@@ -39,6 +39,14 @@ CURRENCY_SERIES = {
         "GDP":           {"series": "GDP",      "category": "growth",     "weight": 1.5, "impact": "high"},
         "Interest Rate": {"series": "FEDFUNDS", "category": "rate",       "weight": 2.0, "impact": "high"},
     },
+    "EUR یۆرۆ": {
+        "CPI":           {"series": "CP0000EZ19M086NEST", "category": "inflation",  "weight": 1.8, "impact": "high"},
+        "Core CPI":      {"series": "CPHPTT01EZM659N",    "category": "inflation",  "weight": 2.0, "impact": "high"},
+        "Production":    {"series": "EA19PRINTO01IXOBSAM","category": "growth",     "weight": 1.2, "impact": "medium"},
+        "Unemployment":  {"series": "LRHUTTTTEZM156S",    "category": "labor_bad",  "weight": 1.5, "impact": "high"},
+        "Interest Rate": {"series": "ECBDFR",             "category": "rate",       "weight": 2.0, "impact": "high"},
+        "GDP":           {"series": "CLVMNACSCAB1GQEA19", "category": "growth",     "weight": 1.5, "impact": "high"},
+    },
     "GBP پاوەند": {
         "CPI":           {"series": "GBRCPIALLMINMEI",  "category": "inflation",  "weight": 1.8, "impact": "high"},
         "Core CPI":      {"series": "GBRCP01IXOBSAM",  "category": "inflation",  "weight": 2.0, "impact": "high"},
@@ -64,6 +72,7 @@ CURRENCY_SERIES = {
 
 KEY_INDICATORS = {
     "USD دۆلار":  ["Core CPI", "Core PCE", "NFP", "Interest Rate"],
+    "EUR یۆرۆ":   ["CPI", "Core CPI", "Unemployment", "Interest Rate"],
     "GBP پاوەند": ["CPI", "Core CPI", "Unemployment", "Interest Rate"],
     "CAD کەنەدی": ["CPI", "Employment", "Unemployment", "Interest Rate"],
     "JPY یەن":    ["CPI", "Core CPI", "Production", "Interest Rate"],
@@ -101,6 +110,14 @@ MONTHLY_CALENDAR = {
         {"name": "PCE",          "day": 25, "hint": "خەرجی بەکاربردنی کەسی",                "impact": "high",   "quarterly": False, "category": "inflation"},
         {"name": "Interest Rate","day": 18, "hint": "بڕیاری سوودی فیدراڵی (FOMC)",           "impact": "high",   "quarterly": False, "category": "rate"},
         {"name": "GDP",          "day": 28, "hint": "گەشەی ئابووری (سێ مانگانە)",            "impact": "high",   "quarterly": True,  "category": "growth"},
+    ],
+    "EUR یۆرۆ": [
+        {"name": "CPI",          "day": 1,  "hint": "هەڵئاوسانی سەرەتایی یۆرۆزۆن (Flash HICP)", "impact": "high",   "quarterly": False, "category": "inflation"},
+        {"name": "Core CPI",     "day": 1,  "hint": "هەڵئاوسانی سەرەکی یۆرۆزۆن",               "impact": "high",   "quarterly": False, "category": "inflation"},
+        {"name": "Unemployment", "day": 1,  "hint": "ڕێژەی بێکاری لە یەکێتی ئەوروپا",           "impact": "high",   "quarterly": False, "category": "labor_bad"},
+        {"name": "Production",   "day": 13, "hint": "بەرهەمهێنانی پیشەسازی ئەوروپا",          "impact": "medium", "quarterly": False, "category": "growth"},
+        {"name": "Interest Rate","day": 12, "hint": "بڕیاری سوودی بانکی ناوەندی ئەوروپا (ECB)", "impact": "high",   "quarterly": False, "category": "rate"},
+        {"name": "GDP",          "day": 30, "hint": "گەشەی ئابووری یۆرۆزۆن (سێ مانگانە)",      "impact": "high",   "quarterly": True,  "category": "growth"},
     ],
     "GBP پاوەند": [
         {"name": "CPI",          "day": 17, "hint": "هەڵئاوسانی بەریتانیا (ONS)",            "impact": "high",   "quarterly": False, "category": "inflation"},
