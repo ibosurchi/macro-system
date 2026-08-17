@@ -1421,4 +1421,4 @@ def main() -> None:
         st.markdown(IMPACT_TABLE_MD)
 
     st.markdown(
-        '<div class="footer-
+        """<div class="foote
