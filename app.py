@@ -1420,5 +1420,15 @@ def main() -> None:
         st.markdown('<h3 style="color:#e5e7eb;margin-bottom:16px;">💡 کاریگەری رووداوە جیهانییەکان</h3>', unsafe_allow_html=True)
         st.markdown(IMPACT_TABLE_MD)
 
-    st.markdown(
-        """<div class="foote
+    footer_txt = (
+        '<div class="footer-note">'
+        "FX Macro &amp; News Intelligence Desk v4"
+        " \u2014 "
+        "\u0628\u06c6 \u0645\u06d5\u0628\u06d5\u0633\u062a\u06cc \u0634\u06cc\u06a9\u0627\u0631\u06cc \u0648 \u0641\u06ce\u0631\u0628\u0648\u0648\u0646\u060c \u0646\u06d5\u06a9 \u0695\u0627\u0648\u06ce\u0698\u06cc \u062f\u0627\u0631\u0627\u06cc\u06cc\u06f4"
+        "</div>"
+    )
+    st.markdown(footer_txt, unsafe_allow_html=True)
+
+
+if __name__ == "__main__":
+    main()
