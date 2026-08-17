@@ -284,8 +284,8 @@ hr.sdivider {
 .mc-name { font-size: 12px; font-weight: 700; color: #6b7280; margin: 6px 0 4px; letter-spacing: 0.3px; }
 .mc-value { font-size: 24px; font-weight: 800; color: #f3f4f6; line-height: 1; margin-bottom: 5px; }
 .mc-change { font-size: 12px; font-weight: 600; margin-bottom: 1px; }
-.mc-secondary { font-size: 11px; color: #374151; margin-bottom: 2px; }
-.mc-date { font-size: 10px; color: #1f2937; padding-bottom: 10px; }
+.mc-secondary { font-size: 11px; color: #6b7280; margin-bottom: 2px; }
+.mc-date { font-size: 10px; color: #4b5563; padding-bottom: 10px; }
 .up-good   { color: #10b981; }
 .down-good { color: #ef4444; }
 .up-bad    { color: #ef4444; }
@@ -341,9 +341,9 @@ hr.sdivider {
     border: 1px solid rgba(226,183,20,0.12);
     border-radius: 16px; padding: 22px; text-align: center;
 }
-.cc-title { font-size: 10px; color: #4b5563; font-weight: 800; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 12px; }
-.cc-score { font-size: 12px; color: #374151; margin-top: 10px; font-family: monospace; }
-.cc-tfs { font-size: 10px; color: #1f2937; margin-top: 6px; letter-spacing: 0.5px; }
+.cc-title { font-size: 10px; color: #9ca3af; font-weight: 800; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 12px; }
+.cc-score { font-size: 12px; color: #6b7280; margin-top: 10px; font-family: monospace; }
+.cc-tfs { font-size: 10px; color: #4b5563; margin-top: 6px; letter-spacing: 0.5px; }
 
 /* === DRIVER CARD === */
 .driver-card {
@@ -354,8 +354,8 @@ hr.sdivider {
 }
 .driver-card:hover { border-color: rgba(226,183,20,0.12); }
 .driver-name { font-size: 13px; font-weight: 700; color: #e5e7eb; }
-.driver-cat { font-size: 11px; color: #4b5563; margin-right: 8px; }
-.driver-tfs { font-size: 11px; color: #374151; margin-top: 6px; }
+.driver-cat { font-size: 11px; color: #6b7280; margin-right: 8px; }
+.driver-tfs { font-size: 11px; color: #6b7280; margin-top: 6px; }
 
 /* === NEWS CARDS === */
 .news-card {
@@ -367,8 +367,8 @@ hr.sdivider {
 .news-card:hover { border-color: rgba(226,183,20,0.15); transform: translateX(-2px); }
 .nc-source-dot { width: 6px; height: 6px; border-radius: 50%; background: #e2b714; display: inline-block; margin-left: 6px; }
 .nc-title { font-size: 13px; font-weight: 600; color: #e5e7eb; line-height: 1.5; margin-bottom: 6px; }
-.nc-meta { font-size: 11px; color: #374151; display: flex; align-items: center; gap: 6px; }
-.nc-time { color: #1f2937; font-size: 10px; margin-right: auto; }
+.nc-meta { font-size: 11px; color: #6b7280; display: flex; align-items: center; gap: 6px; }
+.nc-time { color: #4b5563; font-size: 10px; margin-right: auto; }
 
 /* === ANALYSIS ITEMS === */
 .analysis-item {
@@ -386,8 +386,8 @@ hr.sdivider {
     flex-shrink: 0;
 }
 .ai-title { font-size: 13px; font-weight: 700; color: #e5e7eb; }
-.ai-sub { font-size: 11px; color: #374151; margin-top: 2px; }
-.ai-arrow { margin-right: auto; color: #1f2937; font-size: 16px; transition: color 0.15s; }
+.ai-sub { font-size: 11px; color: #6b7280; margin-top: 2px; }
+.ai-arrow { margin-right: auto; color: #4b5563; font-size: 16px; transition: color 0.15s; }
 .analysis-item:hover .ai-arrow { color: #e2b714; }
 
 /* === CALENDAR CARDS === */
@@ -412,7 +412,7 @@ hr.sdivider {
 .cal-day-badge.upcoming-soon { background: rgba(245,158,11,0.1); color: #f59e0b; }
 .cal-content { flex: 1; min-width: 0; }
 .cal-name { font-weight: 700; color: #e5e7eb; font-size: 13px; }
-.cal-hint { font-size: 11px; color: #374151; margin-top: 2px; }
+.cal-hint { font-size: 11px; color: #6b7280; margin-top: 2px; }
 .cal-impact-badge {
     font-size: 9px; font-weight: 800; padding: 2px 7px;
     border-radius: 999px; letter-spacing: 0.5px; text-transform: uppercase;
@@ -422,12 +422,12 @@ hr.sdivider {
 
 /* === MISC === */
 .section-divider {
-    border: none; border-top: 1px solid rgba(255,255,255,0.04); margin: 22px 0;
+    border: none; border-top: 1px solid rgba(255,255,255,0.06); margin: 22px 0;
 }
 .footer-note {
-    text-align: center; color: #111827; font-size: 11px;
+    text-align: center; color: #374151; font-size: 11px;
     margin-top: 48px; padding: 20px;
-    border-top: 1px solid rgba(255,255,255,0.03);
+    border-top: 1px solid rgba(255,255,255,0.04);
 }
 
 /* Streamlit overrides */
@@ -706,9 +706,9 @@ def make_trend_chart(df: pd.DataFrame, name: str) -> go.Figure | None:
         showlegend=False,
         margin=dict(l=0, r=0, t=6, b=0),
         height=200,
-        xaxis=dict(showgrid=False, color="#374151", tickfont=dict(size=10, color="#374151"), showline=False, zeroline=False),
-        yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.03)", color="#374151",
-                   tickfont=dict(size=10, color="#374151"), showline=False, zeroline=False),
+        xaxis=dict(showgrid=False, color="#4b5563", tickfont=dict(size=10, color="#4b5563"), showline=False, zeroline=False),
+        yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.05)", color="#4b5563",
+                   tickfont=dict(size=10, color="#4b5563"), showline=False, zeroline=False),
         hovermode="x unified",
     )
     return fig
@@ -827,30 +827,43 @@ def render_dashboard(fred_key: str, news_key: str) -> None:
 
     with t_col:
         st.markdown('<div class="section-title">کۆتا ئاراستیەکان</div>', unsafe_allow_html=True)
-        tbl = """
-        <div class="data-table-wrap">
-        <table class="data-table">
-        <thead>
-          <tr>
-            <th>بازار</th><th>کۆتا</th><th>m/m</th><th>q/q</th><th>y/y</th><th>ئاراستە</th><th>کۆک</th>
-          </tr>
-        </thead><tbody>
-        """
+
+        def _fpct(v):
+            if v is None:
+                return "—"
+            return f"+{v:.2f}%" if v > 0 else f"{v:.2f}%"
+
+        tbl_data = []
         for row in rows:
             pos = row["category"] != "labor_bad"
-            lbl, cls, _ = bias_from_score(row["composite"])
-            tbl += f"""
-            <tr>
-              <td style="font-weight:700;color:#e5e7eb;">{row['name']}</td>
-              <td style="color:#e2b714;font-weight:600;">{row['latest']:,.2f}</td>
-              <td>{pct_html(row['mom'], pos)}</td>
-              <td>{pct_html(row.get('qoq'), pos)}</td>
-              <td>{pct_html(row.get('yoy'), pos)}</td>
-              <td><span class="badge {cls}" style="font-size:10px;padding:2px 7px;">{lbl}</span></td>
-              <td style="text-align:center;">{agr_html(row['agreement'])}</td>
-            </tr>"""
-        tbl += "</tbody></table></div>"
-        st.markdown(tbl, unsafe_allow_html=True)
+            lbl, _, _ = bias_from_score(row["composite"])
+            agr_str = (
+                "🟢 کۆک" if row["agreement"] >= 0.85
+                else ("🟡 ناوەند" if row["agreement"] >= 0.5 else "🔴 ناکۆک")
+            )
+            tbl_data.append({
+                "بازار":   row["name"],
+                "کۆتا":   f"{row['latest']:,.2f}",
+                "m/m":    _fpct(row["mom"]),
+                "q/q":    _fpct(row.get("qoq")),
+                "y/y":    _fpct(row.get("yoy")),
+                "ئاراستە": lbl,
+                "کۆک":    agr_str,
+            })
+        st.dataframe(
+            pd.DataFrame(tbl_data),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "بازار":   st.column_config.TextColumn("بازار",   width="medium"),
+                "کۆتا":   st.column_config.TextColumn("کۆتا",   width="small"),
+                "m/m":    st.column_config.TextColumn("m/m",    width="small"),
+                "q/q":    st.column_config.TextColumn("q/q",    width="small"),
+                "y/y":    st.column_config.TextColumn("y/y",    width="small"),
+                "ئاراستە": st.column_config.TextColumn("ئاراستە", width="medium"),
+                "کۆک":   st.column_config.TextColumn("کۆک",    width="medium"),
+            },
+        )
 
     with c_col:
         st.markdown('<div class="section-title">کش و هەواڵی بازارەکان</div>', unsafe_allow_html=True)
@@ -1002,35 +1015,33 @@ def render_currency_detail(fred_key: str) -> None:
     # Full multi-timeframe table
     st.markdown('<div class="section-title">خشتەی فراوانتایمفریم — هەموو نیشاندەرەکان</div>', unsafe_allow_html=True)
 
-    tbl = """
-    <div class="data-table-wrap">
-    <table class="data-table">
-    <thead>
-      <tr>
-        <th>نیشاندەر</th><th>کاتیگۆری</th><th>کۆتا ئاست</th>
-        <th>m/m %</th><th>q/q %</th><th>y/y %</th>
-        <th>Trend 3m</th><th>Z-Level</th><th>ئاراستە</th><th>کۆکبوون</th>
-      </tr>
-    </thead><tbody>
-    """
+    def _fp(v):
+        if v is None:
+            return "—"
+        return f"+{v:.2f}%" if v > 0 else f"{v:.2f}%"
+
+    det_data = []
     for row in rows:
-        pos = row["category"] != "labor_bad"
-        lbl2, cls2, _ = bias_from_score(row["composite"])
-        tbl += f"""
-        <tr>
-          <td style="font-weight:700;color:#e5e7eb;">{row['name']}</td>
-          <td style="color:#6b7280;font-size:11px;">{CATEGORY_LABELS.get(row['category'], '')}</td>
-          <td style="color:#e2b714;font-weight:600;">{row['latest']:,.2f}</td>
-          <td>{pct_html(row['mom'], pos)}</td>
-          <td>{pct_html(row.get('qoq'), pos)}</td>
-          <td>{pct_html(row.get('yoy'), pos)}</td>
-          <td>{pct_html(row.get('t3m'), pos)}</td>
-          <td style="color:#6b7280;font-family:monospace;">{row['z_level']:+.2f}</td>
-          <td><span class="badge {cls2}" style="font-size:10px;padding:2px 7px;">{lbl2}</span></td>
-          <td>{agr_html(row['agreement'])}</td>
-        </tr>"""
-    tbl += "</tbody></table></div>"
-    st.markdown(tbl, unsafe_allow_html=True)
+        pos  = row["category"] != "labor_bad"
+        lbl2, _, _ = bias_from_score(row["composite"])
+        agr_s = "🟢 کۆک" if row["agreement"] >= 0.85 else ("🟡 ناوەند" if row["agreement"] >= 0.5 else "🔴 ناکۆک")
+        det_data.append({
+            "نیشاندەر":   row["name"],
+            "کاتیگۆری":  CATEGORY_LABELS.get(row["category"], ""),
+            "کۆتا":      f"{row['latest']:,.2f}",
+            "m/m %":     _fp(row["mom"]),
+            "q/q %":     _fp(row.get("qoq")),
+            "y/y %":     _fp(row.get("yoy")),
+            "Trend 3m":  _fp(row.get("t3m")),
+            "Z-Level":   f"{row['z_level']:+.2f}σ",
+            "ئاراستە":   lbl2,
+            "کۆکبوون":   agr_s,
+        })
+    st.dataframe(
+        pd.DataFrame(det_data),
+        use_container_width=True,
+        hide_index=True,
+    )
 
     st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
 
@@ -1410,11 +1421,4 @@ def main() -> None:
         st.markdown(IMPACT_TABLE_MD)
 
     st.markdown(
-        '<div class="footer-note">FX Macro & News Intelligence Desk v4 — '
-        'بۆ مەبەستی شیکاری و فێربوون، نەک ڕاوێژی دارایی.</div>',
-        unsafe_allow_html=True,
-    )
-
-
-if __name__ == "__main__":
-    main()
+        '<div class="footer-
