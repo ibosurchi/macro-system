@@ -1,5 +1,5 @@
 """
-FX Macro & News Intelligence Desk — v5
+FX Macro & News Intelligence Desk — v5.1
 سیستەمی پێشبینیکردن و شیکاری هەواڵەکان
 Professional Multi-Timeframe Macro & Geopolitical Intelligence Platform
 """
@@ -11,7 +11,6 @@ import requests
 import plotly.graph_objects as go
 from datetime import datetime, date, timedelta
 import calendar as cal_lib
-import textwrap
 
 st.set_page_config(
     page_title="FX Macro & Geopolitical Desk",
@@ -136,12 +135,16 @@ IMPACT_TABLE_MD = """
 """
 
 # ============================================================
-# HELPER: CLEAN HTML RENDERER (ELIMINATES INDENTATION BUGS)
+# ROBUST HTML RENDERER (ZERO INDENTATION - PREVENTS CODE BLOCKS)
 # ============================================================
 
 def render_html(html_str: str) -> None:
-    """Render pure HTML safely without Markdown indentation/escaping bugs."""
-    clean_html = textwrap.dedent(html_str).strip()
+    """
+    Renders pure HTML by stripping all leading and trailing whitespace
+    from each line. This strictly prevents Markdown from treating any line
+    as an indented code block.
+    """
+    clean_html = "\n".join(line.strip() for line in html_str.splitlines() if line.strip())
     st.markdown(clean_html, unsafe_allow_html=True)
 
 
@@ -268,7 +271,7 @@ def inject_css() -> None:
 }
 .main-breadcrumb {
     font-size: 12px;
-    color: #6b7280;
+    color: #8a99ad;
     font-weight: 500;
 }
 
@@ -304,7 +307,7 @@ section[data-testid="stSidebar"] .block-container {
 .sb-title { font-size: 12px; font-weight: 800; color: #e2b714; }
 .sb-sub { font-size: 9px; color: #6b7280; margin-top: 1px; }
 
-/* Custom styled Sidebar Radio tabs */
+/* Custom styled Sidebar Radio tabs (Hides default radio circle) */
 section[data-testid="stSidebar"] div[data-testid="stRadio"] > div {
     gap: 4px !important;
     flex-direction: column !important;
@@ -327,15 +330,49 @@ section[data-testid="stSidebar"] div[data-testid="stRadio"] label:hover {
     background: rgba(255, 255, 255, 0.03) !important;
     color: #ffffff !important;
 }
-section[data-testid="stSidebar"] div[data-testid="stRadio"] [aria-checked="true"] {
+section[data-testid="stSidebar"] div[data-testid="stRadio"] [aria-checked="true"],
+section[data-testid="stSidebar"] div[data-testid="stRadio"] label[data-checked="true"] {
     background: rgba(226, 183, 20, 0.08) !important;
     border: 1px solid #e2b714 !important;
     color: #e2b714 !important;
     font-weight: 700 !important;
     box-shadow: 0 0 12px rgba(226, 183, 20, 0.12) !important;
 }
-section[data-testid="stSidebar"] div[data-testid="stRadio"] label > div:first-child {
+section[data-testid="stSidebar"] div[data-testid="stRadio"] input[type="radio"],
+section[data-testid="stSidebar"] div[data-testid="stRadio"] label > div:first-child,
+div[data-testid="stRadio"] div[role="radiogroup"] > label > div:first-child {
     display: none !important;
+    visibility: hidden !important;
+    width: 0 !important;
+    height: 0 !important;
+}
+
+/* Horizontal Radio Bars */
+div[data-testid="stRadio"] div[role="radiogroup"] {
+    display: flex !important;
+    gap: 8px !important;
+    flex-wrap: wrap !important;
+}
+div[data-testid="stRadio"] div[role="radiogroup"] label {
+    background: #090e1a !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    border-radius: 10px !important;
+    padding: 6px 14px !important;
+    color: #8a99ad !important;
+    font-size: 12px !important;
+    font-weight: 600 !important;
+    cursor: pointer !important;
+}
+div[data-testid="stRadio"] div[role="radiogroup"] label:hover {
+    border-color: rgba(226, 183, 20, 0.3) !important;
+    color: #ffffff !important;
+}
+div[data-testid="stRadio"] div[role="radiogroup"] [aria-checked="true"],
+div[data-testid="stRadio"] div[role="radiogroup"] label[data-checked="true"] {
+    background: rgba(226, 183, 20, 0.12) !important;
+    border-color: #e2b714 !important;
+    color: #e2b714 !important;
+    font-weight: 700 !important;
 }
 
 /* Sidebar bottom coffee card */
@@ -351,7 +388,7 @@ section[data-testid="stSidebar"] div[data-testid="stRadio"] label > div:first-ch
 .scc-title { font-size: 12px; font-weight: 800; color: #e2b714; }
 .scc-sub { font-size: 10px; color: #6b7280; margin-top: 2px; }
 
-/* === DARK STREAMLIT WIDGET OVERRIDES (NO MORE WHITE ELEMENTS!) === */
+/* === DARK STREAMLIT WIDGET OVERRIDES === */
 div[data-baseweb="select"],
 div[data-baseweb="select"] > div,
 div[data-baseweb="select"] * {
@@ -411,7 +448,7 @@ div[data-testid="stMetricDelta"] svg { display: none; }
     border-radius: 16px;
     overflow: hidden;
     box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5);
-    margin-top: 10px;
+    margin-top: 6px;
 }
 .ref-table {
     width: 100%;
@@ -465,9 +502,9 @@ div[data-testid="stMetricDelta"] svg { display: none; }
     text-align: center;
     direction: ltr;
 }
-.ref-badge-green { color: #10b981; }
-.ref-badge-red { color: #ef4444; }
-.ref-badge-gray { color: #6b7280; }
+.ref-badge-green { color: #10b981; font-weight: 700; }
+.ref-badge-red { color: #ef4444; font-weight: 700; }
+.ref-badge-gray { color: #6b7280; font-weight: 700; }
 .tbl-help-icon {
     display: inline-block;
     color: #6b7280;
@@ -477,7 +514,7 @@ div[data-testid="stMetricDelta"] svg { display: none; }
 .ref-table-footer {
     padding: 12px 18px;
     font-size: 11px;
-    color: #6b7280;
+    color: #8a99ad;
     background: #080c16;
     border-top: 1px solid rgba(255, 255, 255, 0.04);
     display: flex;
@@ -837,55 +874,50 @@ def svg_spark(vals: list, width: int = 80, height: int = 34, positive_is_good: b
     )
 
 
-def make_trend_chart(df: pd.DataFrame, name: str) -> go.Figure | None:
+def make_dynamic_chart(df: pd.DataFrame, indicator_name: str, currency_name: str) -> go.Figure | None:
+    """Creates a real-time responsive dynamic chart from FRED time series."""
     if df is None or df.empty:
         return None
+
+    vals = df["value"].tolist()
+    is_up = vals[-1] >= vals[0] if len(vals) >= 2 else True
+    accent_color = "#e2b714" if is_up else "#f59e0b"
+
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=df["date"], y=df["value"],
+        x=df["date"],
+        y=df["value"],
         mode="lines",
-        line=dict(color="#e2b714", width=2.5, shape="spline"),
+        name=indicator_name,
+        line=dict(color=accent_color, width=2.8, shape="spline"),
         fill="tozeroy",
-        fillcolor="rgba(226,183,20,0.06)",
-        hovertemplate="%{x}<br><b>%{y:,.2f}</b><extra></extra>",
+        fillcolor="rgba(226,183,20,0.07)",
+        hovertemplate="<b>%{x}</b><br>ئاستی داتا: <b>%{y:,.2f}</b><extra></extra>",
     ))
+
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         showlegend=False,
-        margin=dict(l=10, r=10, t=10, b=10),
-        height=220,
-        xaxis=dict(showgrid=False, color="#6b7280", tickfont=dict(size=10, color="#8a99ad"), showline=False, zeroline=False),
-        yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.04)", color="#6b7280", tickfont=dict(size=10, color="#8a99ad"), showline=False, zeroline=False),
-        hovermode="x unified",
-    )
-    return fig
-
-
-def make_candlestick_mock() -> go.Figure:
-    """Mock candlestick chart matching Screenshot 3."""
-    dates = pd.date_range(end=datetime.now(), periods=28, freq="h")
-    np.random.seed(42)
-    base = 1.1000 + np.cumsum(np.random.randn(28) * 0.0008)
-    high = base + np.random.rand(28) * 0.0012
-    low = base - np.random.rand(28) * 0.0012
-    open_p = base - np.random.randn(28) * 0.0004
-    close_p = base + np.random.randn(28) * 0.0004
-
-    fig = go.Figure(data=[go.Candlestick(
-        x=dates,
-        open=open_p, high=high, low=low, close=close_p,
-        increasing_line_color="#10b981", decreasing_line_color="#ef4444",
-        increasing_fillcolor="#10b981", decreasing_fillcolor="#ef4444",
-    )])
-    fig.update_layout(
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        showlegend=False,
-        margin=dict(l=0, r=0, t=0, b=0),
+        margin=dict(l=10, r=20, t=10, b=10),
         height=240,
-        xaxis=dict(showgrid=False, color="#6b7280", rangeslider=dict(visible=False), tickfont=dict(size=9, color="#8a99ad")),
-        yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.04)", color="#6b7280", tickfont=dict(size=9, color="#8a99ad"), side="right"),
+        xaxis=dict(
+            showgrid=False,
+            color="#6b7280",
+            tickfont=dict(size=10, color="#8a99ad"),
+            showline=False,
+            zeroline=False,
+        ),
+        yaxis=dict(
+            showgrid=True,
+            gridcolor="rgba(255,255,255,0.05)",
+            color="#6b7280",
+            tickfont=dict(size=10, color="#8a99ad"),
+            side="right",
+            showline=False,
+            zeroline=False,
+        ),
+        hovermode="x unified",
     )
     return fig
 
@@ -935,7 +967,7 @@ def render_reference_table_html(rows: list) -> None:
             return f'<span class="ref-badge-red">▼ -{abs(v):.2f}%</span>'
         return '<span class="ref-badge-gray">0.00%</span>'
 
-    tbody_rows = ""
+    tbody_rows = []
     for r in rows:
         name = r["name"]
         val = f"{r['latest']:,.2f}"
@@ -943,7 +975,7 @@ def render_reference_table_html(rows: list) -> None:
         qoq_s = fmt_pct(r.get("qoq"))
         yoy_s = fmt_pct(r.get("yoy"))
 
-        tbody_rows += f"""
+        row_str = f"""
         <tr>
           <td class="td-name">
             <span style="color:#e2b714;font-size:14px;">📈</span>
@@ -955,6 +987,9 @@ def render_reference_table_html(rows: list) -> None:
           <td class="td-pct">{yoy_s}</td>
         </tr>
         """
+        tbody_rows.append(row_str)
+
+    all_rows_html = "".join(tbody_rows)
 
     table_html = f"""
     <div class="ref-table-card">
@@ -969,7 +1004,7 @@ def render_reference_table_html(rows: list) -> None:
           </tr>
         </thead>
         <tbody>
-          {tbody_rows}
+          {all_rows_html}
         </tbody>
       </table>
       <div class="ref-table-footer">
@@ -1082,7 +1117,7 @@ def render_dashboard(fred_key: str, news_key: str) -> None:
     st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
 
     # ----------------------------------------------------------------
-    # Dark Table + Chart Side-by-Side (Screenshot 3 layout)
+    # Dark Table + Dynamic Chart (Screenshot 3 layout)
     # ----------------------------------------------------------------
     t_col, c_col = st.columns([1.1, 1.2])
 
@@ -1091,25 +1126,45 @@ def render_dashboard(fred_key: str, news_key: str) -> None:
         render_reference_table_html(rows)
 
     with c_col:
-        st.markdown('<div class="section-title">کەش و هەوای بازاڕەکان (Live Chart)</div>', unsafe_allow_html=True)
-        chart_card_head = """
+        st.markdown('<div class="section-title">کەش و هەوای بازاڕەکان (Live Dynamic Chart)</div>', unsafe_allow_html=True)
+
+        # Dynamic indicator selector for the chart
+        chart_ind_names = [r["name"] for r in rows]
+        chosen_ind = st.selectbox(
+            "نیشاندەر بۆ پیشاندانی نمودار:",
+            chart_ind_names,
+            key=f"dash_chart_ind_{selected}",
+            label_visibility="collapsed",
+        )
+
+        crow = row_map.get(chosen_ind, rows[0])
+        c_vals = crow["vals"]
+        c_max = max(c_vals) if c_vals else 0
+        c_min = min(c_vals) if c_vals else 0
+        c_latest = crow["latest"]
+        pos = crow["category"] != "labor_bad"
+        mom_val = crow["mom"]
+        mom_col = "#10b981" if (mom_val > 0) == pos else "#ef4444"
+
+        chart_card_head = f"""
         <div style="background:#090e1a;border:1px solid rgba(255,255,255,0.07);border-radius:16px;padding:16px;box-shadow:0 12px 36px rgba(0,0,0,0.5);">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
             <div>
-              <span style="font-size:14px;font-weight:800;color:#ffffff;">EUR/USD</span>
-              <span style="font-size:18px;font-weight:800;color:#10b981;margin-right:8px;">1.1024</span>
-              <span style="color:#10b981;font-size:11px;font-weight:700;">▲ +0.36%</span>
+              <span style="font-size:14px;font-weight:800;color:#ffffff;">{selected} &nbsp;—&nbsp; {chosen_ind}</span>
+              <span style="font-size:18px;font-weight:800;color:#ffffff;margin-right:8px;margin-left:8px;">{c_latest:,.2f}</span>
+              <span style="color:{mom_col};font-size:11.5px;font-weight:700;">{'▲ +' if mom_val > 0 else '▼ '}{mom_val:.2f}% m/m</span>
             </div>
             <div style="display:flex;gap:12px;font-size:11px;color:#8a99ad;">
-              <span>High: <b style="color:#fff;">1.1031</b></span>
-              <span>Low: <b style="color:#fff;">1.0987</b></span>
-              <span>Vol: <b style="color:#fff;">124.6K</b></span>
+              <span>High: <b style="color:#fff;">{c_max:,.2f}</b></span>
+              <span>Low: <b style="color:#fff;">{c_min:,.2f}</b></span>
+              <span>Obs: <b style="color:#fff;">{len(c_vals)}</b></span>
             </div>
           </div>
         """
         render_html(chart_card_head)
-        fig_candle = make_candlestick_mock()
-        st.plotly_chart(fig_candle, use_container_width=True, config={"displayModeBar": False})
+        fig_dyn = make_dynamic_chart(crow["df"], chosen_ind, selected)
+        if fig_dyn:
+            st.plotly_chart(fig_dyn, use_container_width=True, config={"displayModeBar": False})
         render_html("</div>")
 
     st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
@@ -1122,7 +1177,7 @@ def render_dashboard(fred_key: str, news_key: str) -> None:
     with n_col:
         st.markdown('<div class="section-title">هەواڵی جیهانی و ئابووری (News Feed)</div>', unsafe_allow_html=True)
         if news_key:
-            arts = fetch_news("forex OR economy OR inflation", news_key)
+            arts = fetch_news(f"{selected.split()[0]} OR forex OR economy OR inflation", news_key)
             if arts:
                 for art in arts[:3]:
                     t_str = art.get("title", "—")
@@ -1198,7 +1253,7 @@ def render_levels_page(fred_key: str) -> None:
 
 
 # ============================================================
-# PAGE 3: 📅 MONTHLY OUTLOOK (FIXED CLEAN HTML)
+# PAGE 3: 📅 MONTHLY OUTLOOK (CLEAN BULLET-PROOF CARDS)
 # ============================================================
 
 def render_monthly(fred_key: str) -> None:
@@ -1272,6 +1327,7 @@ def render_monthly(fred_key: str) -> None:
             else:
                 days_badge = f"<span style='color:#8a99ad;font-size:11px;'>ماوە {ev['days_until']} ڕۆژ</span>"
 
+        pred_txt = '← پێشبینی بەپێی ترێند' if not ev['is_released'] else ''
         html_card = f"""
         <div class="cal-card {card_cls}">
           <div class="cal-day-badge {day_cls}">{ev['day']:02d}</div>
@@ -1286,7 +1342,7 @@ def render_monthly(fred_key: str) -> None:
             <div class="cal-hint">📌 {ev['hint']}</div>
             {tf_line}
             <div style="margin-top:8px;">
-              <span class="badge {cls2}">{lbl2} {'← پێشبینی بەپێی ترێند' if not ev['is_released'] else ''}</span>
+              <span class="badge {cls2}">{lbl2} {pred_txt}</span>
             </div>
           </div>
         </div>
@@ -1360,7 +1416,7 @@ def render_gold_page(fred_key: str) -> None:
     st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
     st.markdown('<div class="section-title">نموداری گۆڕانی سوودی ڕاستەقینە (Real Yield Trend)</div>', unsafe_allow_html=True)
     ry_df = merged[["date", "ry"]].rename(columns={"ry": "value"})
-    fig = make_trend_chart(ry_df, "Real Yield")
+    fig = make_dynamic_chart(ry_df, "Real Yield", "Gold")
     if fig:
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -1471,9 +1527,7 @@ def main() -> None:
     # Page Routing
     if page == "🏠 سەرەکی":
         render_dashboard(fred_key, news_api_key)
-    elif page == "📋 کۆتا ئاستیەکان":
-        render_levels_page(fred_key)
-    elif page == "📈 Macro Strength & Engine":
+    elif page == "📋 کۆتا ئاستیەکان" or page == "📈 Macro Strength & Engine":
         render_levels_page(fred_key)
     elif page == "🥇 Gold (XAUUSD) Analysis":
         render_gold_page(fred_key)
