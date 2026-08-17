@@ -1,5 +1,5 @@
 """
-FX Macro & News Intelligence Desk — v5.1
+FX Macro & News Intelligence Desk — v6
 سیستەمی پێشبینیکردن و شیکاری هەواڵەکان
 Professional Multi-Timeframe Macro & Geopolitical Intelligence Platform
 """
@@ -22,43 +22,43 @@ st.set_page_config(
 REQUEST_TIMEOUT = 10
 
 # ============================================================
-# CONSTANTS & METRICS CONFIGURATION
+# CONSTANTS & OFFICIAL METRICS CONFIGURATION (FRED SERIES)
 # ============================================================
 
 CURRENCY_SERIES = {
     "USD دۆلار": {
-        "CPI":           {"series": "CPIAUCSL",  "category": "inflation",  "weight": 1.5},
-        "Core CPI":      {"series": "CPILFESL",  "category": "inflation",  "weight": 2.0},
-        "PPI":           {"series": "PPIACO",    "category": "inflation",  "weight": 1.0},
-        "Core PPI":      {"series": "WPSFD4131", "category": "inflation",  "weight": 1.2},
-        "Core PCE":      {"series": "PCEPILFE",  "category": "inflation",  "weight": 2.0},
-        "PCE":           {"series": "PCEPI",     "category": "inflation",  "weight": 1.3},
-        "NFP":           {"series": "PAYEMS",    "category": "labor_good", "weight": 1.5},
-        "Unemployment":  {"series": "UNRATE",    "category": "labor_bad",  "weight": 1.5},
-        "Retail Sales":  {"series": "RSAFS",     "category": "growth",     "weight": 1.0},
-        "GDP":           {"series": "GDP",        "category": "growth",     "weight": 1.3},
-        "Interest Rate": {"series": "FEDFUNDS",  "category": "rate",       "weight": 1.5},
+        "CPI":           {"series": "CPIAUCSL", "category": "inflation",  "weight": 1.5, "impact": "high"},
+        "Core CPI":      {"series": "CPILFESL", "category": "inflation",  "weight": 2.0, "impact": "high"},
+        "PPI":           {"series": "PPIFIS",   "category": "inflation",  "weight": 1.2, "impact": "high"},
+        "Core PPI":      {"series": "PPIFES",   "category": "inflation",  "weight": 1.5, "impact": "high"},
+        "Core PCE":      {"series": "PCEPILFE", "category": "inflation",  "weight": 2.0, "impact": "high"},
+        "PCE":           {"series": "PCEPI",    "category": "inflation",  "weight": 1.3, "impact": "high"},
+        "NFP":           {"series": "PAYEMS",   "category": "labor_good", "weight": 1.8, "impact": "high"},
+        "Unemployment":  {"series": "UNRATE",   "category": "labor_bad",  "weight": 1.8, "impact": "high"},
+        "Retail Sales":  {"series": "RSAFS",    "category": "growth",     "weight": 1.2, "impact": "high"},
+        "GDP":           {"series": "GDP",      "category": "growth",     "weight": 1.5, "impact": "high"},
+        "Interest Rate": {"series": "FEDFUNDS", "category": "rate",       "weight": 2.0, "impact": "high"},
     },
     "GBP پاوەند": {
-        "CPI":           {"series": "GBRCPIALLMINMEI",  "category": "inflation",  "weight": 1.5},
-        "Core CPI":      {"series": "GBRCP01IXOBSAM",  "category": "inflation",  "weight": 1.8},
-        "Production":    {"series": "GBRPROINDMISMEI",  "category": "growth",     "weight": 1.0},
-        "Unemployment":  {"series": "LRUN64TTGBM156S",  "category": "labor_bad",  "weight": 1.5},
-        "Interest Rate": {"series": "IRLTLT01GBM156N",  "category": "rate",       "weight": 1.3},
+        "CPI":           {"series": "GBRCPIALLMINMEI",  "category": "inflation",  "weight": 1.8, "impact": "high"},
+        "Core CPI":      {"series": "GBRCP01IXOBSAM",  "category": "inflation",  "weight": 2.0, "impact": "high"},
+        "Production":    {"series": "GBRPROINDMISMEI",  "category": "growth",     "weight": 1.2, "impact": "medium"},
+        "Unemployment":  {"series": "LRUN64TTGBM156S",  "category": "labor_bad",  "weight": 1.5, "impact": "high"},
+        "Interest Rate": {"series": "IRLTLT01GBM156N",  "category": "rate",       "weight": 1.8, "impact": "high"},
     },
     "CAD کەنەدی": {
-        "CPI":           {"series": "CANCPIALLMINMEI", "category": "inflation",  "weight": 1.5},
-        "Core CPI":      {"series": "CANCP01IXOBSAM",  "category": "inflation",  "weight": 1.8},
-        "Employment":    {"series": "LFEMTTTTCAM647S", "category": "labor_good", "weight": 1.3},
-        "Unemployment":  {"series": "LRUN64TTCAM156S", "category": "labor_bad",  "weight": 1.5},
-        "Interest Rate": {"series": "IRLTLT01CAM156N", "category": "rate",       "weight": 1.3},
+        "CPI":           {"series": "CANCPIALLMINMEI", "category": "inflation",  "weight": 1.8, "impact": "high"},
+        "Core CPI":      {"series": "CANCP01IXOBSAM",  "category": "inflation",  "weight": 2.0, "impact": "high"},
+        "Employment":    {"series": "LFEMTTTTCAM647S", "category": "labor_good", "weight": 1.5, "impact": "high"},
+        "Unemployment":  {"series": "LRUN64TTCAM156S", "category": "labor_bad",  "weight": 1.5, "impact": "high"},
+        "Interest Rate": {"series": "IRLTLT01CAM156N", "category": "rate",       "weight": 1.8, "impact": "high"},
     },
     "JPY یەن": {
-        "CPI":           {"series": "JPNCPIALLMINMEI", "category": "inflation",  "weight": 1.5},
-        "Core CPI":      {"series": "JPNCP01IXOBSAM",  "category": "inflation",  "weight": 1.8},
-        "Production":    {"series": "JPNPROINDMISMEI", "category": "growth",     "weight": 1.0},
-        "Unemployment":  {"series": "LRUN64TTJPM156S", "category": "labor_bad",  "weight": 1.5},
-        "Interest Rate": {"series": "IRLTLT01JPM156N", "category": "rate",       "weight": 1.3},
+        "CPI":           {"series": "JPNCPIALLMINMEI", "category": "inflation",  "weight": 1.8, "impact": "high"},
+        "Core CPI":      {"series": "JPNCP01IXOBSAM",  "category": "inflation",  "weight": 2.0, "impact": "high"},
+        "Production":    {"series": "JPNPROINDMISMEI", "category": "growth",     "weight": 1.2, "impact": "medium"},
+        "Unemployment":  {"series": "LRUN64TTJPM156S", "category": "labor_bad",  "weight": 1.5, "impact": "medium"},
+        "Interest Rate": {"series": "IRLTLT01JPM156N", "category": "rate",       "weight": 2.0, "impact": "high"},
     },
 }
 
@@ -90,49 +90,40 @@ GOLD_INFLATION_EXP_SERIES = "T10YIE"
 
 MONTHLY_CALENDAR = {
     "USD دۆلار": [
-        {"name": "NFP",          "day": 4,  "hint": "یەکەم هەینی مانگ",         "impact": "high",   "quarterly": False, "category": "labor_good"},
-        {"name": "Unemployment", "day": 4,  "hint": "هاوکات لەگەڵ NFP",          "impact": "high",   "quarterly": False, "category": "labor_bad"},
-        {"name": "Core CPI",     "day": 11, "hint": "نزیکەی ڕۆژی ١٠-١٣",        "impact": "high",   "quarterly": False, "category": "inflation"},
-        {"name": "CPI",          "day": 11, "hint": "هاوکات لەگەڵ Core CPI",     "impact": "high",   "quarterly": False, "category": "inflation"},
-        {"name": "Core PPI",     "day": 13, "hint": "ڕۆژێک-دوو دوای CPI",       "impact": "medium", "quarterly": False, "category": "inflation"},
-        {"name": "PPI",          "day": 13, "hint": "هاوکات لەگەڵ Core PPI",    "impact": "medium", "quarterly": False, "category": "inflation"},
-        {"name": "Retail Sales", "day": 15, "hint": "نزیکەی ڕۆژی ١٥-١٧",        "impact": "high",   "quarterly": False, "category": "growth"},
-        {"name": "Core PCE",     "day": 25, "hint": "نزیکەی کۆتایی مانگ",       "impact": "high",   "quarterly": False, "category": "inflation"},
-        {"name": "PCE",          "day": 25, "hint": "هاوکات لەگەڵ Core PCE",    "impact": "medium", "quarterly": False, "category": "inflation"},
-        {"name": "Interest Rate","day": 18, "hint": "FOMC — ٨ جار لە ساڵ",      "impact": "high",   "quarterly": False, "category": "rate"},
-        {"name": "GDP",          "day": 28, "hint": "کوارتەرلی — هەر ٣ مانگ",   "impact": "high",   "quarterly": True,  "category": "growth"},
+        {"name": "NFP",          "day": 4,  "hint": "یەکەم هەینی مانگ — بازاڕی کار",         "impact": "high",   "quarterly": False, "category": "labor_good"},
+        {"name": "Unemployment", "day": 4,  "hint": "هاوکات لەگەڵ NFP — ڕێژەی بێکاری",       "impact": "high",   "quarterly": False, "category": "labor_bad"},
+        {"name": "Core CPI",     "day": 11, "hint": "هەڵئاوسانی سەرەکی (بێ وزە و خۆراک)",     "impact": "high",   "quarterly": False, "category": "inflation"},
+        {"name": "CPI",          "day": 11, "hint": "هەڵئاوسانی گشتی بەکارهێنەران",            "impact": "high",   "quarterly": False, "category": "inflation"},
+        {"name": "Core PPI",     "day": 13, "hint": "هەڵئاوسانی بەرهەمهێنەرانی سەرەکی",       "impact": "high",   "quarterly": False, "category": "inflation"},
+        {"name": "PPI",          "day": 13, "hint": "هەڵئاوسانی بەرهەمهێنەرانی گشتی",        "impact": "high",   "quarterly": False, "category": "inflation"},
+        {"name": "Retail Sales", "day": 15, "hint": "فرۆشی تاکەکەسی و کڕینی خەڵک",          "impact": "high",   "quarterly": False, "category": "growth"},
+        {"name": "Core PCE",     "day": 25, "hint": "پێوەری دڵخوازی فیدراڵی بۆ هەڵئاوسان",    "impact": "high",   "quarterly": False, "category": "inflation"},
+        {"name": "PCE",          "day": 25, "hint": "خەرجی بەکاربردنی کەسی",                "impact": "high",   "quarterly": False, "category": "inflation"},
+        {"name": "Interest Rate","day": 18, "hint": "بڕیاری سوودی فیدراڵی (FOMC)",           "impact": "high",   "quarterly": False, "category": "rate"},
+        {"name": "GDP",          "day": 28, "hint": "گەشەی ئابووری (سێ مانگانە)",            "impact": "high",   "quarterly": True,  "category": "growth"},
     ],
     "GBP پاوەند": [
-        {"name": "CPI",          "day": 17, "hint": "نزیکەی ڕۆژی ١٥-٢٠ (ONS)", "impact": "high",   "quarterly": False, "category": "inflation"},
-        {"name": "Core CPI",     "day": 17, "hint": "هاوکات لەگەڵ CPI",          "impact": "high",   "quarterly": False, "category": "inflation"},
-        {"name": "Unemployment", "day": 11, "hint": "نزیکەی ڕۆژی ١٠-١٤",        "impact": "high",   "quarterly": False, "category": "labor_bad"},
-        {"name": "Production",   "day": 11, "hint": "هاوکات لەگەڵ بازرگانی",    "impact": "medium", "quarterly": False, "category": "growth"},
-        {"name": "Interest Rate","day": 19, "hint": "BoE — نزیکەی ٨ جار لە ساڵ","impact": "high",  "quarterly": False, "category": "rate"},
+        {"name": "CPI",          "day": 17, "hint": "هەڵئاوسانی بەریتانیا (ONS)",            "impact": "high",   "quarterly": False, "category": "inflation"},
+        {"name": "Core CPI",     "day": 17, "hint": "هەڵئاوسانی سەرەکی بەریتانیا",          "impact": "high",   "quarterly": False, "category": "inflation"},
+        {"name": "Unemployment", "day": 11, "hint": "ڕێژەی بێکاری و داواکاری کار",           "impact": "high",   "quarterly": False, "category": "labor_bad"},
+        {"name": "Production",   "day": 11, "hint": "بەرهەمهێنانی پیشەسازی",                "impact": "medium", "quarterly": False, "category": "growth"},
+        {"name": "Interest Rate","day": 19, "hint": "بڕیاری سوودی بانکی ئینگلتەرا (BoE)",     "impact": "high",   "quarterly": False, "category": "rate"},
     ],
     "CAD کەنەدی": [
-        {"name": "CPI",          "day": 17, "hint": "نزیکەی ڕۆژی ١٥-٢٠ (StatCan)","impact": "high","quarterly": False, "category": "inflation"},
-        {"name": "Core CPI",     "day": 17, "hint": "هاوکات لەگەڵ CPI",           "impact": "high", "quarterly": False, "category": "inflation"},
-        {"name": "Employment",   "day": 4,  "hint": "یەکەم هەینی مانگ",           "impact": "high", "quarterly": False, "category": "labor_good"},
-        {"name": "Unemployment", "day": 4,  "hint": "هاوکات لەگەڵ Employment",    "impact": "high", "quarterly": False, "category": "labor_bad"},
-        {"name": "Interest Rate","day": 14, "hint": "BoC — نزیکەی ٨ جار لە ساڵ", "impact": "high", "quarterly": False, "category": "rate"},
+        {"name": "CPI",          "day": 17, "hint": "هەڵئاوسانی گشتی کەنەدا (StatCan)",       "impact": "high",   "quarterly": False, "category": "inflation"},
+        {"name": "Core CPI",     "day": 17, "hint": "هەڵئاوسانی سەرەکی کەنەدا",             "impact": "high",   "quarterly": False, "category": "inflation"},
+        {"name": "Employment",   "day": 4,  "hint": "گۆڕانی ژمارەی کارمەندان",               "impact": "high",   "quarterly": False, "category": "labor_good"},
+        {"name": "Unemployment", "day": 4,  "hint": "ڕێژەی بێکاری لە کەنەدا",                 "impact": "high",   "quarterly": False, "category": "labor_bad"},
+        {"name": "Interest Rate","day": 14, "hint": "بڕیاری سوودی بانکی کەنەدا (BoC)",        "impact": "high",   "quarterly": False, "category": "rate"},
     ],
     "JPY یەن": [
-        {"name": "CPI",          "day": 19, "hint": "نزیکەی ڕۆژی ١٩-٢٣",         "impact": "high",   "quarterly": False, "category": "inflation"},
-        {"name": "Core CPI",     "day": 19, "hint": "هاوکات لەگەڵ CPI",           "impact": "high",   "quarterly": False, "category": "inflation"},
-        {"name": "Production",   "day": 14, "hint": "نزیکەی ڕۆژی ١٤-١٦",         "impact": "medium", "quarterly": False, "category": "growth"},
-        {"name": "Unemployment", "day": 27, "hint": "نزیکەی کۆتایی مانگ",        "impact": "medium", "quarterly": False, "category": "labor_bad"},
-        {"name": "Interest Rate","day": 18, "hint": "BoJ — نزیکەی ٨ جار لە ساڵ", "impact": "high",   "quarterly": False, "category": "rate"},
+        {"name": "CPI",          "day": 19, "hint": "هەڵئاوسانی نیشتمانی ژاپۆن",             "impact": "high",   "quarterly": False, "category": "inflation"},
+        {"name": "Core CPI",     "day": 19, "hint": "هەڵئاوسانی سەرەکی ژاپۆن",              "impact": "high",   "quarterly": False, "category": "inflation"},
+        {"name": "Production",   "day": 14, "hint": "بەرهەمهێنانی پیشەسازی",                "impact": "medium", "quarterly": False, "category": "growth"},
+        {"name": "Unemployment", "day": 27, "hint": "ڕێژەی بێکاری لە ژاپۆن",                 "impact": "medium", "quarterly": False, "category": "labor_bad"},
+        {"name": "Interest Rate","day": 18, "hint": "بڕیاری سوودی بانکی ژاپۆن (BoJ)",         "impact": "high",   "quarterly": False, "category": "rate"},
     ],
 }
-
-IMPACT_TABLE_MD = """
-| ڕووداوی جیهانی (Event) | دراوە بەهێزەکان (Bullish) | دراوە لاوازەکان (Bearish) | هۆکارەکە |
-| :--- | :--- | :--- | :--- |
-| **هەڵگیرسانی جەنگ یان ئاڵۆزی سەربازی** | **USD, CHF, Gold** | **EUR, AUD** | ڕاکردنی سەرمایە بۆ ناو دراوە ئەمنەکان (Safe-havens). |
-| **بەرزبوونەوەی بەرچاوی نرخی نەوت** | **CAD, NOK** | **JPY, EUR** | کەنەدا و نەرویج نەوت دەنێرنە دەرەوە؛ ژاپۆن و ئەوروپا هاوردەی دەکەن. |
-| **بەرزکردنەوەی ڕێژەی سوود (Rate Hikes)** | **دراوەکەی خۆی** | **زێڕ (Gold)** | ڕاکێشانی وەبەرهێنەران بۆ بەدەستهێنانی سوودی بەرزتر. |
-| **جەنگی بازرگانی و باجی گومرگی** | **USD** | **AUD, NZD, CNH** | لاوازبوونی بازرگانی چین بە شێوەیەکی ڕاستەوخۆ دۆلاری ئوسترالی دادەبەزێنێت. |
-"""
 
 # ============================================================
 # ROBUST HTML RENDERER (ZERO INDENTATION - PREVENTS CODE BLOCKS)
@@ -505,12 +496,6 @@ div[data-testid="stMetricDelta"] svg { display: none; }
 .ref-badge-green { color: #10b981; font-weight: 700; }
 .ref-badge-red { color: #ef4444; font-weight: 700; }
 .ref-badge-gray { color: #6b7280; font-weight: 700; }
-.tbl-help-icon {
-    display: inline-block;
-    color: #6b7280;
-    font-size: 11px;
-    margin-right: 4px;
-}
 .ref-table-footer {
     padding: 12px 18px;
     font-size: 11px;
@@ -520,6 +505,70 @@ div[data-testid="stMetricDelta"] svg { display: none; }
     display: flex;
     align-items: center;
     gap: 6px;
+}
+
+/* === IMPACT MATRIX TABLE === */
+.matrix-card {
+    background: #090e1a;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5);
+    margin-top: 10px;
+}
+.matrix-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    direction: rtl;
+    text-align: right;
+}
+.matrix-table thead th {
+    background: #0c1322;
+    color: #e2b714;
+    padding: 14px 18px;
+    font-weight: 700;
+    font-size: 12.5px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.matrix-table tbody tr {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    transition: background 0.15s ease;
+}
+.matrix-table tbody tr:hover {
+    background: rgba(226, 183, 20, 0.03);
+}
+.matrix-table tbody tr:last-child {
+    border-bottom: none;
+}
+.matrix-table td {
+    padding: 14px 18px;
+    color: #e5e7eb;
+    vertical-align: middle;
+    line-height: 1.5;
+}
+.matrix-pill-wrap {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+.pill-bull {
+    background: rgba(16, 185, 129, 0.14);
+    color: #10b981;
+    border: 1px solid rgba(16, 185, 129, 0.3);
+    padding: 3px 10px;
+    border-radius: 6px;
+    font-weight: 700;
+    font-size: 11px;
+}
+.pill-bear {
+    background: rgba(239, 68, 68, 0.14);
+    color: #ef4444;
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    padding: 3px 10px;
+    border-radius: 6px;
+    font-weight: 700;
+    font-size: 11px;
 }
 
 /* === METRIC CARDS (OVERVIEW) === */
@@ -818,6 +867,7 @@ def compute_currency_composite(currency: str, fred_key: str):
             "name":      name,
             "category":  meta["category"],
             "weight":    meta["weight"],
+            "impact":    meta.get("impact", "high"),
             "df":        df,
             "vals":      vals,
             "date":      dates[-1],
@@ -835,7 +885,7 @@ def compute_currency_composite(currency: str, fred_key: str):
 
 
 # ============================================================
-# HELPERS
+# HELPERS & PLOTLY DYNAMIC CHART FACTORIES
 # ============================================================
 
 def bias_from_score(score: float):
@@ -875,7 +925,7 @@ def svg_spark(vals: list, width: int = 80, height: int = 34, positive_is_good: b
 
 
 def make_dynamic_chart(df: pd.DataFrame, indicator_name: str, currency_name: str) -> go.Figure | None:
-    """Creates a real-time responsive dynamic chart from FRED time series."""
+    """Creates an auto-scaling, dynamic FRED time series chart (no flat line bugs)."""
     if df is None or df.empty:
         return None
 
@@ -887,12 +937,13 @@ def make_dynamic_chart(df: pd.DataFrame, indicator_name: str, currency_name: str
     fig.add_trace(go.Scatter(
         x=df["date"],
         y=df["value"],
-        mode="lines",
+        mode="lines+markers",
+        marker=dict(size=4, color=accent_color),
         name=indicator_name,
         line=dict(color=accent_color, width=2.8, shape="spline"),
         fill="tozeroy",
-        fillcolor="rgba(226,183,20,0.07)",
-        hovertemplate="<b>%{x}</b><br>ئاستی داتا: <b>%{y:,.2f}</b><extra></extra>",
+        fillcolor="rgba(226,183,20,0.08)",
+        hovertemplate="<b>%{x}</b><br>ئاستی فەرمی: <b>%{y:,.2f}</b><extra></extra>",
     ))
 
     fig.update_layout(
@@ -909,6 +960,70 @@ def make_dynamic_chart(df: pd.DataFrame, indicator_name: str, currency_name: str
             zeroline=False,
         ),
         yaxis=dict(
+            autorange=True,
+            showgrid=True,
+            gridcolor="rgba(255,255,255,0.05)",
+            color="#6b7280",
+            tickfont=dict(size=10, color="#8a99ad"),
+            side="right",
+            showline=False,
+            zeroline=False,
+        ),
+        hovermode="x unified",
+    )
+    return fig
+
+
+def make_gold_dual_chart(ry_df: pd.DataFrame, exp_df: pd.DataFrame) -> go.Figure | None:
+    """Dual comparison chart for Real Yield & Inflation Expectations."""
+    if ry_df is None or ry_df.empty:
+        return None
+
+    fig = go.Figure()
+    # Real Yield trace
+    fig.add_trace(go.Scatter(
+        x=ry_df["date"],
+        y=ry_df["value"],
+        mode="lines",
+        name="Real Yield 10Y (سوودی ڕاستەقینە)",
+        line=dict(color="#e2b714", width=3, shape="spline"),
+        hovertemplate="<b>%{x}</b><br>Real Yield: <b>%{y:.2f}%</b><extra></extra>",
+    ))
+
+    # Inflation Expectations trace if available
+    if exp_df is not None and not exp_df.empty:
+        fig.add_trace(go.Scatter(
+            x=exp_df["date"],
+            y=exp_df["value"],
+            mode="lines",
+            name="Inflation Expectation 10Y (هەڵئاوسانی چاوەڕوانکراو)",
+            line=dict(color="#3b82f6", width=2, dash="dot", shape="spline"),
+            hovertemplate="<b>%{x}</b><br>Inflation Exp: <b>%{y:.2f}%</b><extra></extra>",
+        ))
+
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+            font=dict(size=11, color="#8a99ad"),
+        ),
+        margin=dict(l=10, r=20, t=30, b=10),
+        height=260,
+        xaxis=dict(
+            showgrid=False,
+            color="#6b7280",
+            tickfont=dict(size=10, color="#8a99ad"),
+            showline=False,
+            zeroline=False,
+        ),
+        yaxis=dict(
+            autorange=True,
             showgrid=True,
             gridcolor="rgba(255,255,255,0.05)",
             color="#6b7280",
@@ -953,11 +1068,11 @@ def render_top_header() -> None:
 
 
 # ============================================================
-# COMPONENT: REFERENCE DARK TABLE (SCREENSHOT 3)
+# COMPONENT: REFERENCE DARK TABLE (NO ? QUESTION MARKS)
 # ============================================================
 
 def render_reference_table_html(rows: list) -> None:
-    """Render the exact high-end dark table from Screenshot 3."""
+    """Render the exact high-end dark table from Screenshot 3 without ? marks."""
     def fmt_pct(v):
         if v is None:
             return '<span class="ref-badge-gray">0.00%</span>'
@@ -998,9 +1113,9 @@ def render_reference_table_html(rows: list) -> None:
           <tr>
             <th style="width:28%;">بازار</th>
             <th class="th-ctr" style="width:18%;">کۆتا</th>
-            <th class="th-ctr" style="width:18%;">m/m <span class="tbl-help-icon">?</span></th>
-            <th class="th-ctr" style="width:18%;">q/q <span class="tbl-help-icon">?</span></th>
-            <th class="th-ctr" style="width:18%;">y/y <span class="tbl-help-icon">?</span></th>
+            <th class="th-ctr" style="width:18%;">m/m</th>
+            <th class="th-ctr" style="width:18%;">q/q</th>
+            <th class="th-ctr" style="width:18%;">y/y</th>
           </tr>
         </thead>
         <tbody>
@@ -1011,6 +1126,95 @@ def render_reference_table_html(rows: list) -> None:
         <span>ⓘ</span>
         <span>% گۆڕانکارییەکان نیشاندەدرێن بە گۆڕان بەڕامبەر پێشەووی خۆی.</span>
       </div>
+    </div>
+    """
+    render_html(table_html)
+
+
+# ============================================================
+# COMPONENT: IMPACT MATRIX TABLE (HIGH-END BORDERED GRID)
+# ============================================================
+
+def render_impact_matrix_html() -> None:
+    """Renders a beautifully structured, bordered macro matrix table."""
+    matrix_data = [
+        {
+            "event": "هەڵگیرسانی جەنگ و ئاڵۆزی سەربازی",
+            "icon": "💣",
+            "bullish": ["USD", "CHF", "Gold"],
+            "bearish": ["EUR", "AUD", "GBP"],
+            "reason": "ڕاکردنی سەرمایەی جیهانی بەرەو پەناگە ئارامەکان (Safe-havens) بۆ پاراستنی سەرمایە.",
+        },
+        {
+            "event": "بەرزبوونەوەی بەرچاوی نرخی نەوت و وزە",
+            "icon": "🛢️",
+            "bullish": ["CAD", "NOK", "USD"],
+            "bearish": ["JPY", "EUR"],
+            "reason": "کەنەدا و نەرویج هەناردەکاری نەوتن؛ ژاپۆن و یەکێتی ئەوروپا هاوردەکاری سەرەکین و زیانیان پێدەگات.",
+        },
+        {
+            "event": "بەرزکردنەوەی ڕێژەی سوودی بانکی (Rate Hikes)",
+            "icon": "🏦",
+            "bullish": ["دراوەکەی خۆی"],
+            "bearish": ["زێڕ (Gold)", "پشکەکان"],
+            "reason": "ڕاکێشانی وەبەرهێنەران بۆ بەدەستهێنانی سوودی بەرزتر و زیادبوونی تێچووی هەڵگرتنی زێڕ.",
+        },
+        {
+            "event": "کەمکردنەوەی ڕێژەی سوود (Rate Cuts)",
+            "icon": "📉",
+            "bullish": ["زێڕ (Gold)", "پشکەکان"],
+            "bearish": ["دراوەکەی خۆی"],
+            "reason": "کەمبوونەوەی قازانجی سوودی بانکی و ڕاکردنی وەبەرهێنەران بۆ کڕینی زێڕ و کاڵا سەرمایەییەکان.",
+        },
+        {
+            "event": "جەنگی بازرگانی و باجی گومرگی (Tariffs)",
+            "icon": "🚢",
+            "bullish": ["USD"],
+            "bearish": ["AUD", "NZD", "CNH", "EUR"],
+            "reason": "لاوازبوونی بازرگانی چین بە شێوەیەکی ڕاستەوخۆ دۆلاری ئوسترالی و ئەوروپا دادەبەزێنێت.",
+        },
+        {
+            "event": "قەیرانی بانکی و دارایی جیهانی",
+            "icon": "💥",
+            "bullish": ["Gold", "CHF", "USD"],
+            "bearish": ["EUR", "GBP", "CAD"],
+            "reason": "لەدەستدانی متمانە بە سیستمە بانکییەکان و ڕووبەرووبوونەوە لەگەڵ کڕینی زێڕ و دراوی ئەمن.",
+        },
+    ]
+
+    rows_html = []
+    for item in matrix_data:
+        bull_pills = "".join(f'<span class="pill-bull">{c}</span>' for c in item["bullish"])
+        bear_pills = "".join(f'<span class="pill-bear">{c}</span>' for c in item["bearish"])
+
+        row = f"""
+        <tr>
+          <td style="font-weight:700;color:#ffffff;width:24%;">
+            <span style="font-size:16px;margin-left:6px;">{item['icon']}</span>
+            {item['event']}
+          </td>
+          <td style="width:20%;"><div class="matrix-pill-wrap">{bull_pills}</div></td>
+          <td style="width:20%;"><div class="matrix-pill-wrap">{bear_pills}</div></td>
+          <td style="color:#8a99ad;font-size:12px;width:36%;">{item['reason']}</td>
+        </tr>
+        """
+        rows_html.append(row)
+
+    table_html = f"""
+    <div class="matrix-card">
+      <table class="matrix-table">
+        <thead>
+          <tr>
+            <th>ڕووداوی جیهانی (Global Event)</th>
+            <th>دراوە بەهێزەکان (Bullish)</th>
+            <th>دراوە لاوازەکان (Bearish)</th>
+            <th>هۆکار و شیکاریی مەکڕۆ (Macro Mechanism)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {''.join(rows_html)}
+        </tbody>
+      </table>
     </div>
     """
     render_html(table_html)
@@ -1253,7 +1457,7 @@ def render_levels_page(fred_key: str) -> None:
 
 
 # ============================================================
-# PAGE 3: 📅 MONTHLY OUTLOOK (CLEAN BULLET-PROOF CARDS)
+# PAGE 3: 📅 MONTHLY OUTLOOK (EXPECTED DIRECTION LABELS)
 # ============================================================
 
 def render_monthly(fred_key: str) -> None:
@@ -1327,7 +1531,9 @@ def render_monthly(fred_key: str) -> None:
             else:
                 days_badge = f"<span style='color:#8a99ad;font-size:11px;'>ماوە {ev['days_until']} ڕۆژ</span>"
 
-        pred_txt = '← پێشبینی بەپێی ترێند' if not ev['is_released'] else ''
+        # Requested wording: ئاراستەی چاوەڕوانکراو
+        badge_title = f"📊 ئاراستەی چاوەڕوانکراو: {lbl2.split()[1]}" if not ev['is_released'] else lbl2
+
         html_card = f"""
         <div class="cal-card {card_cls}">
           <div class="cal-day-badge {day_cls}">{ev['day']:02d}</div>
@@ -1342,7 +1548,7 @@ def render_monthly(fred_key: str) -> None:
             <div class="cal-hint">📌 {ev['hint']}</div>
             {tf_line}
             <div style="margin-top:8px;">
-              <span class="badge {cls2}">{lbl2} {pred_txt}</span>
+              <span class="badge {cls2}">{badge_title}</span>
             </div>
           </div>
         </div>
@@ -1362,7 +1568,7 @@ def render_monthly(fred_key: str) -> None:
 
 
 # ============================================================
-# PAGE 4: 🥇 GOLD ANALYSIS
+# PAGE 4: 🥇 GOLD ANALYSIS (AUTO-SCALED REAL YIELD CHART)
 # ============================================================
 
 def render_gold_page(fred_key: str) -> None:
@@ -1414,9 +1620,11 @@ def render_gold_page(fred_key: str) -> None:
         render_html(gold_badge_html)
 
     st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
-    st.markdown('<div class="section-title">نموداری گۆڕانی سوودی ڕاستەقینە (Real Yield Trend)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">نموداری گۆڕانی سوودی ڕاستەقینە (Real Yield &amp; Inflation Expectations)</div>', unsafe_allow_html=True)
+
     ry_df = merged[["date", "ry"]].rename(columns={"ry": "value"})
-    fig = make_dynamic_chart(ry_df, "Real Yield", "Gold")
+    exp_df = merged[["date", "value_i"]].rename(columns={"value_i": "value"})
+    fig = make_gold_dual_chart(ry_df, exp_df)
     if fig:
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -1495,12 +1703,12 @@ def main() -> None:
         """
         render_html(brand_html)
 
+        # Removed duplicate tab — exactly 6 unique pages
         page = st.radio(
             "دەستەی بەڕێوەبردن:",
             [
                 "🏠 سەرەکی",
                 "📋 کۆتا ئاستیەکان",
-                "📈 Macro Strength & Engine",
                 "🥇 Gold (XAUUSD) Analysis",
                 "📅 Monthly Outlook",
                 "📰 هەواڵە جیهانییەکان",
@@ -1527,7 +1735,7 @@ def main() -> None:
     # Page Routing
     if page == "🏠 سەرەکی":
         render_dashboard(fred_key, news_api_key)
-    elif page == "📋 کۆتا ئاستیەکان" or page == "📈 Macro Strength & Engine":
+    elif page == "📋 کۆتا ئاستیەکان":
         render_levels_page(fred_key)
     elif page == "🥇 Gold (XAUUSD) Analysis":
         render_gold_page(fred_key)
@@ -1537,12 +1745,12 @@ def main() -> None:
         render_news_page(news_api_key)
     elif page == "📊 Impact Analysis on Currencies":
         render_top_header()
-        st.markdown('<div class="section-title">💡 کاریگەری ڕووداوە جیهانییەکان لەسەر دراوەکان</div>', unsafe_allow_html=True)
-        st.markdown(IMPACT_TABLE_MD)
+        st.markdown('<div class="section-title">💡 کاریگەری ڕووداوە جیهانییەکان لەسەر دراوەکان (Global Impact Matrix)</div>', unsafe_allow_html=True)
+        render_impact_matrix_html()
     elif page == "⚙️ ڕێکخستنەکان":
         render_top_header()
         st.markdown('<div class="section-title">⚙️ ڕێکخستنەکانی سیستەم و API</div>', unsafe_allow_html=True)
-        st.success("✅ هەموو مۆدیوولەکانی مەکڕۆ بە سەرکەوتوویی ئامادەن.")
+        st.success("✅ هەموو مۆدیوولەکانی مەکڕۆ و FRED API بە سەرکەوتوویی ئامادەن.")
 
     # Global Footer matching screenshot 3
     footer_html = f"""
