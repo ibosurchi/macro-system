@@ -87,6 +87,42 @@ INDICATOR_PHRASES = {
     ("rate", "down"):      "{name} دابەزیوە کە ئاڵوگۆڕی وەبەرهێنان لە دراوەکەدا کەمتر دەکاتەوە.",
 }
 
+# ------------------------------------------------------------
+# کالێندەری ستاتیکی بڵاوکردنەوەی مانگانە (نزیکەی ڕاستی، وەک نموونە)
+# تێبینی: ئەمانە ڕۆژی نزیکەی ئاساییین (Typical pattern)، نەک بەرواری
+# ١٠٠٪ ورد. هەندێک وەک FOMC ساڵ لە ساڵ دەگۆڕدرێن — بۆ وردی تەواو
+# سەیری کالێندەری فەرمی بکە.
+# ------------------------------------------------------------
+MONTHLY_CALENDAR = {
+    "USD دۆلار": [
+        {"name": "NFP", "day": 5, "hint": "یەکەم هەینی مانگ"},
+        {"name": "Unemployment", "day": 5, "hint": "هاوکات لەگەڵ NFP، یەکەم هەینی مانگ"},
+        {"name": "CPI", "day": 12, "hint": "نزیکەی ڕۆژی ١٠-١٣ی مانگ"},
+        {"name": "PPI", "day": 14, "hint": "ڕۆژێک یان دووڕۆژ دوای CPI"},
+        {"name": "Retail Sales", "day": 16, "hint": "نزیکەی ڕۆژی ١٥-١٧ی مانگ"},
+        {"name": "Interest Rate", "day": 20, "hint": "ڕێکەوتی FOMC — ٨ جار لە ساڵێکدا، نزیکەی هەر ٦ هەفتە"},
+        {"name": "GDP", "day": 28, "hint": "نزیکەی کۆتایی مانگی دوای وەرزی سێ مانگی (Quarterly)"},
+    ],
+    "GBP پاوەند": [
+        {"name": "CPI", "day": 18, "hint": "نزیکەی ڕۆژی ١٥-٢٠ی مانگ (ONS)"},
+        {"name": "Unemployment", "day": 12, "hint": "نزیکەی ڕۆژی ١٠-١٤ی مانگ"},
+        {"name": "Production", "day": 12, "hint": "هاوکات لەگەڵ داتای بازرگانی، نزیکەی ڕۆژی ١٠-١٤"},
+        {"name": "Interest Rate", "day": 20, "hint": "ڕێکەوتی BoE — نزیکەی ٨ جار لە ساڵێکدا"},
+    ],
+    "CAD کەنەدی": [
+        {"name": "CPI", "day": 18, "hint": "نزیکەی ڕۆژی ١٥-٢٠ی مانگ (StatCan)"},
+        {"name": "Employment", "day": 5, "hint": "یەکەم هەینی مانگ، هاوکات لەگەڵ NFP‌ی USD"},
+        {"name": "Unemployment", "day": 5, "hint": "هاوکات لەگەڵ داتای دامەزراندن"},
+        {"name": "Interest Rate", "day": 15, "hint": "ڕێکەوتی BoC — نزیکەی ٨ جار لە ساڵێکدا"},
+    ],
+    "JPY یەن": [
+        {"name": "CPI", "day": 20, "hint": "نزیکەی ڕۆژی ١٩-٢٣ی مانگ"},
+        {"name": "Production", "day": 15, "hint": "نزیکەی ڕۆژی ١٤-١٦ی مانگ"},
+        {"name": "Unemployment", "day": 28, "hint": "نزیکەی کۆتایی مانگ"},
+        {"name": "Interest Rate", "day": 19, "hint": "ڕێکەوتی BoJ — نزیکەی ٨ جار لە ساڵێکدا"},
+    ],
+}
+
 IMPACT_TABLE_MD = """
 | ڕووداوی جیهانی (Event) | دراوە بەهێزەکان (Bullish) | دراوە لاوازەکان (Bearish) | هۆکارەکە |
 | :--- | :--- | :--- | :--- |
@@ -183,6 +219,33 @@ def inject_css() -> None:
 
         section[data-testid="stSidebar"] { background-color: #10141f; }
         .footer-note { text-align: center; color: #4b5563; font-size: 12px; margin-top: 40px; }
+
+        /* ---- Monthly release timeline ---- */
+        .timeline { position: relative; margin: 14px 0 22px 0; padding-right: 26px; border-right: 2px solid #2a3447; }
+        .timeline-item { position: relative; padding-bottom: 20px; }
+        .timeline-item:last-child { padding-bottom: 0; }
+        .timeline-dot {
+            position: absolute; right: -33px; top: 3px;
+            width: 14px; height: 14px; border-radius: 50%;
+            border: 2px solid #0b0f19;
+        }
+        .timeline-dot.released { background-color: #10b981; }
+        .timeline-dot.upcoming { background-color: #4b5563; }
+        .timeline-card {
+            background-color: #151c2c;
+            border: 1px solid #2a3447;
+            border-radius: 10px;
+            padding: 10px 14px;
+        }
+        .timeline-title { font-weight: 700; color: #ffffff; font-size: 14px; }
+        .timeline-meta { font-size: 12px; color: #9ca3af; margin-top: 2px; }
+        .timeline-effect { font-size: 13px; margin-top: 6px; color: #e5e7eb; }
+        .timeline-status {
+            display: inline-block; font-size: 11px; font-weight: 700;
+            padding: 2px 8px; border-radius: 999px; margin-top: 6px;
+        }
+        .timeline-status.released { background-color: rgba(16,185,129,0.15); color: #10b981; }
+        .timeline-status.upcoming { background-color: rgba(107,114,128,0.2); color: #9ca3af; }
         </style>
         """,
         unsafe_allow_html=True,
