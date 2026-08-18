@@ -1,6 +1,6 @@
 """
-FX Macro & News Intelligence Desk — v8.1 Production
-سیستەمی پێشبینیکردن، شیکاری مەکرۆ و زێڕ
+FX Macro & News Intelligence Desk — v9 Ultimate
+سیستەمی پێشبینیکردن، شیکاری مەکرۆ، زێڕ و ڕۆژژمێری فەرمی ForexFactory
 """
 
 import streamlit as st
@@ -9,10 +9,10 @@ import numpy as np
 import requests
 import plotly.graph_objects as go
 from datetime import datetime, date
-import calendar as cal_lib
+import pytz
 
 st.set_page_config(
-    page_title="FX Macro & Geopolitical Desk",
+    page_title="FX Macro & ForexFactory Desk",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -27,7 +27,7 @@ FRED_API_KEY = "8e153c7f6941848ffe00388ae93c1d73"
 NEWS_API_KEY = "70fc541920ca43e69ee716ad442405fb"
 
 # ============================================================
-# CURRENCY & METRIC CONFIGURATIONS (ALL ACTIVE & UPDATED FRED SERIES)
+# CURRENCY & METRIC CONFIGURATIONS (ACTIVE FRED SERIES)
 # ============================================================
 
 CURRENCY_SERIES = {
@@ -102,43 +102,6 @@ CATEGORY_ICONS = {
 GOLD_YIELD_SERIES = "DGS10"
 GOLD_INFLATION_EXP_SERIES = "T10YIE"
 
-MONTHLY_CALENDAR = {
-    "USD دۆلار": [
-        {"name": "NFP",          "day": 4,  "hint": "یەکەم هەینی مانگ — بازاڕی کار",         "impact": "high",   "quarterly": False, "category": "labor_good"},
-        {"name": "Unemployment", "day": 4,  "hint": "هاوکات لەگەڵ NFP — ڕێژەی بێکاری",       "impact": "high",   "quarterly": False, "category": "labor_bad"},
-        {"name": "Core CPI",     "day": 11, "hint": "هەڵئاوسانی سەرەکی (بێ وزە و خۆراک)",     "impact": "high",   "quarterly": False, "category": "inflation"},
-        {"name": "CPI",          "day": 11, "hint": "هەڵئاوسانی گشتی بەکارهێنەران",            "impact": "high",   "quarterly": False, "category": "inflation"},
-        {"name": "Retail Sales", "day": 15, "hint": "فرۆشی تاکەکەسی و کڕینی خەڵک",          "impact": "high",   "quarterly": False, "category": "growth"},
-        {"name": "Core PCE",     "day": 25, "hint": "پێوەری دڵخوازی فیدراڵی بۆ هەڵئاوسان",    "impact": "high",   "quarterly": False, "category": "inflation"},
-        {"name": "Interest Rate","day": 18, "hint": "بڕیاری سوودی فیدراڵی (FOMC)",           "impact": "high",   "quarterly": False, "category": "rate"},
-    ],
-    "EUR یۆرۆ": [
-        {"name": "CPI",          "day": 1,  "hint": "هەڵئاوسانی سەرەتایی یۆرۆزۆن (Flash HICP)", "impact": "high",   "quarterly": False, "category": "inflation"},
-        {"name": "Core CPI",     "day": 1,  "hint": "هەڵئاوسانی سەرەکی یۆرۆزۆن",               "impact": "high",   "quarterly": False, "category": "inflation"},
-        {"name": "Unemployment", "day": 1,  "hint": "ڕێژەی بێکاری لە یەکێتی ئەوروپا",           "impact": "high",   "quarterly": False, "category": "labor_bad"},
-        {"name": "Production",   "day": 13, "hint": "بەرهەمهێنانی پیشەسازی ئەوروپا",          "impact": "medium", "quarterly": False, "category": "growth"},
-        {"name": "Interest Rate","day": 12, "hint": "بڕیاری سوودی بانکی ناوەندی ئەوروپا (ECB)", "impact": "high",   "quarterly": False, "category": "rate"},
-    ],
-    "GBP پاوەند": [
-        {"name": "CPI",          "day": 17, "hint": "هەڵئاوسانی بەریتانیا (ONS)",            "impact": "high",   "quarterly": False, "category": "inflation"},
-        {"name": "Core CPI",     "day": 17, "hint": "هەڵئاوسانی سەرەکی بەریتانیا",          "impact": "high",   "quarterly": False, "category": "inflation"},
-        {"name": "Unemployment", "day": 11, "hint": "ڕێژەی بێکاری و داواکاری کار",           "impact": "high",   "quarterly": False, "category": "labor_bad"},
-        {"name": "Interest Rate","day": 19, "hint": "بڕیاری سوودی بانکی ئینگلتەرا (BoE)",     "impact": "high",   "quarterly": False, "category": "rate"},
-    ],
-    "CAD کەنەدی": [
-        {"name": "CPI",          "day": 17, "hint": "هەڵئاوسانی گشتی کەنەدا (StatCan)",       "impact": "high",   "quarterly": False, "category": "inflation"},
-        {"name": "Employment",   "day": 4,  "hint": "گۆڕانی ژمارەی کارمەندان",               "impact": "high",   "quarterly": False, "category": "labor_good"},
-        {"name": "Unemployment", "day": 4,  "hint": "ڕێژەی بێکاری لە کەنەدا",                 "impact": "high",   "quarterly": False, "category": "labor_bad"},
-        {"name": "Interest Rate","day": 14, "hint": "بڕیاری سوودی بانکی کەنەدا (BoC)",        "impact": "high",   "quarterly": False, "category": "rate"},
-    ],
-    "JPY یەن": [
-        {"name": "CPI",          "day": 19, "hint": "هەڵئاوسانی نیشتمانی ژاپۆن",             "impact": "high",   "quarterly": False, "category": "inflation"},
-        {"name": "Production",   "day": 14, "hint": "بەرهەمهێنانی پیشەسازی",                "impact": "medium", "quarterly": False, "category": "growth"},
-        {"name": "Unemployment", "day": 27, "hint": "ڕێژەی بێکاری لە ژاپۆن",                 "impact": "medium", "quarterly": False, "category": "labor_bad"},
-        {"name": "Interest Rate","day": 18, "hint": "بڕیاری سوودی بانکی ژاپۆن (BoJ)",         "impact": "high",   "quarterly": False, "category": "rate"},
-    ],
-}
-
 # ============================================================
 # MOBILE & DESKTOP CSS
 # ============================================================
@@ -207,17 +170,24 @@ def inject_css() -> None:
 .ref-badge-gray { color: #6b7280; font-weight: 700; }
 .ref-table-footer { padding: 8px 12px; font-size: 10px; color: #8a99ad; background: #080c16; }
 
-.cal-card { display: flex; align-items: center; gap: 12px; background: #090e1a; border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 12px; padding: 10px 14px; margin-bottom: 8px; }
-.cal-card.released { border-right: 4px solid #10b981; }
-.cal-card.upcoming { border-right: 4px solid #374151; }
-.cal-card.upcoming-soon { border-right: 4px solid #f59e0b; }
-.cal-day-badge { min-width: 38px; height: 38px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 14px; flex-shrink: 0; }
-.cal-day-badge.released { background: rgba(16, 185, 129, 0.12); color: #10b981; }
-.cal-day-badge.upcoming { background: #0c1322; color: #8a99ad; }
-.cal-day-badge.upcoming-soon { background: rgba(245, 158, 11, 0.12); color: #f59e0b; }
-.cal-content { flex: 1; min-width: 0; }
-.cal-name { font-weight: 800; color: #ffffff; font-size: 13px; }
-.cal-hint { font-size: 10.5px; color: #8a99ad; margin-top: 2px; }
+/* ForexFactory Calendar Cards */
+.ff-card {
+    display: flex; align-items: center; gap: 12px; background: #090e1a;
+    border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 12px;
+    padding: 12px 14px; margin-bottom: 8px;
+}
+.ff-time-badge {
+    min-width: 65px; height: 38px; border-radius: 10px; display: flex;
+    align-items: center; justify-content: center; font-weight: 800;
+    font-size: 11px; flex-shrink: 0; background: #0c1322; color: #e2b714;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+}
+.ff-content { flex: 1; min-width: 0; }
+.ff-name { font-weight: 800; color: #ffffff; font-size: 13px; }
+.ff-impact-badge { font-size: 9px; font-weight: 800; padding: 2px 7px; border-radius: 999px; }
+.impact-high { background: rgba(239, 68, 68, 0.14); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); }
+.impact-medium { background: rgba(245, 158, 11, 0.14); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); }
+.impact-low { background: rgba(107, 114, 128, 0.14); color: #9ca3af; border: 1px solid rgba(107, 114, 128, 0.3); }
 
 div[data-testid="stRadio"] div[role="radiogroup"] { display: flex !important; gap: 6px !important; flex-wrap: wrap !important; }
 div[data-testid="stRadio"] div[role="radiogroup"] label { background: #090e1a !important; border: 1px solid rgba(255, 255, 255, 0.08) !important; border-radius: 8px !important; padding: 5px 10px !important; color: #8a99ad !important; font-size: 11.5px !important; cursor: pointer !important; }
@@ -251,7 +221,7 @@ header[data-testid="stHeader"] { background: transparent !important; }
 
 
 # ============================================================
-# DATA FETCHING ENGINE
+# DATA FETCHING ENGINE (FRED & FOREXFACTORY)
 # ============================================================
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -274,6 +244,30 @@ def fetch_fred_series(series_id: str, key: str, limit: int = 36):
         return None
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_forexfactory_calendar():
+    """ڕاکێشانی ڕاستەوخۆی ڕۆژژمێری فەرمی ForexFactory بە کاتی عێراق/کوردستان"""
+    url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        res = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+        res.raise_for_status()
+        events = res.json()
+        if not events:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(events)
+        df['datetime'] = pd.to_datetime(df['date'])
+        # گۆڕینی کات بۆ UTC+3 (Asia/Baghdad)
+        local_tz = pytz.timezone('Asia/Baghdad')
+        df['local_time'] = df['datetime'].dt.tz_convert(local_tz)
+        df['date_str'] = df['local_time'].dt.strftime('%Y-%m-%d')
+        df['time_str'] = df['local_time'].dt.strftime('%I:%M %p')
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_news(query: str, key: str):
     if not key:
@@ -289,7 +283,7 @@ def fetch_news(query: str, key: str):
 
 
 # ============================================================
-# MULTI-TIMEFRAME CALCULATION
+# MULTI-TIMEFRAME ENGINE
 # ============================================================
 
 def calc_multiframe(vals: list, dates: list, category: str) -> dict | None:
@@ -300,7 +294,7 @@ def calc_multiframe(vals: list, dates: list, category: str) -> dict | None:
     is_stale = False
     try:
         last_dt = datetime.strptime(last_date_str, "%Y-%m-%d")
-        if (datetime.now() - last_dt).days > 240:  # ئەگەر داتاکە لە ٨ مانگ کۆنتر بێت
+        if (datetime.now() - last_dt).days > 240:
             is_stale = True
     except Exception:
         pass
@@ -384,7 +378,7 @@ def compute_currency_composite(currency: str, fred_key: str):
 
 
 # ============================================================
-# CHART BUILDERS
+# CHART BUILDERS & HELPERS
 # ============================================================
 
 def bias_from_score(score: float):
@@ -507,7 +501,7 @@ def render_reference_table_html(rows: list) -> None:
         </thead>
         <tbody>{''.join(tbody_rows)}</tbody>
       </table>
-      <div class="ref-table-footer">ⓘ گۆڕانکاری % بەپێی کاتی دەرچوون. (⚠️ داتای کۆنە)</div>
+      <div class="ref-table-footer">ⓘ گۆڕانکاری % بەپێی کاتی دەرچوون.</div>
     </div>
     """)
 
@@ -694,51 +688,85 @@ def render_gold_page() -> None:
 
 
 # ============================================================
-# PAGE 3: 📅 MONTHLY OUTLOOK
+# PAGE 3: 📅 FOREXFACTORY REAL-TIME CALENDAR
 # ============================================================
 
-def render_monthly() -> None:
-    today = date.today()
-    month_ku = {1:"کانوونی دووەم",2:"شوبات",3:"ئازار",4:"نیسان",5:"ئایار",6:"حوزەیران",7:"تەممووز",8:"ئاب",9:"ئەیلوول",10:"تشرینی یەکەم",11:"تشرینی دووەم",12:"کانوونی یەکەم"}
-
-    render_html(f"""
+def render_forexfactory_calendar() -> None:
+    render_html("""
     <div class="main-title-wrap">
-      <div class="main-gold-sub">PREDICTIVE CALENDAR</div>
-      <h1 class="main-big-heading">کالێندەری شیکاری هەواڵەکان — {month_ku[today.month]} {today.year}</h1>
-      <div class="main-breadcrumb">ئەمڕۆ: <b style="color:#e2b714;">{today.strftime('%Y-%m-%d')}</b></div>
+      <div class="main-gold-sub">REAL-TIME ECONOMIC CALENDAR</div>
+      <h1 class="main-big-heading">ڕۆژژمێری ڕاستەوخۆی ForexFactory</h1>
+      <div class="main-breadcrumb">داتای خێرا و فەرمی بە کاتی کوردستان (UTC+3)</div>
     </div>
     """)
 
-    selected = st.radio("دراوەکە:", list(MONTHLY_CALENDAR.keys()), horizontal=True, key="month_cur")
-    indicators = CURRENCY_SERIES.get(selected, {})
-    events = []
+    with st.spinner("ڕۆژژمێری ئابووری بار دەکرێت..."):
+        df = fetch_forexfactory_calendar()
 
-    for ev in MONTHLY_CALENDAR.get(selected, []):
-        try:
-            max_d = cal_lib.monthrange(today.year, today.month)[1]
-            rel_d = date(today.year, today.month, min(ev["day"], max_d))
-        except ValueError:
-            continue
+    if df.empty:
+        st.warning("⚠️ پەیوەندی لەگەڵ سێرڤەری ForexFactory بەردەست نییە.")
+        return
 
-        is_released = today >= rel_d
-        days_until  = (rel_d - today).days
-        events.append({**ev, "release_date": rel_d, "is_released": is_released, "days_until": days_until})
+    c1, c2 = st.columns([1.5, 1])
+    with c1:
+        countries = ["هەموو دراوەکان"] + sorted([c for c in df["country"].dropna().unique() if c])
+        sel_country = st.selectbox("فلتەری دراو:", countries, label_visibility="collapsed")
+    with c2:
+        sel_impact = st.radio("فلتەری گرنگی:", ["High Only (سوور)", "هەموو گرنگییەکان"], horizontal=True, label_visibility="collapsed")
 
-    events.sort(key=lambda x: x["day"])
-    for ev in events:
-        status_color = "#10b981" if ev["is_released"] else ("#f59e0b" if 0 <= ev["days_until"] <= 3 else "#4b5563")
-        render_html(f"""
-        <div class="cal-card" style="border-right: 4px solid {status_color};">
-          <div class="cal-day-badge" style="background:#0c1322; color:{status_color};">{ev['day']:02d}</div>
-          <div class="cal-content">
-            <div style="display:flex;align-items:center;justify-content:space-between;">
-              <span class="cal-name">{ev['name']}</span>
-              <span style="font-size:10.5px;color:{status_color};font-weight:700;">{'✅ بڵاوکراوەتەوە' if ev['is_released'] else f'⏳ ماوە {ev["days_until"]} ڕۆژ'}</span>
+    filtered_df = df.copy()
+    if sel_country != "هەموو دراوەکان":
+        filtered_df = filtered_df[filtered_df["country"] == sel_country]
+
+    if "High" in sel_impact:
+        filtered_df = filtered_df[filtered_df["impact"].str.lower() == "high"]
+
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    unique_dates = filtered_df['date_str'].unique()
+
+    for d_str in unique_dates:
+        day_events = filtered_df[filtered_df['date_str'] == d_str]
+        is_today = (d_str == today_str)
+        day_label = f"📅 {d_str} {' (ئەمڕۆ)' if is_today else ''}"
+
+        st.markdown(f'<div class="section-title">{day_label}</div>', unsafe_allow_html=True)
+
+        for _, ev in day_events.iterrows():
+            impact_val = str(ev.get('impact', '')).lower()
+            impact_cls = f"impact-{impact_val}"
+            border_c = "#ef4444" if impact_val == "high" else ("#f59e0b" if impact_val == "medium" else "#6b7280")
+
+            actual = str(ev.get('actual', '')) or '—'
+            forecast = str(ev.get('forecast', '')) or '—'
+            previous = str(ev.get('previous', '')) or '—'
+
+            # تەنسیقی ڕەنگی ئەنجام (Actual)
+            act_color = "#e5e7eb"
+            if actual != '—' and forecast != '—' and actual != '' and forecast != '':
+                try:
+                    act_num = float(actual.replace('%', '').replace('K', '').replace('M', '').replace('B', ''))
+                    fc_num = float(forecast.replace('%', '').replace('K', '').replace('M', '').replace('B', ''))
+                    act_color = "#10b981" if act_num >= fc_num else "#ef4444"
+                except ValueError:
+                    pass
+
+            card_html = f"""
+            <div class="ff-card" style="border-right: 4px solid {border_c};">
+              <div class="ff-time-badge">{ev['time_str']}</div>
+              <div class="ff-content">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                  <span class="ff-name"><b style="color:#e2b714;">{ev.get('country', '')}</b> — {ev.get('title', '')}</span>
+                  <span class="ff-impact-badge {impact_cls}">{impact_val.upper()}</span>
+                </div>
+                <div style="margin-top:6px; font-size:11.5px; display:flex; gap:14px; color:#8a99ad; flex-wrap:wrap;">
+                  <span>Actual: <b style="color:{act_color}; font-size:12.5px;">{actual}</b></span>
+                  <span>Forecast: <b style="color:#ffffff;">{forecast}</b></span>
+                  <span>Previous: <b style="color:#6b7280;">{previous}</b></span>
+                </div>
+              </div>
             </div>
-            <div class="cal-hint">📌 {ev['hint']}</div>
-          </div>
-        </div>
-        """)
+            """
+            render_html(card_html)
 
 
 # ============================================================
@@ -757,16 +785,23 @@ def main() -> None:
 
         page = st.radio(
             "دەستەی بەڕێوەبردن:",
-            ["🏠 سەرەکی", "🥇 Gold (XAUUSD)", "📅 Monthly Calendar"],
+            ["🏠 سەرەکی", "🥇 Gold (XAUUSD)", "📅 ForexFactory Calendar"],
             label_visibility="collapsed",
         )
+
+        st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
+        render_html("""
+        <div style="background:#090e1a;border:1px solid rgba(16,185,129,0.2);border-radius:10px;padding:8px 12px;text-align:center;">
+          <span style="color:#10b981;font-size:11px;font-weight:700;">🟢 Live ForexFactory &amp; FRED</span>
+        </div>
+        """)
 
     if page == "🏠 سەرەکی":
         render_dashboard()
     elif page == "🥇 Gold (XAUUSD)":
         render_gold_page()
-    elif page == "📅 Monthly Calendar":
-        render_monthly()
+    elif page == "📅 ForexFactory Calendar":
+        render_forexfactory_calendar()
 
     render_html(f"""
     <div class="app-footer">
