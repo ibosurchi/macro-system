@@ -75,9 +75,9 @@ CURRENCY_SERIES = {
         "flag": "🇪🇺", "name": "Euro Area",
         "indicators": {
             "CPI":           {"series": "CP0000EZ19M086NEST",   "cat": "inflation",  "w": 1.8, "impact": "high"},
-            "Core CPI":      {"series": "CPXXFE00EZ19M086NEST", "cat": "inflation",  "w": 2.0, "impact": "high"},
+            "Core CPI":      {"series": "00XEFDEZ19M086NEST",   "cat": "inflation",  "w": 2.0, "impact": "high"},
             "Production":    {"series": "EA19PRINTO01IXOBSAM",  "cat": "growth",     "w": 1.2, "impact": "medium"},
-            "Unemployment":  {"series": "LRHUTTTTEZM156N",      "cat": "labor_neg",  "w": 1.5, "impact": "high"},
+            "Unemployment":  {"series": "LRHUTTTTDEM156S",      "cat": "labor_neg",  "w": 1.5, "impact": "high"},
             "Interest Rate": {"series": "ECBDFR",               "cat": "rate",       "w": 2.0, "impact": "high"},
             "GDP":           {"series": "CLVMNACSCAB1GQEA19",   "cat": "growth",     "w": 1.5, "impact": "high"},
         },
