@@ -280,7 +280,7 @@ div[data-testid="stMetric"] label{color:#8a99ad!important;font-size:12px!importa
 .mc-ico{width:32px;height:32px;border-radius:8px;background:rgba(226,183,20,0.08);display:flex;align-items:center;justify-content:center;font-size:15px;}
 .mc-cat{font-size:9px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:#8a99ad;padding:2px 7px;border-radius:999px;background:rgba(255,255,255,0.04);}
 .mc-nm{font-size:12.5px;font-weight:700;color:#8a99ad;margin:3px 0 2px;}
-.mc-val{font-size:22px;font-weight:800;color:#fff;line-height:1.1;margin-bottom:3px;}
+.mc-val{font-size:22px;font-weight:800;line-height:1.1;margin-bottom:3px;}
 .mc-chg{font-size:12px;font-weight:700;}
 .mc-sec{font-size:11px;color:#8a99ad;margin-top:2px;}
 .mc-dt{font-size:10px;color:#4b5563;margin-top:5px;}
@@ -749,44 +749,51 @@ def page_dashboard(fred_key: str, news_key: str) -> None:
     render_html('<div class="sec-title">Key Macro Indicators</div>')
     cols = st.columns(len(k_rows) or 1)
     for col, r in zip(cols, k_rows):
-        pg  = r["cat"] not in ("labor_neg",)
-        mom = r["mom"]
-        yoy = r.get("yoy")
-        cat = r["cat"]
-        # --- Hero number logic ---
-        if cat in ("rate", "labor_neg"):
-            # Show raw value as hero (e.g. 2.25%, 6.70%)
-            hero_val  = f"{r['latest']:.2f}%"
-            hero_good = (mom > 0) == pg
-            hero_color = "#10b981" if hero_good else "#ef4444"
-            hero_arrow = "▲" if mom > 0 else "▼"
-            secondary = f"<div class='mc-sec' style='color:#8a99ad;'>{hero_arrow} {abs(mom):.3f}pp (m/m)</div>"
+        _pg    = r["cat"] not in ("labor_neg",)
+        _mom   = r["mom"]
+        _yoy   = r.get("yoy")
+        _cat   = r["cat"]
+        _icon  = CAT_ICONS.get(_cat, "📊")
+        _label = CAT_LABELS.get(_cat, "")
+        _spark = spark_svg(r["vals"][-20:], pos_good=_pg)
+        _date  = r["date"]
+        # ── hero number: % as main display ──
+        if _cat in ("rate", "labor_neg"):
+            _hero     = f"{r['latest']:.2f}%"
+            _hgood    = (_mom > 0) == _pg
+            _hcolor   = "#10b981" if _hgood else "#ef4444"
+            _arr      = "▲" if _mom > 0 else "▼"
+            _sec      = f"{_arr} {abs(_mom):.3f} pp (m/m)"
+            _sec_html = f'<div style="font-size:11px;color:#8a99ad;margin-top:3px;">{_sec}</div>'
         else:
-            # Show y/y% as hero, raw level as secondary
-            if yoy is not None:
-                hero_good  = (yoy > 0) == pg
-                hero_color = "#10b981" if hero_good else "#ef4444"
-                hero_arrow = "▲ +" if yoy > 0 else "▼ "
-                hero_val   = f"{hero_arrow}{abs(yoy):.2f}% y/y"
+            if _yoy is not None:
+                _hgood  = (_yoy > 0) == _pg
+                _hcolor = "#10b981" if _hgood else "#ef4444"
+                _arr    = "▲" if _yoy > 0 else "▼"
+                _hero   = f"{_arr} {abs(_yoy):.2f}% y/y"
             else:
-                hero_good  = (mom > 0) == pg
-                hero_color = "#10b981" if hero_good else "#ef4444"
-                hero_arrow = "▲ +" if mom > 0 else "▼ "
-                hero_val   = f"{hero_arrow}{abs(mom):.2f}% m/m"
-            mc2 = "#10b981" if (mom > 0) == pg else "#ef4444"
-            ma2 = "▲" if mom > 0 else "▼"
-            secondary = f"<div class='mc-sec' style='color:#8a99ad;'>Level: {r['latest']:,.2f} &nbsp;|&nbsp; <span style='color:{mc2};'>{ma2} {abs(mom):.2f}%</span> m/m</div>"
+                _hgood  = (_mom > 0) == _pg
+                _hcolor = "#10b981" if _hgood else "#ef4444"
+                _arr    = "▲" if _mom > 0 else "▼"
+                _hero   = f"{_arr} {abs(_mom):.2f}% m/m"
+            _mc2      = "#10b981" if (_mom > 0) == _pg else "#ef4444"
+            _ma2      = "▲" if _mom > 0 else "▼"
+            _sec_html = (f'<div style="font-size:11px;color:#6b7280;margin-top:3px;">'
+                         f'Level: <b style="color:#8a99ad">{r["latest"]:,.2f}</b>'
+                         f' &nbsp;·&nbsp; <span style="color:{_mc2};font-weight:700;">{_ma2} {abs(_mom):.2f}%</span> m/m'
+                         f'</div>')
+        _card = (
+            f'<div class="m-card">'
+            f'<div class="mc-hd"><div class="mc-ico">{_icon}</div><span class="mc-cat">{_label}</span></div>'
+            f'<div class="mc-nm">{r["name"]}</div>'
+            f'<div style="font-size:21px;font-weight:800;color:{_hcolor};line-height:1.15;margin:4px 0 2px;">{_hero}</div>'
+            f'{_sec_html}'
+            f'<div style="font-size:10px;color:#4b5563;margin-top:5px;">📅 {_date}</div>'
+            f'<div style="margin-top:9px;">{_spark}</div>'
+            f'</div>'
+        )
         with col:
-            render_html(f"""
-<div class="m-card">
-<div class="mc-hd"><div class="mc-ico">{CAT_ICONS.get(r['cat'],'📊')}</div><span class="mc-cat">{CAT_LABELS.get(r['cat'],'')}</span></div>
-<div class="mc-nm">{r['name']}</div>
-<div class="mc-val" style="color:{hero_color};font-size:20px;">{hero_val}</div>
-{secondary}
-<div class="mc-dt">📅 {r['date']}</div>
-<div style="margin-top:9px;">{spark_svg(r['vals'][-20:], pos_good=pg)}</div>
-</div>
-""")
+            render_html(_card)
 
     st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
 
