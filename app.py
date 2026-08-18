@@ -577,7 +577,7 @@ def dynamic_chart(df: pd.DataFrame, name: str, currency: str) -> go.Figure | Non
         mode="lines+markers",
         marker=dict(size=3.5, color=color),
         line=dict(color=color, width=2.5, shape="spline"),
-        fill="tozeroy",
+        fill="tonexty",
         fillcolor="rgba(226,183,20,0.06)",
         hovertemplate="<b>%{x}</b><br>%{y:,.3f}<extra></extra>",
     ))
