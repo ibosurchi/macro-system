@@ -662,6 +662,36 @@ def render_top_header() -> None:
 """)
 
 
+def format_latest_cell(r: dict) -> str:
+    cat = r.get("cat")
+    latest = r["latest"]
+    yoy = r.get("yoy")
+    mom = r.get("mom")
+    pg = cat not in ("labor_neg",)
+    
+    if cat in ("rate", "labor_neg"):
+        return f'<span style="font-weight:700;color:#fff;">{latest:.2f}%</span>'
+    elif cat in ("inflation", "growth"):
+        if yoy is not None:
+            col = "#10b981" if (yoy > 0) == pg else "#ef4444"
+            sign = "+" if yoy > 0 else ""
+            return f'<span style="font-weight:700;color:{col};">{sign}{yoy:.2f}%</span>'
+        elif mom is not None:
+            col = "#10b981" if (mom > 0) == pg else "#ef4444"
+            sign = "+" if mom > 0 else ""
+            return f'<span style="font-weight:700;color:{col};">{sign}{mom:.2f}%</span>'
+        else:
+            return f'<span style="font-weight:600;color:#fff;">{latest:,.2f}</span>'
+    elif cat == "labor_pos":
+        if mom is not None:
+            col = "#10b981" if mom > 0 else "#ef4444"
+            sign = "+" if mom > 0 else ""
+            return f'<span style="font-weight:700;color:{col};">{sign}{mom:.2f}%</span>'
+        return f'<span style="font-weight:600;color:#fff;">{latest:,.2f}</span>'
+    else:
+        return f'<span style="font-weight:600;color:#fff;">{latest:,.2f}</span>'
+
+
 def render_data_table(rows: list) -> None:
     tbody = []
     for r in rows:
@@ -672,7 +702,7 @@ def render_data_table(rows: list) -> None:
         tbody.append(f"""
 <tr>
 <td class="td-nm"><span style="color:#e2b714;margin-right:6px;">{cat_icon}</span>{r['name']}</td>
-<td class="td-val">{r['latest']:,.3f}</td>
+<td class="td-val">{format_latest_cell(r)}</td>
 <td class="td-pct">{pct_html(r['mom'])}</td>
 <td class="td-pct">{pct_html(r.get('qoq'))}</td>
 <td class="td-pct">{pct_html(r.get('yoy'))}</td>
@@ -814,17 +844,18 @@ def page_dashboard(fred_key: str, news_key: str) -> None:
         pg2 = crow["cat"] not in ("labor_neg",)
         mc2 = "#10b981" if (crow["mom"] > 0) == pg2 else "#ef4444"
         ma2 = "▲ +" if crow["mom"] > 0 else "▼ "
+        _crow_disp = format_latest_cell(crow)
         render_html(f"""
 <div class="chart-card">
 <div class="chart-hd">
 <div>
 <span style="font-size:13.5px;font-weight:800;color:#fff;">{currency} — {chosen}</span>
-<span style="font-size:19px;font-weight:800;color:#fff;margin:0 8px;">{crow['latest']:,.3f}</span>
+<span style="margin:0 8px;">{_crow_disp}</span>
 <span style="color:{mc2};font-size:11.5px;font-weight:700;">{ma2}{abs(crow['mom']):.2f}% m/m</span>
 </div>
 <div class="chart-stats">
-<span>High: <span>{c_max:,.3f}</span></span>
-<span>Low: <span>{c_min:,.3f}</span></span>
+<span>High: <span>{c_max:,.2f}</span></span>
+<span>Low: <span>{c_min:,.2f}</span></span>
 <span>Obs: <span>{len(cv)}</span></span>
 </div>
 </div>
@@ -1287,39 +1318,4 @@ def main() -> None:
                     unsafe_allow_html=True)
         fred_key = st.text_input("FRED API Key:", value=DEFAULT_FRED_KEY,
                                  type="password", key="fred_key")
-        news_key = st.text_input("NewsAPI Key:", value=DEFAULT_NEWS_KEY,
-                                 type="password", key="news_key")
-
-        render_html("""
-<div class="sb-coffee">
-<div style="font-size:24px;margin-bottom:5px;">☕</div>
-<div style="font-size:11.5px;font-weight:800;color:#e2b714;">FX Macro Desk</div>
-<div style="font-size:10px;color:#6b7280;margin-top:2px;">Professional Market Intelligence</div>
-</div>
-""")
-
-    if page == "🏠 Executive Dashboard":
-        page_dashboard(fred_key, news_key)
-    elif page == "📋 Multi-Timeframe Levels":
-        page_levels(fred_key)
-    elif page == "🥇 Gold (XAUUSD) Intelligence":
-        page_gold(fred_key)
-    elif page == "📅 Economic Calendar":
-        page_calendar(fred_key)
-    elif page == "📰 Live News Feed":
-        page_news(news_key)
-    elif page == "📊 Currency Impact Matrix":
-        page_matrix()
-    elif page == "⚙️ Settings & API":
-        page_settings(fred_key, news_key)
-
-    render_html(f"""
-<div class="app-foot">
-<div>© 2026 FX Macro &amp; Geopolitical Desk &nbsp;|&nbsp; Professional Market Intelligence Platform</div>
-<div><span class="live-dot"></span><span style="color:#10b981;font-weight:600;">Live Market Data &nbsp; {datetime.now().strftime('%H:%M:%S')}</span></div>
-</div>
-""")
-
-
-if __name__ == "__main__":
-    main()
+        news_key = st.text
