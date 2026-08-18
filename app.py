@@ -1317,4 +1317,40 @@ def main() -> None:
         st.markdown("<b style='color:#6b7280;font-size:10.5px;letter-spacing:1px;'>🔐 API KEYS</b>",
                     unsafe_allow_html=True)
         fred_key = st.text_input("FRED API Key:", value=DEFAULT_FRED_KEY,
-                                 type="password", key="fre
+                                 type="password", key="fred_key")
+        news_key = st.text_input("NewsAPI Key:", value=DEFAULT_NEWS_KEY,
+                                 type="password", key="news_key")
+
+        render_html("""
+<div class="sb-coffee">
+<div style="font-size:24px;margin-bottom:5px;">☕</div>
+<div style="font-size:11.5px;font-weight:800;color:#e2b714;">FX Macro Desk</div>
+<div style="font-size:10px;color:#6b7280;margin-top:2px;">Professional Market Intelligence</div>
+</div>
+""")
+
+    if page == "🏠 Executive Dashboard":
+        page_dashboard(fred_key, news_key)
+    elif page == "📋 Multi-Timeframe Levels":
+        page_levels(fred_key)
+    elif page == "🥇 Gold (XAUUSD) Intelligence":
+        page_gold(fred_key)
+    elif page == "📅 Economic Calendar":
+        page_calendar(fred_key)
+    elif page == "📰 Live News Feed":
+        page_news(news_key)
+    elif page == "📊 Currency Impact Matrix":
+        page_matrix()
+    elif page == "⚙️ Settings & API":
+        page_settings(fred_key, news_key)
+
+    render_html(f"""
+<div class="app-foot">
+<div>© 2026 FX Macro &amp; Geopolitical Desk &nbsp;|&nbsp; Professional Market Intelligence Platform</div>
+<div><span class="live-dot"></span><span style="color:#10b981;font-weight:600;">Live Market Data &nbsp; {datetime.now().strftime('%H:%M:%S')}</span></div>
+</div>
+""")
+
+
+if __name__ == "__main__":
+    main()
