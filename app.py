@@ -1,5 +1,5 @@
 """
-FX Macro & News Intelligence Desk — v9 Ultimate
+FX Macro & News Intelligence Desk — v9.5 Production
 سیستەمی پێشبینیکردن، شیکاری مەکرۆ، زێڕ و ڕۆژژمێری فەرمی ForexFactory
 """
 
@@ -27,7 +27,7 @@ FRED_API_KEY = "8e153c7f6941848ffe00388ae93c1d73"
 NEWS_API_KEY = "70fc541920ca43e69ee716ad442405fb"
 
 # ============================================================
-# CURRENCY & METRIC CONFIGURATIONS (ACTIVE FRED SERIES)
+# CURRENCY & METRIC CONFIGURATIONS (ALL ACTIVE & TESTED FRED SERIES)
 # ============================================================
 
 CURRENCY_SERIES = {
@@ -170,7 +170,6 @@ def inject_css() -> None:
 .ref-badge-gray { color: #6b7280; font-weight: 700; }
 .ref-table-footer { padding: 8px 12px; font-size: 10px; color: #8a99ad; background: #080c16; }
 
-/* ForexFactory Calendar Cards */
 .ff-card {
     display: flex; align-items: center; gap: 12px; background: #090e1a;
     border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 12px;
@@ -221,7 +220,7 @@ header[data-testid="stHeader"] { background: transparent !important; }
 
 
 # ============================================================
-# DATA FETCHING ENGINE (FRED & FOREXFACTORY)
+# DATA FETCHING ENGINE
 # ============================================================
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -246,7 +245,6 @@ def fetch_fred_series(series_id: str, key: str, limit: int = 36):
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_forexfactory_calendar():
-    """ڕاکێشانی ڕاستەوخۆی ڕۆژژمێری فەرمی ForexFactory بە کاتی عێراق/کوردستان"""
     url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -258,7 +256,6 @@ def fetch_forexfactory_calendar():
 
         df = pd.DataFrame(events)
         df['datetime'] = pd.to_datetime(df['date'])
-        # گۆڕینی کات بۆ UTC+3 (Asia/Baghdad)
         local_tz = pytz.timezone('Asia/Baghdad')
         df['local_time'] = df['datetime'].dt.tz_convert(local_tz)
         df['date_str'] = df['local_time'].dt.strftime('%Y-%m-%d')
@@ -283,7 +280,7 @@ def fetch_news(query: str, key: str):
 
 
 # ============================================================
-# MULTI-TIMEFRAME ENGINE
+# MULTI-TIMEFRAME CALCULATION
 # ============================================================
 
 def calc_multiframe(vals: list, dates: list, category: str) -> dict | None:
@@ -740,7 +737,6 @@ def render_forexfactory_calendar() -> None:
             forecast = str(ev.get('forecast', '')) or '—'
             previous = str(ev.get('previous', '')) or '—'
 
-            # تەنسیقی ڕەنگی ئەنجام (Actual)
             act_color = "#e5e7eb"
             if actual != '—' and forecast != '—' and actual != '' and forecast != '':
                 try:
