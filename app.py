@@ -74,12 +74,12 @@ CURRENCY_SERIES = {
     "EUR": {
         "flag": "🇪🇺", "name": "Euro Area",
         "indicators": {
-            "CPI":           {"series": "CP0000EZ19M086NEST",  "cat": "inflation",  "w": 1.8, "impact": "high"},
-            "Core CPI":      {"series": "CPHPTT01EZM659N",     "cat": "inflation",  "w": 2.0, "impact": "high"},
-            "Production":    {"series": "EA19PRINTO01IXOBSAM", "cat": "growth",     "w": 1.2, "impact": "medium"},
-            "Unemployment":  {"series": "LRHUTTTTEZM156S",     "cat": "labor_neg",  "w": 1.5, "impact": "high"},
-            "Interest Rate": {"series": "ECBDFR",              "cat": "rate",       "w": 2.0, "impact": "high"},
-            "GDP":           {"series": "CLVMNACSCAB1GQEA19",  "cat": "growth",     "w": 1.5, "impact": "high"},
+            "CPI":           {"series": "CP0000EZ19M086NEST",   "cat": "inflation",  "w": 1.8, "impact": "high"},
+            "Core CPI":      {"series": "CPXXFE00EZ19M086NEST", "cat": "inflation",  "w": 2.0, "impact": "high"},
+            "Production":    {"series": "EA19PRINTO01IXOBSAM",  "cat": "growth",     "w": 1.2, "impact": "medium"},
+            "Unemployment":  {"series": "LRHUTTTTEZM156N",      "cat": "labor_neg",  "w": 1.5, "impact": "high"},
+            "Interest Rate": {"series": "ECBDFR",               "cat": "rate",       "w": 2.0, "impact": "high"},
+            "GDP":           {"series": "CLVMNACSCAB1GQEA19",   "cat": "growth",     "w": 1.5, "impact": "high"},
         },
         "key_indicators": ["CPI", "Core CPI", "Unemployment", "Interest Rate"],
         "calendar": [
@@ -568,17 +568,17 @@ def dynamic_chart(df: pd.DataFrame, name: str, currency: str) -> go.Figure | Non
     if df is None or df.empty:
         return None
     vals = df["value"].tolist()
-    up = vals[-1] >= vals[0] if len(vals) >= 2 else True
     color = "#e2b714"
-    pad = (max(vals) - min(vals)) * 0.1 or abs(min(vals)) * 0.05 or 0.1
+    mn, mx = min(vals), max(vals)
+    pad = (mx - mn) * 0.15 if (mx - mn) > 0 else abs(mn) * 0.05 or 0.5
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=df["date"], y=df["value"],
         mode="lines+markers",
         marker=dict(size=3.5, color=color),
         line=dict(color=color, width=2.5, shape="spline"),
-        fill="tonexty",
-        fillcolor="rgba(226,183,20,0.07)",
+        fill="tozeroy",
+        fillcolor="rgba(226,183,20,0.06)",
         hovertemplate="<b>%{x}</b><br>%{y:,.3f}<extra></extra>",
     ))
     fig.update_layout(
@@ -586,8 +586,9 @@ def dynamic_chart(df: pd.DataFrame, name: str, currency: str) -> go.Figure | Non
         showlegend=False, margin=dict(l=6, r=16, t=6, b=6), height=230,
         xaxis=dict(showgrid=False, tickfont=dict(size=9, color="#8a99ad"), showline=False, zeroline=False),
         yaxis=dict(
-            autorange=True, range=[min(vals) - pad, max(vals) + pad],
-            showgrid=True, gridcolor="rgba(255,255,255,0.04)",
+            autorange=False,
+            range=[mn - pad, mx + pad],
+            showgrid=True, gridcolor="rgba(255,255,255,0.05)",
             tickfont=dict(size=9, color="#8a99ad"), side="right",
             showline=False, zeroline=False,
         ),
@@ -617,7 +618,8 @@ def dual_chart(df1: pd.DataFrame, df2: pd.DataFrame, lbl1: str, lbl2: str) -> go
         all_v = v1 + v2
     else:
         all_v = v1
-    pad = (max(all_v) - min(all_v)) * 0.12 or 0.1
+    mn2, mx2 = min(all_v), max(all_v)
+    pad2 = (mx2 - mn2) * 0.15 if (mx2 - mn2) > 0 else abs(mn2) * 0.05 or 0.1
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         showlegend=True,
@@ -626,8 +628,9 @@ def dual_chart(df1: pd.DataFrame, df2: pd.DataFrame, lbl1: str, lbl2: str) -> go
         margin=dict(l=6, r=16, t=28, b=6), height=260,
         xaxis=dict(showgrid=False, tickfont=dict(size=9, color="#8a99ad"), showline=False, zeroline=False),
         yaxis=dict(
-            autorange=True, range=[min(all_v) - pad, max(all_v) + pad],
-            showgrid=True, gridcolor="rgba(255,255,255,0.04)",
+            autorange=False,
+            range=[mn2 - pad2, mx2 + pad2],
+            showgrid=True, gridcolor="rgba(255,255,255,0.05)",
             tickfont=dict(size=9, color="#8a99ad"), side="right",
             showline=False, zeroline=False,
         ),
@@ -746,25 +749,40 @@ def page_dashboard(fred_key: str, news_key: str) -> None:
     render_html('<div class="sec-title">Key Macro Indicators</div>')
     cols = st.columns(len(k_rows) or 1)
     for col, r in zip(cols, k_rows):
-        pg = r["cat"] not in ("labor_neg",)
+        pg  = r["cat"] not in ("labor_neg",)
         mom = r["mom"]
-        good = (mom > 0) == pg
-        mc = "#10b981" if good else "#ef4444"
-        ma = "▲" if mom > 0 else "▼"
-        ystr = ""
-        if r.get("yoy") is not None:
-            yg = (r["yoy"] > 0) == pg
-            yc = "#10b981" if yg else "#ef4444"
-            ya = "▲" if r["yoy"] > 0 else "▼"
-            ystr = f"<div class='mc-sec'><span style='color:{yc};font-weight:700;'>{ya} {abs(r['yoy']):.2f}%</span> y/y</div>"
+        yoy = r.get("yoy")
+        cat = r["cat"]
+        # --- Hero number logic ---
+        if cat in ("rate", "labor_neg"):
+            # Show raw value as hero (e.g. 2.25%, 6.70%)
+            hero_val  = f"{r['latest']:.2f}%"
+            hero_good = (mom > 0) == pg
+            hero_color = "#10b981" if hero_good else "#ef4444"
+            hero_arrow = "▲" if mom > 0 else "▼"
+            secondary = f"<div class='mc-sec' style='color:#8a99ad;'>{hero_arrow} {abs(mom):.3f}pp (m/m)</div>"
+        else:
+            # Show y/y% as hero, raw level as secondary
+            if yoy is not None:
+                hero_good  = (yoy > 0) == pg
+                hero_color = "#10b981" if hero_good else "#ef4444"
+                hero_arrow = "▲ +" if yoy > 0 else "▼ "
+                hero_val   = f"{hero_arrow}{abs(yoy):.2f}% y/y"
+            else:
+                hero_good  = (mom > 0) == pg
+                hero_color = "#10b981" if hero_good else "#ef4444"
+                hero_arrow = "▲ +" if mom > 0 else "▼ "
+                hero_val   = f"{hero_arrow}{abs(mom):.2f}% m/m"
+            mc2 = "#10b981" if (mom > 0) == pg else "#ef4444"
+            ma2 = "▲" if mom > 0 else "▼"
+            secondary = f"<div class='mc-sec' style='color:#8a99ad;'>Level: {r['latest']:,.2f} &nbsp;|&nbsp; <span style='color:{mc2};'>{ma2} {abs(mom):.2f}%</span> m/m</div>"
         with col:
             render_html(f"""
 <div class="m-card">
 <div class="mc-hd"><div class="mc-ico">{CAT_ICONS.get(r['cat'],'📊')}</div><span class="mc-cat">{CAT_LABELS.get(r['cat'],'')}</span></div>
 <div class="mc-nm">{r['name']}</div>
-<div class="mc-val">{r['latest']:,.3f}</div>
-<div class="mc-chg"><span style="color:{mc};font-weight:700;">{ma} {abs(mom):.2f}%</span> <span style="color:#6b7280;font-size:10px;">(m/m)</span></div>
-{ystr}
+<div class="mc-val" style="color:{hero_color};font-size:20px;">{hero_val}</div>
+{secondary}
 <div class="mc-dt">📅 {r['date']}</div>
 <div style="margin-top:9px;">{spark_svg(r['vals'][-20:], pos_good=pg)}</div>
 </div>
