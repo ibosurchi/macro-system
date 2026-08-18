@@ -3,4 +3,4 @@ pandas
 numpy
 requests
 plotly
-yfinance
+pytz
