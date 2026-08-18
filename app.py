@@ -1,7 +1,7 @@
 """
-FX Macro & News Intelligence Desk — v6
-سیستەمی پێشبینیکردن و شیکاری هەواڵەکان
-Professional Multi-Timeframe Macro & Geopolitical Intelligence Platform
+FX Macro & News Intelligence Desk — v7 Pro
+سیستەمی پێشبینیکردن، شیکاری هەواڵەکان و سیستەمی تەکنیکی زێڕ
+Professional Multi-Timeframe Macro, Geopolitical & Technical Execution Platform
 """
 
 import streamlit as st
@@ -9,11 +9,12 @@ import pandas as pd
 import numpy as np
 import requests
 import plotly.graph_objects as go
-from datetime import datetime, date, timedelta
+import yfinance as yf
+from datetime import datetime, date
 import calendar as cal_lib
 
 st.set_page_config(
-    page_title="FX Macro & Geopolitical Desk",
+    page_title="FX Macro & Technical Desk",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -22,7 +23,7 @@ st.set_page_config(
 REQUEST_TIMEOUT = 10
 
 # ============================================================
-# CONSTANTS & OFFICIAL METRICS CONFIGURATION (FRED SERIES)
+# CONSTANTS & METRICS CONFIGURATION
 # ============================================================
 
 CURRENCY_SERIES = {
@@ -143,22 +144,13 @@ MONTHLY_CALENDAR = {
 }
 
 # ============================================================
-# ROBUST HTML RENDERER (ZERO INDENTATION - PREVENTS CODE BLOCKS)
+# HTML RENDERER & CSS
 # ============================================================
 
 def render_html(html_str: str) -> None:
-    """
-    Renders pure HTML by stripping all leading and trailing whitespace
-    from each line. This strictly prevents Markdown from treating any line
-    as an indented code block.
-    """
     clean_html = "\n".join(line.strip() for line in html_str.splitlines() if line.strip())
     st.markdown(clean_html, unsafe_allow_html=True)
 
-
-# ============================================================
-# CSS — PREMIUM DARK THEME (MATCHING SCREENSHOT 3)
-# ============================================================
 
 def inject_css() -> None:
     css_content = """
@@ -166,7 +158,6 @@ def inject_css() -> None:
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
 * { font-family: 'Inter', -apple-system, sans-serif !important; box-sizing: border-box; }
 
-/* === GLOBAL PAGE BACKGROUND === */
 .stApp { background-color: #060a12 !important; color: #e5e7eb !important; }
 .main .block-container {
     padding-top: 14px !important;
@@ -175,585 +166,91 @@ def inject_css() -> None:
     max-width: 100% !important;
 }
 
-/* === TOP HEADER TICKER BAR === */
 .top-header-bar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 10px 18px;
-    background: #090e1a;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 18px; background: #090e1a;
     border: 1px solid rgba(255, 255, 255, 0.06);
-    border-radius: 14px;
-    margin-bottom: 20px;
+    border-radius: 14px; margin-bottom: 20px;
     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
 }
-.top-brand {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    font-size: 13px;
-    font-weight: 800;
-    color: #e2b714;
-    letter-spacing: 0.5px;
-}
-.top-tickers {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex-wrap: wrap;
-}
-.ticker-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    background: #0d1527;
-    border: 1px solid rgba(255, 255, 255, 0.05);
-    padding: 4px 10px;
-    border-radius: 8px;
-    font-size: 11px;
-    font-weight: 600;
-    color: #9ca3af;
-}
+.top-brand { display: flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 800; color: #e2b714; }
+.top-tickers { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.ticker-pill { display: inline-flex; align-items: center; gap: 6px; background: #0d1527; border: 1px solid rgba(255, 255, 255, 0.05); padding: 4px 10px; border-radius: 8px; font-size: 11px; font-weight: 600; color: #9ca3af; }
 .ticker-up { color: #10b981; font-weight: 700; }
 .ticker-down { color: #ef4444; font-weight: 700; }
-.top-actions {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-}
-.icon-btn {
-    background: #0d1527;
-    border: 1px solid rgba(255, 255, 255, 0.07);
-    color: #9ca3af;
-    width: 32px;
-    height: 32px;
-    border-radius: 8px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 13px;
-    cursor: pointer;
-}
-.user-badge {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    background: #0d1527;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    padding: 4px 10px;
-    border-radius: 20px;
-}
-.user-avatar {
-    width: 24px;
-    height: 24px;
-    border-radius: 50%;
-    background: linear-gradient(135deg, #e2b714, #f59e0b);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 11px;
-    color: #000;
-    font-weight: 800;
-}
+.top-actions { display: flex; align-items: center; gap: 12px; }
+.user-badge { display: flex; align-items: center; gap: 8px; background: #0d1527; border: 1px solid rgba(255, 255, 255, 0.08); padding: 4px 10px; border-radius: 20px; }
+.user-avatar { width: 24px; height: 24px; border-radius: 50%; background: linear-gradient(135deg, #e2b714, #f59e0b); display: flex; align-items: center; justify-content: center; font-size: 11px; color: #000; font-weight: 800; }
 .user-info { font-size: 11px; font-weight: 700; color: #ffffff; }
 
-/* === MAIN PAGE BANNER TITLE === */
-.main-title-wrap {
-    text-align: center;
-    padding: 10px 0 20px 0;
-}
-.main-gold-sub {
-    font-size: 11px;
-    font-weight: 800;
-    letter-spacing: 2px;
-    color: #e2b714;
-    text-transform: uppercase;
-    margin-bottom: 6px;
-}
-.main-big-heading {
-    font-size: 26px;
-    font-weight: 900;
-    color: #ffffff;
-    margin: 0 0 6px 0;
-    letter-spacing: -0.5px;
-}
-.main-breadcrumb {
-    font-size: 12px;
-    color: #8a99ad;
-    font-weight: 500;
-}
+.main-title-wrap { text-align: center; padding: 10px 0 20px 0; }
+.main-gold-sub { font-size: 11px; font-weight: 800; letter-spacing: 2px; color: #e2b714; text-transform: uppercase; margin-bottom: 6px; }
+.main-big-heading { font-size: 26px; font-weight: 900; color: #ffffff; margin: 0 0 6px 0; }
+.main-breadcrumb { font-size: 12px; color: #8a99ad; font-weight: 500; }
 
-/* === SIDEBAR STYLING === */
-section[data-testid="stSidebar"] {
-    background: #070c16 !important;
-    border-right: 1px solid rgba(255, 255, 255, 0.05) !important;
-    min-width: 250px !important;
-    max-width: 250px !important;
-}
-section[data-testid="stSidebar"] .block-container {
-    padding: 16px 12px !important;
-}
-.sidebar-brand {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 6px 8px 16px 8px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-    margin-bottom: 14px;
-}
-.sb-icon {
-    width: 36px;
-    height: 36px;
-    border-radius: 10px;
-    background: linear-gradient(135deg, #e2b714, #d97706);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 18px;
-    box-shadow: 0 4px 12px rgba(226, 183, 20, 0.25);
-}
+section[data-testid="stSidebar"] { background: #070c16 !important; border-right: 1px solid rgba(255, 255, 255, 0.05) !important; min-width: 250px !important; }
+section[data-testid="stSidebar"] .block-container { padding: 16px 12px !important; }
+.sidebar-brand { display: flex; align-items: center; gap: 10px; padding: 6px 8px 16px 8px; border-bottom: 1px solid rgba(255, 255, 255, 0.06); margin-bottom: 14px; }
+.sb-icon { width: 36px; height: 36px; border-radius: 10px; background: linear-gradient(135deg, #e2b714, #d97706); display: flex; align-items: center; justify-content: center; font-size: 18px; }
 .sb-title { font-size: 12px; font-weight: 800; color: #e2b714; }
 .sb-sub { font-size: 9px; color: #6b7280; margin-top: 1px; }
 
-/* Custom styled Sidebar Radio tabs (Hides default radio circle) */
-section[data-testid="stSidebar"] div[data-testid="stRadio"] > div {
-    gap: 4px !important;
-    flex-direction: column !important;
-}
-section[data-testid="stSidebar"] div[data-testid="stRadio"] label {
-    display: flex !important;
-    align-items: center !important;
-    padding: 9px 12px !important;
-    border-radius: 10px !important;
-    background: transparent !important;
-    border: 1px solid transparent !important;
-    color: #8a99ad !important;
-    font-size: 12.5px !important;
-    font-weight: 500 !important;
-    transition: all 0.15s ease !important;
-    cursor: pointer !important;
-    width: 100% !important;
-}
-section[data-testid="stSidebar"] div[data-testid="stRadio"] label:hover {
-    background: rgba(255, 255, 255, 0.03) !important;
-    color: #ffffff !important;
-}
-section[data-testid="stSidebar"] div[data-testid="stRadio"] [aria-checked="true"],
-section[data-testid="stSidebar"] div[data-testid="stRadio"] label[data-checked="true"] {
-    background: rgba(226, 183, 20, 0.08) !important;
-    border: 1px solid #e2b714 !important;
-    color: #e2b714 !important;
-    font-weight: 700 !important;
-    box-shadow: 0 0 12px rgba(226, 183, 20, 0.12) !important;
-}
-section[data-testid="stSidebar"] div[data-testid="stRadio"] input[type="radio"],
-section[data-testid="stSidebar"] div[data-testid="stRadio"] label > div:first-child,
-div[data-testid="stRadio"] div[role="radiogroup"] > label > div:first-child {
-    display: none !important;
-    visibility: hidden !important;
-    width: 0 !important;
-    height: 0 !important;
-}
+section[data-testid="stSidebar"] div[data-testid="stRadio"] label { padding: 9px 12px !important; border-radius: 10px !important; color: #8a99ad !important; font-size: 12.5px !important; font-weight: 500 !important; cursor: pointer !important; width: 100% !important; }
+section[data-testid="stSidebar"] div[data-testid="stRadio"] label:hover { background: rgba(255, 255, 255, 0.03) !important; color: #ffffff !important; }
+section[data-testid="stSidebar"] div[data-testid="stRadio"] [aria-checked="true"] { background: rgba(226, 183, 20, 0.08) !important; border: 1px solid #e2b714 !important; color: #e2b714 !important; font-weight: 700 !important; }
+section[data-testid="stSidebar"] div[data-testid="stRadio"] input[type="radio"], section[data-testid="stSidebar"] div[data-testid="stRadio"] label > div:first-child { display: none !important; }
 
-/* Horizontal Radio Bars */
-div[data-testid="stRadio"] div[role="radiogroup"] {
-    display: flex !important;
-    gap: 8px !important;
-    flex-wrap: wrap !important;
-}
-div[data-testid="stRadio"] div[role="radiogroup"] label {
-    background: #090e1a !important;
-    border: 1px solid rgba(255, 255, 255, 0.08) !important;
-    border-radius: 10px !important;
-    padding: 6px 14px !important;
-    color: #8a99ad !important;
-    font-size: 12px !important;
-    font-weight: 600 !important;
-    cursor: pointer !important;
-}
-div[data-testid="stRadio"] div[role="radiogroup"] label:hover {
-    border-color: rgba(226, 183, 20, 0.3) !important;
-    color: #ffffff !important;
-}
-div[data-testid="stRadio"] div[role="radiogroup"] [aria-checked="true"],
-div[data-testid="stRadio"] div[role="radiogroup"] label[data-checked="true"] {
-    background: rgba(226, 183, 20, 0.12) !important;
-    border-color: #e2b714 !important;
-    color: #e2b714 !important;
-    font-weight: 700 !important;
-}
-
-/* Sidebar bottom coffee card */
-.sidebar-coffee-card {
-    background: #0b1220;
-    border: 1px solid rgba(226, 183, 20, 0.15);
-    border-radius: 14px;
-    padding: 16px 12px;
-    text-align: center;
-    margin-top: 20px;
-}
-.scc-icon { font-size: 26px; margin-bottom: 6px; }
-.scc-title { font-size: 12px; font-weight: 800; color: #e2b714; }
-.scc-sub { font-size: 10px; color: #6b7280; margin-top: 2px; }
-
-/* === DARK STREAMLIT WIDGET OVERRIDES === */
-div[data-baseweb="select"],
-div[data-baseweb="select"] > div,
-div[data-baseweb="select"] * {
-    background-color: #0b1220 !important;
-    color: #ffffff !important;
-    border-color: rgba(255, 255, 255, 0.1) !important;
-    border-radius: 10px !important;
-}
-div[data-baseweb="popover"],
-div[data-baseweb="popover"] > div,
-div[data-baseweb="popover"] * {
-    background-color: #0b1220 !important;
-    color: #ffffff !important;
-}
-div[role="listbox"],
-ul[role="listbox"] {
-    background-color: #0b1220 !important;
-    border: 1px solid rgba(255, 255, 255, 0.1) !important;
-    border-radius: 10px !important;
-}
-li[role="option"] {
-    background-color: #0b1220 !important;
-    color: #e5e7eb !important;
-    padding: 10px 14px !important;
-}
-li[role="option"]:hover,
-li[aria-selected="true"] {
-    background-color: rgba(226, 183, 20, 0.15) !important;
-    color: #e2b714 !important;
-}
-div[data-baseweb="input"],
-div[data-baseweb="input"] input,
-.stTextInput input {
-    background-color: #0b1220 !important;
-    color: #ffffff !important;
-    border: 1px solid rgba(255, 255, 255, 0.1) !important;
-    border-radius: 10px !important;
-}
-.stTextInput input:focus {
-    border-color: #e2b714 !important;
-    box-shadow: 0 0 10px rgba(226, 183, 20, 0.25) !important;
-}
-div[data-testid="stMetric"] {
-    background: #0b1220 !important;
-    border: 1px solid rgba(255, 255, 255, 0.06) !important;
-    border-radius: 14px !important;
-    padding: 14px !important;
-}
-div[data-testid="stMetric"] label { color: #8a99ad !important; font-size: 12px !important; }
-div[data-testid="stMetricValue"] { color: #ffffff !important; }
-div[data-testid="stMetricDelta"] svg { display: none; }
-
-/* === REFERENCE DARK TABLE (SCREENSHOT 3) === */
-.ref-table-card {
-    background: #090e1a;
-    border: 1px solid rgba(255, 255, 255, 0.07);
-    border-radius: 16px;
-    overflow: hidden;
-    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5);
-    margin-top: 6px;
-}
-.ref-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 13px;
-    direction: rtl;
-    text-align: right;
-}
-.ref-table thead th {
-    background: #0c1322;
-    color: #8a99ad;
-    padding: 14px 18px;
-    font-weight: 600;
-    font-size: 12px;
-    letter-spacing: 0.5px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-}
-.ref-table thead th.th-ctr {
-    text-align: center;
-    direction: ltr;
-}
-.ref-table tbody tr {
-    border-bottom: 1px solid rgba(255, 255, 255, 0.035);
-    transition: background 0.15s ease;
-}
-.ref-table tbody tr:hover {
-    background: rgba(226, 183, 20, 0.04);
-}
-.ref-table tbody tr:last-child {
-    border-bottom: none;
-}
-.ref-table tbody td {
-    padding: 12px 18px;
-    color: #e5e7eb;
-    vertical-align: middle;
-}
-.ref-table td.td-name {
-    font-weight: 700;
-    color: #ffffff;
-}
-.ref-table td.td-val {
-    font-family: 'Inter', monospace, sans-serif;
-    font-weight: 600;
-    color: #ffffff;
-    text-align: center;
-    direction: ltr;
-}
-.ref-table td.td-pct {
-    font-family: 'Inter', monospace, sans-serif;
-    font-weight: 600;
-    text-align: center;
-    direction: ltr;
-}
+.ref-table-card { background: #090e1a; border: 1px solid rgba(255, 255, 255, 0.07); border-radius: 16px; overflow: hidden; box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5); }
+.ref-table { width: 100%; border-collapse: collapse; font-size: 13px; direction: rtl; text-align: right; }
+.ref-table thead th { background: #0c1322; color: #8a99ad; padding: 14px 18px; font-weight: 600; font-size: 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.06); }
+.ref-table thead th.th-ctr { text-align: center; direction: ltr; }
+.ref-table tbody tr { border-bottom: 1px solid rgba(255, 255, 255, 0.035); }
+.ref-table tbody tr:hover { background: rgba(226, 183, 20, 0.04); }
+.ref-table tbody td { padding: 12px 18px; color: #e5e7eb; vertical-align: middle; }
+.ref-table td.td-name { font-weight: 700; color: #ffffff; }
+.ref-table td.td-val { font-family: 'Inter', monospace, sans-serif; font-weight: 600; color: #ffffff; text-align: center; direction: ltr; }
+.ref-table td.td-pct { font-family: 'Inter', monospace, sans-serif; font-weight: 600; text-align: center; direction: ltr; }
 .ref-badge-green { color: #10b981; font-weight: 700; }
 .ref-badge-red { color: #ef4444; font-weight: 700; }
 .ref-badge-gray { color: #6b7280; font-weight: 700; }
-.ref-table-footer {
-    padding: 12px 18px;
-    font-size: 11px;
-    color: #8a99ad;
-    background: #080c16;
-    border-top: 1px solid rgba(255, 255, 255, 0.04);
-    display: flex;
-    align-items: center;
-    gap: 6px;
-}
+.ref-table-footer { padding: 12px 18px; font-size: 11px; color: #8a99ad; background: #080c16; border-top: 1px solid rgba(255, 255, 255, 0.04); }
 
-/* === IMPACT MATRIX TABLE === */
-.matrix-card {
-    background: #090e1a;
-    border: 1px solid rgba(255, 255, 255, 0.07);
-    border-radius: 16px;
-    overflow: hidden;
-    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5);
-    margin-top: 10px;
-}
-.matrix-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 13px;
-    direction: rtl;
-    text-align: right;
-}
-.matrix-table thead th {
-    background: #0c1322;
-    color: #e2b714;
-    padding: 14px 18px;
-    font-weight: 700;
-    font-size: 12.5px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-}
-.matrix-table tbody tr {
-    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-    transition: background 0.15s ease;
-}
-.matrix-table tbody tr:hover {
-    background: rgba(226, 183, 20, 0.03);
-}
-.matrix-table tbody tr:last-child {
-    border-bottom: none;
-}
-.matrix-table td {
-    padding: 14px 18px;
-    color: #e5e7eb;
-    vertical-align: middle;
-    line-height: 1.5;
-}
-.matrix-pill-wrap {
-    display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-}
-.pill-bull {
-    background: rgba(16, 185, 129, 0.14);
-    color: #10b981;
-    border: 1px solid rgba(16, 185, 129, 0.3);
-    padding: 3px 10px;
-    border-radius: 6px;
-    font-weight: 700;
-    font-size: 11px;
-}
-.pill-bear {
-    background: rgba(239, 68, 68, 0.14);
-    color: #ef4444;
-    border: 1px solid rgba(239, 68, 68, 0.3);
-    padding: 3px 10px;
-    border-radius: 6px;
-    font-weight: 700;
-    font-size: 11px;
-}
-
-/* === METRIC CARDS (OVERVIEW) === */
-.metric-card {
-    background: #090e1a;
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    border-radius: 16px;
-    padding: 16px 18px;
-    transition: all 0.2s ease;
-    height: 100%;
-}
-.metric-card:hover {
-    border-color: rgba(226, 183, 20, 0.25);
-    transform: translateY(-2px);
-}
-.mc-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 8px;
-}
-.mc-icon-wrap {
-    width: 34px;
-    height: 34px;
-    border-radius: 9px;
-    background: rgba(226, 183, 20, 0.08);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 16px;
-}
-.mc-cat {
-    font-size: 9px;
-    font-weight: 800;
-    letter-spacing: 1px;
-    text-transform: uppercase;
-    color: #8a99ad;
-    padding: 2px 8px;
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.04);
-}
+.metric-card { background: #090e1a; border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 16px; padding: 16px 18px; height: 100%; }
+.metric-card:hover { border-color: rgba(226, 183, 20, 0.25); }
+.mc-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.mc-icon-wrap { width: 34px; height: 34px; border-radius: 9px; background: rgba(226, 183, 20, 0.08); display: flex; align-items: center; justify-content: center; font-size: 16px; }
+.mc-cat { font-size: 9px; font-weight: 800; letter-spacing: 1px; color: #8a99ad; padding: 2px 8px; border-radius: 999px; background: rgba(255, 255, 255, 0.04); }
 .mc-name { font-size: 13px; font-weight: 700; color: #8a99ad; margin: 4px 0 2px; }
 .mc-value { font-size: 24px; font-weight: 800; color: #ffffff; line-height: 1.1; margin-bottom: 4px; }
 .mc-change { font-size: 12px; font-weight: 700; }
 .mc-secondary { font-size: 11px; color: #8a99ad; margin-top: 2px; }
 .mc-date { font-size: 10px; color: #4b5563; margin-top: 6px; }
 
-/* === CALENDAR CARDS (MONTHLY OUTLOOK) === */
-.cal-card {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    background: #090e1a;
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    border-radius: 14px;
-    padding: 14px 18px;
-    margin-bottom: 10px;
-    transition: all 0.15s ease;
-}
-.cal-card:hover {
-    border-color: rgba(226, 183, 20, 0.2);
-    transform: translateX(-2px);
-}
-.cal-card.released { border-right: 4px solid #10b981; }
-.cal-card.upcoming { border-right: 4px solid #374151; }
-.cal-card.upcoming-soon { border-right: 4px solid #f59e0b; }
-.cal-day-badge {
-    min-width: 44px;
-    height: 44px;
-    border-radius: 12px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: 900;
-    font-size: 16px;
-    flex-shrink: 0;
-}
-.cal-day-badge.released { background: rgba(16, 185, 129, 0.12); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.2); }
-.cal-day-badge.upcoming { background: #0c1322; color: #8a99ad; border: 1px solid rgba(255, 255, 255, 0.05); }
-.cal-day-badge.upcoming-soon { background: rgba(245, 158, 11, 0.12); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.2); }
-.cal-content { flex: 1; min-width: 0; }
-.cal-name { font-weight: 800; color: #ffffff; font-size: 14px; }
-.cal-hint { font-size: 11.5px; color: #8a99ad; margin-top: 3px; }
-.cal-impact-badge {
-    font-size: 9px;
-    font-weight: 800;
-    padding: 2px 8px;
-    border-radius: 999px;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
-}
-.impact-high   { background: rgba(239, 68, 68, 0.12); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.2); }
-.impact-medium { background: rgba(245, 158, 11, 0.12); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.2); }
+.tech-box { background: #090e1a; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 14px; padding: 16px; height: 100%; }
+.calc-card { background: #0b1220; border: 1px solid rgba(226, 183, 20, 0.2); border-radius: 14px; padding: 18px; }
 
-/* === BADGES === */
-.badge {
-    display: inline-block;
-    padding: 4px 10px;
-    border-radius: 999px;
-    font-size: 11px;
-    font-weight: 700;
-    white-space: nowrap;
-}
+.badge { display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; }
 .badge-bullish { background: rgba(16, 185, 129, 0.12); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.2); }
 .badge-bearish { background: rgba(239, 68, 68, 0.12); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.2); }
 .badge-neutral { background: rgba(107, 114, 128, 0.12); color: #9ca3af; border: 1px solid rgba(107, 114, 128, 0.2); }
 .badge-lg { font-size: 14px; padding: 8px 20px; border-radius: 12px; font-weight: 800; }
 
-/* === SECTION TITLE === */
-.section-title {
-    font-size: 11px;
-    font-weight: 800;
-    letter-spacing: 2px;
-    text-transform: uppercase;
-    color: #8a99ad;
-    margin-bottom: 12px;
-    margin-top: 6px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-.section-title::after {
-    content: '';
-    flex: 1;
-    height: 1px;
-    background: linear-gradient(90deg, rgba(255, 255, 255, 0.08), transparent);
-}
+.section-title { font-size: 11px; font-weight: 800; letter-spacing: 2px; text-transform: uppercase; color: #8a99ad; margin-bottom: 12px; margin-top: 6px; display: flex; align-items: center; gap: 8px; }
+.section-title::after { content: ''; flex: 1; height: 1px; background: linear-gradient(90deg, rgba(255, 255, 255, 0.08), transparent); }
 
-/* === FOOTER NOTE === */
-.app-footer {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 18px 24px;
-    margin-top: 40px;
-    border-top: 1px solid rgba(255, 255, 255, 0.05);
-    font-size: 11px;
-    color: #4b5563;
-}
-.live-status {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    color: #10b981;
-    font-weight: 600;
-}
-.live-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: #10b981;
-    box-shadow: 0 0 8px #10b981;
-}
+.app-footer { display: flex; justify-content: space-between; align-items: center; padding: 18px 24px; margin-top: 40px; border-top: 1px solid rgba(255, 255, 255, 0.05); font-size: 11px; color: #4b5563; }
+.live-status { display: flex; align-items: center; gap: 6px; color: #10b981; font-weight: 600; }
+.live-dot { width: 7px; height: 7px; border-radius: 50%; background: #10b981; box-shadow: 0 0 8px #10b981; }
 
-/* Hide default streamlit clutter */
-#MainMenu { visibility: hidden; }
-footer { visibility: hidden; }
-.stDeployButton { display: none; }
+#MainMenu, footer, .stDeployButton { display: none !important; }
 header[data-testid="stHeader"] { background: transparent !important; }
-.js-plotly-plot { background: transparent !important; }
-.plotly .bg { fill: transparent !important; }
 </style>
 """
     render_html(css_content)
 
 
 # ============================================================
-# DATA LAYER
+# DATA LAYER (FRED + YFINANCE)
 # ============================================================
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -776,6 +273,44 @@ def fetch_fred_series(series_id: str, key: str, limit: int = 36):
         return None
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_technical_data(symbol="GC=F", period="1y", interval="1d"):
+    """داتای ڕۆژانەی زیندوو و دەرهێنانی نیشاندەرەکانی RSI, EMA 50/200, ATR"""
+    try:
+        df = yf.download(symbol, period=period, interval=interval, progress=False)
+        if df.empty:
+            return None
+
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
+        df = df.reset_index()
+        date_col = "Date" if "Date" in df.columns else "Datetime"
+        df["date"] = df[date_col].dt.strftime('%Y-%m-%d')
+
+        # EMAs
+        df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
+        df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
+
+        # RSI (14)
+        delta = df["Close"].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        df["RSI"] = 100 - (100 / (1 + rs))
+
+        # ATR (14) بۆ دیاریکردنی ستۆپ لۆس
+        high_low = df["High"] - df["Low"]
+        high_cp = (df["High"] - df["Close"].shift()).abs()
+        low_cp = (df["Low"] - df["Close"].shift()).abs()
+        tr = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1)
+        df["ATR"] = tr.rolling(window=14).mean()
+
+        return df.dropna(subset=["EMA50", "RSI", "ATR"]).reset_index(drop=True)
+    except Exception:
+        return None
+
+
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_news(query: str, key: str):
     if not key:
@@ -791,7 +326,7 @@ def fetch_news(query: str, key: str):
 
 
 # ============================================================
-# MULTI-TIMEFRAME ANALYSIS ENGINE
+# MULTI-TIMEFRAME ENGINE
 # ============================================================
 
 def calc_multiframe(vals: list, category: str) -> dict | None:
@@ -799,30 +334,23 @@ def calc_multiframe(vals: list, category: str) -> dict | None:
         return None
 
     reverse = (category == "labor_bad")
-
-    # --- m/m ---
     mom = (vals[-1] - vals[-2]) / abs(vals[-2]) * 100 if vals[-2] != 0 else 0.0
 
-    # --- q/q ---
     qoq = None
     if len(vals) >= 6:
         qnow  = np.mean(vals[-3:])
         qprev = np.mean(vals[-6:-3])
         qoq = (qnow - qprev) / abs(qprev) * 100 if qprev != 0 else 0.0
 
-    # --- y/y ---
     yoy = None
     if len(vals) >= 13:
         yoy = (vals[-1] - vals[-13]) / abs(vals[-13]) * 100 if vals[-13] != 0 else 0.0
 
-    # --- trend 3m ---
     t3m = None
     if len(vals) >= 4:
-        changes = [(vals[i] - vals[i-1]) / abs(vals[i-1]) * 100
-                   for i in range(-3, 0) if vals[i-1] != 0]
+        changes = [(vals[i] - vals[i-1]) / abs(vals[i-1]) * 100 for i in range(-3, 0) if vals[i-1] != 0]
         t3m = np.mean(changes) if changes else None
 
-    # --- Z-score ---
     z_level = 0.0
     if len(vals) >= 6:
         sub = vals[-12:] if len(vals) >= 12 else vals
@@ -844,25 +372,12 @@ def calc_multiframe(vals: list, category: str) -> dict | None:
     if reverse:
         composite = -composite
 
-    def dir_val(x):
-        if x is None:
-            return None
-        return (-x if reverse else x)
-
-    dirs = [np.sign(v) for v in [dir_val(mom), dir_val(qoq), dir_val(yoy)] if v is not None]
-    main_sign = np.sign(composite)
-    agreement = sum(1 for d in dirs if d == main_sign) / len(dirs) if dirs else 0.0
-
     return {
         "latest":    vals[-1],
         "mom":       round(mom, 3),
-        "qoq":       round(qoq, 3)  if qoq  is not None else None,
-        "yoy":       round(yoy, 3)  if yoy  is not None else None,
-        "t3m":       round(t3m, 3)  if t3m  is not None else None,
-        "z_level":   round(z_level, 2),
+        "qoq":       round(qoq, 3) if qoq is not None else None,
+        "yoy":       round(yoy, 3) if yoy is not None else None,
         "composite": float(composite),
-        "agreement": float(agreement),
-        "reverse":   reverse,
     }
 
 
@@ -897,12 +412,11 @@ def compute_currency_composite(currency: str, fred_key: str):
 
     tw = sum(r["weight"] for r in rows)
     composite = sum(weighted) / tw if tw else 0.0
-    top4 = sorted(rows, key=lambda r: abs(r["composite"] * r["weight"]), reverse=True)[:4]
-    return {"composite": composite, "rows": rows, "top4": top4}
+    return {"composite": composite, "rows": rows}
 
 
 # ============================================================
-# HELPERS & PLOTLY DYNAMIC CHART FACTORIES
+# HELPERS & PLOTLY DYNAMIC CHARTS
 # ============================================================
 
 def bias_from_score(score: float):
@@ -936,122 +450,81 @@ def svg_spark(vals: list, width: int = 80, height: int = 34, positive_is_good: b
     return (
         f'<svg width="{width}" height="{height}" viewBox="0 0 {width} {height}" style="display:block;">'
         f'<path d="{fpath}" fill="{fill_c}"/>'
-        f'<path d="{path}" fill="none" stroke="{line_c}" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>'
+        f'<path d="{path}" fill="none" stroke="{line_c}" stroke-width="1.8"/>'
         f'</svg>'
     )
 
 
-def make_dynamic_chart(df: pd.DataFrame, indicator_name: str, currency_name: str) -> go.Figure | None:
-    """Creates an auto-scaling, dynamic FRED time series chart (no flat line bugs)."""
-    if df is None or df.empty:
-        return None
-
-    vals = df["value"].tolist()
-    is_up = vals[-1] >= vals[0] if len(vals) >= 2 else True
-    accent_color = "#e2b714" if is_up else "#f59e0b"
-
+def make_gold_candlestick(df: pd.DataFrame) -> go.Figure:
+    """Creates a Japanese Candlestick chart with EMA 50/200 overlays."""
     fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=df["date"],
-        y=df["value"],
-        mode="lines+markers",
-        marker=dict(size=4, color=accent_color),
-        name=indicator_name,
-        line=dict(color=accent_color, width=2.8, shape="spline"),
-        fill="tozeroy",
-        fillcolor="rgba(226,183,20,0.08)",
-        hovertemplate="<b>%{x}</b><br>ئاستی فەرمی: <b>%{y:,.2f}</b><extra></extra>",
+    fig.add_trace(go.Candlestick(
+        x=df['date'],
+        open=df['Open'], high=df['High'],
+        low=df['Low'], close=df['Close'],
+        name='Gold (XAUUSD)',
+        increasing_line_color='#10b981', decreasing_line_color='#ef4444'
     ))
-
+    fig.add_trace(go.Scatter(
+        x=df['date'], y=df['EMA50'],
+        mode='lines', name='EMA 50',
+        line=dict(color='#e2b714', width=1.5)
+    ))
+    fig.add_trace(go.Scatter(
+        x=df['date'], y=df['EMA200'],
+        mode='lines', name='EMA 200',
+        line=dict(color='#3b82f6', width=1.8)
+    ))
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        showlegend=False,
-        margin=dict(l=10, r=20, t=10, b=10),
-        height=240,
-        xaxis=dict(
-            showgrid=False,
-            color="#6b7280",
-            tickfont=dict(size=10, color="#8a99ad"),
-            showline=False,
-            zeroline=False,
-        ),
-        yaxis=dict(
-            autorange=True,
-            showgrid=True,
-            gridcolor="rgba(255,255,255,0.05)",
-            color="#6b7280",
-            tickfont=dict(size=10, color="#8a99ad"),
-            side="right",
-            showline=False,
-            zeroline=False,
-        ),
-        hovermode="x unified",
+        height=380,
+        margin=dict(l=10, r=20, t=20, b=10),
+        xaxis_rangeslider_visible=False,
+        legend=dict(orientation="h", y=1.05, x=1, xanchor="right", font=dict(size=10, color="#8a99ad")),
+        xaxis=dict(showgrid=False, color="#6b7280"),
+        yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.05)", side="right", color="#6b7280")
     )
     return fig
 
 
-def make_gold_dual_chart(ry_df: pd.DataFrame, exp_df: pd.DataFrame) -> go.Figure | None:
-    """Dual comparison chart for Real Yield & Inflation Expectations."""
-    if ry_df is None or ry_df.empty:
-        return None
+def render_reference_table_html(rows: list) -> None:
+    def fmt_pct(v):
+        if v is None: return '<span class="ref-badge-gray">0.00%</span>'
+        if v > 0: return f'<span class="ref-badge-green">▲ +{abs(v):.2f}%</span>'
+        if v < 0: return f'<span class="ref-badge-red">▼ -{abs(v):.2f}%</span>'
+        return '<span class="ref-badge-gray">0.00%</span>'
 
-    fig = go.Figure()
-    # Real Yield trace
-    fig.add_trace(go.Scatter(
-        x=ry_df["date"],
-        y=ry_df["value"],
-        mode="lines",
-        name="Real Yield 10Y (سوودی ڕاستەقینە)",
-        line=dict(color="#e2b714", width=3, shape="spline"),
-        hovertemplate="<b>%{x}</b><br>Real Yield: <b>%{y:.2f}%</b><extra></extra>",
-    ))
+    tbody_rows = []
+    for r in rows:
+        tbody_rows.append(f"""
+        <tr>
+          <td class="td-name"><span style="color:#e2b714;">📈</span> {r['name']}</td>
+          <td class="td-val">{r['latest']:,.2f}</td>
+          <td class="td-pct">{fmt_pct(r['mom'])}</td>
+          <td class="td-pct">{fmt_pct(r.get('qoq'))}</td>
+          <td class="td-pct">{fmt_pct(r.get('yoy'))}</td>
+        </tr>
+        """)
 
-    # Inflation Expectations trace if available
-    if exp_df is not None and not exp_df.empty:
-        fig.add_trace(go.Scatter(
-            x=exp_df["date"],
-            y=exp_df["value"],
-            mode="lines",
-            name="Inflation Expectation 10Y (هەڵئاوسانی چاوەڕوانکراو)",
-            line=dict(color="#3b82f6", width=2, dash="dot", shape="spline"),
-            hovertemplate="<b>%{x}</b><br>Inflation Exp: <b>%{y:.2f}%</b><extra></extra>",
-        ))
-
-    fig.update_layout(
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        showlegend=True,
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1,
-            font=dict(size=11, color="#8a99ad"),
-        ),
-        margin=dict(l=10, r=20, t=30, b=10),
-        height=260,
-        xaxis=dict(
-            showgrid=False,
-            color="#6b7280",
-            tickfont=dict(size=10, color="#8a99ad"),
-            showline=False,
-            zeroline=False,
-        ),
-        yaxis=dict(
-            autorange=True,
-            showgrid=True,
-            gridcolor="rgba(255,255,255,0.05)",
-            color="#6b7280",
-            tickfont=dict(size=10, color="#8a99ad"),
-            side="right",
-            showline=False,
-            zeroline=False,
-        ),
-        hovermode="x unified",
-    )
-    return fig
+    table_html = f"""
+    <div class="ref-table-card">
+      <table class="ref-table">
+        <thead>
+          <tr>
+            <th style="width:28%;">نیشاندەر</th>
+            <th class="th-ctr" style="width:18%;">کۆتا ئاست</th>
+            <th class="th-ctr" style="width:18%;">m/m</th>
+            <th class="th-ctr" style="width:18%;">q/q</th>
+            <th class="th-ctr" style="width:18%;">y/y</th>
+          </tr>
+        </thead>
+        <tbody>{''.join(tbody_rows)}</tbody>
+      </table>
+      <div class="ref-table-footer">ⓘ % گۆڕانکارییەکان نیشاندەدرێن بە گۆڕان بەڕامبەر پێشەووی خۆی.</div>
+    </div>
+    """
+    render_html(table_html)
 
 
 # ============================================================
@@ -1061,22 +534,17 @@ def make_gold_dual_chart(ry_df: pd.DataFrame, exp_df: pd.DataFrame) -> go.Figure
 def render_top_header() -> None:
     html = """
     <div class="top-header-bar">
-      <div class="top-brand">
-        <span style="font-size:18px;">📊</span>
-        <span>FX MACRO &amp; GEOPOLITICAL DESK</span>
-      </div>
+      <div class="top-brand"><span>📊</span> <span>FX MACRO &amp; TECHNICAL INTELLIGENCE</span></div>
       <div class="top-tickers">
         <div class="ticker-pill"><span>🇺🇸 USD</span> <span class="ticker-up">98.42 ▲ +0.24%</span></div>
+        <div class="ticker-pill"><span>🥇 Gold</span> <span class="ticker-up">Live GC=F</span></div>
         <div class="ticker-pill"><span>🇪🇺 EUR</span> <span class="ticker-up">1.08 ▲ +0.18%</span></div>
         <div class="ticker-pill"><span>🇬🇧 GBP</span> <span class="ticker-down">1.27 ▼ -0.12%</span></div>
-        <div class="ticker-pill"><span>🇯🇵 JPY</span> <span class="ticker-up">157.36 ▲ +0.31%</span></div>
       </div>
       <div class="top-actions">
-        <div class="icon-btn">🔔 <span style="font-size:9px;color:#e2b714;margin-right:2px;">3</span></div>
-        <div class="icon-btn">🌙</div>
         <div class="user-badge">
           <div class="user-avatar">M</div>
-          <div class="user-info">Macro Desk <span style="color:#6b7280;font-size:10px;">/ Analyst</span></div>
+          <div class="user-info">Macro &amp; Quant Desk</div>
         </div>
       </div>
     </div>
@@ -1085,166 +553,11 @@ def render_top_header() -> None:
 
 
 # ============================================================
-# COMPONENT: REFERENCE DARK TABLE (NO ? QUESTION MARKS)
-# ============================================================
-
-def render_reference_table_html(rows: list) -> None:
-    """Render the exact high-end dark table from Screenshot 3 without ? marks."""
-    def fmt_pct(v):
-        if v is None:
-            return '<span class="ref-badge-gray">0.00%</span>'
-        if v > 0:
-            return f'<span class="ref-badge-green">▲ +{abs(v):.2f}%</span>'
-        if v < 0:
-            return f'<span class="ref-badge-red">▼ -{abs(v):.2f}%</span>'
-        return '<span class="ref-badge-gray">0.00%</span>'
-
-    tbody_rows = []
-    for r in rows:
-        name = r["name"]
-        val = f"{r['latest']:,.2f}"
-        mom_s = fmt_pct(r["mom"])
-        qoq_s = fmt_pct(r.get("qoq"))
-        yoy_s = fmt_pct(r.get("yoy"))
-
-        row_str = f"""
-        <tr>
-          <td class="td-name">
-            <span style="color:#e2b714;font-size:14px;">📈</span>
-            <span style="color:#ffffff;font-weight:700;">{name}</span>
-          </td>
-          <td class="td-val">{val}</td>
-          <td class="td-pct">{mom_s}</td>
-          <td class="td-pct">{qoq_s}</td>
-          <td class="td-pct">{yoy_s}</td>
-        </tr>
-        """
-        tbody_rows.append(row_str)
-
-    all_rows_html = "".join(tbody_rows)
-
-    table_html = f"""
-    <div class="ref-table-card">
-      <table class="ref-table">
-        <thead>
-          <tr>
-            <th style="width:28%;">بازار</th>
-            <th class="th-ctr" style="width:18%;">کۆتا</th>
-            <th class="th-ctr" style="width:18%;">m/m</th>
-            <th class="th-ctr" style="width:18%;">q/q</th>
-            <th class="th-ctr" style="width:18%;">y/y</th>
-          </tr>
-        </thead>
-        <tbody>
-          {all_rows_html}
-        </tbody>
-      </table>
-      <div class="ref-table-footer">
-        <span>ⓘ</span>
-        <span>% گۆڕانکارییەکان نیشاندەدرێن بە گۆڕان بەڕامبەر پێشەووی خۆی.</span>
-      </div>
-    </div>
-    """
-    render_html(table_html)
-
-
-# ============================================================
-# COMPONENT: IMPACT MATRIX TABLE (HIGH-END BORDERED GRID)
-# ============================================================
-
-def render_impact_matrix_html() -> None:
-    """Renders a beautifully structured, bordered macro matrix table."""
-    matrix_data = [
-        {
-            "event": "هەڵگیرسانی جەنگ و ئاڵۆزی سەربازی",
-            "icon": "💣",
-            "bullish": ["USD", "CHF", "Gold"],
-            "bearish": ["EUR", "AUD", "GBP"],
-            "reason": "ڕاکردنی سەرمایەی جیهانی بەرەو پەناگە ئارامەکان (Safe-havens) بۆ پاراستنی سەرمایە.",
-        },
-        {
-            "event": "بەرزبوونەوەی بەرچاوی نرخی نەوت و وزە",
-            "icon": "🛢️",
-            "bullish": ["CAD", "NOK", "USD"],
-            "bearish": ["JPY", "EUR"],
-            "reason": "کەنەدا و نەرویج هەناردەکاری نەوتن؛ ژاپۆن و یەکێتی ئەوروپا هاوردەکاری سەرەکین و زیانیان پێدەگات.",
-        },
-        {
-            "event": "بەرزکردنەوەی ڕێژەی سوودی بانکی (Rate Hikes)",
-            "icon": "🏦",
-            "bullish": ["دراوەکەی خۆی"],
-            "bearish": ["زێڕ (Gold)", "پشکەکان"],
-            "reason": "ڕاکێشانی وەبەرهێنەران بۆ بەدەستهێنانی سوودی بەرزتر و زیادبوونی تێچووی هەڵگرتنی زێڕ.",
-        },
-        {
-            "event": "کەمکردنەوەی ڕێژەی سوود (Rate Cuts)",
-            "icon": "📉",
-            "bullish": ["زێڕ (Gold)", "پشکەکان"],
-            "bearish": ["دراوەکەی خۆی"],
-            "reason": "کەمبوونەوەی قازانجی سوودی بانکی و ڕاکردنی وەبەرهێنەران بۆ کڕینی زێڕ و کاڵا سەرمایەییەکان.",
-        },
-        {
-            "event": "جەنگی بازرگانی و باجی گومرگی (Tariffs)",
-            "icon": "🚢",
-            "bullish": ["USD"],
-            "bearish": ["AUD", "NZD", "CNH", "EUR"],
-            "reason": "لاوازبوونی بازرگانی چین بە شێوەیەکی ڕاستەوخۆ دۆلاری ئوسترالی و ئەوروپا دادەبەزێنێت.",
-        },
-        {
-            "event": "قەیرانی بانکی و دارایی جیهانی",
-            "icon": "💥",
-            "bullish": ["Gold", "CHF", "USD"],
-            "bearish": ["EUR", "GBP", "CAD"],
-            "reason": "لەدەستدانی متمانە بە سیستمە بانکییەکان و ڕووبەرووبوونەوە لەگەڵ کڕینی زێڕ و دراوی ئەمن.",
-        },
-    ]
-
-    rows_html = []
-    for item in matrix_data:
-        bull_pills = "".join(f'<span class="pill-bull">{c}</span>' for c in item["bullish"])
-        bear_pills = "".join(f'<span class="pill-bear">{c}</span>' for c in item["bearish"])
-
-        row = f"""
-        <tr>
-          <td style="font-weight:700;color:#ffffff;width:24%;">
-            <span style="font-size:16px;margin-left:6px;">{item['icon']}</span>
-            {item['event']}
-          </td>
-          <td style="width:20%;"><div class="matrix-pill-wrap">{bull_pills}</div></td>
-          <td style="width:20%;"><div class="matrix-pill-wrap">{bear_pills}</div></td>
-          <td style="color:#8a99ad;font-size:12px;width:36%;">{item['reason']}</td>
-        </tr>
-        """
-        rows_html.append(row)
-
-    table_html = f"""
-    <div class="matrix-card">
-      <table class="matrix-table">
-        <thead>
-          <tr>
-            <th>ڕووداوی جیهانی (Global Event)</th>
-            <th>دراوە بەهێزەکان (Bullish)</th>
-            <th>دراوە لاوازەکان (Bearish)</th>
-            <th>هۆکار و شیکاریی مەکڕۆ (Macro Mechanism)</th>
-          </tr>
-        </thead>
-        <tbody>
-          {''.join(rows_html)}
-        </tbody>
-      </table>
-    </div>
-    """
-    render_html(table_html)
-
-
-# ============================================================
 # PAGE 1: 🏠 سەرەکی (DASHBOARD)
 # ============================================================
 
 def render_dashboard(fred_key: str, news_key: str) -> None:
     render_top_header()
-
-    # Title & Breadcrumbs matching screenshot 3
     banner_html = """
     <div class="main-title-wrap">
       <div class="main-gold-sub">FX MACRO &amp; GEOPOLITICAL DESK</div>
@@ -1254,45 +567,29 @@ def render_dashboard(fred_key: str, news_key: str) -> None:
     """
     render_html(banner_html)
 
-    # Asset type & currency selector
     a_col, b_col = st.columns([3, 2])
     with a_col:
-        asset_type = st.radio(
-            "جۆری بازاڕ:", ["💱 Forex", "🥇 Gold & Metals", "📈 Indices", "🛢️ Commodities", "₿ Crypto"],
-            horizontal=True, key="dash_asset", label_visibility="collapsed",
-        )
+        asset_type = st.radio("جۆری بازاڕ:", ["💱 Forex", "🥇 Gold & Metals"], horizontal=True, label_visibility="collapsed")
     with b_col:
-        if "Forex" in asset_type:
-            selected = st.selectbox("دراوەکە هەڵبژێرە:", list(CURRENCY_SERIES.keys()),
-                                    key="dash_cur", label_visibility="collapsed")
-        else:
-            selected = "USD دۆلار"
-
-    if "Indices" in asset_type or "Commodities" in asset_type or "Crypto" in asset_type:
-        st.info("📌 ئەم بەشە بەزوودی بە داتای ڕاستەوخۆ دەوڵەمەند دەکرێت.")
-        return
+        selected = st.selectbox("دراوەکە هەڵبژێرە:", list(CURRENCY_SERIES.keys()), label_visibility="collapsed") if "Forex" in asset_type else "USD دۆلار"
 
     if "Gold" in asset_type:
         render_gold_page(fred_key)
         return
 
     if not fred_key:
-        st.info("🔑 تکایە FRED API Key لە سایدبار بنووسە بۆ بارکردنی داتاکانی مەکرۆ.")
+        st.info("🔑 تکایە FRED API Key لە سایدبار بنووسە بۆ بارکردنی داتاکان.")
         return
 
-    with st.spinner("داتاکانی بازاڕ شیکاری دەکرێن..."):
+    with st.spinner("داتاکان دەهێنرێن..."):
         result = compute_currency_composite(selected, fred_key)
 
     if not result:
-        st.warning("⚠️ نەتوانرا داتاکان بهێنرێت. تکایە کلیلی FRED API بپشکنە.")
+        st.warning("⚠️ داتا نەدۆزرایەوە.")
         return
 
-    rows    = result["rows"]
+    rows = result["rows"]
     row_map = {r["name"]: r for r in rows}
-
-    # ----------------------------------------------------------------
-    # 4 Overview Metric Cards
-    # ----------------------------------------------------------------
     key_inds = KEY_INDICATORS.get(selected, [r["name"] for r in rows[:4]])
     key_rows = [row_map[k] for k in key_inds if k in row_map]
 
@@ -1301,19 +598,10 @@ def render_dashboard(fred_key: str, news_key: str) -> None:
 
     for col, row in zip(cols, key_rows):
         pos_good = row["category"] != "labor_bad"
-        mom      = row["mom"]
-        yoy      = row.get("yoy")
-        spark    = svg_spark(row["vals"][-20:], positive_is_good=pos_good)
+        mom = row["mom"]
+        spark = svg_spark(row["vals"][-20:], positive_is_good=pos_good)
         mom_arrow = "▲" if mom > 0 else "▼"
-        mom_good  = (mom > 0) == pos_good
-        mom_color = "#10b981" if mom_good else "#ef4444"
-
-        yoy_str = ""
-        if yoy is not None:
-            yoy_arrow = "▲" if yoy > 0 else "▼"
-            yoy_good  = (yoy > 0) == pos_good
-            yoy_color = "#10b981" if yoy_good else "#ef4444"
-            yoy_str = f"<div class='mc-secondary'><span style='color:{yoy_color};font-weight:700;'>{yoy_arrow} {abs(yoy):.2f}%</span> (y/y)</div>"
+        mom_color = "#10b981" if (mom > 0) == pos_good else "#ef4444"
 
         card_html = f"""
         <div class="metric-card">
@@ -1327,7 +615,6 @@ def render_dashboard(fred_key: str, news_key: str) -> None:
             <span style="color:{mom_color}; font-weight:700;">{mom_arrow} {abs(mom):.2f}%</span>
             <span style="color:#6b7280; font-size:10px;"> (m/m)</span>
           </div>
-          {yoy_str}
           <div class="mc-date">📅 {row['date']}</div>
           <div style="margin-top:10px;">{spark}</div>
         </div>
@@ -1336,153 +623,165 @@ def render_dashboard(fred_key: str, news_key: str) -> None:
             render_html(card_html)
 
     st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
-
-    # ----------------------------------------------------------------
-    # Dark Table + Dynamic Chart (Screenshot 3 layout)
-    # ----------------------------------------------------------------
-    t_col, c_col = st.columns([1.1, 1.2])
+    t_col, d_col = st.columns([1.2, 1])
 
     with t_col:
         st.markdown('<div class="section-title">کۆتا ئاستیەکان (Multi-Timeframe Table)</div>', unsafe_allow_html=True)
         render_reference_table_html(rows)
 
-    with c_col:
-        st.markdown('<div class="section-title">کەش و هەوای بازاڕەکان (Live Dynamic Chart)</div>', unsafe_allow_html=True)
-
-        # Dynamic indicator selector for the chart
-        chart_ind_names = [r["name"] for r in rows]
-        chosen_ind = st.selectbox(
-            "نیشاندەر بۆ پیشاندانی نمودار:",
-            chart_ind_names,
-            key=f"dash_chart_ind_{selected}",
-            label_visibility="collapsed",
-        )
-
-        crow = row_map.get(chosen_ind, rows[0])
-        c_vals = crow["vals"]
-        c_max = max(c_vals) if c_vals else 0
-        c_min = min(c_vals) if c_vals else 0
-        c_latest = crow["latest"]
-        pos = crow["category"] != "labor_bad"
-        mom_val = crow["mom"]
-        mom_col = "#10b981" if (mom_val > 0) == pos else "#ef4444"
-
-        chart_card_head = f"""
-        <div style="background:#090e1a;border:1px solid rgba(255,255,255,0.07);border-radius:16px;padding:16px;box-shadow:0 12px 36px rgba(0,0,0,0.5);">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-            <div>
-              <span style="font-size:14px;font-weight:800;color:#ffffff;">{selected} &nbsp;—&nbsp; {chosen_ind}</span>
-              <span style="font-size:18px;font-weight:800;color:#ffffff;margin-right:8px;margin-left:8px;">{c_latest:,.2f}</span>
-              <span style="color:{mom_col};font-size:11.5px;font-weight:700;">{'▲ +' if mom_val > 0 else '▼ '}{mom_val:.2f}% m/m</span>
-            </div>
-            <div style="display:flex;gap:12px;font-size:11px;color:#8a99ad;">
-              <span>High: <b style="color:#fff;">{c_max:,.2f}</b></span>
-              <span>Low: <b style="color:#fff;">{c_min:,.2f}</b></span>
-              <span>Obs: <b style="color:#fff;">{len(c_vals)}</b></span>
-            </div>
-          </div>
-        """
-        render_html(chart_card_head)
-        fig_dyn = make_dynamic_chart(crow["df"], chosen_ind, selected)
-        if fig_dyn:
-            st.plotly_chart(fig_dyn, use_container_width=True, config={"displayModeBar": False})
-        render_html("</div>")
-
-    st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
-
-    # ----------------------------------------------------------------
-    # News & Key Drivers
-    # ----------------------------------------------------------------
-    n_col, d_col = st.columns([1.1, 1.1])
-
-    with n_col:
-        st.markdown('<div class="section-title">هەواڵی جیهانی و ئابووری (News Feed)</div>', unsafe_allow_html=True)
-        if news_key:
-            arts = fetch_news(f"{selected.split()[0]} OR forex OR economy OR inflation", news_key)
-            if arts:
-                for art in arts[:3]:
-                    t_str = art.get("title", "—")
-                    src   = (art.get("source") or {}).get("name", "Market Desk")
-                    pub   = (art.get("publishedAt") or "")[:10]
-                    link  = art.get("url", "#")
-                    news_card_html = f"""
-                    <a href="{link}" target="_blank" style="text-decoration:none;">
-                    <div style="background:#090e1a;border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:12px 16px;margin-bottom:8px;transition:border-color 0.2s;">
-                      <div style="color:#ffffff;font-size:13px;font-weight:600;line-height:1.4;margin-bottom:6px;">{t_str}</div>
-                      <div style="font-size:11px;color:#8a99ad;display:flex;justify-content:space-between;">
-                        <span>📰 {src}</span>
-                        <span>🕒 {pub}</span>
-                      </div>
-                    </div></a>
-                    """
-                    render_html(news_card_html)
-        else:
-            render_html('<div style="background:#090e1a;padding:20px;border-radius:12px;color:#8a99ad;border:1px solid rgba(255,255,255,0.05);font-size:12px;">🔑 NewsAPI Key لە سایدبار بنووسە بۆ نیشاندانی هەواڵی زیندوو.</div>')
-
     with d_col:
         st.markdown('<div class="section-title">ئاراستەی گشتی دراو (Composite Signal)</div>', unsafe_allow_html=True)
-        lbl_b, cls_b, _ = bias_from_score(result["composite"])
         comp_box = f"""
-        <div style="background:#090e1a;border:1px solid rgba(226,183,20,0.18);border-radius:14px;padding:20px;text-align:center;">
-          <div style="font-size:11px;font-weight:800;letter-spacing:1px;color:#8a99ad;text-transform:uppercase;margin-bottom:8px;">ئاراستەی کورتخایەن و درێژخایەنی {selected}</div>
-          <div style="margin:12px 0;">{badge_html(result['composite'], large=True)}</div>
-          <div style="font-size:13px;font-weight:700;color:#ffffff;margin-top:8px;">Composite Score: <span style="color:#e2b714;">{result['composite']:+.3f}</span></div>
-          <div style="font-size:11px;color:#6b7280;margin-top:4px;">بەپێی ژماردنی تایمفریمەکانی: m/m • q/q • y/y • Trend 3m • Z-Score</div>
+        <div style="background:#090e1a;border:1px solid rgba(226,183,20,0.18);border-radius:14px;padding:24px;text-align:center;">
+          <div style="font-size:11px;font-weight:800;letter-spacing:1px;color:#8a99ad;text-transform:uppercase;margin-bottom:8px;">ئاراستەی مەکرۆی {selected}</div>
+          <div style="margin:16px 0;">{badge_html(result['composite'], large=True)}</div>
+          <div style="font-size:14px;font-weight:700;color:#ffffff;margin-top:8px;">Composite Score: <span style="color:#e2b714;">{result['composite']:+.3f}</span></div>
+          <div style="font-size:11px;color:#6b7280;margin-top:8px;line-height:1.6;">پشت بەستن بە هەموو داتاکانی هەڵئاوسان، بێکاری و سوودی بانکی</div>
         </div>
         """
         render_html(comp_box)
 
 
 # ============================================================
-# PAGE 2: 📋 کۆتا ئاستیەکان (LATEST LEVELS TABLE)
+# PAGE 2: 🥇 GOLD ANALYSIS & TECHNICAL SYSTEM
 # ============================================================
 
-def render_levels_page(fred_key: str) -> None:
+def render_gold_page(fred_key: str) -> None:
     render_top_header()
-
-    banner_html = """
+    header_html = """
     <div class="main-title-wrap">
-      <div class="main-gold-sub">FX MACRO &amp; GEOPOLITICAL DESK</div>
-      <h1 class="main-big-heading">سیستەمی پێشبینیکردن و شیکاری هەواڵەکان</h1>
-      <div class="main-breadcrumb">Macro Strength &amp; Predictive Engine &gt; کۆتا ئاستیەکان</div>
+      <div class="main-gold-sub">COMMODITY &amp; TECHNICAL INTELLIGENCE</div>
+      <h1 class="main-big-heading">شیکاری زێڕ (XAUUSD) — تەکنیکی، مەکرۆ و بەڕێوەبردنی ریسک</h1>
+      <div class="main-breadcrumb">Real Yield + USD Macro + Live RSI / EMA + Risk Calculator</div>
     </div>
     """
-    render_html(banner_html)
+    render_html(header_html)
 
-    c1, c2 = st.columns([3, 1])
+    # 1. Macro Signal (FRED)
+    gold_macro_score = 0.0
+    ry_val, ry_mom = 0.0, 0.0
+    usd_score = 0.0
+
+    if fred_key:
+        y_df  = fetch_fred_series(GOLD_YIELD_SERIES, fred_key, limit=36)
+        i_df  = fetch_fred_series(GOLD_INFLATION_EXP_SERIES, fred_key, limit=36)
+        usd_r = compute_currency_composite("USD دۆلار", fred_key)
+
+        if y_df is not None and i_df is not None:
+            merged = pd.merge(y_df, i_df, on="date", suffixes=("_y", "_i"))
+            merged["ry"] = merged["value_y"] - merged["value_i"]
+            ry_vals = merged["ry"].tail(24).tolist()
+            ry_mf = calc_multiframe(ry_vals, "rate")
+            ry_val = ry_vals[-1]
+            ry_mom = ry_mf["mom"] if ry_mf else 0.0
+
+            gold_ry = -ry_mf["composite"] if ry_mf else 0.0
+            usd_score = usd_r["composite"] if usd_r else 0.0
+            gold_usd = -usd_score
+            gold_macro_score = (0.55 * gold_ry) + (0.45 * gold_usd)
+
+    # 2. Technical Data (yfinance)
+    tech_df = fetch_technical_data("GC=F", period="1y", interval="1d")
+
+    if tech_df is None or tech_df.empty:
+        st.error("⚠️ نەتوانرا داتای زیندوی تەکنیکی زێڕ لە ڕێگەی yfinance وەربگیرێت.")
+        return
+
+    latest_row = tech_df.iloc[-1]
+    curr_price = float(latest_row["Close"])
+    rsi_val    = float(latest_row["RSI"])
+    ema50_val  = float(latest_row["EMA50"])
+    ema200_val = float(latest_row["EMA200"])
+    atr_val    = float(latest_row["ATR"])
+
+    # Technical Bias Decision
+    tech_bull = (curr_price > ema50_val) and (rsi_val > 50)
+    tech_bear = (curr_price < ema50_val) and (rsi_val < 50)
+    tech_status = "📈 Bullish" if tech_bull else ("📉 Bearish" if tech_bear else "⚖️ Neutral")
+    tech_color = "#10b981" if tech_bull else ("#ef4444" if tech_bear else "#9ca3af")
+
+    # Final Combined Bias
+    macro_bull = gold_macro_score > 0.15
+    final_verdict = "💎 STRONG BUY (مەکرۆ و تەکنیکی هاوڕان)" if (macro_bull and tech_bull) else \
+                    ("🔻 STRONG SELL (مەکرۆ و تەکنیکی هاوڕان)" if (gold_macro_score < -0.15 and tech_bear) else "⚠️ NEUTRAL / چاوەڕوانی")
+
+    # Overview Cards
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
-        selected = st.selectbox(
-            "کاتی داهاتووی بازاڕەکان (دراوەکە):",
-            list(CURRENCY_SERIES.keys()),
-            key="levels_cur",
-        )
+        st.metric("نرخی ئێستای زێڕ (Spot/Futures)", f"${curr_price:,.2f}", delta=f"{latest_row['Close'] - tech_df.iloc[-2]['Close']:+.2f}")
     with c2:
-        st.markdown("<div style='margin-top:28px;text-align:left;'><span style='background:#0b1220;border:1px solid rgba(255,255,255,0.08);padding:8px 14px;border-radius:10px;font-size:12px;font-weight:700;color:#e2b714;'>📅 2026-06-01</span></div>", unsafe_allow_html=True)
+        st.metric("Real Yield 10Y", f"{ry_val:.2f}%", delta=f"{ry_mom:+.2f}% m/m", delta_color="inverse")
+    with c3:
+        st.metric("RSI (14) ئاستی بازاڕ", f"{rsi_val:.1f}", delta="Overbought" if rsi_val > 70 else ("Oversold" if rsi_val < 30 else "Normal"))
+    with c4:
+        st.markdown(f"""
+        <div style="background:#090e1a;border:1px solid rgba(226,183,20,0.2);border-radius:14px;padding:10px 14px;text-align:center;">
+          <div style="font-size:10px;font-weight:800;color:#8a99ad;">بڕیاری گشتی سیستەم</div>
+          <div style="font-size:12px;font-weight:800;color:#e2b714;margin-top:4px;">{final_verdict}</div>
+        </div>
+        """, unsafe_allow_html=True)
 
-    if not fred_key:
-        st.info("🔑 FRED API Key بنووسە لە سایدبار بۆ بارکردنی داتاکان.")
-        return
+    st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
 
-    with st.spinner("داتاکانی مەکڕۆ دەهێنرێن..."):
-        result = compute_currency_composite(selected, fred_key)
+    # Chart & Technical Details
+    g_col, calc_col = st.columns([1.4, 1])
 
-    if not result:
-        st.warning("⚠️ داتا نەدۆزرایەوە.")
-        return
+    with g_col:
+        st.markdown('<div class="section-title">چارتی کاندڵستیک و نیشاندەرە تەکنیکییەکان (Daily)</div>', unsafe_allow_html=True)
+        fig_candle = make_gold_candlestick(tech_df)
+        st.plotly_chart(fig_candle, use_container_width=True, config={"displayModeBar": False})
 
-    render_reference_table_html(result["rows"])
+    with calc_col:
+        st.markdown('<div class="section-title">🧮 ژمێرەری قەبارەی لۆت و بەڕێوەبردنی ریسک</div>', unsafe_allow_html=True)
+
+        with st.container():
+            render_html('<div class="calc-card">')
+            col_b1, col_b2 = st.columns(2)
+            with col_b1:
+                account_bal = st.number_input("سەرمایەی هەژمار ($):", min_value=100.0, value=5000.0, step=500.0)
+            with col_b2:
+                risk_percent = st.slider("ڕێژەی ریسک (%):", min_value=0.5, max_value=5.0, value=1.0, step=0.5)
+
+            trade_dir = st.radio("ئاراستەی مامەڵە:", ["BUY", "SELL"], horizontal=True)
+
+            risk_dollars = account_bal * (risk_percent / 100.0)
+            sl_distance = atr_val * 1.5
+
+            if trade_dir == "BUY":
+                sl_price = curr_price - sl_distance
+                tp1_price = curr_price + (sl_distance * 1.5)
+                tp2_price = curr_price + (sl_distance * 2.5)
+            else:
+                sl_price = curr_price + sl_distance
+                tp1_price = curr_price - (sl_distance * 1.5)
+                tp2_price = curr_price - (sl_distance * 2.5)
+
+            # بۆ زێڕ: هەر 1 لۆت = 100 ئۆنسە (واتە $1 گۆڕان = $100 قازانج/زیان بۆ 1 لۆتی تەواو)
+            calc_lot = risk_dollars / (sl_distance * 100) if sl_distance > 0 else 0.01
+
+            st.markdown(f"""
+            <div style="margin-top:10px;font-size:12px;color:#8a99ad;line-height:1.8;">
+              <div>🔹 بڕی مەترسی (Risk $): <b style="color:#ef4444;">${risk_dollars:,.2f}</b></div>
+              <div>🔹 ATR (14) مەودای ڕۆژانە: <b style="color:#fff;">${atr_val:.2f}</b></div>
+              <div>🔹 Stop Loss (1.5x ATR): <b style="color:#ef4444;">${sl_price:,.2f}</b></div>
+              <div>🔹 Take Profit 1 (1:1.5): <b style="color:#10b981;">${tp1_price:,.2f}</b></div>
+              <div>🔹 Take Profit 2 (1:2.5): <b style="color:#10b981;">${tp2_price:,.2f}</b></div>
+              <div style="margin-top:8px;padding:8px;background:rgba(226,183,20,0.1);border:1px solid #e2b714;border-radius:8px;text-align:center;">
+                قەبارەی لۆتی پێشنیارکراو: <b style="font-size:16px;color:#e2b714;">{calc_lot:.2f} Lot</b>
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
+            render_html('</div>')
 
 
 # ============================================================
-# PAGE 3: 📅 MONTHLY OUTLOOK (EXPECTED DIRECTION LABELS)
+# PAGE 3: 📅 MONTHLY OUTLOOK (CALENDAR)
 # ============================================================
 
 def render_monthly(fred_key: str) -> None:
     render_top_header()
     today = date.today()
-    month_ku = {1:"کانوونی دووەم",2:"شوبات",3:"ئازار",4:"نیسان",
-                5:"ئایار",6:"حوزەیران",7:"تەممووز",8:"ئاب",
-                9:"ئەیلوول",10:"تشرینی یەکەم",11:"تشرینی دووەم",12:"کانوونی یەکەم"}
+    month_ku = {1:"کانوونی دووەم",2:"شوبات",3:"ئازار",4:"نیسان",5:"ئایار",6:"حوزەیران",7:"تەممووز",8:"ئاب",9:"ئەیلوول",10:"تشرینی یەکەم",11:"تشرینی دووەم",12:"کانوونی یەکەم"}
 
     header_html = f"""
     <div class="main-title-wrap">
@@ -1496,213 +795,40 @@ def render_monthly(fred_key: str) -> None:
     selected = st.radio("دراوەکە:", list(MONTHLY_CALENDAR.keys()), horizontal=True, key="month_cur")
 
     if not fred_key:
-        st.info("🔑 FRED API Key بنووسە بۆ بارکردنی پێشبینی و داتاکانی مانگ.")
+        st.info("🔑 FRED API Key بنووسە بۆ بارکردنی پێشبینییەکان.")
         return
 
-    indicators = CURRENCY_SERIES.get(selected, {})
     events = []
-
     for ev in MONTHLY_CALENDAR.get(selected, []):
-        quarterly = ev.get("quarterly", False)
-        is_this   = not (quarterly and today.month not in [1, 4, 7, 10])
         try:
             max_d = cal_lib.monthrange(today.year, today.month)[1]
             rel_d = date(today.year, today.month, min(ev["day"], max_d))
         except ValueError:
             continue
 
-        is_released = today >= rel_d and is_this
+        is_released = today >= rel_d
         days_until  = (rel_d - today).days
-
-        mf = None
-        meta = indicators.get(ev["name"])
-        if meta and fred_key and is_this:
-            df2 = fetch_fred_series(meta["series"], fred_key, limit=36)
-            if df2 is not None and not df2.empty:
-                mf = calc_multiframe(df2["value"].tolist(), meta["category"])
-
-        events.append({**ev, "release_date": rel_d, "is_released": is_released,
-                        "is_this": is_this, "days_until": days_until, "mf": mf})
+        events.append({**ev, "release_date": rel_d, "is_released": is_released, "days_until": days_until})
 
     events.sort(key=lambda x: x["day"])
-    released  = [e for e in events if e["is_released"]  and e["is_this"]]
-    upcoming  = [e for e in events if not e["is_released"] and e["is_this"]]
-
-    def render_event_card(ev, card_cls, day_cls):
-        mf  = ev.get("mf")
-        pos = ev.get("category", "inflation") != "labor_bad"
-        lbl2, cls2, _ = bias_from_score(mf["composite"] if mf else 0)
-        imt = f"impact-{ev['impact']}"
-
-        tf_line = ""
-        if mf:
-            mom_s = f"<span style='color:{'#10b981' if (mf['mom']>0)==pos else '#ef4444'}; font-weight:700;'>{'▲' if mf['mom']>0 else '▼'} {abs(mf['mom']):.2f}%</span>"
-            qoq_s = f"<span style='color:{'#10b981' if ((mf.get('qoq') or 0)>0)==pos else '#ef4444'}; font-weight:700;'>{abs(mf.get('qoq') or 0):.2f}%</span>" if mf.get('qoq') is not None else "—"
-            yoy_s = f"<span style='color:{'#10b981' if ((mf.get('yoy') or 0)>0)==pos else '#ef4444'}; font-weight:700;'>{abs(mf.get('yoy') or 0):.2f}%</span>" if mf.get('yoy') is not None else "—"
-            tf_line = f"<div style='margin-top:6px;font-size:11.5px;color:#8a99ad;'>m/m: {mom_s} &nbsp;|&nbsp; q/q: {qoq_s} &nbsp;|&nbsp; y/y: {yoy_s}</div>"
-
-        days_badge = ""
-        if not ev["is_released"] and ev["is_this"]:
-            if ev["days_until"] <= 3:
-                days_badge = f"<span style='color:#f59e0b;font-weight:800;font-size:11px;'>⚡ ماوە {ev['days_until']} ڕۆژ</span>"
-            else:
-                days_badge = f"<span style='color:#8a99ad;font-size:11px;'>ماوە {ev['days_until']} ڕۆژ</span>"
-
-        # Requested wording: ئاراستەی چاوەڕوانکراو
-        badge_title = f"📊 ئاراستەی چاوەڕوانکراو: {lbl2.split()[1]}" if not ev['is_released'] else lbl2
-
-        html_card = f"""
-        <div class="cal-card {card_cls}">
-          <div class="cal-day-badge {day_cls}">{ev['day']:02d}</div>
-          <div class="cal-content">
-            <div style="display:flex;align-items:center;gap:10px;justify-content:space-between;">
-              <div style="display:flex;align-items:center;gap:8px;">
-                <span class="cal-name">{ev['name']}</span>
-                <span class="cal-impact-badge {imt}">{ev['impact'].upper()}</span>
-              </div>
-              <div>{days_badge}</div>
-            </div>
-            <div class="cal-hint">📌 {ev['hint']}</div>
-            {tf_line}
-            <div style="margin-top:8px;">
-              <span class="badge {cls2}">{badge_title}</span>
-            </div>
+    for ev in events:
+        status_color = "#10b981" if ev["is_released"] else ("#f59e0b" if 0 <= ev["days_until"] <= 3 else "#6b7280")
+        card_html = f"""
+        <div style="background:#090e1a;border:1px solid rgba(255,255,255,0.06);border-right:4px solid {status_color};border-radius:12px;padding:12px 16px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;">
+          <div>
+            <span style="font-weight:700;color:#fff;">{ev['day']:02d}ی مانگ &nbsp;|&nbsp; {ev['name']}</span>
+            <span style="font-size:11px;color:#8a99ad;margin-right:10px;">({ev['hint']})</span>
+          </div>
+          <div style="font-size:12px;font-weight:700;color:{status_color};">
+            {'✅ بڵاوکراوەتەوە' if ev['is_released'] else f'⏳ ماوە {ev["days_until"]} ڕۆژ'}
           </div>
         </div>
         """
-        render_html(html_card)
-
-    if released:
-        st.markdown('<div class="section-title">✅ بڵاوکراوەتەوە — Released Events</div>', unsafe_allow_html=True)
-        for ev in released:
-            render_event_card(ev, "released", "released")
-
-    if upcoming:
-        st.markdown('<div class="section-title">🔮 هەواڵەکانی داهاتوو — Upcoming Forecasts</div>', unsafe_allow_html=True)
-        for ev in upcoming:
-            cc = "upcoming-soon" if 0 <= ev["days_until"] <= 3 else "upcoming"
-            render_event_card(ev, cc, cc)
+        render_html(card_html)
 
 
 # ============================================================
-# PAGE 4: 🥇 GOLD ANALYSIS (AUTO-SCALED REAL YIELD CHART)
-# ============================================================
-
-def render_gold_page(fred_key: str) -> None:
-    render_top_header()
-    header_html = """
-    <div class="main-title-wrap">
-      <div class="main-gold-sub">COMMODITY &amp; SAFE-HAVEN INTELLIGENCE</div>
-      <h1 class="main-big-heading">شیکاری زێڕ (XAUUSD) — Real Yield &amp; USD</h1>
-      <div class="main-breadcrumb">Real Yield 10Y (DGS10 - T10YIE) + USD Multi-Timeframe Composite</div>
-    </div>
-    """
-    render_html(header_html)
-
-    if not fred_key:
-        st.info("🔑 FRED API Key بنووسە.")
-        return
-
-    with st.spinner("داتاکانی زێڕ و سوودی ڕاستەقینە شیکاری دەکرێن..."):
-        y_df   = fetch_fred_series(GOLD_YIELD_SERIES, fred_key, limit=36)
-        i_df   = fetch_fred_series(GOLD_INFLATION_EXP_SERIES, fred_key, limit=36)
-        usd_r  = compute_currency_composite("USD دۆلار", fred_key)
-
-    if y_df is None or i_df is None:
-        st.warning("⚠️ نەتوانرا داتاکانی DGS10 یان T10YIE بهێنرێت.")
-        return
-
-    merged = pd.merge(y_df, i_df, on="date", suffixes=("_y", "_i"))
-    merged["ry"] = merged["value_y"] - merged["value_i"]
-    ry_vals = merged["ry"].tail(24).tolist()
-    ry_mf   = calc_multiframe(ry_vals, "rate")
-
-    gold_ry   = -ry_mf["composite"]  if ry_mf  else 0.0
-    gold_usd  = -usd_r["composite"]  if usd_r  else 0.0
-    gold_score = 0.55 * gold_ry + 0.45 * gold_usd
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.metric("Real Yield 10Y", f"{ry_vals[-1]:.2f}%", delta=f"{ry_mf['mom']:+.2f}% m/m" if ry_mf else None, delta_color="inverse")
-    with c2:
-        st.metric("USD Composite Score", f"{usd_r['composite']:+.3f}" if usd_r else "0.00")
-    with c3:
-        gold_badge_html = f"""
-        <div style="background:#090e1a;border:1px solid rgba(226,183,20,0.2);border-radius:14px;padding:12px;text-align:center;">
-          <div style="font-size:10px;font-weight:800;letter-spacing:1px;color:#8a99ad;text-transform:uppercase;margin-bottom:6px;">ئاراستەی گشتی زێڕ</div>
-          {badge_html(gold_score, large=True)}
-          <div style="font-size:11px;color:#6b7280;margin-top:6px;">Gold Signal Score: <b style="color:#e2b714;">{gold_score:+.3f}</b></div>
-        </div>
-        """
-        render_html(gold_badge_html)
-
-    st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
-    st.markdown('<div class="section-title">نموداری گۆڕانی سوودی ڕاستەقینە (Real Yield &amp; Inflation Expectations)</div>', unsafe_allow_html=True)
-
-    ry_df = merged[["date", "ry"]].rename(columns={"ry": "value"})
-    exp_df = merged[["date", "value_i"]].rename(columns={"value_i": "value"})
-    fig = make_gold_dual_chart(ry_df, exp_df)
-    if fig:
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
-
-# ============================================================
-# PAGE 5: 📰 هەواڵە جیهانییەکان
-# ============================================================
-
-def render_news_page(news_key: str) -> None:
-    render_top_header()
-    header_html = """
-    <div class="main-title-wrap">
-      <div class="main-gold-sub">GLOBAL GEOPOLITICAL &amp; MACRO FEED</div>
-      <h1 class="main-big-heading">هەواڵە جیهانییە خێراکان</h1>
-      <div class="main-breadcrumb">هەواڵی گرنگی بانکە ناوەندییەکان، نەوت، جەنگ، و باجە گومرگییەکان</div>
-    </div>
-    """
-    render_html(header_html)
-
-    cat = st.radio("کاتیگۆری:", [
-        "💣 Geopolitics & War", "🛢️ Energy & Oil",
-        "🏛️ Central Banks",     "🤝 Trade Wars",
-    ], horizontal=True, label_visibility="collapsed")
-
-    kw = {
-        "💣 Geopolitics & War": "war OR military OR conflict OR sanctions",
-        "🛢️ Energy & Oil":      "oil OR opec OR crude OR energy crisis",
-        "🏛️ Central Banks":     "fed OR central bank OR interest rates OR inflation",
-        "🤝 Trade Wars":        "tariffs OR trade war OR import tax",
-    }
-
-    if not news_key:
-        st.info("🔑 NewsAPI Key لە سایدبار بنووسە بۆ خوێندنەوەی هەواڵەکان.")
-        return
-
-    with st.spinner("هەواڵەکان دەهێنرێن..."):
-        arts = fetch_news(kw[cat], news_key)
-
-    if not arts:
-        st.info("هیچ هەواڵێک نەدۆزرایەوە.")
-        return
-
-    for art in arts:
-        title  = art.get("title", "—")
-        source = (art.get("source") or {}).get("name", "")
-        pub    = (art.get("publishedAt") or "")[:10]
-        desc   = art.get("description", "") or ""
-        link   = art.get("url", "#")
-        card = f"""
-        <div style="background:#090e1a;border:1px solid rgba(255,255,255,0.06);border-radius:14px;padding:16px 18px;margin-bottom:12px;">
-          <div style="color:#e2b714;font-size:14px;font-weight:700;line-height:1.5;margin-bottom:4px;">{title}</div>
-          <div style="font-size:11px;color:#8a99ad;margin-bottom:8px;">📰 {source} &nbsp;•&nbsp; 🕒 {pub}</div>
-          <div style="font-size:12.5px;color:#d1d5db;line-height:1.6;margin-bottom:10px;">{desc}</div>
-          <a href="{link}" target="_blank" style="color:#10b981;font-size:12px;font-weight:700;text-decoration:none;">خوێندنەوەی سەرچاوە ↗</a>
-        </div>
-        """
-        render_html(card)
-
-
-# ============================================================
-# MAIN APPLICATION CONTROLLER
+# MAIN ROUTER
 # ============================================================
 
 def main() -> None:
@@ -1720,16 +846,12 @@ def main() -> None:
         """
         render_html(brand_html)
 
-        # Removed duplicate tab — exactly 6 unique pages
         page = st.radio(
             "دەستەی بەڕێوەبردن:",
             [
                 "🏠 سەرەکی",
-                "📋 کۆتا ئاستیەکان",
-                "🥇 Gold (XAUUSD) Analysis",
+                "🥇 Gold (XAUUSD) & Risk Desk",
                 "📅 Monthly Outlook",
-                "📰 هەواڵە جیهانییەکان",
-                "📊 Impact Analysis on Currencies",
                 "⚙️ ڕێکخستنەکان",
             ],
             label_visibility="collapsed",
@@ -1740,43 +862,20 @@ def main() -> None:
         fred_key     = st.text_input("FRED API Key:", type="password", key="fred_key")
         news_api_key = st.text_input("NewsAPI Key:",  type="password", key="news_key")
 
-        coffee_html = """
-        <div class="sidebar-coffee-card">
-          <div class="scc-icon">☕</div>
-          <div class="scc-title">FX Macro Desk</div>
-          <div class="scc-sub">Professional Market Insights</div>
-        </div>
-        """
-        render_html(coffee_html)
-
-    # Page Routing
     if page == "🏠 سەرەکی":
         render_dashboard(fred_key, news_api_key)
-    elif page == "📋 کۆتا ئاستیەکان":
-        render_levels_page(fred_key)
-    elif page == "🥇 Gold (XAUUSD) Analysis":
+    elif page == "🥇 Gold (XAUUSD) & Risk Desk":
         render_gold_page(fred_key)
     elif page == "📅 Monthly Outlook":
         render_monthly(fred_key)
-    elif page == "📰 هەواڵە جیهانییەکان":
-        render_news_page(news_api_key)
-    elif page == "📊 Impact Analysis on Currencies":
-        render_top_header()
-        st.markdown('<div class="section-title">💡 کاریگەری ڕووداوە جیهانییەکان لەسەر دراوەکان (Global Impact Matrix)</div>', unsafe_allow_html=True)
-        render_impact_matrix_html()
     elif page == "⚙️ ڕێکخستنەکان":
         render_top_header()
-        st.markdown('<div class="section-title">⚙️ ڕێکخستنەکانی سیستەم و API</div>', unsafe_allow_html=True)
-        st.success("✅ هەموو مۆدیوولەکانی مەکڕۆ و FRED API بە سەرکەوتوویی ئامادەن.")
+        st.success("✅ سیستەم ئامادەیە بە تەواوی مۆدیوولەکانی yfinance, Plotly, و FRED.")
 
-    # Global Footer matching screenshot 3
     footer_html = f"""
     <div class="app-footer">
-      <div>© 2026 FX Macro &amp; Geopolitical Desk &nbsp;|&nbsp; Professional Market Intelligence</div>
-      <div class="live-status">
-        <span class="live-dot"></span>
-        <span>Live Market Data &nbsp; {datetime.now().strftime('%H:%M:%S')}</span>
-      </div>
+      <div>© 2026 FX Macro &amp; Geopolitical Desk &nbsp;|&nbsp; Professional Technical &amp; Macro Intelligence</div>
+      <div class="live-status"><span class="live-dot"></span><span>Live System &nbsp; {datetime.now().strftime('%H:%M:%S')}</span></div>
     </div>
     """
     render_html(footer_html)
