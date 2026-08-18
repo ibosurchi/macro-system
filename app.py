@@ -1,6 +1,6 @@
 """
-FX Macro & News Intelligence Desk — v8 Ultimate Mobile & Desktop
-سیستەمی پێشبینیکردن، شیکاری مەکرۆ و زێڕ — تایبەت بە مۆبایل و دێسکتۆپ
+FX Macro & News Intelligence Desk — v8.1 Production
+سیستەمی پێشبینیکردن، شیکاری مەکرۆ و زێڕ
 """
 
 import streamlit as st
@@ -8,7 +8,7 @@ import pandas as pd
 import numpy as np
 import requests
 import plotly.graph_objects as go
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 import calendar as cal_lib
 
 st.set_page_config(
@@ -27,7 +27,7 @@ FRED_API_KEY = "8e153c7f6941848ffe00388ae93c1d73"
 NEWS_API_KEY = "70fc541920ca43e69ee716ad442405fb"
 
 # ============================================================
-# CURRENCY & METRIC CONFIGURATIONS (ALL TESTED & UPDATED)
+# CURRENCY & METRIC CONFIGURATIONS (ALL ACTIVE & UPDATED FRED SERIES)
 # ============================================================
 
 CURRENCY_SERIES = {
@@ -46,32 +46,32 @@ CURRENCY_SERIES = {
     },
     "EUR یۆرۆ": {
         "CPI":           {"series": "CP0000EZ19M086NEST", "category": "inflation",  "weight": 1.8, "impact": "high"},
-        "Core CPI":      {"series": "CPHPTT01EZM659N",    "category": "inflation",  "weight": 2.0, "impact": "high"},
-        "Production":    {"series": "EA19PRINTO01IXOBSAM","category": "growth",     "weight": 1.2, "impact": "medium"},
-        "Unemployment":  {"series": "LRHUTTTTEZM156N",    "category": "labor_bad",  "weight": 1.5, "impact": "high"},
+        "Core CPI":      {"series": "CP0000EZ00M086NEST", "category": "inflation",  "weight": 2.0, "impact": "high"},
+        "Production":    {"series": "PRINTO01EZM661S",    "category": "growth",     "weight": 1.2, "impact": "medium"},
+        "Unemployment":  {"series": "LRHUTTTTEZM156S",    "category": "labor_bad",  "weight": 1.5, "impact": "high"},
         "Interest Rate": {"series": "ECBDFR",             "category": "rate",       "weight": 2.0, "impact": "high"},
         "GDP":           {"series": "CLVMNACSCAB1GQEA19", "category": "growth",     "weight": 1.5, "impact": "high"},
     },
     "GBP پاوەند": {
-        "CPI":           {"series": "GBRCPIALLMINMEI",  "category": "inflation",  "weight": 1.8, "impact": "high"},
-        "Core CPI":      {"series": "GBRCP01IXOBSAM",  "category": "inflation",  "weight": 2.0, "impact": "high"},
-        "Production":    {"series": "GBRPROINDMISMEI",  "category": "growth",     "weight": 1.2, "impact": "medium"},
-        "Unemployment":  {"series": "LRUN64TTGBM156S",  "category": "labor_bad",  "weight": 1.5, "impact": "high"},
-        "Interest Rate": {"series": "INTDSRGBM193N",    "category": "rate",       "weight": 1.8, "impact": "high"},
+        "CPI":           {"series": "GBRCPIALLMINMEI",    "category": "inflation",  "weight": 1.8, "impact": "high"},
+        "Core CPI":      {"series": "GBRCPICORMINMEI",    "category": "inflation",  "weight": 2.0, "impact": "high"},
+        "Production":    {"series": "GBRPROINDMISMEI",    "category": "growth",     "weight": 1.2, "impact": "medium"},
+        "Unemployment":  {"series": "LMUNRRTTGBM156S",    "category": "labor_bad",  "weight": 1.5, "impact": "high"},
+        "Interest Rate": {"series": "BOERUKM",            "category": "rate",       "weight": 1.8, "impact": "high"},
     },
     "CAD کەنەدی": {
-        "CPI":           {"series": "CANCPIALLMINMEI", "category": "inflation",  "weight": 1.8, "impact": "high"},
-        "Core CPI":      {"series": "CANCP01IXOBSAM",  "category": "inflation",  "weight": 2.0, "impact": "high"},
-        "Employment":    {"series": "LFEMTTTTCAM647S", "category": "labor_good", "weight": 1.5, "impact": "high"},
-        "Unemployment":  {"series": "LRUN64TTCAM156S", "category": "labor_bad",  "weight": 1.5, "impact": "high"},
-        "Interest Rate": {"series": "INTDSRCAM193N",   "category": "rate",       "weight": 1.8, "impact": "high"},
+        "CPI":           {"series": "CANCPIALLMINMEI",    "category": "inflation",  "weight": 1.8, "impact": "high"},
+        "Core CPI":      {"series": "CANCPICORMINMEI",    "category": "inflation",  "weight": 2.0, "impact": "high"},
+        "Employment":    {"series": "LFEMTTTTCAM647S",    "category": "labor_good", "weight": 1.5, "impact": "high"},
+        "Unemployment":  {"series": "LRUN64TTCAM156S",    "category": "labor_bad",  "weight": 1.5, "impact": "high"},
+        "Interest Rate": {"series": "IRSTCB01CAM156N",    "category": "rate",       "weight": 1.8, "impact": "high"},
     },
     "JPY یەن": {
-        "CPI":           {"series": "JPNCPIALLMINMEI", "category": "inflation",  "weight": 1.8, "impact": "high"},
-        "Core CPI":      {"series": "JPNCP01IXOBSAM",  "category": "inflation",  "weight": 2.0, "impact": "high"},
-        "Production":    {"series": "JPNPROINDMISMEI", "category": "growth",     "weight": 1.2, "impact": "medium"},
-        "Unemployment":  {"series": "LRUN64TTJPM156S", "category": "labor_bad",  "weight": 1.5, "impact": "medium"},
-        "Interest Rate": {"series": "INTDSRJPM193N",   "category": "rate",       "weight": 2.0, "impact": "high"},
+        "CPI":           {"series": "JPNCPIALLMINMEI",    "category": "inflation",  "weight": 1.8, "impact": "high"},
+        "Core CPI":      {"series": "JPNCPICORMINMEI",    "category": "inflation",  "weight": 2.0, "impact": "high"},
+        "Production":    {"series": "JPNPROINDMISMEI",    "category": "growth",     "weight": 1.2, "impact": "medium"},
+        "Unemployment":  {"series": "LRUN64TTJPM156S",    "category": "labor_bad",  "weight": 1.5, "impact": "medium"},
+        "Interest Rate": {"series": "IRSTCB01JPM156N",    "category": "rate",       "weight": 2.0, "impact": "high"},
     },
 }
 
@@ -140,7 +140,7 @@ MONTHLY_CALENDAR = {
 }
 
 # ============================================================
-# MOBILE & DESKTOP ULTRA-RESPONSIVE CSS
+# MOBILE & DESKTOP CSS
 # ============================================================
 
 def render_html(html_str: str) -> None:
@@ -162,7 +162,6 @@ def inject_css() -> None:
     max-width: 100% !important;
 }
 
-/* Header & Tickers */
 .top-header-bar {
     display: flex; align-items: center; justify-content: space-between;
     padding: 10px 14px; background: #090e1a;
@@ -174,14 +173,12 @@ def inject_css() -> None:
 .top-tickers { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .ticker-pill { display: inline-flex; align-items: center; gap: 5px; background: #0d1527; border: 1px solid rgba(255, 255, 255, 0.05); padding: 4px 8px; border-radius: 8px; font-size: 10.5px; font-weight: 600; color: #9ca3af; }
 .ticker-up { color: #10b981; font-weight: 700; }
-.ticker-down { color: #ef4444; font-weight: 700; }
 
 .main-title-wrap { text-align: center; padding: 6px 0 16px 0; }
 .main-gold-sub { font-size: 10px; font-weight: 800; letter-spacing: 1.5px; color: #e2b714; text-transform: uppercase; margin-bottom: 4px; }
 .main-big-heading { font-size: 20px; font-weight: 900; color: #ffffff; margin: 0 0 4px 0; }
 .main-breadcrumb { font-size: 11px; color: #8a99ad; font-weight: 500; }
 
-/* Responsive Card Grid */
 .metric-card {
     background: #090e1a; border: 1px solid rgba(255, 255, 255, 0.06);
     border-radius: 14px; padding: 14px; margin-bottom: 10px;
@@ -194,7 +191,6 @@ def inject_css() -> None:
 .mc-change { font-size: 11px; font-weight: 700; }
 .mc-date { font-size: 9.5px; color: #4b5563; margin-top: 4px; }
 
-/* Table styling with horizontal scroll on mobile */
 .ref-table-card {
     background: #090e1a; border: 1px solid rgba(255, 255, 255, 0.07);
     border-radius: 14px; overflow-x: auto; -webkit-overflow-scrolling: touch;
@@ -211,7 +207,6 @@ def inject_css() -> None:
 .ref-badge-gray { color: #6b7280; font-weight: 700; }
 .ref-table-footer { padding: 8px 12px; font-size: 10px; color: #8a99ad; background: #080c16; }
 
-/* Calendar cards */
 .cal-card { display: flex; align-items: center; gap: 12px; background: #090e1a; border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 12px; padding: 10px 14px; margin-bottom: 8px; }
 .cal-card.released { border-right: 4px solid #10b981; }
 .cal-card.upcoming { border-right: 4px solid #374151; }
@@ -224,13 +219,11 @@ def inject_css() -> None:
 .cal-name { font-weight: 800; color: #ffffff; font-size: 13px; }
 .cal-hint { font-size: 10.5px; color: #8a99ad; margin-top: 2px; }
 
-/* Radio buttons mobile friendly */
 div[data-testid="stRadio"] div[role="radiogroup"] { display: flex !important; gap: 6px !important; flex-wrap: wrap !important; }
 div[data-testid="stRadio"] div[role="radiogroup"] label { background: #090e1a !important; border: 1px solid rgba(255, 255, 255, 0.08) !important; border-radius: 8px !important; padding: 5px 10px !important; color: #8a99ad !important; font-size: 11.5px !important; cursor: pointer !important; }
 div[data-testid="stRadio"] div[role="radiogroup"] [aria-checked="true"] { background: rgba(226, 183, 20, 0.12) !important; border-color: #e2b714 !important; color: #e2b714 !important; font-weight: 700 !important; }
 div[data-testid="stRadio"] input[type="radio"], div[data-testid="stRadio"] label > div:first-child { display: none !important; }
 
-/* Badges */
 .badge { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; }
 .badge-bullish { background: rgba(16, 185, 129, 0.12); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.2); }
 .badge-bearish { background: rgba(239, 68, 68, 0.12); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.2); }
@@ -258,7 +251,7 @@ header[data-testid="stHeader"] { background: transparent !important; }
 
 
 # ============================================================
-# DATA FETCHING ENGINE (WITH STALENESS FILTER)
+# DATA FETCHING ENGINE
 # ============================================================
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -307,7 +300,7 @@ def calc_multiframe(vals: list, dates: list, category: str) -> dict | None:
     is_stale = False
     try:
         last_dt = datetime.strptime(last_date_str, "%Y-%m-%d")
-        if (datetime.now() - last_dt).days > 180:  # ئەگەر داتاکە زیاتر لە ٦ مانگ کۆن بێت
+        if (datetime.now() - last_dt).days > 240:  # ئەگەر داتاکە لە ٨ مانگ کۆنتر بێت
             is_stale = True
     except Exception:
         pass
@@ -379,7 +372,6 @@ def compute_currency_composite(currency: str, fred_key: str):
             "date":      dates[-1],
             **mf,
         })
-        # داتای زۆر کۆن لە نمرەی گشتیدا کێشی کەم دەکرێتەوە
         if not mf["is_stale"]:
             weighted.append(mf["composite"] * meta["weight"])
 
