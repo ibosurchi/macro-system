@@ -1,7 +1,7 @@
 """
-FX Macro & News Intelligence Desk — v7 Pro
-سیستەمی پێشبینیکردن، شیکاری هەواڵەکان و سیستەمی تەکنیکی زێڕ
-Professional Multi-Timeframe Macro, Geopolitical & Technical Execution Platform
+FX Macro & News Intelligence Desk — v6 Pro
+سیستەمی پێشبینیکردن و شیکاری هەواڵەکان
+Professional Multi-Timeframe Macro & Geopolitical Intelligence Platform
 """
 
 import streamlit as st
@@ -9,12 +9,11 @@ import pandas as pd
 import numpy as np
 import requests
 import plotly.graph_objects as go
-import yfinance as yf
 from datetime import datetime, date
 import calendar as cal_lib
 
 st.set_page_config(
-    page_title="FX Macro & Technical Desk",
+    page_title="FX Macro & Geopolitical Desk",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -23,7 +22,13 @@ st.set_page_config(
 REQUEST_TIMEOUT = 10
 
 # ============================================================
-# CONSTANTS & METRICS CONFIGURATION
+# FIXED API KEYS CONFIGURATION
+# ============================================================
+FRED_API_KEY = "8e153c7f6941848ffe00388ae93c1d73"
+NEWS_API_KEY = "70fc541920ca43e69ee716ad442405fb"
+
+# ============================================================
+# CONSTANTS & OFFICIAL METRICS CONFIGURATION (FRED SERIES)
 # ============================================================
 
 CURRENCY_SERIES = {
@@ -215,19 +220,41 @@ section[data-testid="stSidebar"] div[data-testid="stRadio"] input[type="radio"],
 .ref-badge-gray { color: #6b7280; font-weight: 700; }
 .ref-table-footer { padding: 12px 18px; font-size: 11px; color: #8a99ad; background: #080c16; border-top: 1px solid rgba(255, 255, 255, 0.04); }
 
+.matrix-card { background: #090e1a; border: 1px solid rgba(255, 255, 255, 0.07); border-radius: 16px; overflow: hidden; box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5); }
+.matrix-table { width: 100%; border-collapse: collapse; font-size: 13px; direction: rtl; text-align: right; }
+.matrix-table thead th { background: #0c1322; color: #e2b714; padding: 14px 18px; font-weight: 700; font-size: 12.5px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
+.matrix-table tbody tr { border-bottom: 1px solid rgba(255, 255, 255, 0.04); }
+.matrix-table tbody tr:hover { background: rgba(226, 183, 20, 0.03); }
+.matrix-table td { padding: 14px 18px; color: #e5e7eb; vertical-align: middle; line-height: 1.5; }
+.matrix-pill-wrap { display: flex; gap: 6px; flex-wrap: wrap; }
+.pill-bull { background: rgba(16, 185, 129, 0.14); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); padding: 3px 10px; border-radius: 6px; font-weight: 700; font-size: 11px; }
+.pill-bear { background: rgba(239, 68, 68, 0.14); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); padding: 3px 10px; border-radius: 6px; font-weight: 700; font-size: 11px; }
+
 .metric-card { background: #090e1a; border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 16px; padding: 16px 18px; height: 100%; }
 .metric-card:hover { border-color: rgba(226, 183, 20, 0.25); }
 .mc-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .mc-icon-wrap { width: 34px; height: 34px; border-radius: 9px; background: rgba(226, 183, 20, 0.08); display: flex; align-items: center; justify-content: center; font-size: 16px; }
-.mc-cat { font-size: 9px; font-weight: 800; letter-spacing: 1px; color: #8a99ad; padding: 2px 8px; border-radius: 999px; background: rgba(255, 255, 255, 0.04); }
+.mc-cat { font-size: 9px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; color: #8a99ad; padding: 2px 8px; border-radius: 999px; background: rgba(255, 255, 255, 0.04); }
 .mc-name { font-size: 13px; font-weight: 700; color: #8a99ad; margin: 4px 0 2px; }
 .mc-value { font-size: 24px; font-weight: 800; color: #ffffff; line-height: 1.1; margin-bottom: 4px; }
 .mc-change { font-size: 12px; font-weight: 700; }
 .mc-secondary { font-size: 11px; color: #8a99ad; margin-top: 2px; }
 .mc-date { font-size: 10px; color: #4b5563; margin-top: 6px; }
 
-.tech-box { background: #090e1a; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 14px; padding: 16px; height: 100%; }
-.calc-card { background: #0b1220; border: 1px solid rgba(226, 183, 20, 0.2); border-radius: 14px; padding: 18px; }
+.cal-card { display: flex; align-items: center; gap: 16px; background: #090e1a; border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 14px; padding: 14px 18px; margin-bottom: 10px; }
+.cal-card.released { border-right: 4px solid #10b981; }
+.cal-card.upcoming { border-right: 4px solid #374151; }
+.cal-card.upcoming-soon { border-right: 4px solid #f59e0b; }
+.cal-day-badge { min-width: 44px; height: 44px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 16px; flex-shrink: 0; }
+.cal-day-badge.released { background: rgba(16, 185, 129, 0.12); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.2); }
+.cal-day-badge.upcoming { background: #0c1322; color: #8a99ad; border: 1px solid rgba(255, 255, 255, 0.05); }
+.cal-day-badge.upcoming-soon { background: rgba(245, 158, 11, 0.12); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.2); }
+.cal-content { flex: 1; min-width: 0; }
+.cal-name { font-weight: 800; color: #ffffff; font-size: 14px; }
+.cal-hint { font-size: 11.5px; color: #8a99ad; margin-top: 3px; }
+.cal-impact-badge { font-size: 9px; font-weight: 800; padding: 2px 8px; border-radius: 999px; }
+.impact-high { background: rgba(239, 68, 68, 0.12); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.2); }
+.impact-medium { background: rgba(245, 158, 11, 0.12); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.2); }
 
 .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; }
 .badge-bullish { background: rgba(16, 185, 129, 0.12); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.2); }
@@ -250,7 +277,7 @@ header[data-testid="stHeader"] { background: transparent !important; }
 
 
 # ============================================================
-# DATA LAYER (FRED + YFINANCE)
+# DATA LAYER
 # ============================================================
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -269,44 +296,6 @@ def fetch_fred_series(series_id: str, key: str, limit: int = 36):
         df["value"] = pd.to_numeric(df["value"], errors="coerce")
         df = df.dropna(subset=["value"])
         return df[["date", "value"]].tail(limit).reset_index(drop=True) if not df.empty else None
-    except Exception:
-        return None
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_technical_data(symbol="GC=F", period="1y", interval="1d"):
-    """داتای ڕۆژانەی زیندوو و دەرهێنانی نیشاندەرەکانی RSI, EMA 50/200, ATR"""
-    try:
-        df = yf.download(symbol, period=period, interval=interval, progress=False)
-        if df.empty:
-            return None
-
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-
-        df = df.reset_index()
-        date_col = "Date" if "Date" in df.columns else "Datetime"
-        df["date"] = df[date_col].dt.strftime('%Y-%m-%d')
-
-        # EMAs
-        df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
-        df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
-
-        # RSI (14)
-        delta = df["Close"].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / loss
-        df["RSI"] = 100 - (100 / (1 + rs))
-
-        # ATR (14) بۆ دیاریکردنی ستۆپ لۆس
-        high_low = df["High"] - df["Low"]
-        high_cp = (df["High"] - df["Close"].shift()).abs()
-        low_cp = (df["Low"] - df["Close"].shift()).abs()
-        tr = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1)
-        df["ATR"] = tr.rolling(window=14).mean()
-
-        return df.dropna(subset=["EMA50", "RSI", "ATR"]).reset_index(drop=True)
     except Exception:
         return None
 
@@ -455,35 +444,73 @@ def svg_spark(vals: list, width: int = 80, height: int = 34, positive_is_good: b
     )
 
 
-def make_gold_candlestick(df: pd.DataFrame) -> go.Figure:
-    """Creates a Japanese Candlestick chart with EMA 50/200 overlays."""
+def make_dynamic_chart(df: pd.DataFrame, indicator_name: str, currency_name: str) -> go.Figure | None:
+    if df is None or df.empty:
+        return None
+
+    vals = df["value"].tolist()
+    accent_color = "#e2b714"
+
     fig = go.Figure()
-    fig.add_trace(go.Candlestick(
-        x=df['date'],
-        open=df['Open'], high=df['High'],
-        low=df['Low'], close=df['Close'],
-        name='Gold (XAUUSD)',
-        increasing_line_color='#10b981', decreasing_line_color='#ef4444'
-    ))
     fig.add_trace(go.Scatter(
-        x=df['date'], y=df['EMA50'],
-        mode='lines', name='EMA 50',
-        line=dict(color='#e2b714', width=1.5)
+        x=df["date"],
+        y=df["value"],
+        mode="lines+markers",
+        marker=dict(size=4, color=accent_color),
+        name=indicator_name,
+        line=dict(color=accent_color, width=2.8, shape="spline"),
+        fill="tozeroy",
+        fillcolor="rgba(226,183,20,0.08)",
+        hovertemplate="<b>%{x}</b><br>ئاست: <b>%{y:,.2f}</b><extra></extra>",
     ))
-    fig.add_trace(go.Scatter(
-        x=df['date'], y=df['EMA200'],
-        mode='lines', name='EMA 200',
-        line=dict(color='#3b82f6', width=1.8)
-    ))
+
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        height=380,
-        margin=dict(l=10, r=20, t=20, b=10),
-        xaxis_rangeslider_visible=False,
-        legend=dict(orientation="h", y=1.05, x=1, xanchor="right", font=dict(size=10, color="#8a99ad")),
+        showlegend=False,
+        margin=dict(l=10, r=20, t=10, b=10),
+        height=240,
+        xaxis=dict(showgrid=False, color="#6b7280", tickfont=dict(size=10, color="#8a99ad")),
+        yaxis=dict(autorange=True, showgrid=True, gridcolor="rgba(255,255,255,0.05)", color="#6b7280", side="right"),
+        hovermode="x unified",
+    )
+    return fig
+
+
+def make_gold_dual_chart(ry_df: pd.DataFrame, exp_df: pd.DataFrame) -> go.Figure | None:
+    if ry_df is None or ry_df.empty:
+        return None
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=ry_df["date"],
+        y=ry_df["value"],
+        mode="lines",
+        name="Real Yield 10Y (سوودی ڕاستەقینە)",
+        line=dict(color="#e2b714", width=3, shape="spline"),
+        hovertemplate="<b>%{x}</b><br>Real Yield: <b>%{y:.2f}%</b><extra></extra>",
+    ))
+
+    if exp_df is not None and not exp_df.empty:
+        fig.add_trace(go.Scatter(
+            x=exp_df["date"],
+            y=exp_df["value"],
+            mode="lines",
+            name="Inflation Exp 10Y (هەڵئاوسانی چاوەڕوانکراو)",
+            line=dict(color="#3b82f6", width=2, dash="dot", shape="spline"),
+            hovertemplate="<b>%{x}</b><br>Inflation Exp: <b>%{y:.2f}%</b><extra></extra>",
+        ))
+
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        showlegend=True,
+        legend=dict(orientation="h", y=1.05, x=1, xanchor="right", font=dict(size=11, color="#8a99ad")),
+        margin=dict(l=10, r=20, t=30, b=10),
+        height=260,
         xaxis=dict(showgrid=False, color="#6b7280"),
-        yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.05)", side="right", color="#6b7280")
+        yaxis=dict(autorange=True, showgrid=True, gridcolor="rgba(255,255,255,0.05)", side="right", color="#6b7280"),
+        hovermode="x unified",
     )
     return fig
 
@@ -512,8 +539,8 @@ def render_reference_table_html(rows: list) -> None:
       <table class="ref-table">
         <thead>
           <tr>
-            <th style="width:28%;">نیشاندەر</th>
-            <th class="th-ctr" style="width:18%;">کۆتا ئاست</th>
+            <th style="width:28%;">بازار</th>
+            <th class="th-ctr" style="width:18%;">کۆتا</th>
             <th class="th-ctr" style="width:18%;">m/m</th>
             <th class="th-ctr" style="width:18%;">q/q</th>
             <th class="th-ctr" style="width:18%;">y/y</th>
@@ -521,7 +548,46 @@ def render_reference_table_html(rows: list) -> None:
         </thead>
         <tbody>{''.join(tbody_rows)}</tbody>
       </table>
-      <div class="ref-table-footer">ⓘ % گۆڕانکارییەکان نیشاندەدرێن بە گۆڕان بەڕامبەر پێشەووی خۆی.</div>
+      <div class="ref-table-footer">ⓘ % گۆڕانکارییەکان نیشاندەدرێن بە گۆڕان بەڕامبەری پێشووی خۆی.</div>
+    </div>
+    """
+    render_html(table_html)
+
+
+def render_impact_matrix_html() -> None:
+    matrix_data = [
+        {"event": "هەڵگیرسانی جەنگ و ئاڵۆزی سەربازی", "icon": "💣", "bullish": ["USD", "CHF", "Gold"], "bearish": ["EUR", "AUD", "GBP"], "reason": "ڕاکردنی سەرمایەی جیهانی بەرەو پەناگە ئارامەکان (Safe-havens)."},
+        {"event": "بەرزبوونەوەی بەرچاوی نرخی نەوت و وزە", "icon": "🛢️", "bullish": ["CAD", "NOK", "USD"], "bearish": ["JPY", "EUR"], "reason": "کەنەدا و نەرویج هەناردەکاری نەوتن؛ ژاپۆن و ئەوروپا هاوردەکاری سەرەکین."},
+        {"event": "بەرزکردنەوەی ڕێژەی سوودی بانکی (Rate Hikes)", "icon": "🏦", "bullish": ["دراوەکەی خۆی"], "bearish": ["زێڕ (Gold)", "پشکەکان"], "reason": "ڕاکێشانی وەبەرهێنەران بۆ بەدەستهێنانی سوودی بەرزتر لە دراوەکەدا."},
+        {"event": "کەمکردنەوەی ڕێژەی سوود (Rate Cuts)", "icon": "📉", "bullish": ["زێڕ (Gold)", "پشکەکان"], "bearish": ["دراوەکەی خۆی"], "reason": "کەمبوونەوەی قازانجی سوودی بانکی و بەرزبوونەوەی خواست لەسەر زێڕ."},
+        {"event": "جەنگی بازرگانی و باجی گومرگی (Tariffs)", "icon": "🚢", "bullish": ["USD"], "bearish": ["AUD", "NZD", "CNH", "EUR"], "reason": "لاوازبوونی بازرگانی چین بە شێوەیەکی ڕاستەوخۆ دۆلاری ئوسترالی و ئەوروپا دادەبەزێنێت."},
+    ]
+    rows_html = []
+    for item in matrix_data:
+        bull_pills = "".join(f'<span class="pill-bull">{c}</span>' for c in item["bullish"])
+        bear_pills = "".join(f'<span class="pill-bear">{c}</span>' for c in item["bearish"])
+        rows_html.append(f"""
+        <tr>
+          <td style="font-weight:700;color:#ffffff;width:24%;"><span style="font-size:16px;margin-left:6px;">{item['icon']}</span> {item['event']}</td>
+          <td style="width:20%;"><div class="matrix-pill-wrap">{bull_pills}</div></td>
+          <td style="width:20%;"><div class="matrix-pill-wrap">{bear_pills}</div></td>
+          <td style="color:#8a99ad;font-size:12px;width:36%;">{item['reason']}</td>
+        </tr>
+        """)
+
+    table_html = f"""
+    <div class="matrix-card">
+      <table class="matrix-table">
+        <thead>
+          <tr>
+            <th>ڕووداوی جیهانی (Global Event)</th>
+            <th>دراوە بەهێزەکان (Bullish)</th>
+            <th>دراوە لاوازەکان (Bearish)</th>
+            <th>هۆکار و شیکاریی مەکرۆ (Macro Mechanism)</th>
+          </tr>
+        </thead>
+        <tbody>{''.join(rows_html)}</tbody>
+      </table>
     </div>
     """
     render_html(table_html)
@@ -534,17 +600,17 @@ def render_reference_table_html(rows: list) -> None:
 def render_top_header() -> None:
     html = """
     <div class="top-header-bar">
-      <div class="top-brand"><span>📊</span> <span>FX MACRO &amp; TECHNICAL INTELLIGENCE</span></div>
+      <div class="top-brand"><span>📊</span> <span>FX MACRO &amp; GEOPOLITICAL DESK</span></div>
       <div class="top-tickers">
         <div class="ticker-pill"><span>🇺🇸 USD</span> <span class="ticker-up">98.42 ▲ +0.24%</span></div>
-        <div class="ticker-pill"><span>🥇 Gold</span> <span class="ticker-up">Live GC=F</span></div>
         <div class="ticker-pill"><span>🇪🇺 EUR</span> <span class="ticker-up">1.08 ▲ +0.18%</span></div>
         <div class="ticker-pill"><span>🇬🇧 GBP</span> <span class="ticker-down">1.27 ▼ -0.12%</span></div>
+        <div class="ticker-pill"><span>🇯🇵 JPY</span> <span class="ticker-up">157.36 ▲ +0.31%</span></div>
       </div>
       <div class="top-actions">
         <div class="user-badge">
           <div class="user-avatar">M</div>
-          <div class="user-info">Macro &amp; Quant Desk</div>
+          <div class="user-info">Macro Desk</div>
         </div>
       </div>
     </div>
@@ -556,7 +622,7 @@ def render_top_header() -> None:
 # PAGE 1: 🏠 سەرەکی (DASHBOARD)
 # ============================================================
 
-def render_dashboard(fred_key: str, news_key: str) -> None:
+def render_dashboard() -> None:
     render_top_header()
     banner_html = """
     <div class="main-title-wrap">
@@ -574,15 +640,11 @@ def render_dashboard(fred_key: str, news_key: str) -> None:
         selected = st.selectbox("دراوەکە هەڵبژێرە:", list(CURRENCY_SERIES.keys()), label_visibility="collapsed") if "Forex" in asset_type else "USD دۆلار"
 
     if "Gold" in asset_type:
-        render_gold_page(fred_key)
+        render_gold_page()
         return
 
-    if not fred_key:
-        st.info("🔑 تکایە FRED API Key لە سایدبار بنووسە بۆ بارکردنی داتاکان.")
-        return
-
-    with st.spinner("داتاکان دەهێنرێن..."):
-        result = compute_currency_composite(selected, fred_key)
+    with st.spinner("داتاکانی مەکرۆ بار دەکرێن..."):
+        result = compute_currency_composite(selected, FRED_API_KEY)
 
     if not result:
         st.warning("⚠️ داتا نەدۆزرایەوە.")
@@ -623,11 +685,41 @@ def render_dashboard(fred_key: str, news_key: str) -> None:
             render_html(card_html)
 
     st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
-    t_col, d_col = st.columns([1.2, 1])
+    t_col, c_col = st.columns([1.1, 1.2])
 
     with t_col:
         st.markdown('<div class="section-title">کۆتا ئاستیەکان (Multi-Timeframe Table)</div>', unsafe_allow_html=True)
         render_reference_table_html(rows)
+
+    with c_col:
+        st.markdown('<div class="section-title">کەش و هەوای بازاڕەکان (Live Dynamic Chart)</div>', unsafe_allow_html=True)
+        chosen_ind = st.selectbox("نیشاندەر بۆ پیشاندان:", [r["name"] for r in rows], label_visibility="collapsed")
+        crow = row_map.get(chosen_ind, rows[0])
+        fig_dyn = make_dynamic_chart(crow["df"], chosen_ind, selected)
+        if fig_dyn:
+            st.plotly_chart(fig_dyn, use_container_width=True, config={"displayModeBar": False})
+
+    st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+    n_col, d_col = st.columns([1.1, 1.1])
+
+    with n_col:
+        st.markdown('<div class="section-title">هەواڵی جیهانی و ئابووری (News Feed)</div>', unsafe_allow_html=True)
+        arts = fetch_news(f"{selected.split()[0]} OR forex OR economy OR inflation", NEWS_API_KEY)
+        if arts:
+            for art in arts[:3]:
+                t_str = art.get("title", "—")
+                src = (art.get("source") or {}).get("name", "Market Desk")
+                pub = (art.get("publishedAt") or "")[:10]
+                link = art.get("url", "#")
+                render_html(f"""
+                <a href="{link}" target="_blank" style="text-decoration:none;">
+                <div style="background:#090e1a;border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:12px 16px;margin-bottom:8px;">
+                  <div style="color:#ffffff;font-size:13px;font-weight:600;line-height:1.4;margin-bottom:6px;">{t_str}</div>
+                  <div style="font-size:11px;color:#8a99ad;display:flex;justify-content:space-between;"><span>📰 {src}</span><span>🕒 {pub}</span></div>
+                </div></a>
+                """)
+        else:
+            st.info("هەواڵ نەدۆزرایەوە.")
 
     with d_col:
         st.markdown('<div class="section-title">ئاراستەی گشتی دراو (Composite Signal)</div>', unsafe_allow_html=True)
@@ -636,149 +728,38 @@ def render_dashboard(fred_key: str, news_key: str) -> None:
           <div style="font-size:11px;font-weight:800;letter-spacing:1px;color:#8a99ad;text-transform:uppercase;margin-bottom:8px;">ئاراستەی مەکرۆی {selected}</div>
           <div style="margin:16px 0;">{badge_html(result['composite'], large=True)}</div>
           <div style="font-size:14px;font-weight:700;color:#ffffff;margin-top:8px;">Composite Score: <span style="color:#e2b714;">{result['composite']:+.3f}</span></div>
-          <div style="font-size:11px;color:#6b7280;margin-top:8px;line-height:1.6;">پشت بەستن بە هەموو داتاکانی هەڵئاوسان، بێکاری و سوودی بانکی</div>
+          <div style="font-size:11px;color:#6b7280;margin-top:8px;">بەپێی ژماردنی تایمفریمەکانی: m/m • q/q • y/y • Z-Score</div>
         </div>
         """
         render_html(comp_box)
 
 
 # ============================================================
-# PAGE 2: 🥇 GOLD ANALYSIS & TECHNICAL SYSTEM
+# PAGE 2: 📋 کۆتا ئاستیەکان
 # ============================================================
 
-def render_gold_page(fred_key: str) -> None:
+def render_levels_page() -> None:
     render_top_header()
-    header_html = """
+    banner_html = """
     <div class="main-title-wrap">
-      <div class="main-gold-sub">COMMODITY &amp; TECHNICAL INTELLIGENCE</div>
-      <h1 class="main-big-heading">شیکاری زێڕ (XAUUSD) — تەکنیکی، مەکرۆ و بەڕێوەبردنی ریسک</h1>
-      <div class="main-breadcrumb">Real Yield + USD Macro + Live RSI / EMA + Risk Calculator</div>
+      <div class="main-gold-sub">FX MACRO &amp; GEOPOLITICAL DESK</div>
+      <h1 class="main-big-heading">سیستەمی پێشبینیکردن و شیکاری هەواڵەکان</h1>
+      <div class="main-breadcrumb">Macro Strength &amp; Predictive Engine &gt; کۆتا ئاستیەکان</div>
     </div>
     """
-    render_html(header_html)
+    render_html(banner_html)
 
-    # 1. Macro Signal (FRED)
-    gold_macro_score = 0.0
-    ry_val, ry_mom = 0.0, 0.0
-    usd_score = 0.0
-
-    if fred_key:
-        y_df  = fetch_fred_series(GOLD_YIELD_SERIES, fred_key, limit=36)
-        i_df  = fetch_fred_series(GOLD_INFLATION_EXP_SERIES, fred_key, limit=36)
-        usd_r = compute_currency_composite("USD دۆلار", fred_key)
-
-        if y_df is not None and i_df is not None:
-            merged = pd.merge(y_df, i_df, on="date", suffixes=("_y", "_i"))
-            merged["ry"] = merged["value_y"] - merged["value_i"]
-            ry_vals = merged["ry"].tail(24).tolist()
-            ry_mf = calc_multiframe(ry_vals, "rate")
-            ry_val = ry_vals[-1]
-            ry_mom = ry_mf["mom"] if ry_mf else 0.0
-
-            gold_ry = -ry_mf["composite"] if ry_mf else 0.0
-            usd_score = usd_r["composite"] if usd_r else 0.0
-            gold_usd = -usd_score
-            gold_macro_score = (0.55 * gold_ry) + (0.45 * gold_usd)
-
-    # 2. Technical Data (yfinance)
-    tech_df = fetch_technical_data("GC=F", period="1y", interval="1d")
-
-    if tech_df is None or tech_df.empty:
-        st.error("⚠️ نەتوانرا داتای زیندوی تەکنیکی زێڕ لە ڕێگەی yfinance وەربگیرێت.")
-        return
-
-    latest_row = tech_df.iloc[-1]
-    curr_price = float(latest_row["Close"])
-    rsi_val    = float(latest_row["RSI"])
-    ema50_val  = float(latest_row["EMA50"])
-    ema200_val = float(latest_row["EMA200"])
-    atr_val    = float(latest_row["ATR"])
-
-    # Technical Bias Decision
-    tech_bull = (curr_price > ema50_val) and (rsi_val > 50)
-    tech_bear = (curr_price < ema50_val) and (rsi_val < 50)
-    tech_status = "📈 Bullish" if tech_bull else ("📉 Bearish" if tech_bear else "⚖️ Neutral")
-    tech_color = "#10b981" if tech_bull else ("#ef4444" if tech_bear else "#9ca3af")
-
-    # Final Combined Bias
-    macro_bull = gold_macro_score > 0.15
-    final_verdict = "💎 STRONG BUY (مەکرۆ و تەکنیکی هاوڕان)" if (macro_bull and tech_bull) else \
-                    ("🔻 STRONG SELL (مەکرۆ و تەکنیکی هاوڕان)" if (gold_macro_score < -0.15 and tech_bear) else "⚠️ NEUTRAL / چاوەڕوانی")
-
-    # Overview Cards
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.metric("نرخی ئێستای زێڕ (Spot/Futures)", f"${curr_price:,.2f}", delta=f"{latest_row['Close'] - tech_df.iloc[-2]['Close']:+.2f}")
-    with c2:
-        st.metric("Real Yield 10Y", f"{ry_val:.2f}%", delta=f"{ry_mom:+.2f}% m/m", delta_color="inverse")
-    with c3:
-        st.metric("RSI (14) ئاستی بازاڕ", f"{rsi_val:.1f}", delta="Overbought" if rsi_val > 70 else ("Oversold" if rsi_val < 30 else "Normal"))
-    with c4:
-        st.markdown(f"""
-        <div style="background:#090e1a;border:1px solid rgba(226,183,20,0.2);border-radius:14px;padding:10px 14px;text-align:center;">
-          <div style="font-size:10px;font-weight:800;color:#8a99ad;">بڕیاری گشتی سیستەم</div>
-          <div style="font-size:12px;font-weight:800;color:#e2b714;margin-top:4px;">{final_verdict}</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
-
-    # Chart & Technical Details
-    g_col, calc_col = st.columns([1.4, 1])
-
-    with g_col:
-        st.markdown('<div class="section-title">چارتی کاندڵستیک و نیشاندەرە تەکنیکییەکان (Daily)</div>', unsafe_allow_html=True)
-        fig_candle = make_gold_candlestick(tech_df)
-        st.plotly_chart(fig_candle, use_container_width=True, config={"displayModeBar": False})
-
-    with calc_col:
-        st.markdown('<div class="section-title">🧮 ژمێرەری قەبارەی لۆت و بەڕێوەبردنی ریسک</div>', unsafe_allow_html=True)
-
-        with st.container():
-            render_html('<div class="calc-card">')
-            col_b1, col_b2 = st.columns(2)
-            with col_b1:
-                account_bal = st.number_input("سەرمایەی هەژمار ($):", min_value=100.0, value=5000.0, step=500.0)
-            with col_b2:
-                risk_percent = st.slider("ڕێژەی ریسک (%):", min_value=0.5, max_value=5.0, value=1.0, step=0.5)
-
-            trade_dir = st.radio("ئاراستەی مامەڵە:", ["BUY", "SELL"], horizontal=True)
-
-            risk_dollars = account_bal * (risk_percent / 100.0)
-            sl_distance = atr_val * 1.5
-
-            if trade_dir == "BUY":
-                sl_price = curr_price - sl_distance
-                tp1_price = curr_price + (sl_distance * 1.5)
-                tp2_price = curr_price + (sl_distance * 2.5)
-            else:
-                sl_price = curr_price + sl_distance
-                tp1_price = curr_price - (sl_distance * 1.5)
-                tp2_price = curr_price - (sl_distance * 2.5)
-
-            # بۆ زێڕ: هەر 1 لۆت = 100 ئۆنسە (واتە $1 گۆڕان = $100 قازانج/زیان بۆ 1 لۆتی تەواو)
-            calc_lot = risk_dollars / (sl_distance * 100) if sl_distance > 0 else 0.01
-
-            st.markdown(f"""
-            <div style="margin-top:10px;font-size:12px;color:#8a99ad;line-height:1.8;">
-              <div>🔹 بڕی مەترسی (Risk $): <b style="color:#ef4444;">${risk_dollars:,.2f}</b></div>
-              <div>🔹 ATR (14) مەودای ڕۆژانە: <b style="color:#fff;">${atr_val:.2f}</b></div>
-              <div>🔹 Stop Loss (1.5x ATR): <b style="color:#ef4444;">${sl_price:,.2f}</b></div>
-              <div>🔹 Take Profit 1 (1:1.5): <b style="color:#10b981;">${tp1_price:,.2f}</b></div>
-              <div>🔹 Take Profit 2 (1:2.5): <b style="color:#10b981;">${tp2_price:,.2f}</b></div>
-              <div style="margin-top:8px;padding:8px;background:rgba(226,183,20,0.1);border:1px solid #e2b714;border-radius:8px;text-align:center;">
-                قەبارەی لۆتی پێشنیارکراو: <b style="font-size:16px;color:#e2b714;">{calc_lot:.2f} Lot</b>
-              </div>
-            </div>
-            """, unsafe_allow_html=True)
-            render_html('</div>')
+    selected = st.selectbox("دراوەکە هەڵبژێرە:", list(CURRENCY_SERIES.keys()), key="levels_cur")
+    result = compute_currency_composite(selected, FRED_API_KEY)
+    if result:
+        render_reference_table_html(result["rows"])
 
 
 # ============================================================
-# PAGE 3: 📅 MONTHLY OUTLOOK (CALENDAR)
+# PAGE 3: 📅 MONTHLY OUTLOOK
 # ============================================================
 
-def render_monthly(fred_key: str) -> None:
+def render_monthly() -> None:
     render_top_header()
     today = date.today()
     month_ku = {1:"کانوونی دووەم",2:"شوبات",3:"ئازار",4:"نیسان",5:"ئایار",6:"حوزەیران",7:"تەممووز",8:"ئاب",9:"ئەیلوول",10:"تشرینی یەکەم",11:"تشرینی دووەم",12:"کانوونی یەکەم"}
@@ -793,12 +774,9 @@ def render_monthly(fred_key: str) -> None:
     render_html(header_html)
 
     selected = st.radio("دراوەکە:", list(MONTHLY_CALENDAR.keys()), horizontal=True, key="month_cur")
-
-    if not fred_key:
-        st.info("🔑 FRED API Key بنووسە بۆ بارکردنی پێشبینییەکان.")
-        return
-
+    indicators = CURRENCY_SERIES.get(selected, {})
     events = []
+
     for ev in MONTHLY_CALENDAR.get(selected, []):
         try:
             max_d = cal_lib.monthrange(today.year, today.month)[1]
@@ -808,23 +786,166 @@ def render_monthly(fred_key: str) -> None:
 
         is_released = today >= rel_d
         days_until  = (rel_d - today).days
-        events.append({**ev, "release_date": rel_d, "is_released": is_released, "days_until": days_until})
+
+        mf = None
+        meta = indicators.get(ev["name"])
+        if meta:
+            df2 = fetch_fred_series(meta["series"], FRED_API_KEY, limit=36)
+            if df2 is not None and not df2.empty:
+                mf = calc_multiframe(df2["value"].tolist(), meta["category"])
+
+        events.append({**ev, "release_date": rel_d, "is_released": is_released, "days_until": days_until, "mf": mf})
 
     events.sort(key=lambda x: x["day"])
-    for ev in events:
-        status_color = "#10b981" if ev["is_released"] else ("#f59e0b" if 0 <= ev["days_until"] <= 3 else "#6b7280")
-        card_html = f"""
-        <div style="background:#090e1a;border:1px solid rgba(255,255,255,0.06);border-right:4px solid {status_color};border-radius:12px;padding:12px 16px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;">
-          <div>
-            <span style="font-weight:700;color:#fff;">{ev['day']:02d}ی مانگ &nbsp;|&nbsp; {ev['name']}</span>
-            <span style="font-size:11px;color:#8a99ad;margin-right:10px;">({ev['hint']})</span>
-          </div>
-          <div style="font-size:12px;font-weight:700;color:{status_color};">
-            {'✅ بڵاوکراوەتەوە' if ev['is_released'] else f'⏳ ماوە {ev["days_until"]} ڕۆژ'}
+    released = [e for e in events if e["is_released"]]
+    upcoming = [e for e in events if not e["is_released"]]
+
+    def render_event_card(ev, card_cls, day_cls):
+        mf = ev.get("mf")
+        pos = ev.get("category", "inflation") != "labor_bad"
+        lbl2, cls2, _ = bias_from_score(mf["composite"] if mf else 0)
+        imt = f"impact-{ev['impact']}"
+
+        tf_line = ""
+        if mf:
+            mom_s = f"<span style='color:{'#10b981' if (mf['mom']>0)==pos else '#ef4444'}; font-weight:700;'>{'▲' if mf['mom']>0 else '▼'} {abs(mf['mom']):.2f}%</span>"
+            qoq_s = f"<span style='color:{'#10b981' if ((mf.get('qoq') or 0)>0)==pos else '#ef4444'}; font-weight:700;'>{abs(mf.get('qoq') or 0):.2f}%</span>" if mf.get('qoq') is not None else "—"
+            yoy_s = f"<span style='color:{'#10b981' if ((mf.get('yoy') or 0)>0)==pos else '#ef4444'}; font-weight:700;'>{abs(mf.get('yoy') or 0):.2f}%</span>" if mf.get('yoy') is not None else "—"
+            tf_line = f"<div style='margin-top:6px;font-size:11.5px;color:#8a99ad;'>m/m: {mom_s} &nbsp;|&nbsp; q/q: {qoq_s} &nbsp;|&nbsp; y/y: {yoy_s}</div>"
+
+        days_badge = f"<span style='color:#f59e0b;font-weight:800;font-size:11px;'>⚡ ماوە {ev['days_until']} ڕۆژ</span>" if ev['days_until'] <= 3 else f"<span style='color:#8a99ad;font-size:11px;'>ماوە {ev['days_until']} ڕۆژ</span>"
+        badge_title = f"📊 ئاراستەی چاوەڕوانکراو: {lbl2.split()[1]}" if not ev['is_released'] else lbl2
+
+        render_html(f"""
+        <div class="cal-card {card_cls}">
+          <div class="cal-day-badge {day_cls}">{ev['day']:02d}</div>
+          <div class="cal-content">
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+              <div style="display:flex;align-items:center;gap:8px;">
+                <span class="cal-name">{ev['name']}</span>
+                <span class="cal-impact-badge {imt}">{ev['impact'].upper()}</span>
+              </div>
+              <div>{days_badge}</div>
+            </div>
+            <div class="cal-hint">📌 {ev['hint']}</div>
+            {tf_line}
+            <div style="margin-top:8px;"><span class="badge {cls2}">{badge_title}</span></div>
           </div>
         </div>
-        """
-        render_html(card_html)
+        """)
+
+    if released:
+        st.markdown('<div class="section-title">✅ بڵاوکراوەتەوە — Released Events</div>', unsafe_allow_html=True)
+        for ev in released: render_event_card(ev, "released", "released")
+
+    if upcoming:
+        st.markdown('<div class="section-title">🔮 هەواڵەکانی داهاتوو — Upcoming Forecasts</div>', unsafe_allow_html=True)
+        for ev in upcoming:
+            cc = "upcoming-soon" if 0 <= ev["days_until"] <= 3 else "upcoming"
+            render_event_card(ev, cc, cc)
+
+
+# ============================================================
+# PAGE 4: 🥇 GOLD ANALYSIS
+# ============================================================
+
+def render_gold_page() -> None:
+    render_top_header()
+    header_html = """
+    <div class="main-title-wrap">
+      <div class="main-gold-sub">COMMODITY &amp; SAFE-HAVEN INTELLIGENCE</div>
+      <h1 class="main-big-heading">شیکاری زێڕ (XAUUSD) — Real Yield &amp; USD</h1>
+      <div class="main-breadcrumb">Real Yield 10Y (DGS10 - T10YIE) + USD Multi-Timeframe Composite</div>
+    </div>
+    """
+    render_html(header_html)
+
+    with st.spinner("شیکاری زێڕ دەکرێت..."):
+        y_df   = fetch_fred_series(GOLD_YIELD_SERIES, FRED_API_KEY, limit=36)
+        i_df   = fetch_fred_series(GOLD_INFLATION_EXP_SERIES, FRED_API_KEY, limit=36)
+        usd_r  = compute_currency_composite("USD دۆلار", FRED_API_KEY)
+
+    if y_df is None or i_df is None:
+        st.warning("⚠️ نەتوانرا داتاکانی DGS10 یان T10YIE بهێنرێت.")
+        return
+
+    merged = pd.merge(y_df, i_df, on="date", suffixes=("_y", "_i"))
+    merged["ry"] = merged["value_y"] - merged["value_i"]
+    ry_vals = merged["ry"].tail(24).tolist()
+    ry_mf   = calc_multiframe(ry_vals, "rate")
+
+    gold_ry   = -ry_mf["composite"] if ry_mf else 0.0
+    gold_usd  = -usd_r["composite"] if usd_r else 0.0
+    gold_score = (0.55 * gold_ry) + (0.45 * gold_usd)
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Real Yield 10Y", f"{ry_vals[-1]:.2f}%", delta=f"{ry_mf['mom']:+.2f}% m/m" if ry_mf else None, delta_color="inverse")
+    with c2:
+        st.metric("USD Composite Score", f"{usd_r['composite']:+.3f}" if usd_r else "0.00")
+    with c3:
+        render_html(f"""
+        <div style="background:#090e1a;border:1px solid rgba(226,183,20,0.2);border-radius:14px;padding:12px;text-align:center;">
+          <div style="font-size:10px;font-weight:800;letter-spacing:1px;color:#8a99ad;text-transform:uppercase;margin-bottom:6px;">ئاراستەی گشتی زێڕ</div>
+          {badge_html(gold_score, large=True)}
+          <div style="font-size:11px;color:#6b7280;margin-top:6px;">Gold Signal Score: <b style="color:#e2b714;">{gold_score:+.3f}</b></div>
+        </div>
+        """)
+
+    st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
+    st.markdown('<div class="section-title">نموداری گۆڕانی سوودی ڕاستەقینە (Real Yield &amp; Inflation Expectations)</div>', unsafe_allow_html=True)
+
+    ry_df = merged[["date", "ry"]].rename(columns={"ry": "value"})
+    exp_df = merged[["date", "value_i"]].rename(columns={"value_i": "value"})
+    fig = make_gold_dual_chart(ry_df, exp_df)
+    if fig:
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+# ============================================================
+# PAGE 5: 📰 هەواڵە جیهانییەکان
+# ============================================================
+
+def render_news_page() -> None:
+    render_top_header()
+    header_html = """
+    <div class="main-title-wrap">
+      <div class="main-gold-sub">GLOBAL GEOPOLITICAL &amp; MACRO FEED</div>
+      <h1 class="main-big-heading">هەواڵە جیهانییە خێراکان</h1>
+      <div class="main-breadcrumb">هەواڵی گرنگی بانکە ناوەندییەکان، نەوت، جەنگ، و باجە گومرگییەکان</div>
+    </div>
+    """
+    render_html(header_html)
+
+    cat = st.radio("کاتیگۆری:", ["💣 Geopolitics & War", "🛢️ Energy & Oil", "🏛️ Central Banks", "🤝 Trade Wars"], horizontal=True, label_visibility="collapsed")
+    kw = {
+        "💣 Geopolitics & War": "war OR military OR conflict OR sanctions",
+        "🛢️ Energy & Oil":      "oil OR opec OR crude OR energy crisis",
+        "🏛️ Central Banks":     "fed OR central bank OR interest rates OR inflation",
+        "🤝 Trade Wars":        "tariffs OR trade war OR import tax",
+    }
+
+    with st.spinner("هەواڵەکان دەهێنرێن..."):
+        arts = fetch_news(kw[cat], NEWS_API_KEY)
+
+    if not arts:
+        st.info("هیچ هەواڵێک نەدۆزرایەوە.")
+        return
+
+    for art in arts:
+        title  = art.get("title", "—")
+        source = (art.get("source") or {}).get("name", "")
+        pub    = (art.get("publishedAt") or "")[:10]
+        desc   = art.get("description", "") or ""
+        link   = art.get("url", "#")
+        render_html(f"""
+        <div style="background:#090e1a;border:1px solid rgba(255,255,255,0.06);border-radius:14px;padding:16px 18px;margin-bottom:12px;">
+          <div style="color:#e2b714;font-size:14px;font-weight:700;line-height:1.5;margin-bottom:4px;">{title}</div>
+          <div style="font-size:11px;color:#8a99ad;margin-bottom:8px;">📰 {source} &nbsp;•&nbsp; 🕒 {pub}</div>
+          <div style="font-size:12.5px;color:#d1d5db;line-height:1.6;margin-bottom:10px;">{desc}</div>
+          <a href="{link}" target="_blank" style="color:#10b981;font-size:12px;font-weight:700;text-decoration:none;">خوێندنەوەی سەرچاوە ↗</a>
+        </div>
+        """)
 
 
 # ============================================================
@@ -850,32 +971,41 @@ def main() -> None:
             "دەستەی بەڕێوەبردن:",
             [
                 "🏠 سەرەکی",
-                "🥇 Gold (XAUUSD) & Risk Desk",
+                "📋 کۆتا ئاستیەکان",
+                "🥇 Gold (XAUUSD) Analysis",
                 "📅 Monthly Outlook",
-                "⚙️ ڕێکخستنەکان",
+                "📰 هەواڵە جیهانییەکان",
+                "📊 Impact Analysis on Currencies",
             ],
             label_visibility="collapsed",
         )
 
         st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
-        st.markdown("<b style='color:#8a99ad;font-size:11px;letter-spacing:1px;'>🔐 API KEYS</b>", unsafe_allow_html=True)
-        fred_key     = st.text_input("FRED API Key:", type="password", key="fred_key")
-        news_api_key = st.text_input("NewsAPI Key:",  type="password", key="news_key")
+        render_html("""
+        <div style="background:#090e1a;border:1px solid rgba(16,185,129,0.2);border-radius:10px;padding:8px 12px;text-align:center;">
+          <span style="color:#10b981;font-size:11px;font-weight:700;">🟢 API Keys Active</span>
+        </div>
+        """)
 
     if page == "🏠 سەرەکی":
-        render_dashboard(fred_key, news_api_key)
-    elif page == "🥇 Gold (XAUUSD) & Risk Desk":
-        render_gold_page(fred_key)
+        render_dashboard()
+    elif page == "📋 کۆتا ئاستیەکان":
+        render_levels_page()
+    elif page == "🥇 Gold (XAUUSD) Analysis":
+        render_gold_page()
     elif page == "📅 Monthly Outlook":
-        render_monthly(fred_key)
-    elif page == "⚙️ ڕێکخستنەکان":
+        render_monthly()
+    elif page == "📰 هەواڵە جیهانییەکان":
+        render_news_page()
+    elif page == "📊 Impact Analysis on Currencies":
         render_top_header()
-        st.success("✅ سیستەم ئامادەیە بە تەواوی مۆدیوولەکانی yfinance, Plotly, و FRED.")
+        st.markdown('<div class="section-title">💡 کاریگەری ڕووداوە جیهانییەکان لەسەر دراوەکان (Global Impact Matrix)</div>', unsafe_allow_html=True)
+        render_impact_matrix_html()
 
     footer_html = f"""
     <div class="app-footer">
-      <div>© 2026 FX Macro &amp; Geopolitical Desk &nbsp;|&nbsp; Professional Technical &amp; Macro Intelligence</div>
-      <div class="live-status"><span class="live-dot"></span><span>Live System &nbsp; {datetime.now().strftime('%H:%M:%S')}</span></div>
+      <div>© 2026 FX Macro &amp; Geopolitical Desk &nbsp;|&nbsp; Professional Market Intelligence</div>
+      <div class="live-status"><span class="live-dot"></span><span>Live Market Data &nbsp; {datetime.now().strftime('%H:%M:%S')}</span></div>
     </div>
     """
     render_html(footer_html)
