@@ -2,7 +2,7 @@
 FX Macro & Geopolitical Intelligence Desk — v7
 Institutional-Grade Multi-Timeframe Macro Analysis & Predictive Calendar
 """
-
+from __future__ import annotations
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -1317,5 +1317,4 @@ def main() -> None:
         st.markdown("<b style='color:#6b7280;font-size:10.5px;letter-spacing:1px;'>🔐 API KEYS</b>",
                     unsafe_allow_html=True)
         fred_key = st.text_input("FRED API Key:", value=DEFAULT_FRED_KEY,
-                                 type="password", key="fred_key")
-        news_key = st.text
+                                 type="password", key="fre
