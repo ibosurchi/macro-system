@@ -166,9 +166,67 @@ CURRENCY_SERIES = {
              "hint": "Bank of Japan Policy Rate Decision"},
         ],
     },
+    "AUD": {
+        "flag": "🇦🇺", "name": "Australian Dollar",
+        "indicators": {
+            "CPI":           {"series": "AUSCPIALLQINMEI", "cat": "inflation",  "w": 1.8, "impact": "high"},
+            "Employment":    {"series": "LFEMTTTTAUM647S", "cat": "labor_pos",  "w": 1.5, "impact": "high"},
+            "Unemployment":  {"series": "LRUN64TTAUM156S", "cat": "labor_neg",  "w": 1.5, "impact": "high"},
+            "Interest Rate": {"series": "IRLTLT01AUM156N", "cat": "rate",       "w": 2.0, "impact": "high"},
+        },
+        "key_indicators": ["CPI", "Employment", "Unemployment", "Interest Rate"],
+        "calendar": [
+            {"name": "CPI",          "day": 24, "impact": "high",   "cat": "inflation",  "quarterly": True,
+             "hint": "Australia CPI (Australian Bureau of Statistics)"},
+            {"name": "Employment",   "day": 15, "impact": "high",   "cat": "labor_pos",  "quarterly": False,
+             "hint": "Australia Employment Change (ABS)"},
+            {"name": "Unemployment", "day": 15, "impact": "high",   "cat": "labor_neg",  "quarterly": False,
+             "hint": "Australia Unemployment Rate (ABS)"},
+            {"name": "Interest Rate","day": 6,  "impact": "high",   "cat": "rate",       "quarterly": False,
+             "hint": "Reserve Bank of Australia (RBA) Cash Rate Decision"},
+        ],
+    },
+    "NZD": {
+        "flag": "🇳🇿", "name": "New Zealand Dollar",
+        "indicators": {
+            "CPI":           {"series": "NZLCPIALLQINMEI", "cat": "inflation",  "w": 1.8, "impact": "high"},
+            "Employment":    {"series": "LFEMTTTTNZQ647S", "cat": "labor_pos",  "w": 1.5, "impact": "high"},
+            "Unemployment":  {"series": "LRHUTTTTNZQ156S", "cat": "labor_neg",  "w": 1.5, "impact": "high"},
+            "Interest Rate": {"series": "IRLTLT01NZM156N", "cat": "rate",       "w": 2.0, "impact": "high"},
+        },
+        "key_indicators": ["CPI", "Employment", "Unemployment", "Interest Rate"],
+        "calendar": [
+            {"name": "CPI",          "day": 18, "impact": "high",   "cat": "inflation",  "quarterly": True,
+             "hint": "New Zealand CPI (Stats NZ)"},
+            {"name": "Employment",   "day": 7,  "impact": "high",   "cat": "labor_pos",  "quarterly": True,
+             "hint": "New Zealand Employment Change (Stats NZ)"},
+            {"name": "Unemployment", "day": 7,  "impact": "high",   "cat": "labor_neg",  "quarterly": True,
+             "hint": "New Zealand Unemployment Rate (Stats NZ)"},
+            {"name": "Interest Rate","day": 26, "impact": "high",   "cat": "rate",       "quarterly": False,
+             "hint": "Reserve Bank of New Zealand (RBNZ) Official Cash Rate"},
+        ],
+    },
+    "CHF": {
+        "flag": "🇨🇭", "name": "Swiss Franc",
+        "indicators": {
+            "CPI":           {"series": "CHECPIALLMINMEI", "cat": "inflation",  "w": 1.8, "impact": "high"},
+            "Unemployment":  {"series": "LRHUTTTTCHQ156S", "cat": "labor_neg",  "w": 1.5, "impact": "high"},
+            "Interest Rate": {"series": "IRLTLT01CHM156N", "cat": "rate",       "w": 2.0, "impact": "high"},
+        },
+        "key_indicators": ["CPI", "Unemployment", "Interest Rate"],
+        "calendar": [
+            {"name": "CPI",          "day": 3,  "impact": "high",   "cat": "inflation",  "quarterly": False,
+             "hint": "Switzerland CPI (Federal Statistical Office)"},
+            {"name": "Unemployment", "day": 8,  "impact": "high",   "cat": "labor_neg",  "quarterly": False,
+             "hint": "Switzerland Unemployment Rate (SECO)"},
+            {"name": "Interest Rate","day": 20, "impact": "high",   "cat": "rate",       "quarterly": True,
+             "hint": "Swiss National Bank (SNB) Policy Rate Decision"},
+        ],
+    },
 }
 
 GOLD_SERIES  = {"yield": "DGS10", "inflation_exp": "T10YIE"}
+OIL_SERIES   = {"wti": "DCOILWTICO", "brent": "DCOILBRENTEU"}
 CAT_ICONS    = {"inflation": "📈", "labor_pos": "👥", "labor_neg": "📉", "growth": "🏭", "rate": "🏦"}
 CAT_LABELS   = {"inflation": "Inflation", "labor_pos": "Labour Market", "labor_neg": "Unemployment", "growth": "Growth", "rate": "Interest Rate"}
 
@@ -651,7 +709,10 @@ def render_top_header() -> None:
 <div class="t-pill"><span>🇪🇺 EUR</span><span class="t-up">1.08 ▲ +0.18%</span></div>
 <div class="t-pill"><span>🇬🇧 GBP</span><span class="t-dn">1.27 ▼ -0.12%</span></div>
 <div class="t-pill"><span>🇯🇵 JPY</span><span class="t-up">157.36 ▲ +0.31%</span></div>
+<div class="t-pill"><span>🇦🇺 AUD</span><span class="t-up">0.66 ▲ +0.22%</span></div>
+<div class="t-pill"><span>🇨🇭 CHF</span><span class="t-up">0.89 ▲ +0.15%</span></div>
 <div class="t-pill"><span>🥇 XAU</span><span class="t-up">2418 ▲ +0.55%</span></div>
+<div class="t-pill"><span>🛢️ WTI</span><span class="t-up">$84.77 ▲ +1.20%</span></div>
 </div>
 <div class="top-actions">
 <div class="i-btn">🔔</div>
@@ -745,7 +806,7 @@ def page_dashboard(fred_key: str, news_key: str) -> None:
 """)
     a_col, b_col = st.columns([3, 2])
     with a_col:
-        asset = st.radio("Market:", ["💱 Forex", "🥇 Gold & Real Yield", "📈 Indices (Soon)", "₿ Crypto (Soon)"],
+        asset = st.radio("Market:", ["💱 Forex", "🥇 Gold & Real Yield", "🛢️ Crude Oil (WTI/Brent)", "📈 Indices (Soon)", "₿ Crypto (Soon)"],
                          horizontal=True, key="dash_asset", label_visibility="collapsed")
     with b_col:
         currency = st.selectbox("Currency:", list(CURRENCY_SERIES.keys()),
@@ -754,6 +815,9 @@ def page_dashboard(fred_key: str, news_key: str) -> None:
 
     if "Gold" in asset:
         page_gold(fred_key)
+        return
+    if "Oil" in asset:
+        page_oil(fred_key)
         return
     if "Soon" in asset:
         st.info("📌 This section is coming soon with live market data feeds.")
@@ -1012,6 +1076,74 @@ Gold (XAUUSD) Direction
         st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
         render_html('<div class="sec-title">USD Macro Drivers (All Indicators)</div>')
         render_data_table(usd_r["rows"])
+
+
+# ============================================================
+# PAGE — CRUDE OIL (ENERGY DESK)
+# ============================================================
+def page_oil(fred_key: str) -> None:
+    render_top_header()
+    render_html("""
+<div class="pg-title">
+<div class="pg-sub">GLOBAL ENERGY &amp; COMMODITY INTELLIGENCE</div>
+<h1 class="pg-h1">Crude Oil (WTI &amp; Brent) — Energy Desk</h1>
+<div class="pg-bread">WTI Crude Spot (DCOILWTICO) · Brent Crude Spot (DCOILBRENTEU) · Petrocurrency Analysis</div>
+</div>
+""")
+    if not fred_key:
+        st.info("🔑 FRED API Key required.")
+        return
+    with st.spinner("Loading Crude Oil spot & futures data..."):
+        w_df = fetch_fred(OIL_SERIES["wti"], fred_key, limit=60)
+        b_df = fetch_fred(OIL_SERIES["brent"], fred_key, limit=60)
+
+    if w_df is None or b_df is None:
+        st.warning("⚠️ Could not load WTI or Brent Crude Oil data.")
+        return
+
+    w_vals = w_df["value"].tolist()
+    b_vals = b_df["value"].tolist()
+    w_mf = calc_mtf(w_vals, "growth")
+    b_mf = calc_mtf(b_vals, "growth")
+    spread = b_vals[-1] - w_vals[-1]
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("WTI Crude Oil", f"${w_vals[-1]:.2f}/bbl",
+                  delta=f"{w_mf['mom']:+.2f}% m/m" if w_mf else None)
+    with c2:
+        st.metric("Brent Crude Oil", f"${b_vals[-1]:.2f}/bbl",
+                  delta=f"{b_mf['mom']:+.2f}% m/m" if b_mf else None)
+    with c3:
+        lbl_oil, css_oil, _ = bias_from_score(w_mf["score"] if w_mf else 0)
+        render_html(f"""
+<div class="comp-box" style="margin-top:0;">
+<div style="font-size:10px;font-weight:800;letter-spacing:1px;color:#8a99ad;text-transform:uppercase;margin-bottom:6px;">
+Crude Oil Trend Bias
+</div>
+<span class="badge {css_oil} badge-lg">{lbl_oil}</span>
+<div style="font-size:11px;color:#6b7280;margin-top:5px;">Spread (Brent - WTI): <b style="color:#e2b714;">+${spread:.2f}</b></div>
+</div>
+""")
+
+    st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
+    render_html('<div class="sec-title">WTI vs Brent Crude Oil Price Dynamic</div>')
+    fig = dual_chart(w_df, b_df, "WTI Crude ($/bbl)", "Brent Crude ($/bbl)")
+    if fig:
+        render_html('<div class="chart-card">')
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        render_html('</div>')
+
+    st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
+    render_html('<div class="sec-title">Petrocurrency &amp; Global Macro Impact</div>')
+    render_html("""
+<div class="dt-wrap" style="padding:16px 20px;">
+<div style="font-size:12.5px;color:#e5e7eb;line-height:1.8;">
+<b style="color:#10b981;">🚀 Bullish Petrocurrencies:</b> <b>CAD (Canadian Dollar)</b> and <b>NOK (Norwegian Krone)</b> directly benefit from rising oil prices due to massive export revenues.<br>
+<b style="color:#ef4444;">🔻 Bearish Currencies:</b> <b>JPY (Japanese Yen)</b> and <b>EUR (Euro)</b> import over 85% of their energy needs. Higher crude prices widen their trade deficits significantly.
+</div>
+</div>
+""")
 
 
 # ============================================================
@@ -1307,6 +1439,7 @@ def main() -> None:
             "🏠 Executive Dashboard",
             "📋 Multi-Timeframe Levels",
             "🥇 Gold (XAUUSD) Intelligence",
+            "🛢️ Crude Oil (Energy Desk)",
             "📅 Economic Calendar",
             "📰 Live News Feed",
             "📊 Currency Impact Matrix",
@@ -1335,6 +1468,8 @@ def main() -> None:
         page_levels(fred_key)
     elif page == "🥇 Gold (XAUUSD) Intelligence":
         page_gold(fred_key)
+    elif page == "🛢️ Crude Oil (Energy Desk)":
+        page_oil(fred_key)
     elif page == "📅 Economic Calendar":
         page_calendar(fred_key)
     elif page == "📰 Live News Feed":
