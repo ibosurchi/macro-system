@@ -1,5 +1,5 @@
 """
-FX Macro & Geopolitical Intelligence Desk — v9.6 Fully Patched AI Engine
+FX Macro & Geopolitical Intelligence Desk — v9.7 Quota Optimized AI Engine
 Institutional-Grade Multi-Timeframe Macro Analysis & Predictive Calendar
 Live Integration: Google Gemini AI + Telegram (@Forex_LiveStream) + Multi-Feed RSS + FRED (DFII10)
 """
@@ -302,7 +302,7 @@ def fetch_all_instant_news(channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> list
 
 
 # ============================================================
-# GEMINI AI INTELLIGENCE & SENTIMENT IMPACT ENGINE
+# GEMINI AI INTELLIGENCE & SENTIMENT IMPACT ENGINE (300s TTL)
 # ============================================================
 def extract_json_clean(text: str) -> dict:
     match = re.search(r"\{[\s\S]*\}", text)
@@ -311,7 +311,7 @@ def extract_json_clean(text: str) -> dict:
     return json.loads(text)
 
 
-@st.cache_data(ttl=90, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def analyze_news_with_gemini(articles: list, gemini_key: str) -> dict:
     scores = {
         "USD": 0.0, "EUR": 0.0, "GBP": 0.0, "CAD": 0.0,
@@ -361,7 +361,6 @@ Return ONLY a JSON object strictly matching this schema:
   "ai_summary": string
 }}
 """
-    # تاقیکردنەوەی مۆدێلە نوێ و بەردەستەکانی گووگڵ
     models_to_try = ["gemini-2.5-flash", "gemini-3.5-flash"]
     last_err = ""
     for model_name in models_to_try:
@@ -883,7 +882,7 @@ def main() -> None:
         render_html("""
         <div style="padding:5px 7px 14px;border-bottom:1px solid rgba(255,255,255,0.06);margin-bottom:12px;">
           <div style="font-size:12px;font-weight:800;color:#e2b714;">FX MACRO &amp; GEO</div>
-          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v9.6 (AI)</div>
+          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v9.7 (AI)</div>
         </div>
         """)
         page = st.radio("Navigation:", [
