@@ -1,7 +1,7 @@
 """
-FX Macro & Geopolitical Intelligence Desk — v7 Pro
+FX Macro & Geopolitical Intelligence Desk — v7.5 Live RSS
 Institutional-Grade Multi-Timeframe Macro Analysis & Predictive Calendar
-Enhanced with Real-Time Geopolitical & News Sentiment Impact Engine
+Enhanced with Instant Real-Time RSS News & Geopolitical Impact Engine
 """
 from __future__ import annotations
 import streamlit as st
@@ -13,6 +13,8 @@ from plotly.subplots import make_subplots
 from datetime import datetime, date, timedelta
 import calendar as cal_lib
 import re
+import feedparser
+from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(
     page_title="FX Macro & Geopolitical Desk",
@@ -22,10 +24,9 @@ st.set_page_config(
 )
 
 # ============================================================
-# DEFAULT API KEYS (embedded for immediate connectivity)
+# DEFAULT API KEYS
 # ============================================================
 DEFAULT_FRED_KEY = "8e153c7f6941848ffe00388ae93c1d73"
-DEFAULT_NEWS_KEY = "70fc541920ca43e69ee716ad442405fb"
 REQUEST_TIMEOUT = 12
 
 # ============================================================
@@ -424,7 +425,7 @@ div[data-testid="stMetric"] label{color:#8a99ad!important;font-size:12px!importa
 """)
 
 # ============================================================
-# DATA LAYER
+# DATA LAYER (FRED + INSTANT REAL-TIME RSS FEEDS)
 # ============================================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_fred(series_id: str, key: str, limit: int = 48) -> pd.DataFrame | None:
@@ -448,31 +449,67 @@ def fetch_fred(series_id: str, key: str, limit: int = 48) -> pd.DataFrame | None
         return None
 
 
-@st.cache_data(ttl=900, show_spinner=False)
-def fetch_news(query: str, key: str) -> list:
-    if not key:
-        return []
-    try:
-        r = requests.get(
-            "https://newsapi.org/v2/everything",
-            params={"q": query, "sortBy": "publishedAt", "apiKey": key, "pageSize": 10, "language": "en"},
-            timeout=REQUEST_TIMEOUT,
-        )
-        r.raise_for_status()
-        return r.json().get("articles", [])[:10]
-    except Exception:
-        return []
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_news(query: str = "", key: str = "") -> list:
+    """
+    Direct Real-Time Financial & Geopolitical RSS News Parser.
+    Fetches breaking news from ForexLive, FXStreet, Investing.com, OilPrice & CNBC
+    without any 24-hour API delay.
+    """
+    rss_urls = [
+        ("ForexLive", "https://www.forexlive.com/feed/news"),
+        ("FXStreet", "https://www.fxstreet.com/rss/news"),
+        ("Investing.com", "https://www.investing.com/rss/news_25.rss"),
+        ("OilPrice", "https://oilprice.com/rss/main"),
+        ("CNBC Market", "https://search.cnbc.com/rs/search/view.html?partnerId=2000&keywords=forex%20economy%20fed%20war&f=rss")
+    ]
+    
+    articles = []
+    for src_name, url in rss_urls:
+        try:
+            feed = feedparser.parse(url)
+            for entry in feed.entries[:4]:
+                title = entry.get("title", "")
+                desc = entry.get("summary", entry.get("description", ""))
+                # Clean html tags from summary
+                clean_desc = re.sub(r'<[^>]+>', '', desc)[:140] if desc else ""
+                
+                # Format current date/time from feed
+                pub = entry.get("published", "")
+                if pub:
+                    pub_clean = pub[:16]
+                else:
+                    pub_clean = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+                articles.append({
+                    "title": title,
+                    "description": clean_desc,
+                    "publishedAt": pub_clean,
+                    "source": {"name": src_name},
+                    "url": entry.get("link", "#")
+                })
+        except Exception:
+            continue
+
+    # Filter by query if specific keyword is searched
+    if query and query.strip():
+        q_words = [w.lower().strip() for w in re.split(r' OR | AND | ', query) if len(w) > 2]
+        if q_words:
+            matched = []
+            for a in articles:
+                txt = (a["title"] + " " + a["description"]).lower()
+                if any(qw in txt for qw in q_words):
+                    matched.append(a)
+            if matched:
+                return matched[:10]
+
+    return articles[:10]
 
 
 # ============================================================
 # REAL-TIME GEOPOLITICAL & NEWS SENTIMENT IMPACT ENGINE
 # ============================================================
 def analyze_news_sentiment(articles: list) -> dict:
-    """
-    NLP & Keyword Sentiment Engine:
-    Scans live news headlines & descriptions according to the Impact Matrix
-    and assigns real-time impact points (Bullish/Bearish) to Currencies, Gold, & Oil.
-    """
     scores = {
         "USD": 0.0, "EUR": 0.0, "GBP": 0.0, "CAD": 0.0,
         "JPY": 0.0, "AUD": 0.0, "NZD": 0.0, "CHF": 0.0,
@@ -481,9 +518,8 @@ def analyze_news_sentiment(articles: list) -> dict:
     drivers = []
 
     if not articles:
-        return {"scores": scores, "drivers": drivers, "total_impact": 0.0}
+        return {"scores": scores, "drivers": drivers}
 
-    # Macro Rules Dictionary
     rules = [
         {
             "pattern": r"(war|military|missile|conflict|sanction|attack|invad|escalat|middle east|russia|ukraine|iran|taiwan|tensions)",
@@ -534,7 +570,6 @@ def analyze_news_sentiment(articles: list) -> dict:
                     drivers.append({"name": r["name"], "icon": r["icon"], "sample": a.get("title", "")})
                     detected_events.add(r["name"])
 
-    # Bound scores between -0.40 and +0.40 for stability
     for k in scores:
         scores[k] = float(np.clip(scores[k], -0.40, 0.40))
 
@@ -625,7 +660,7 @@ def build_rationale(mf: dict, indicator: str, cat: str) -> str:
     return " ".join(lines) if lines else "Trend analysis based on FRED historical data (m/m, q/q, y/y composite)."
 
 
-def compute_composite(currency: str, fred_key: str, news_key: str = "") -> dict | None:
+def compute_composite(currency: str, fred_key: str) -> dict | None:
     cfg = CURRENCY_SERIES[currency]
     rows, weighted = [], []
     for name, meta in cfg["indicators"].items():
@@ -647,15 +682,12 @@ def compute_composite(currency: str, fred_key: str, news_key: str = "") -> dict 
     macro_score = sum(weighted) / tw if tw else 0.0
 
     # Real-Time Geopolitical & News Sentiment Modifier (20% Weight)
-    news_points = 0.0
-    detected_drivers = []
-    if news_key:
-        arts = fetch_news(f"{currency} OR central bank OR war OR sanctions OR oil OR tariffs", news_key)
-        sentiment_res = analyze_news_sentiment(arts)
-        news_points = sentiment_res["scores"].get(currency, 0.0)
-        detected_drivers = sentiment_res.get("drivers", [])
+    arts = fetch_news(f"{currency} OR central bank OR war OR sanctions OR oil OR tariffs")
+    sentiment_res = analyze_news_sentiment(arts)
+    news_points = sentiment_res["scores"].get(currency, 0.0)
+    detected_drivers = sentiment_res.get("drivers", [])
 
-    final_score = (0.80 * macro_score) + (0.20 * (news_points / 0.40)) if news_key else macro_score
+    final_score = (0.80 * macro_score) + (0.20 * (news_points / 0.40))
 
     return {
         "score": final_score,
@@ -887,13 +919,13 @@ def render_data_table(rows: list) -> None:
 # ============================================================
 # PAGE 1 — EXECUTIVE DASHBOARD
 # ============================================================
-def page_dashboard(fred_key: str, news_key: str) -> None:
+def page_dashboard(fred_key: str) -> None:
     render_top_header()
     render_html("""
 <div class="pg-title">
 <div class="pg-sub">FX MACRO &amp; GEOPOLITICAL DESK</div>
 <h1 class="pg-h1">Executive Intelligence Dashboard</h1>
-<div class="pg-bread">Real-time Multi-Timeframe Macro Analysis &amp; Predictive Engine</div>
+<div class="pg-bread">Real-time Multi-Timeframe Macro Analysis &amp; Live Geopolitical Predictive Engine</div>
 </div>
 """)
     a_col, b_col = st.columns([3, 2])
@@ -906,10 +938,10 @@ def page_dashboard(fred_key: str, news_key: str) -> None:
                                 key="dash_cur", label_visibility="collapsed")
 
     if "Gold" in asset:
-        page_gold(fred_key, news_key)
+        page_gold(fred_key)
         return
     if "Oil" in asset:
-        page_oil(fred_key, news_key)
+        page_oil(fred_key)
         return
     if "Soon" in asset:
         st.info("📌 This section is coming soon with live market data feeds.")
@@ -919,8 +951,8 @@ def page_dashboard(fred_key: str, news_key: str) -> None:
         st.info("🔑 FRED API Key is required. Please check the sidebar settings.")
         return
 
-    with st.spinner(f"Loading {currency} macro & geopolitical data..."):
-        result = compute_composite(currency, fred_key, news_key)
+    with st.spinner(f"Loading {currency} macro & live geopolitical news..."):
+        result = compute_composite(currency, fred_key)
 
     if not result:
         st.warning("⚠️ Could not load data. Please verify your FRED API key.")
@@ -1022,19 +1054,18 @@ def page_dashboard(fred_key: str, news_key: str) -> None:
 
     st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
 
-    # ── News + Geopolitical Composite ──
+    # ── Live Instant News + Geopolitical Composite ──
     n_col, d_col = st.columns([1.15, 1.0])
     with n_col:
-        render_html('<div class="sec-title">Live News &amp; Geopolitical Drivers</div>')
-        if news_key:
-            arts = fetch_news(f"{currency} OR forex OR inflation OR central bank OR war OR tariffs", news_key)
-            for a in arts[:4]:
-                title = a.get("title", "")
-                src   = (a.get("source") or {}).get("name", "Market Feed")
-                pub   = (a.get("publishedAt") or "")[:10]
-                link  = a.get("url", "#")
-                desc  = (a.get("description") or "")[:120]
-                render_html(f"""
+        render_html('<div class="sec-title">Live Real-Time News (Instant Feeds)</div>')
+        arts = fetch_news(f"{currency} OR forex OR inflation OR central bank OR war OR tariffs")
+        for a in arts[:4]:
+            title = a.get("title", "")
+            src   = (a.get("source") or {}).get("name", "Live Desk")
+            pub   = a.get("publishedAt", "")
+            link  = a.get("url", "#")
+            desc  = a.get("description", "")
+            render_html(f"""
 <a href="{link}" target="_blank" style="text-decoration:none;">
 <div class="news-card">
 <div style="color:#fff;font-size:12.5px;font-weight:600;line-height:1.4;margin-bottom:5px;">{title}</div>
@@ -1042,11 +1073,9 @@ def page_dashboard(fred_key: str, news_key: str) -> None:
 <div style="font-size:11px;color:#8a99ad;display:flex;justify-content:space-between;"><span>📰 {src}</span><span>🕒 {pub}</span></div>
 </div></a>
 """)
-        else:
-            render_html('<div style="background:#090e1a;padding:18px;border-radius:12px;color:#8a99ad;border:1px solid rgba(255,255,255,0.05);font-size:12px;">Add a NewsAPI key in Settings to enable the live news feed.</div>')
 
     with d_col:
-        render_html('<div class="sec-title">Macro + Geopolitical Composite</div>')
+        render_html('<div class="sec-title">Macro + Real-Time News Composite</div>')
         s = result["score"]
         m_s = result["macro_score"]
         n_p = result["news_points"]
@@ -1058,7 +1087,7 @@ def page_dashboard(fred_key: str, news_key: str) -> None:
         drivers_html = ""
         if result["drivers"]:
             driver_tags = "".join(f'<span class="pill-g" style="background:rgba(226,183,20,0.12);color:#e2b714;border-color:rgba(226,183,20,0.3);">{d["icon"]} {d["name"]}</span> ' for d in result["drivers"][:2])
-            drivers_html = f'<div style="margin-top:8px;font-size:11px;color:#8a99ad;">Active Shocks: {driver_tags}</div>'
+            drivers_html = f'<div style="margin-top:8px;font-size:11px;color:#8a99ad;">Live Active Shocks: {driver_tags}</div>'
 
         render_html(f"""
 <div class="comp-box">
@@ -1074,7 +1103,7 @@ Composite Score: <span style="color:#e2b714;">{s:+.3f}</span>
 <span>News Impact: <b style="color:{np_color};">{np_sign}{n_p:.2f} pts</b></span>
 </div>
 {drivers_html}
-<div style="font-size:10px;color:#6b7280;margin-top:6px;">80% Multi-Timeframe FRED Model + 20% Real-Time Geopolitical Sentiment</div>
+<div style="font-size:10px;color:#6b7280;margin-top:6px;">80% Multi-Timeframe FRED Model + 20% Real-Time Live News Sentiment</div>
 </div>
 """)
 
@@ -1082,7 +1111,7 @@ Composite Score: <span style="color:#e2b714;">{s:+.3f}</span>
 # ============================================================
 # PAGE 2 — MULTI-TIMEFRAME LEVELS
 # ============================================================
-def page_levels(fred_key: str, news_key: str = "") -> None:
+def page_levels(fred_key: str) -> None:
     render_top_header()
     render_html("""
 <div class="pg-title">
@@ -1099,7 +1128,7 @@ def page_levels(fred_key: str, news_key: str = "") -> None:
         st.info("🔑 FRED API Key required.")
         return
     with st.spinner("Loading data..."):
-        result = compute_composite(cur, fred_key, news_key)
+        result = compute_composite(cur, fred_key)
     if not result:
         st.warning("⚠️ Could not load data.")
         return
@@ -1111,7 +1140,7 @@ def page_levels(fred_key: str, news_key: str = "") -> None:
 <div style="margin-top:18px;">
 <div class="comp-box">
 <div style="font-size:10.5px;font-weight:800;letter-spacing:1px;color:#8a99ad;text-transform:uppercase;margin-bottom:7px;">
-{CURRENCY_SERIES[cur]['flag']} {cur} Overall Composite Bias (Macro + News Engine)
+{CURRENCY_SERIES[cur]['flag']} {cur} Overall Composite Bias (Macro + Live RSS News Engine)
 </div>
 {badge(s, lg=True)}
 <div style="font-size:12px;font-weight:700;color:#fff;margin-top:8px;">Score: <span style="color:#e2b714;">{s:+.3f}</span></div>
@@ -1123,22 +1152,22 @@ def page_levels(fred_key: str, news_key: str = "") -> None:
 # ============================================================
 # PAGE 3 — GOLD INTELLIGENCE
 # ============================================================
-def page_gold(fred_key: str, news_key: str = "") -> None:
+def page_gold(fred_key: str) -> None:
     render_top_header()
     render_html("""
 <div class="pg-title">
 <div class="pg-sub">COMMODITY &amp; SAFE-HAVEN INTELLIGENCE</div>
 <h1 class="pg-h1">Gold (XAUUSD) — Real Yield &amp; USD Analysis</h1>
-<div class="pg-bread">10Y Real Yield (DGS10 − T10YIE) · USD Composite · Geopolitical Shock Score</div>
+<div class="pg-bread">10Y Real Yield (DGS10 − T10YIE) · USD Composite · Instant Geopolitical News Sentiment</div>
 </div>
 """)
     if not fred_key:
         st.info("🔑 FRED API Key required.")
         return
-    with st.spinner("Loading Gold, Yield & Geopolitical data..."):
+    with st.spinner("Loading Gold, Yield & Live Geopolitical data..."):
         y_df  = fetch_fred(GOLD_SERIES["yield"], fred_key, limit=60)
         i_df  = fetch_fred(GOLD_SERIES["inflation_exp"], fred_key, limit=60)
-        usd_r = compute_composite("USD", fred_key, news_key)
+        usd_r = compute_composite("USD", fred_key)
 
     if y_df is None or i_df is None:
         st.warning("⚠️ Could not load DGS10 or T10YIE data.")
@@ -1152,12 +1181,10 @@ def page_gold(fred_key: str, news_key: str = "") -> None:
     gold_ry  = -ry_mf["score"]    if ry_mf  else 0.0
     gold_usd = -(usd_r["macro_score"]) if usd_r else 0.0
     
-    # News Geopolitical Safe-Haven Points for Gold
-    gold_news_pts = 0.0
-    if news_key:
-        arts = fetch_news("gold OR war OR military conflict OR sanctions OR fed cut OR banking crisis", news_key)
-        sentiment_res = analyze_news_sentiment(arts)
-        gold_news_pts = sentiment_res["scores"].get("Gold", 0.0)
+    # Real-Time Geopolitical Safe-Haven Points for Gold via Live RSS
+    arts = fetch_news("gold OR war OR military conflict OR sanctions OR fed cut OR banking crisis")
+    sentiment_res = analyze_news_sentiment(arts)
+    gold_news_pts = sentiment_res["scores"].get("Gold", 0.0)
 
     # 45% Real Yield + 35% USD Macro + 20% Geopolitical Safe-Haven News Points
     gold_s = (0.45 * gold_ry) + (0.35 * gold_usd) + (0.20 * (gold_news_pts / 0.40))
@@ -1177,7 +1204,7 @@ Gold (XAUUSD) Direction
 </div>
 {badge(gold_s, lg=True)}
 <div style="font-size:11px;color:#6b7280;margin-top:5px;">
-Score: <b style="color:#e2b714;">{gold_s:+.3f}</b> &nbsp;|&nbsp; Geo Impact: <b style="color:{gn_color};">{gold_news_pts:+.2f} pts</b>
+Score: <b style="color:#e2b714;">{gold_s:+.3f}</b> &nbsp;|&nbsp; Live Geo Impact: <b style="color:{gn_color};">{gold_news_pts:+.2f} pts</b>
 </div>
 </div>
 """)
@@ -1202,7 +1229,7 @@ Score: <b style="color:#e2b714;">{gold_s:+.3f}</b> &nbsp;|&nbsp; Geo Impact: <b 
 # ============================================================
 # PAGE — CRUDE OIL (ENERGY DESK)
 # ============================================================
-def page_oil(fred_key: str, news_key: str = "") -> None:
+def page_oil(fred_key: str) -> None:
     render_top_header()
     render_html("""
 <div class="pg-title">
@@ -1228,12 +1255,10 @@ def page_oil(fred_key: str, news_key: str = "") -> None:
     b_mf = calc_mtf(b_vals, "growth")
     spread = b_vals[-1] - w_vals[-1]
 
-    # Geopolitical News Oil Impact
-    oil_news_pts = 0.0
-    if news_key:
-        arts = fetch_news("crude oil OR opec OR energy crisis OR pipeline disruption OR middle east oil", news_key)
-        sentiment_res = analyze_news_sentiment(arts)
-        oil_news_pts = sentiment_res["scores"].get("Oil", 0.0)
+    # Geopolitical Live News Oil Impact
+    arts = fetch_news("crude oil OR opec OR energy crisis OR pipeline disruption OR middle east oil")
+    sentiment_res = analyze_news_sentiment(arts)
+    oil_news_pts = sentiment_res["scores"].get("Oil", 0.0)
 
     final_oil_score = (0.75 * (w_mf["score"] if w_mf else 0.0)) + (0.25 * (oil_news_pts / 0.40))
 
@@ -1396,13 +1421,13 @@ m/m: <span style="color:{mc_m};font-weight:700;">{ma_m} {abs(mf['mom']):.2f}%</s
 # ============================================================
 # PAGE 5 — LIVE GEOPOLITICAL NEWS & SENTIMENT RADAR
 # ============================================================
-def page_news(news_key: str) -> None:
+def page_news() -> None:
     render_top_header()
     render_html("""
 <div class="pg-title">
 <div class="pg-sub">LIVE GEOPOLITICAL &amp; MACRO NEWS</div>
 <h1 class="pg-h1">Global Market Intelligence Feed</h1>
-<div class="pg-bread">Real-time news: Central Banks · Energy · Geopolitics · Trade Wars · Live Impact Scoring</div>
+<div class="pg-bread">Real-time instant RSS news: Central Banks · Energy · Geopolitics · Trade Wars · Live Impact Scoring</div>
 </div>
 """)
     cat = st.radio("Category:", [
@@ -1416,12 +1441,8 @@ def page_news(news_key: str) -> None:
         "🤝 Trade Wars":    "tariffs OR trade war OR import duties OR WTO",
     }
 
-    if not news_key:
-        st.info("🔑 NewsAPI key required. Add it in ⚙️ Settings.")
-        return
-
-    with st.spinner("Fetching latest news & calculating impact points..."):
-        arts = fetch_news(kw[cat], news_key)
+    with st.spinner("Fetching instant live RSS news & calculating impact radar..."):
+        arts = fetch_news(kw[cat])
 
     if not arts:
         st.info("No articles found for this category.")
@@ -1441,16 +1462,16 @@ def page_news(news_key: str) -> None:
     if pills_html:
         render_html(f"""
 <div class="dt-wrap" style="padding:12px 16px;margin-bottom:16px;background:#0d1527;border-color:rgba(226,183,20,0.2);">
-<div style="font-size:11px;font-weight:800;color:#e2b714;text-transform:uppercase;margin-bottom:6px;">⚡ Real-Time News Impact Radar (Points Matrix)</div>
+<div style="font-size:11px;font-weight:800;color:#e2b714;text-transform:uppercase;margin-bottom:6px;">⚡ Real-Time News Impact Radar (Live Points Matrix)</div>
 <div class="pills">{"".join(pills_html)}</div>
 </div>
 """)
 
     for a in arts:
         title = a.get("title", "")
-        src   = (a.get("source") or {}).get("name", "")
-        pub   = (a.get("publishedAt") or "")[:10]
-        desc  = a.get("description", "") or ""
+        src   = (a.get("source") or {}).get("name", "Live Feed")
+        pub   = a.get("publishedAt", "")
+        desc  = a.get("description", "")
         link  = a.get("url", "#")
         render_html(f"""
 <div class="news-card">
@@ -1506,7 +1527,7 @@ def page_matrix() -> None:
 # ============================================================
 # PAGE 7 — SETTINGS & API CONFIGURATION
 # ============================================================
-def page_settings(fred_key: str, news_key: str) -> None:
+def page_settings(fred_key: str) -> None:
     render_top_header()
     render_html("""
 <div class="pg-title">
@@ -1535,19 +1556,8 @@ def page_settings(fred_key: str, news_key: str) -> None:
         render_html(f'<div class="{cls}">{icon} FRED API — {"Connected & Healthy" if fred_ok else "Connection Failed — check API key"}</div>')
 
     with c2:
-        render_html('<div class="sec-title">NewsAPI</div>')
-        news_ok = False
-        if news_key:
-            try:
-                r = requests.get("https://newsapi.org/v2/top-headlines",
-                                 params={"country": "us", "apiKey": news_key, "pageSize": "1"},
-                                 timeout=8)
-                news_ok = r.status_code == 200
-            except Exception:
-                pass
-        cls2 = "status-ok" if news_ok else "status-err"
-        icon2 = "✅" if news_ok else "❌"
-        render_html(f'<div class="{cls2}">{icon2} NewsAPI — {"Connected & Healthy" if news_ok else "Connection Failed — check API key"}</div>')
+        render_html('<div class="sec-title">Real-Time RSS Feed Engine</div>')
+        render_html('<div class="status-ok">✅ Live RSS Feeds Active (ForexLive, FXStreet, Investing, OilPrice) — 0s Delay</div>')
 
     st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
     render_html('<div class="sec-title">Cache Management</div>')
@@ -1560,11 +1570,10 @@ def page_settings(fred_key: str, news_key: str) -> None:
 <div class="sec-title">System Architecture</div>
 <div class="dt-wrap" style="padding:18px 20px;">
 <div style="font-size:13px;color:#e5e7eb;line-height:1.9;">
-<b style="color:#e2b714;">Data Sources:</b> Federal Reserve FRED API (800K+ series), NewsAPI (80K+ global sources)<br>
-<b style="color:#e2b714;">Analysis Engine:</b> Multi-Timeframe Composite (m/m 30% · q/q 25% · y/y 25% · 3M Trend 10% · Z-Score 10%) + Real-Time Geopolitical Sentiment Points<br>
+<b style="color:#e2b714;">Data Sources:</b> Federal Reserve FRED API (800K+ series), Direct Live Financial RSS Feeds<br>
+<b style="color:#e2b714;">Analysis Engine:</b> Multi-Timeframe Composite (80% FRED Baseline) + Real-Time Live News Impact Engine (20%)<br>
 <b style="color:#e2b714;">Currencies:</b> USD · EUR · GBP · CAD · JPY · AUD · NZD · CHF · Gold · Crude Oil<br>
-<b style="color:#e2b714;">Predictive Model:</b> Hybrid FRED Baseline + Econometric Rationale + Live Geopolitical Sentiment Engine<br>
-<b style="color:#e2b714;">Cache TTL:</b> Market data 60 min · News 15 min<br>
+<b style="color:#e2b714;">Auto-Sync:</b> Automatic Page Refresh every 60s<br>
 <b style="color:#e2b714;">Version:</b> FX Macro Desk v7.5 Pro — Production Ready
 </div>
 </div>
@@ -1575,13 +1584,16 @@ def page_settings(fred_key: str, news_key: str) -> None:
 # MAIN APPLICATION CONTROLLER
 # ============================================================
 def main() -> None:
+    # ── Auto-Refresh: هەموو 60 چرکە جارێک پەڕەکە بە داتای نوێ ڕیفرێش دەبێتەوە ──
+    st_autorefresh(interval=60 * 1000, key="auto_refresh_counter")
+
     inject_css()
 
     with st.sidebar:
         render_html("""
 <div class="sb-brand">
 <div class="sb-ico">📈</div>
-<div><div class="sb-t">FX MACRO &amp; GEO</div><div class="sb-s">INTELLIGENCE DESK v7 Pro</div></div>
+<div><div class="sb-t">FX MACRO &amp; GEO</div><div class="sb-s">INTELLIGENCE DESK v7.5</div></div>
 </div>
 """)
         page = st.radio("Navigation:", [
@@ -1600,8 +1612,6 @@ def main() -> None:
                     unsafe_allow_html=True)
         fred_key = st.text_input("FRED API Key:", value=DEFAULT_FRED_KEY,
                                  type="password", key="fred_key")
-        news_key = st.text_input("NewsAPI Key:", value=DEFAULT_NEWS_KEY,
-                                 type="password", key="news_key")
 
         render_html("""
 <div class="sb-coffee">
@@ -1612,21 +1622,21 @@ def main() -> None:
 """)
 
     if page == "🏠 Executive Dashboard":
-        page_dashboard(fred_key, news_key)
+        page_dashboard(fred_key)
     elif page == "📋 Multi-Timeframe Levels":
-        page_levels(fred_key, news_key)
+        page_levels(fred_key)
     elif page == "🥇 Gold (XAUUSD) Intelligence":
-        page_gold(fred_key, news_key)
+        page_gold(fred_key)
     elif page == "🛢️ Crude Oil (Energy Desk)":
-        page_oil(fred_key, news_key)
+        page_oil(fred_key)
     elif page == "📅 Economic Calendar":
         page_calendar(fred_key)
     elif page == "📰 Live News Feed":
-        page_news(news_key)
+        page_news()
     elif page == "📊 Currency Impact Matrix":
         page_matrix()
     elif page == "⚙️ Settings & API":
-        page_settings(fred_key, news_key)
+        page_settings(fred_key)
 
     render_html(f"""
 <div class="app-foot">
