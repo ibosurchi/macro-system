@@ -1,5 +1,5 @@
 """
-FX Macro & Geopolitical Intelligence Desk — v9.5 Stable Universal AI Engine
+FX Macro & Geopolitical Intelligence Desk — v9.6 Fully Patched AI Engine
 Institutional-Grade Multi-Timeframe Macro Analysis & Predictive Calendar
 Live Integration: Google Gemini AI + Telegram (@Forex_LiveStream) + Multi-Feed RSS + FRED (DFII10)
 """
@@ -218,7 +218,6 @@ div[data-testid="stMetric"] label{color:#8a99ad!important;font-size:12px!importa
 .pills{display:flex;gap:5px;flex-wrap:wrap;}
 .pill-g{background:rgba(16,185,129,0.13);color:#10b981;border:1px solid rgba(16,185,129,0.28);padding:3px 9px;border-radius:6px;font-weight:700;font-size:11px;}
 .pill-r{background:rgba(239,68,68,0.13);color:#ef4444;border:1px solid rgba(239,68,68,0.28);padding:3px 9px;border-radius:6px;font-weight:700;font-size:11px;}
-.pill-ai{background:rgba(226,183,20,0.13);color:#e2b714;border:1px solid rgba(226,183,20,0.28);padding:3px 9px;border-radius:6px;font-weight:700;font-size:11px;}
 .app-foot{display:flex;justify-content:space-between;align-items:center;padding:16px 22px;margin-top:36px;border-top:1px solid rgba(255,255,255,0.05);font-size:11px;color:#4b5563;}
 .live-dot{width:6px;height:6px;border-radius:50%;background:#10b981;box-shadow:0 0 7px #10b981;display:inline-block;margin-right:5px;}
 </style>
@@ -362,8 +361,8 @@ Return ONLY a JSON object strictly matching this schema:
   "ai_summary": string
 }}
 """
-    # تاقیکردنەوەی مۆدێلە نوێ و بەردەستەکانی گووگڵ بە پێی دواین وەشانی 2026
-    models_to_try = ["gemini-2.5-flash", "gemini-3.5-flash", "gemini-1.5-flash"]
+    # تاقیکردنەوەی مۆدێلە نوێ و بەردەستەکانی گووگڵ
+    models_to_try = ["gemini-2.5-flash", "gemini-3.5-flash"]
     last_err = ""
     for model_name in models_to_try:
         try:
@@ -884,7 +883,7 @@ def main() -> None:
         render_html("""
         <div style="padding:5px 7px 14px;border-bottom:1px solid rgba(255,255,255,0.06);margin-bottom:12px;">
           <div style="font-size:12px;font-weight:800;color:#e2b714;">FX MACRO &amp; GEO</div>
-          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v9.5 (AI)</div>
+          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v9.6 (AI)</div>
         </div>
         """)
         page = st.radio("Navigation:", [
