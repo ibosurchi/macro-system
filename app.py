@@ -1,5 +1,5 @@
 """
-FX Macro & Geopolitical Intelligence Desk — v9.7 Quota Optimized AI Engine
+FX Macro & Geopolitical Intelligence Desk — v9.8 Rate Limit Optimized AI Engine
 Institutional-Grade Multi-Timeframe Macro Analysis & Predictive Calendar
 Live Integration: Google Gemini AI + Telegram (@Forex_LiveStream) + Multi-Feed RSS + FRED (DFII10)
 """
@@ -302,7 +302,7 @@ def fetch_all_instant_news(channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> list
 
 
 # ============================================================
-# GEMINI AI INTELLIGENCE & SENTIMENT IMPACT ENGINE (300s TTL)
+# GEMINI AI INTELLIGENCE & SENTIMENT IMPACT ENGINE (OPTIMIZED)
 # ============================================================
 def extract_json_clean(text: str) -> dict:
     match = re.search(r"\{[\s\S]*\}", text)
@@ -328,70 +328,39 @@ def analyze_news_with_gemini(articles: list, gemini_key: str) -> dict:
     if not clean_key:
         return {"scores": scores, "drivers": drivers, "ai_summary": "API Key is missing.", "ai_active": False}
 
-    news_corpus = "\n".join([f"[{i+1}] {a.get('title','')} - {a.get('description','')[:180]}" for i, a in enumerate(articles[:8])])
+    news_corpus = "\n".join([f"[{i+1}] {a.get('title','')} - {a.get('description','')[:180]}" for i, a in enumerate(articles[:6])])
     prompt = f"""
-You are an elite Institutional Macro Strategist and Quantitative FX & Commodity Portfolio Manager.
-Evaluate the following breaking news articles and determine exact directional impact points, expected duration, and key drivers.
-
-LIVE NEWS STREAM:
-{news_corpus}
-
-INSTRUCTIONS:
-1. Provide impact scores for: USD, EUR, GBP, CAD, JPY, AUD, NZD, CHF, Gold, Oil.
-   Scale: -0.50 (Extremely Bearish) to +0.50 (Extremely Bullish). 0.0 is Neutral.
-2. Identify top 2-3 market-moving catalyst events.
-3. For each catalyst, specify 'name', 'icon' (emoji), 'expected_duration' (e.g. '1-4 Hours', '1-3 Days', '1-2 Weeks'), and 'reason'.
-4. Provide a concise 'ai_summary' explaining the primary market theme in 1-2 sharp sentences.
-
-Return ONLY a JSON object strictly matching this schema:
+You are an elite Institutional Macro Strategist. Evaluate these news articles and provide exact directional impact points (-0.50 to +0.50) for USD, EUR, GBP, CAD, JPY, AUD, NZD, CHF, Gold, Oil, top drivers, and a short 'ai_summary'.
+Return ONLY a JSON object:
 {{
-  "scores": {{
-    "USD": float, "EUR": float, "GBP": float, "CAD": float,
-    "JPY": float, "AUD": float, "NZD": float, "CHF": float,
-    "Gold": float, "Oil": float
-  }},
-  "drivers": [
-    {{
-      "name": string,
-      "icon": string,
-      "expected_duration": string,
-      "reason": string
-    }}
-  ],
+  "scores": {{"USD": float, "EUR": float, "GBP": float, "CAD": float, "JPY": float, "AUD": float, "NZD": float, "CHF": float, "Gold": float, "Oil": float}},
+  "drivers": [{{"name": string, "icon": string, "expected_duration": string, "reason": string}}],
   "ai_summary": string
 }}
+News: {news_corpus}
 """
-    models_to_try = ["gemini-2.5-flash", "gemini-3.5-flash"]
-    last_err = ""
-    for model_name in models_to_try:
-        try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={clean_key}"
-            headers = {"Content-Type": "application/json"}
-            payload = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {
-                    "responseMimeType": "application/json",
-                    "temperature": 0.1
-                }
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={clean_key}"
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "responseMimeType": "application/json",
+                "temperature": 0.1
             }
-            res = requests.post(url, headers=headers, json=payload, timeout=12)
-            if res.status_code == 200:
-                res_data = res.json()
-                raw_text = res_data["candidates"][0]["content"]["parts"][0]["text"]
-                parsed = extract_json_clean(raw_text)
-                parsed["ai_active"] = True
-                return parsed
-            else:
-                last_err = res.json().get("error", {}).get("message", res.text[:100])
-        except Exception as e:
-            last_err = str(e)[:100]
-
-    return {
-        "scores": scores,
-        "drivers": drivers,
-        "ai_summary": f"API Error: {last_err}",
-        "ai_active": False
-    }
+        }
+        res = requests.post(url, headers=headers, json=payload, timeout=12)
+        if res.status_code == 200:
+            res_data = res.json()
+            raw_text = res_data["candidates"][0]["content"]["parts"][0]["text"]
+            parsed = extract_json_clean(raw_text)
+            parsed["ai_active"] = True
+            return parsed
+        else:
+            err_msg = res.json().get("error", {}).get("message", res.text[:100])
+            return {"scores": scores, "drivers": drivers, "ai_summary": f"Rate Limit Error: {err_msg}", "ai_active": False}
+    except Exception as e:
+        return {"scores": scores, "drivers": drivers, "ai_summary": f"Error: {str(e)[:100]}", "ai_active": False}
 
 
 # ============================================================
@@ -882,7 +851,7 @@ def main() -> None:
         render_html("""
         <div style="padding:5px 7px 14px;border-bottom:1px solid rgba(255,255,255,0.06);margin-bottom:12px;">
           <div style="font-size:12px;font-weight:800;color:#e2b714;">FX MACRO &amp; GEO</div>
-          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v9.7 (AI)</div>
+          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v9.8 (AI)</div>
         </div>
         """)
         page = st.radio("Navigation:", [
