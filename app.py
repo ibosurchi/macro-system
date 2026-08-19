@@ -1,7 +1,7 @@
 """
-FX Macro & Geopolitical Intelligence Desk — v10.4 Groq Llama 3.1 Patched
+FX Macro & Geopolitical Intelligence Desk — v10.5 Groq Llama 3.3 Patched
 Institutional-Grade Multi-Timeframe Macro Analysis & Predictive Calendar
-Live Integration: Groq Llama 3.1 (8b-instant) + Telegram + RSS + FRED (DFII10)
+Live Integration: Groq Llama 3.3 (70b-versatile) + Telegram + RSS + FRED (DFII10)
 """
 from __future__ import annotations
 import streamlit as st
@@ -368,7 +368,7 @@ Return ONLY a JSON object strictly matching this schema:
             "Content-Type": "application/json"
         }
         payload = {
-            "model": "llama-3.1-8b-instant",
+            "model": "llama-3.3-70b-versatile",
             "messages": [{"role": "user", "content": prompt}],
             "response_format": {"type": "json_object"},
             "temperature": 0.1
@@ -535,7 +535,7 @@ def render_top_header() -> None:
 <div class="top-tickers">
 <div class="t-pill"><span>🇺🇸 USD</span><span class="t-up">Live Macro</span></div>
 <div class="t-pill"><span>🥇 Gold</span><span class="t-up">XAU/USD Active</span></div>
-<div class="t-pill"><span>🤖 AI Engine</span><span class="t-up">Groq Llama 3.1 Active</span></div>
+<div class="t-pill"><span>🤖 AI Engine</span><span class="t-up">Groq Llama 3.3 Active</span></div>
 <div class="t-pill"><span>📡 Channel</span><span class="t-up">Telegram @Forex_LiveStream</span></div>
 </div>
 </div>
@@ -588,7 +588,7 @@ def page_dashboard(fred_key: str, channel_name: str, groq_key: str) -> None:
 <div class="pg-title">
 <div class="pg-sub">FX MACRO &amp; GEOPOLITICAL DESK</div>
 <h1 class="pg-h1">Executive Intelligence Dashboard</h1>
-<div class="pg-bread">Real-time Multi-Timeframe Macro Analysis &amp; Groq Llama 3.1 AI Engine</div>
+<div class="pg-bread">Real-time Multi-Timeframe Macro Analysis &amp; Groq Llama 3.3 AI Engine</div>
 </div>
 """)
     a_col, b_col = st.columns([3, 2])
@@ -604,7 +604,7 @@ def page_dashboard(fred_key: str, channel_name: str, groq_key: str) -> None:
         page_oil(fred_key, channel_name, groq_key)
         return
 
-    with st.spinner(f"Reading {currency} macro data & analyzing live feeds with Groq Llama 3.1..."):
+    with st.spinner(f"Reading {currency} macro data & analyzing live feeds with Groq Llama 3.3..."):
         result = compute_composite(currency, fred_key, channel_name, groq_key)
 
     if not result:
@@ -670,7 +670,7 @@ def page_dashboard(fred_key: str, channel_name: str, groq_key: str) -> None:
             """)
 
     with d_col:
-        ai_badge = '<span style="color:#10b981;font-size:10px;font-weight:800;">🤖 Groq Llama 3.1 Active</span>' if result["ai_active"] else '<span style="color:#f59e0b;font-size:10px;font-weight:700;">⚙️ Check Groq API Key</span>'
+        ai_badge = '<span style="color:#10b981;font-size:10px;font-weight:800;">🤖 Groq Llama 3.3 Active</span>' if result["ai_active"] else '<span style="color:#f59e0b;font-size:10px;font-weight:700;">⚙️ Check Groq API Key</span>'
         render_html(f'<div class="sec-title">Macro + AI Sentiment Composite &nbsp; {ai_badge}</div>')
         s = result["score"]
         m_s = result["macro_score"]
@@ -706,7 +706,7 @@ def page_gold(fred_key: str, channel_name: str, groq_key: str) -> None:
 <div class="pg-title">
 <div class="pg-sub">COMMODITY &amp; SAFE-HAVEN INTELLIGENCE</div>
 <h1 class="pg-h1">Gold (XAUUSD) — Real Yield &amp; Groq AI Feed</h1>
-<div class="pg-bread">Real Yield 10Y (DFII10) + Groq Llama 3.1 Shock &amp; Duration Analysis</div>
+<div class="pg-bread">Real Yield 10Y (DFII10) + Groq Llama 3.3 Shock &amp; Duration Analysis</div>
 </div>
 """)
     if not fred_key:
@@ -816,7 +816,7 @@ def page_telegram_feed(channel_name: str, groq_key: str) -> None:
 <div class="pg-title">
 <div class="pg-sub">LIVE TELEGRAM RADAR</div>
 <h1 class="pg-h1">Telegram Channel: @{channel_name}</h1>
-<div class="pg-bread">Real-Time Parsed Messages &amp; Groq Llama 3.1 Impact Analysis</div>
+<div class="pg-bread">Real-Time Parsed Messages &amp; Groq Llama 3.3 Impact Analysis</div>
 </div>
 """)
     with st.spinner("Fetching Telegram posts & executing Groq AI Model..."):
@@ -842,7 +842,7 @@ def page_telegram_feed(channel_name: str, groq_key: str) -> None:
     if sentiment_res.get("ai_summary"):
         render_html(f"""
         <div class="news-card" style="border: 1px solid rgba(226,183,20,0.3);background:#0b1325;margin-bottom:14px;">
-          <div style="color:#e2b714;font-size:12.5px;font-weight:800;">🤖 Groq Llama 3.1 Intelligence Briefing</div>
+          <div style="color:#e2b714;font-size:12.5px;font-weight:800;">🤖 Groq Llama 3.3 Intelligence Briefing</div>
           <div style="color:#ffffff;font-size:12px;line-height:1.5;margin-top:5px;">{sentiment_res["ai_summary"]}</div>
         </div>
         """)
@@ -874,7 +874,7 @@ def main() -> None:
         render_html("""
         <div style="padding:5px 7px 14px;border-bottom:1px solid rgba(255,255,255,0.06);margin-bottom:12px;">
           <div style="font-size:12px;font-weight:800;color:#e2b714;">FX MACRO &amp; GEO</div>
-          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v10.4 (Groq)</div>
+          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v10.5 (Groq)</div>
         </div>
         """)
         page = st.radio("Navigation:", [
@@ -909,7 +909,7 @@ def main() -> None:
 
     render_html(f"""
     <div class="app-foot">
-      <div>© 2026 FX Macro Desk | Groq Llama 3.1 Integration</div>
+      <div>© 2026 FX Macro Desk | Groq Llama 3.3 Integration</div>
       <div><span class="live-dot"></span><span style="color:#10b981;font-weight:600;">Live Feed Active &nbsp; {datetime.now().strftime('%H:%M:%S')}</span></div>
     </div>
     """)
