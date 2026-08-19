@@ -1,8 +1,7 @@
 """
-FX Macro & Geopolitical Intelligence Desk — v8.3 High-Impact Sentiment
+FX Macro & Geopolitical Intelligence Desk — v9.0 AI-Powered
 Institutional-Grade Multi-Timeframe Macro Analysis & Predictive Calendar
-Live Integration: Telegram (@Forex_LiveStream) + Multi-Feed RSS + FRED Engine
-Weighting: 50% Macro Baseline + 50% Real-Time Telegram Sentiment Impact
+Live Integration: Google Gemini AI + Telegram (@Forex_LiveStream) + Multi-Feed RSS + FRED (DFII10)
 """
 from __future__ import annotations
 import streamlit as st
@@ -13,9 +12,12 @@ import plotly.graph_objects as go
 from datetime import datetime, date, timedelta
 import calendar as cal_lib
 import re
+import json
 import feedparser
 from bs4 import BeautifulSoup
 from streamlit_autorefresh import st_autorefresh
+from google import genai
+from google.genai import types
 
 st.set_page_config(
     page_title="FX Macro & Geopolitical Desk",
@@ -154,7 +156,7 @@ def inject_css() -> None:
 #MainMenu,footer,.stDeployButton{visibility:hidden!important;display:none!important;}
 header[data-testid="stHeader"]{background:transparent!important;}
 
-section[data-testid="stSidebar"]{background:#070c16!important;border-right:1px solid rgba(255,255,255,0.05)!important;min-width:248px!important;max-width:248px!important;}
+section[data-testid="stSidebar"]{background:#070c16!important;border-right:1px solid rgba(255,255,255,0.05)!important;min-width:250px!important;max-width:250px!important;}
 section[data-testid="stSidebar"] .block-container{padding:14px 10px!important;}
 section[data-testid="stSidebar"] div[data-testid="stRadio"]>div{gap:3px!important;flex-direction:column!important;}
 section[data-testid="stSidebar"] div[data-testid="stRadio"] label{display:flex!important;align-items:center!important;padding:9px 12px!important;border-radius:10px!important;background:transparent!important;border:1px solid transparent!important;color:#8a99ad!important;font-size:12.5px!important;font-weight:500!important;cursor:pointer!important;width:100%!important;}
@@ -216,6 +218,7 @@ div[data-testid="stMetric"] label{color:#8a99ad!important;font-size:12px!importa
 .pills{display:flex;gap:5px;flex-wrap:wrap;}
 .pill-g{background:rgba(16,185,129,0.13);color:#10b981;border:1px solid rgba(16,185,129,0.28);padding:3px 9px;border-radius:6px;font-weight:700;font-size:11px;}
 .pill-r{background:rgba(239,68,68,0.13);color:#ef4444;border:1px solid rgba(239,68,68,0.28);padding:3px 9px;border-radius:6px;font-weight:700;font-size:11px;}
+.pill-ai{background:rgba(226,183,20,0.13);color:#e2b714;border:1px solid rgba(226,183,20,0.28);padding:3px 9px;border-radius:6px;font-weight:700;font-size:11px;}
 .app-foot{display:flex;justify-content:space-between;align-items:center;padding:16px 22px;margin-top:36px;border-top:1px solid rgba(255,255,255,0.05);font-size:11px;color:#4b5563;}
 .live-dot{width:6px;height:6px;border-radius:50%;background:#10b981;box-shadow:0 0 7px #10b981;display:inline-block;margin-right:5px;}
 </style>
@@ -300,66 +303,93 @@ def fetch_all_instant_news(channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> list
 
 
 # ============================================================
-# REAL-TIME GEOPOLITICAL & NEWS SENTIMENT IMPACT ENGINE
+# GEMINI AI INTELLIGENCE & SENTIMENT IMPACT ENGINE
 # ============================================================
-def analyze_news_sentiment(articles: list) -> dict:
+@st.cache_data(ttl=90, show_spinner=False)
+def analyze_news_with_gemini(articles: list, gemini_key: str) -> dict:
     scores = {
         "USD": 0.0, "EUR": 0.0, "GBP": 0.0, "CAD": 0.0,
         "JPY": 0.0, "AUD": 0.0, "NZD": 0.0, "CHF": 0.0,
         "Gold": 0.0, "Oil": 0.0
     }
     drivers = []
+    ai_summary = ""
+
     if not articles:
-        return {"scores": scores, "drivers": drivers}
+        return {"scores": scores, "drivers": drivers, "ai_summary": ai_summary, "ai_active": False}
 
-    rules = [
-        {
-            "pattern": r"(war|military|missile|conflict|sanction|attack|invad|escalat|iran|israel|russia|ukraine|tensions)",
-            "name": "Geopolitical Conflict & War Escalation",
-            "icon": "💣",
-            "impacts": {"USD": +0.10, "CHF": +0.25, "Gold": +0.35, "Oil": +0.25, "EUR": -0.15, "GBP": -0.12}
-        },
-        {
-            "pattern": r"(treasury.*buyback|bond repurchase|yields.*decline|yield.*fall|dollar.*decline)",
-            "name": "US Treasury Bond Buybacks / Yield Drop",
-            "icon": "📉",
-            "impacts": {"Gold": +0.35, "EUR": +0.20, "GBP": +0.18, "USD": -0.35}
-        },
-        {
-            "pattern": r"(oil spike|opec cut|crude jump|brent surge|energy supply|pipeline)",
-            "name": "Oil & Energy Supply Shock",
-            "icon": "🛢️",
-            "impacts": {"CAD": +0.22, "Oil": +0.30, "USD": +0.10, "JPY": -0.22, "EUR": -0.15}
-        },
-        {
-            "pattern": r"(fed hike|hawkish fed|rate increase|sticky inflation|cpi surge)",
-            "name": "Hawkish Fed / Rate Hike Pressure",
-            "icon": "🏦",
-            "impacts": {"USD": +0.25, "Gold": -0.20, "EUR": -0.15, "JPY": -0.18}
-        },
-        {
-            "pattern": r"(fed cut|rate cut|dovish fed|inflation cooling|fed pivot)",
-            "name": "Dovish Fed / Rate Cut Pivot",
-            "icon": "📉",
-            "impacts": {"Gold": +0.30, "USD": -0.25, "EUR": +0.18, "GBP": +0.15}
-        },
-    ]
+    # Fallback Rule-Based Engine if Gemini Key is not supplied
+    if not gemini_key or not gemini_key.strip():
+        rules = [
+            {"pattern": r"(war|military|missile|conflict|sanction|attack|invad|escalat|iran|israel|russia|ukraine|tensions)", "name": "Geopolitical Conflict & War Escalation", "icon": "💣", "dur": "1-2 Weeks", "impacts": {"USD": +0.10, "CHF": +0.25, "Gold": +0.35, "Oil": +0.25, "EUR": -0.15, "GBP": -0.12}},
+            {"pattern": r"(treasury.*buyback|bond repurchase|yields.*decline|yield.*fall|dollar.*decline)", "name": "US Treasury Bond Buybacks / Yield Drop", "icon": "📉", "dur": "1-3 Days", "impacts": {"Gold": +0.35, "EUR": +0.20, "GBP": +0.18, "USD": -0.35}},
+            {"pattern": r"(oil spike|opec cut|crude jump|brent surge|energy supply|pipeline)", "name": "Oil & Energy Supply Shock", "icon": "🛢️", "dur": "3-5 Days", "impacts": {"CAD": +0.22, "Oil": +0.30, "USD": +0.10, "JPY": -0.22, "EUR": -0.15}},
+            {"pattern": r"(fed hike|hawkish fed|rate increase|sticky inflation|cpi surge)", "name": "Hawkish Fed / Rate Hike Pressure", "icon": "🏦", "dur": "1-2 Weeks", "impacts": {"USD": +0.25, "Gold": -0.20, "EUR": -0.15, "JPY": -0.18}},
+            {"pattern": r"(fed cut|rate cut|dovish fed|inflation cooling|fed pivot)", "name": "Dovish Fed / Rate Cut Pivot", "icon": "📉", "dur": "1-2 Weeks", "impacts": {"Gold": +0.30, "USD": -0.25, "EUR": +0.18, "GBP": +0.15}},
+        ]
+        detected = set()
+        for a in articles:
+            txt = (str(a.get("title", "")) + " " + str(a.get("description", ""))).lower()
+            for r in rules:
+                if re.search(r["pattern"], txt):
+                    for curr, pt in r["impacts"].items():
+                        scores[curr] += pt
+                    if r["name"] not in detected:
+                        drivers.append({"name": r["name"], "icon": r["icon"], "expected_duration": r["dur"], "reason": "Rule-based pattern matching"})
+                        detected.add(r["name"])
+        for k in scores:
+            scores[k] = float(np.clip(scores[k], -0.60, 0.60))
+        return {"scores": scores, "drivers": drivers, "ai_summary": "Rule-based engine active (Add Gemini API Key in sidebar for advanced AI reasoning).", "ai_active": False}
 
-    detected = set()
-    for a in articles:
-        txt = (str(a.get("title", "")) + " " + str(a.get("description", ""))).lower()
-        for r in rules:
-            if re.search(r["pattern"], txt):
-                for curr, pt in r["impacts"].items():
-                    scores[curr] += pt
-                if r["name"] not in detected:
-                    drivers.append({"name": r["name"], "icon": r["icon"]})
-                    detected.add(r["name"])
+    # Advanced Google Gemini 2.5 Flash Institutional Engine
+    news_corpus = "\n".join([f"[{i+1}] {a.get('title','')} - {a.get('description','')[:180]}" for i, a in enumerate(articles[:8])])
+    prompt = f"""
+You are an elite Institutional Macro Strategist and Quantitative FX & Commodity Portfolio Manager.
+Evaluate the following breaking news articles and determine exact directional impact points, expected duration, and key drivers.
 
-    for k in scores:
-        scores[k] = float(np.clip(scores[k], -0.60, 0.60))
+LIVE NEWS STREAM:
+{news_corpus}
 
-    return {"scores": scores, "drivers": drivers}
+INSTRUCTIONS:
+1. Provide impact scores for: USD, EUR, GBP, CAD, JPY, AUD, NZD, CHF, Gold, Oil.
+   Scale: -0.50 (Extremely Bearish) to +0.50 (Extremely Bullish). 0.0 is Neutral.
+2. Identify top 2-3 market-moving catalyst events.
+3. For each catalyst, specify 'name', 'icon' (emoji), 'expected_duration' (e.g. '1-4 Hours', '1-3 Days', '1-2 Weeks'), and 'reason'.
+4. Provide a concise 'ai_summary' explaining the primary market theme in 1-2 sharp sentences.
+
+Return ONLY a JSON object strictly matching this schema:
+{{
+  "scores": {{
+    "USD": float, "EUR": float, "GBP": float, "CAD": float,
+    "JPY": float, "AUD": float, "NZD": float, "CHF": float,
+    "Gold": float, "Oil": float
+  }},
+  "drivers": [
+    {{
+      "name": string,
+      "icon": string,
+      "expected_duration": string,
+      "reason": string
+    }}
+  ],
+  "ai_summary": string
+}}
+"""
+    try:
+        client = genai.Client(api_key=gemini_key.strip())
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.1
+            )
+        )
+        data = json.loads(response.text)
+        data["ai_active"] = True
+        return data
+    except Exception as e:
+        return analyze_news_with_gemini(articles, "")
 
 
 # ============================================================
@@ -400,7 +430,7 @@ def calc_mtf(vals: list, cat: str) -> dict | None:
     }
 
 
-def compute_composite(currency: str, fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> dict | None:
+def compute_composite(currency: str, fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL, gemini_key: str = "") -> dict | None:
     cfg = CURRENCY_SERIES[currency]
     rows, weighted = [], []
     for name, meta in cfg["indicators"].items():
@@ -418,12 +448,15 @@ def compute_composite(currency: str, fred_key: str, channel_name: str = DEFAULT_
     tw = sum(r["weight"] for r in rows)
     macro_score = sum(weighted) / tw if tw else 0.0
 
-    # 50% Macro Baseline + 50% Real-Time Telegram News Weighting
+    # AI Sentiment Analysis
     all_news = fetch_all_instant_news(channel_name)
-    sentiment_res = analyze_news_sentiment(all_news)
+    sentiment_res = analyze_news_with_gemini(all_news, gemini_key)
     news_points = sentiment_res["scores"].get(currency, 0.0)
     detected_drivers = sentiment_res.get("drivers", [])
+    ai_summary = sentiment_res.get("ai_summary", "")
+    ai_active = sentiment_res.get("ai_active", False)
 
+    # 50% Macro Baseline + 50% AI News Impact
     final_score = (0.50 * macro_score) + (0.50 * (news_points / 0.50))
 
     return {
@@ -431,6 +464,8 @@ def compute_composite(currency: str, fred_key: str, channel_name: str = DEFAULT_
         "macro_score": macro_score,
         "news_points": news_points,
         "drivers": detected_drivers,
+        "ai_summary": ai_summary,
+        "ai_active": ai_active,
         "rows": rows
     }
 
@@ -505,9 +540,10 @@ def render_top_header() -> None:
 <div class="top-bar">
 <div class="top-brand"><span>📊</span><span>FX MACRO &amp; GEOPOLITICAL DESK</span></div>
 <div class="top-tickers">
-<div class="t-pill"><span>🇺🇸 USD</span><span class="t-up">Live Baseline</span></div>
+<div class="t-pill"><span>🇺🇸 USD</span><span class="t-up">Live Macro</span></div>
 <div class="t-pill"><span>🥇 Gold</span><span class="t-up">XAU/USD Active</span></div>
-<div class="t-pill"><span>📡 50% News Weight</span><span class="t-up">Telegram @Forex_LiveStream</span></div>
+<div class="t-pill"><span>🤖 AI Engine</span><span class="t-up">Gemini 2.5 Flash</span></div>
+<div class="t-pill"><span>📡 Channel</span><span class="t-up">Telegram @Forex_LiveStream</span></div>
 </div>
 </div>
 """)
@@ -553,13 +589,13 @@ def render_data_table(rows: list) -> None:
 # ============================================================
 # PAGE 1 — EXECUTIVE DASHBOARD
 # ============================================================
-def page_dashboard(fred_key: str, channel_name: str) -> None:
+def page_dashboard(fred_key: str, channel_name: str, gemini_key: str) -> None:
     render_top_header()
     render_html("""
 <div class="pg-title">
 <div class="pg-sub">FX MACRO &amp; GEOPOLITICAL DESK</div>
 <h1 class="pg-h1">Executive Intelligence Dashboard</h1>
-<div class="pg-bread">Real-time Multi-Timeframe Macro Analysis &amp; 50% Telegram News Impact Engine</div>
+<div class="pg-bread">Real-time Multi-Timeframe Macro Analysis &amp; Google Gemini AI Impact Engine</div>
 </div>
 """)
     a_col, b_col = st.columns([3, 2])
@@ -569,14 +605,14 @@ def page_dashboard(fred_key: str, channel_name: str) -> None:
         currency = st.selectbox("Currency:", list(CURRENCY_SERIES.keys()), format_func=lambda k: f"{CURRENCY_SERIES[k]['flag']} {k} — {CURRENCY_SERIES[k]['name']}", label_visibility="collapsed")
 
     if "Gold" in asset:
-        page_gold(fred_key, channel_name)
+        page_gold(fred_key, channel_name, gemini_key)
         return
     if "Oil" in asset:
-        page_oil(fred_key, channel_name)
+        page_oil(fred_key, channel_name, gemini_key)
         return
 
-    with st.spinner(f"Reading {currency} macro data & live Telegram feed..."):
-        result = compute_composite(currency, fred_key, channel_name)
+    with st.spinner(f"Reading {currency} macro data & analyzing live feeds with Gemini AI..."):
+        result = compute_composite(currency, fred_key, channel_name, gemini_key)
 
     if not result:
         st.warning("⚠️ Could not load data.")
@@ -641,41 +677,50 @@ def page_dashboard(fred_key: str, channel_name: str) -> None:
             """)
 
     with d_col:
-        render_html('<div class="sec-title">Macro + Telegram News Composite</div>')
+        ai_badge = '<span style="color:#10b981;font-size:10px;font-weight:800;">🤖 Gemini 2.5 Flash Active</span>' if result["ai_active"] else '<span style="color:#f59e0b;font-size:10px;font-weight:700;">⚙️ Rule Engine (Add API Key)</span>'
+        render_html(f'<div class="sec-title">Macro + AI Sentiment Composite &nbsp; {ai_badge}</div>')
         s = result["score"]
         m_s = result["macro_score"]
         n_p = result["news_points"]
         np_color = "#10b981" if n_p > 0 else ("#ef4444" if n_p < 0 else "#8a99ad")
-        drivers_html = "".join(f'<span class="pill-g" style="background:rgba(226,183,20,0.12);color:#e2b714;">{d["icon"]} {d["name"]}</span> ' for d in result["drivers"][:2])
+        
+        driver_items = []
+        for d in result["drivers"][:3]:
+            dur_tag = f'<span style="color:#10b981;font-weight:700;"> ({d.get("expected_duration", "Active")})</span>' if d.get("expected_duration") else ''
+            driver_items.append(f'<div style="font-size:11.5px;color:#e5e7eb;margin-top:4px;text-align:left;"><b>{d.get("icon","⚡")} {d.get("name","Event")}:</b>{dur_tag}<br><span style="color:#8a99ad;font-size:10.5px;">{d.get("reason","")}</span></div>')
+        drivers_html = "".join(driver_items)
+
+        ai_summary_html = f'<div style="margin-top:8px;padding:8px 10px;background:rgba(226,183,20,0.06);border:1px solid rgba(226,183,20,0.18);border-radius:8px;font-size:11px;color:#e5e7eb;text-align:left;"><b style="color:#e2b714;">AI Assessment:</b> {result["ai_summary"]}</div>' if result["ai_summary"] else ''
 
         render_html(f"""
         <div class="comp-box">
           <div style="font-size:10.5px;font-weight:800;color:#8a99ad;text-transform:uppercase;">{CURRENCY_SERIES[currency]['flag']} {currency} Overall Bias</div>
-          <div style="margin:10px 0;">{badge(s, lg=True)}</div>
+          <div style="margin:8px 0;">{badge(s, lg=True)}</div>
           <div style="font-size:14px;font-weight:800;color:#fff;">Composite: <span style="color:#e2b714;">{s:+.3f}</span></div>
-          <div style="font-size:11px;color:#8a99ad;margin-top:6px;">Baseline (50%): <b>{m_s:+.3f}</b> | News Impact (50%): <b style="color:{np_color};">{n_p:+.2f} pts</b></div>
-          <div style="margin-top:8px;">{drivers_html}</div>
+          <div style="font-size:11px;color:#8a99ad;margin-top:4px;">Macro (50%): <b>{m_s:+.3f}</b> | AI News (50%): <b style="color:{np_color};">{n_p:+.2f} pts</b></div>
+          {ai_summary_html}
+          <div style="margin-top:6px;">{drivers_html}</div>
         </div>
         """)
 
 
 # ============================================================
-# PAGE 2 — GOLD INTELLIGENCE (50% NEWS WEIGHT)
+# PAGE 2 — GOLD INTELLIGENCE
 # ============================================================
-def page_gold(fred_key: str, channel_name: str) -> None:
+def page_gold(fred_key: str, channel_name: str, gemini_key: str) -> None:
     render_top_header()
     render_html("""
 <div class="pg-title">
 <div class="pg-sub">COMMODITY &amp; SAFE-HAVEN INTELLIGENCE</div>
-<h1 class="pg-h1">Gold (XAUUSD) — Real Yield &amp; Telegram Feed</h1>
-<div class="pg-bread">50% Real Yield/Macro + 50% High-Impact Telegram Geopolitical Alerts</div>
+<h1 class="pg-h1">Gold (XAUUSD) — Real Yield &amp; Gemini AI Feed</h1>
+<div class="pg-bread">Real Yield 10Y (DFII10) + Google Gemini AI Shock &amp; Duration Analysis</div>
 </div>
 """)
     if not fred_key:
         st.info("🔑 FRED API Key is required.")
         return
 
-    with st.spinner("Analyzing Gold Real Yield (DFII10) & Telegram News..."):
+    with st.spinner("Analyzing Gold Real Yield (DFII10) & Telegram Feeds with Gemini AI..."):
         ry_df = fetch_fred(GOLD_SERIES["real_yield"], fred_key, limit=60)
         if ry_df is None or ry_df.empty:
             y_df = fetch_fred(GOLD_SERIES["yield"], fred_key, limit=60)
@@ -686,7 +731,7 @@ def page_gold(fred_key: str, channel_name: str) -> None:
                     merged["value"] = merged["value_y"] - merged["value_i"]
                     ry_df = merged[["date", "value"]]
 
-        usd_r = compute_composite("USD", fred_key, channel_name)
+        usd_r = compute_composite("USD", fred_key, channel_name, gemini_key)
 
     if ry_df is None or ry_df.empty:
         st.warning("⚠️ Could not load yield data.")
@@ -699,10 +744,10 @@ def page_gold(fred_key: str, channel_name: str) -> None:
     gold_usd = -(usd_r["macro_score"]) if usd_r else 0.0
     
     all_news = fetch_all_instant_news(channel_name)
-    sentiment_res = analyze_news_sentiment(all_news)
+    sentiment_res = analyze_news_with_gemini(all_news, gemini_key)
     gold_news_pts = sentiment_res["scores"].get("Gold", 0.0)
 
-    # 30% Real Yield + 20% USD Macro + 50% Telegram Geopolitical Safe-Haven
+    # 30% Real Yield + 20% USD Macro + 50% AI Geopolitical Safe-Haven
     gold_s = (0.30 * gold_ry) + (0.20 * gold_usd) + (0.50 * (gold_news_pts / 0.50))
 
     c1, c2, c3 = st.columns(3)
@@ -716,7 +761,7 @@ def page_gold(fred_key: str, channel_name: str) -> None:
         <div class="comp-box" style="margin-top:0;padding:10px;">
           <div style="font-size:9.5px;font-weight:800;color:#8a99ad;">Gold (XAUUSD) Direction</div>
           {badge(gold_s, lg=True)}
-          <div style="font-size:10.5px;color:#8a99ad;margin-top:4px;">Score: <b style="color:#e2b714;">{gold_s:+.3f}</b> | Geo Shock: <b style="color:{gn_color};">{gold_news_pts:+.2f} pts</b></div>
+          <div style="font-size:10.5px;color:#8a99ad;margin-top:4px;">Score: <b style="color:#e2b714;">{gold_s:+.3f}</b> | AI Shock: <b style="color:{gn_color};">{gold_news_pts:+.2f} pts</b></div>
         </div>
         """)
 
@@ -732,7 +777,7 @@ def page_gold(fred_key: str, channel_name: str) -> None:
 # ============================================================
 # PAGE 3 — CRUDE OIL
 # ============================================================
-def page_oil(fred_key: str, channel_name: str) -> None:
+def page_oil(fred_key: str, channel_name: str, gemini_key: str) -> None:
     render_top_header()
     render_html("""
 <div class="pg-title">
@@ -752,10 +797,9 @@ def page_oil(fred_key: str, channel_name: str) -> None:
     spread = b_vals[-1] - w_vals[-1]
 
     all_news = fetch_all_instant_news(channel_name)
-    sentiment_res = analyze_news_sentiment(all_news)
+    sentiment_res = analyze_news_with_gemini(all_news, gemini_key)
     oil_news_pts = sentiment_res["scores"].get("Oil", 0.0)
 
-    # 50% Macro + 50% Geopolitical Shock
     final_oil_score = (0.50 * (w_mf["score"] if w_mf else 0.0)) + (0.50 * (oil_news_pts / 0.50))
 
     c1, c2, c3 = st.columns(3)
@@ -763,7 +807,7 @@ def page_oil(fred_key: str, channel_name: str) -> None:
     with c2: st.metric("Brent Crude", f"${b_vals[-1]:.2f}/bbl")
     with c3:
         lbl_oil, css_oil, _ = bias_from_score(final_oil_score)
-        render_html(f"""<div class="comp-box" style="margin-top:0;padding:10px;"><div style="font-size:9.5px;font-weight:800;color:#8a99ad;">Oil Bias</div><span class="badge {css_oil} badge-lg">{lbl_oil}</span><div style="font-size:10px;color:#8a99ad;margin-top:3px;">Spread: +${spread:.2f} | News: {oil_news_pts:+.2f} pts</div></div>""")
+        render_html(f"""<div class="comp-box" style="margin-top:0;padding:10px;"><div style="font-size:9.5px;font-weight:800;color:#8a99ad;">Oil Bias</div><span class="badge {css_oil} badge-lg">{lbl_oil}</span><div style="font-size:10px;color:#8a99ad;margin-top:3px;">Spread: +${spread:.2f} | AI News: {oil_news_pts:+.2f} pts</div></div>""")
 
     st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
     fig = dual_chart(w_df, b_df, "WTI Crude", "Brent Crude")
@@ -774,21 +818,20 @@ def page_oil(fred_key: str, channel_name: str) -> None:
 # ============================================================
 # PAGE 4 — REAL-TIME TELEGRAM FEED SCANNER
 # ============================================================
-def page_telegram_feed(channel_name: str) -> None:
+def page_telegram_feed(channel_name: str, gemini_key: str) -> None:
     render_top_header()
     render_html(f"""
 <div class="pg-title">
 <div class="pg-sub">LIVE TELEGRAM RADAR</div>
 <h1 class="pg-h1">Telegram Channel: @{channel_name}</h1>
-<div class="pg-bread">Real-Time Parsed Messages &amp; Sentiment Detection</div>
+<div class="pg-bread">Real-Time Parsed Messages &amp; Google Gemini AI Impact Analysis</div>
 </div>
 """)
-    with st.spinner("Fetching Telegram channel posts..."):
+    with st.spinner("Fetching Telegram posts & executing Gemini AI Model..."):
         posts = fetch_telegram_channel_news(channel_name)
+        sentiment_res = analyze_news_with_gemini(posts, gemini_key)
 
-    sentiment_res = analyze_news_sentiment(posts)
     scores = sentiment_res["scores"]
-
     pills_html = []
     for asset, pt in scores.items():
         if pt != 0.0:
@@ -799,8 +842,16 @@ def page_telegram_feed(channel_name: str) -> None:
     if pills_html:
         render_html(f"""
         <div class="dt-wrap" style="padding:12px 16px;margin-bottom:16px;background:#0d1527;border-color:rgba(226,183,20,0.2);">
-          <div style="font-size:11px;font-weight:800;color:#e2b714;text-transform:uppercase;margin-bottom:6px;">⚡ Telegram Real-Time Impact Matrix (50% Engine)</div>
+          <div style="font-size:11px;font-weight:800;color:#e2b714;text-transform:uppercase;margin-bottom:6px;">⚡ AI Instant Sentiment Radar (Scores Matrix)</div>
           <div class="pills">{"".join(pills_html)}</div>
+        </div>
+        """)
+
+    if sentiment_res.get("ai_summary"):
+        render_html(f"""
+        <div class="news-card" style="border: 1px solid rgba(226,183,20,0.3);background:#0b1325;margin-bottom:14px;">
+          <div style="color:#e2b714;font-size:12.5px;font-weight:800;">🤖 Gemini AI Intelligence Briefing</div>
+          <div style="color:#ffffff;font-size:12px;line-height:1.5;margin-top:5px;">{sentiment_res["ai_summary"]}</div>
         </div>
         """)
 
@@ -831,7 +882,7 @@ def main() -> None:
         render_html("""
         <div style="padding:5px 7px 14px;border-bottom:1px solid rgba(255,255,255,0.06);margin-bottom:12px;">
           <div style="font-size:12px;font-weight:800;color:#e2b714;">FX MACRO &amp; GEO</div>
-          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v8.3</div>
+          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v9.0 (AI)</div>
         </div>
         """)
         page = st.radio("Navigation:", [
@@ -843,26 +894,30 @@ def main() -> None:
         ], label_visibility="collapsed")
 
         st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+        st.markdown("<b style='color:#e2b714;font-size:11px;'>🤖 GOOGLE GEMINI AI</b>", unsafe_allow_html=True)
+        gemini_key = st.text_input("Gemini API Key:", value="", type="password", key="gemini_key", help="Paste your Google Gemini API Key here for instant AI geopolitical reasoning.")
+        
+        st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
         st.markdown("<b style='color:#6b7280;font-size:10.5px;'>📡 TELEGRAM CHANNEL</b>", unsafe_allow_html=True)
         channel_name = st.text_input("Channel Username:", value=DEFAULT_TELEGRAM_CHANNEL, key="tg_channel")
         fred_key = st.text_input("FRED API Key:", value=DEFAULT_FRED_KEY, type="password", key="fred_key")
 
     if page == "🏠 Executive Dashboard":
-        page_dashboard(fred_key, channel_name)
+        page_dashboard(fred_key, channel_name, gemini_key)
     elif page == "🥇 Gold (XAUUSD) Intelligence":
-        page_gold(fred_key, channel_name)
+        page_gold(fred_key, channel_name, gemini_key)
     elif page == "🛢️ Crude Oil (Energy Desk)":
-        page_oil(fred_key, channel_name)
+        page_oil(fred_key, channel_name, gemini_key)
     elif page == "📡 Live Telegram Feed":
-        page_telegram_feed(channel_name)
+        page_telegram_feed(channel_name, gemini_key)
     elif page == "📊 Currency Impact Matrix":
         render_top_header()
         render_html('<div class="sec-title">Currency Impact Matrix</div>')
-        render_html('<div class="dt-wrap" style="padding:16px;">Real-Time Matrix active in memory.</div>')
+        render_html('<div class="dt-wrap" style="padding:16px;">AI Institutional Matrix active in memory.</div>')
 
     render_html(f"""
     <div class="app-foot">
-      <div>© 2026 FX Macro Desk | High-Impact Telegram Engine</div>
+      <div>© 2026 FX Macro Desk | Google Gemini 2.5 Flash Integration</div>
       <div><span class="live-dot"></span><span style="color:#10b981;font-weight:600;">Live Feed Active &nbsp; {datetime.now().strftime('%H:%M:%S')}</span></div>
     </div>
     """)
