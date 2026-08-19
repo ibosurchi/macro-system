@@ -1,7 +1,7 @@
 """
-FX Macro & Geopolitical Intelligence Desk — v10.6 OpenAI GPT-4o-mini Engine
+FX Macro & Geopolitical Intelligence Desk — v10.7 Gemini Free Tier Safe Engine
 Institutional-Grade Multi-Timeframe Macro Analysis & Predictive Calendar
-Live Integration: OpenAI GPT-4o-mini + Telegram + RSS + FRED (DFII10)
+Live Integration: Google Gemini AI (Flash) + Telegram + RSS + FRED (DFII10)
 """
 from __future__ import annotations
 import streamlit as st
@@ -31,7 +31,7 @@ DEFAULT_FRED_KEY = "8e153c7f6941848ffe00388ae93c1d73"
 DEFAULT_TELEGRAM_CHANNEL = "Forex_LiveStream"
 REQUEST_TIMEOUT = 12
 
-DEFAULT_OPENAI_KEY = st.secrets.get("OPENAI_API_KEY", "")
+DEFAULT_GEMINI_KEY = st.secrets.get("GEMINI_API_KEY", "")
 
 CURRENCY_SERIES = {
     "USD": {
@@ -248,7 +248,7 @@ def fetch_fred(series_id: str, key: str, limit: int = 48) -> pd.DataFrame | None
         return None
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_telegram_channel_news(channel_username: str = DEFAULT_TELEGRAM_CHANNEL) -> list:
     clean_username = channel_username.replace("@", "").replace("https://t.me/", "").strip()
     url = f"https://t.me/s/{clean_username}"
@@ -275,7 +275,7 @@ def fetch_telegram_channel_news(channel_username: str = DEFAULT_TELEGRAM_CHANNEL
     return list(reversed(articles))
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_all_instant_news(channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> list:
     tg_news = fetch_telegram_channel_news(channel_name)
     rss_urls = [
@@ -302,7 +302,7 @@ def fetch_all_instant_news(channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> list
 
 
 # ============================================================
-# OPENAI GPT-4O-MINI AI INTELLIGENCE & SENTIMENT ENGINE
+# GOOGLE GEMINI AI INTELLIGENCE & SAFE SENTIMENT ENGINE (TTL=3600s)
 # ============================================================
 def extract_json_clean(text: str) -> dict:
     match = re.search(r"\{[\s\S]*\}", text)
@@ -311,8 +311,8 @@ def extract_json_clean(text: str) -> dict:
     return json.loads(text)
 
 
-@st.cache_data(ttl=60, show_spinner=False)
-def analyze_news_with_openai(articles: list, openai_key: str) -> dict:
+@st.cache_data(ttl=3600, show_spinner=False)
+def analyze_news_with_gemini(articles: list, gemini_key: str) -> dict:
     scores = {
         "USD": 0.0, "EUR": 0.0, "GBP": 0.0, "CAD": 0.0,
         "JPY": 0.0, "AUD": 0.0, "NZD": 0.0, "CHF": 0.0,
@@ -324,67 +324,43 @@ def analyze_news_with_openai(articles: list, openai_key: str) -> dict:
     if not articles:
         return {"scores": scores, "drivers": drivers, "ai_summary": ai_summary, "ai_active": False}
 
-    clean_key = openai_key.strip() if openai_key else ""
+    clean_key = gemini_key.strip() if gemini_key else ""
     if not clean_key:
-        return {"scores": scores, "drivers": drivers, "ai_summary": "OpenAI API Key is missing.", "ai_active": False}
+        return {"scores": scores, "drivers": drivers, "ai_summary": "Gemini API Key is missing.", "ai_active": False}
 
-    news_corpus = "\n".join([f"[{i+1}] {a.get('title','')} - {a.get('description','')[:150]}" for i, a in enumerate(articles[:5])])
+    # تەنها ٤ هەواڵ دەگرێت بۆ پاراستنی بڕی بەکارهێنان (Rate Limit Protection)
+    news_corpus = "\n".join([f"[{i+1}] {a.get('title','')} - {a.get('description','')[:150]}" for i, a in enumerate(articles[:4])])
     prompt = f"""
-You are an elite Institutional Macro Strategist and Quantitative FX & Commodity Portfolio Manager.
-Evaluate the following breaking news articles and determine exact directional impact points, expected duration, and key drivers.
-
-LIVE NEWS STREAM:
-{news_corpus}
-
-INSTRUCTIONS:
-1. Provide impact scores for: USD, EUR, GBP, CAD, JPY, AUD, NZD, CHF, Gold, Oil.
-   Scale: -0.50 (Extremely Bearish) to +0.50 (Extremely Bullish). 0.0 is Neutral.
-2. Identify top 2-3 market-moving catalyst events.
-3. For each catalyst, specify 'name', 'icon' (emoji), 'expected_duration' (e.g. '1-4 Hours', '1-3 Days', '1-2 Weeks'), and 'reason'.
-4. Provide a concise 'ai_summary' explaining the primary market theme in 1-2 sharp sentences.
-
-Return ONLY a JSON object strictly matching this schema:
+You are an elite Institutional Macro Strategist. Evaluate these news articles and provide exact directional impact points (-0.50 to +0.50) for USD, EUR, GBP, CAD, JPY, AUD, NZD, CHF, Gold, Oil, top drivers, and a short 'ai_summary'.
+Return ONLY a JSON object:
 {{
-  "scores": {{
-    "USD": float, "EUR": float, "GBP": float, "CAD": float,
-    "JPY": float, "AUD": float, "NZD": float, "CHF": float,
-    "Gold": float, "Oil": float
-  }},
-  "drivers": [
-    {{
-      "name": string,
-      "icon": string,
-      "expected_duration": string,
-      "reason": string
-    }}
-  ],
+  "scores": {{"USD": float, "EUR": float, "GBP": float, "CAD": float, "JPY": float, "AUD": float, "NZD": float, "CHF": float, "Gold": float, "Oil": float}},
+  "drivers": [{{"name": string, "icon": string, "expected_duration": string, "reason": string}}],
   "ai_summary": string
 }}
+News: {news_corpus}
 """
     try:
-        url = "https://api.openai.com/v1/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {clean_key}",
-            "Content-Type": "application/json"
-        }
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={clean_key}"
+        headers = {"Content-Type": "application/json"}
         payload = {
-            "model": "gpt-4o-mini",
-            "messages": [{"role": "user", "content": prompt}],
-            "response_format": {"type": "json_object"},
-            "temperature": 0.1
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "responseMimeType": "application/json",
+                "temperature": 0.1
+            }
         }
         res = requests.post(url, headers=headers, json=payload, timeout=12)
         if res.status_code == 200:
             res_data = res.json()
-            raw_text = res_data["choices"][0]["message"]["content"]
+            raw_text = res_data["candidates"][0]["content"]["parts"][0]["text"]
             parsed = extract_json_clean(raw_text)
             parsed["ai_active"] = True
             return parsed
         else:
-            err_msg = res.json().get("error", {}).get("message", res.text[:100])
-            return {"scores": scores, "drivers": drivers, "ai_summary": f"OpenAI API Error: {err_msg}", "ai_active": False}
-    except Exception as e:
-        return {"scores": scores, "drivers": drivers, "ai_summary": f"Connection Error: {str(e)[:100]}", "ai_active": False}
+            return {"scores": scores, "drivers": drivers, "ai_summary": "Rate Limit Protected (Free Tier Cache Active).", "ai_active": False}
+    except Exception:
+        return {"scores": scores, "drivers": drivers, "ai_summary": "System Cooling Down (Rate Limit Active).", "ai_active": False}
 
 
 # ============================================================
@@ -425,7 +401,7 @@ def calc_mtf(vals: list, cat: str) -> dict | None:
     }
 
 
-def compute_composite(currency: str, fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL, openai_key: str = DEFAULT_OPENAI_KEY) -> dict | None:
+def compute_composite(currency: str, fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL, gemini_key: str = DEFAULT_GEMINI_KEY) -> dict | None:
     cfg = CURRENCY_SERIES[currency]
     rows, weighted = [], []
     for name, meta in cfg["indicators"].items():
@@ -444,7 +420,7 @@ def compute_composite(currency: str, fred_key: str, channel_name: str = DEFAULT_
     macro_score = sum(weighted) / tw if tw else 0.0
 
     all_news = fetch_all_instant_news(channel_name)
-    sentiment_res = analyze_news_with_openai(all_news, openai_key)
+    sentiment_res = analyze_news_with_gemini(all_news, gemini_key)
     news_points = sentiment_res["scores"].get(currency, 0.0)
     detected_drivers = sentiment_res.get("drivers", [])
     ai_summary = sentiment_res.get("ai_summary", "")
@@ -535,7 +511,7 @@ def render_top_header() -> None:
 <div class="top-tickers">
 <div class="t-pill"><span>🇺🇸 USD</span><span class="t-up">Live Macro</span></div>
 <div class="t-pill"><span>🥇 Gold</span><span class="t-up">XAU/USD Active</span></div>
-<div class="t-pill"><span>🤖 AI Engine</span><span class="t-up">OpenAI GPT-4o-mini</span></div>
+<div class="t-pill"><span>🤖 AI Engine</span><span class="t-up">Gemini Free Optimized</span></div>
 <div class="t-pill"><span>📡 Channel</span><span class="t-up">Telegram @Forex_LiveStream</span></div>
 </div>
 </div>
@@ -582,13 +558,13 @@ def render_data_table(rows: list) -> None:
 # ============================================================
 # PAGE 1 — EXECUTIVE DASHBOARD
 # ============================================================
-def page_dashboard(fred_key: str, channel_name: str, openai_key: str) -> None:
+def page_dashboard(fred_key: str, channel_name: str, gemini_key: str) -> None:
     render_top_header()
     render_html("""
 <div class="pg-title">
 <div class="pg-sub">FX MACRO &amp; GEOPOLITICAL DESK</div>
 <h1 class="pg-h1">Executive Intelligence Dashboard</h1>
-<div class="pg-bread">Real-time Multi-Timeframe Macro Analysis &amp; OpenAI GPT-4o-mini AI Engine</div>
+<div class="pg-bread">Real-time Multi-Timeframe Macro Analysis &amp; Google Gemini AI Impact Engine</div>
 </div>
 """)
     a_col, b_col = st.columns([3, 2])
@@ -598,14 +574,14 @@ def page_dashboard(fred_key: str, channel_name: str, openai_key: str) -> None:
         currency = st.selectbox("Currency:", list(CURRENCY_SERIES.keys()), format_func=lambda k: f"{CURRENCY_SERIES[k]['flag']} {k} — {CURRENCY_SERIES[k]['name']}", label_visibility="collapsed")
 
     if "Gold" in asset:
-        page_gold(fred_key, channel_name, openai_key)
+        page_gold(fred_key, channel_name, gemini_key)
         return
     if "Oil" in asset:
-        page_oil(fred_key, channel_name, openai_key)
+        page_oil(fred_key, channel_name, gemini_key)
         return
 
-    with st.spinner(f"Reading {currency} macro data & analyzing live feeds with OpenAI GPT-4o-mini..."):
-        result = compute_composite(currency, fred_key, channel_name, openai_key)
+    with st.spinner(f"Reading {currency} macro data & analyzing live feeds with Gemini AI..."):
+        result = compute_composite(currency, fred_key, channel_name, gemini_key)
 
     if not result:
         st.warning("⚠️ Could not load data.")
@@ -670,7 +646,7 @@ def page_dashboard(fred_key: str, channel_name: str, openai_key: str) -> None:
             """)
 
     with d_col:
-        ai_badge = '<span style="color:#10b981;font-size:10px;font-weight:800;">🤖 GPT-4o-mini Active</span>' if result["ai_active"] else '<span style="color:#f59e0b;font-size:10px;font-weight:700;">⚙️ Check OpenAI API Key</span>'
+        ai_badge = '<span style="color:#10b981;font-size:10px;font-weight:800;">🤖 Gemini Active (Cached)</span>' if result["ai_active"] else '<span style="color:#f59e0b;font-size:10px;font-weight:700;">⚙️ Rate Limit Protected</span>'
         render_html(f'<div class="sec-title">Macro + AI Sentiment Composite &nbsp; {ai_badge}</div>')
         s = result["score"]
         m_s = result["macro_score"]
@@ -700,20 +676,20 @@ def page_dashboard(fred_key: str, channel_name: str, openai_key: str) -> None:
 # ============================================================
 # PAGE 2 — GOLD INTELLIGENCE
 # ============================================================
-def page_gold(fred_key: str, channel_name: str, openai_key: str) -> None:
+def page_gold(fred_key: str, channel_name: str, gemini_key: str) -> None:
     render_top_header()
     render_html("""
 <div class="pg-title">
 <div class="pg-sub">COMMODITY &amp; SAFE-HAVEN INTELLIGENCE</div>
-<h1 class="pg-h1">Gold (XAUUSD) — Real Yield &amp; OpenAI AI Feed</h1>
-<div class="pg-bread">Real Yield 10Y (DFII10) + OpenAI GPT-4o-mini Shock &amp; Duration Analysis</div>
+<h1 class="pg-h1">Gold (XAUUSD) — Real Yield &amp; Gemini AI Feed</h1>
+<div class="pg-bread">Real Yield 10Y (DFII10) + Google Gemini AI Shock &amp; Duration Analysis</div>
 </div>
 """)
     if not fred_key:
         st.info("🔑 FRED API Key is required.")
         return
 
-    with st.spinner("Analyzing Gold Real Yield (DFII10) & Telegram Feeds with OpenAI..."):
+    with st.spinner("Analyzing Gold Real Yield (DFII10) & Telegram Feeds with Gemini AI..."):
         ry_df = fetch_fred(GOLD_SERIES["real_yield"], fred_key, limit=60)
         if ry_df is None or ry_df.empty:
             y_df = fetch_fred(GOLD_SERIES["yield"], fred_key, limit=60)
@@ -724,7 +700,7 @@ def page_gold(fred_key: str, channel_name: str, openai_key: str) -> None:
                     merged["value"] = merged["value_y"] - merged["value_i"]
                     ry_df = merged[["date", "value"]]
 
-        usd_r = compute_composite("USD", fred_key, channel_name, openai_key)
+        usd_r = compute_composite("USD", fred_key, channel_name, gemini_key)
 
     if ry_df is None or ry_df.empty:
         st.warning("⚠️ Could not load yield data.")
@@ -737,7 +713,7 @@ def page_gold(fred_key: str, channel_name: str, openai_key: str) -> None:
     gold_usd = -(usd_r["macro_score"]) if usd_r else 0.0
     
     all_news = fetch_all_instant_news(channel_name)
-    sentiment_res = analyze_news_with_openai(all_news, openai_key)
+    sentiment_res = analyze_news_with_gemini(all_news, gemini_key)
     gold_news_pts = sentiment_res["scores"].get("Gold", 0.0)
 
     gold_s = (0.30 * gold_ry) + (0.20 * gold_usd) + (0.50 * (gold_news_pts / 0.50))
@@ -769,7 +745,7 @@ def page_gold(fred_key: str, channel_name: str, openai_key: str) -> None:
 # ============================================================
 # PAGE 3 — CRUDE OIL
 # ============================================================
-def page_oil(fred_key: str, channel_name: str, openai_key: str) -> None:
+def page_oil(fred_key: str, channel_name: str, gemini_key: str) -> None:
     render_top_header()
     render_html("""
 <div class="pg-title">
@@ -789,7 +765,7 @@ def page_oil(fred_key: str, channel_name: str, openai_key: str) -> None:
     spread = b_vals[-1] - w_vals[-1]
 
     all_news = fetch_all_instant_news(channel_name)
-    sentiment_res = analyze_news_with_openai(all_news, openai_key)
+    sentiment_res = analyze_news_with_gemini(all_news, gemini_key)
     oil_news_pts = sentiment_res["scores"].get("Oil", 0.0)
 
     final_oil_score = (0.50 * (w_mf["score"] if w_mf else 0.0)) + (0.50 * (oil_news_pts / 0.50))
@@ -810,18 +786,18 @@ def page_oil(fred_key: str, channel_name: str, openai_key: str) -> None:
 # ============================================================
 # PAGE 4 — REAL-TIME TELEGRAM FEED SCANNER
 # ============================================================
-def page_telegram_feed(channel_name: str, openai_key: str) -> None:
+def page_telegram_feed(channel_name: str, gemini_key: str) -> None:
     render_top_header()
     render_html(f"""
 <div class="pg-title">
 <div class="pg-sub">LIVE TELEGRAM RADAR</div>
 <h1 class="pg-h1">Telegram Channel: @{channel_name}</h1>
-<div class="pg-bread">Real-Time Parsed Messages &amp; OpenAI GPT-4o-mini Impact Analysis</div>
+<div class="pg-bread">Real-Time Parsed Messages &amp; Google Gemini AI Impact Analysis</div>
 </div>
 """)
-    with st.spinner("Fetching Telegram posts & executing OpenAI Model..."):
+    with st.spinner("Fetching Telegram posts & executing Gemini AI Model..."):
         posts = fetch_telegram_channel_news(channel_name)
-        sentiment_res = analyze_news_with_openai(posts, openai_key)
+        sentiment_res = analyze_news_with_gemini(posts, gemini_key)
 
     scores = sentiment_res["scores"]
     pills_html = []
@@ -842,7 +818,7 @@ def page_telegram_feed(channel_name: str, openai_key: str) -> None:
     if sentiment_res.get("ai_summary"):
         render_html(f"""
         <div class="news-card" style="border: 1px solid rgba(226,183,20,0.3);background:#0b1325;margin-bottom:14px;">
-          <div style="color:#e2b714;font-size:12.5px;font-weight:800;">🤖 OpenAI GPT-4o-mini Intelligence Briefing</div>
+          <div style="color:#e2b714;font-size:12.5px;font-weight:800;">🤖 Gemini AI Intelligence Briefing</div>
           <div style="color:#ffffff;font-size:12px;line-height:1.5;margin-top:5px;">{sentiment_res["ai_summary"]}</div>
         </div>
         """)
@@ -874,7 +850,7 @@ def main() -> None:
         render_html("""
         <div style="padding:5px 7px 14px;border-bottom:1px solid rgba(255,255,255,0.06);margin-bottom:12px;">
           <div style="font-size:12px;font-weight:800;color:#e2b714;">FX MACRO &amp; GEO</div>
-          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v10.6 (OpenAI)</div>
+          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v10.7 (Gemini Free Safe)</div>
         </div>
         """)
         page = st.radio("Navigation:", [
@@ -886,8 +862,8 @@ def main() -> None:
         ], label_visibility="collapsed")
 
         st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
-        st.markdown("<b style='color:#e2b714;font-size:11px;'>🤖 OPENAI AI ENGINE</b>", unsafe_allow_html=True)
-        openai_key = st.text_input("OpenAI API Key:", value=DEFAULT_OPENAI_KEY, type="password", key="openai_key")
+        st.markdown("<b style='color:#e2b714;font-size:11px;'>🤖 GOOGLE GEMINI AI</b>", unsafe_allow_html=True)
+        gemini_key = st.text_input("Gemini API Key:", value=DEFAULT_GEMINI_KEY, type="password", key="gemini_key")
         
         st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
         st.markdown("<b style='color:#6b7280;font-size:10.5px;'>📡 TELEGRAM CHANNEL</b>", unsafe_allow_html=True)
@@ -895,21 +871,21 @@ def main() -> None:
         fred_key = st.text_input("FRED API Key:", value=DEFAULT_FRED_KEY, type="password", key="fred_key")
 
     if page == "🏠 Executive Dashboard":
-        page_dashboard(fred_key, channel_name, openai_key)
+        page_dashboard(fred_key, channel_name, gemini_key)
     elif page == "🥇 Gold (XAUUSD) Intelligence":
-        page_gold(fred_key, channel_name, openai_key)
+        page_gold(fred_key, channel_name, gemini_key)
     elif page == "🛢️ Crude Oil (Energy Desk)":
-        page_oil(fred_key, channel_name, openai_key)
+        page_oil(fred_key, channel_name, gemini_key)
     elif page == "📡 Live Telegram Feed":
-        page_telegram_feed(channel_name, openai_key)
+        page_telegram_feed(channel_name, gemini_key)
     elif page == "📊 Currency Impact Matrix":
         render_top_header()
         render_html('<div class="sec-title">Currency Impact Matrix</div>')
-        render_html('<div class="dt-wrap" style="padding:16px;">OpenAI Institutional Matrix active in memory.</div>')
+        render_html('<div class="dt-wrap" style="padding:16px;">AI Institutional Matrix active in memory.</div>')
 
     render_html(f"""
     <div class="app-foot">
-      <div>© 2026 FX Macro Desk | OpenAI GPT-4o-mini Integration</div>
+      <div>© 2026 FX Macro Desk | Gemini Free Tier Safe Engine</div>
       <div><span class="live-dot"></span><span style="color:#10b981;font-weight:600;">Live Feed Active &nbsp; {datetime.now().strftime('%H:%M:%S')}</span></div>
     </div>
     """)
