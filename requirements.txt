@@ -7,3 +7,4 @@ pytz
 feedparser
 beautifulsoup4
 streamlit-autorefresh
+google-genai
