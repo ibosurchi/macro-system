@@ -1,5 +1,5 @@
 """
-FX Macro & Geopolitical Intelligence Desk — v9.1 Embedded Gemini AI
+FX Macro & Geopolitical Intelligence Desk — v9.2 Full Gemini AI Integrated
 Institutional-Grade Multi-Timeframe Macro Analysis & Predictive Calendar
 Live Integration: Google Gemini AI + Telegram (@Forex_LiveStream) + Multi-Feed RSS + FRED (DFII10)
 """
@@ -27,12 +27,14 @@ st.set_page_config(
 )
 
 # ============================================================
-# CONFIGURATIONS (کلیلەکەی خۆت لێرە دابنێ)
+# CONFIGURATIONS
 # ============================================================
 DEFAULT_FRED_KEY = "8e153c7f6941848ffe00388ae93c1d73"
 DEFAULT_TELEGRAM_CHANNEL = "Forex_LiveStream"
-DEFAULT_GEMINI_KEY = "YOUR_GEMINI_API_KEY_HERE"  # 👈 کلیلی Gemini لێرە دابنێ
 REQUEST_TIMEOUT = 12
+
+# بەکارهێنانی کلیل لە نهێنییەکانی سیستەم گەر هەبێت
+DEFAULT_GEMINI_KEY = st.secrets.get("GEMINI_API_KEY", "")
 
 CURRENCY_SERIES = {
     "USD": {
@@ -319,8 +321,8 @@ def analyze_news_with_gemini(articles: list, gemini_key: str) -> dict:
     if not articles:
         return {"scores": scores, "drivers": drivers, "ai_summary": ai_summary, "ai_active": False}
 
-    # Fallback Rule-Based Engine
-    if not gemini_key or not gemini_key.strip() or gemini_key == "YOUR_GEMINI_API_KEY_HERE":
+    clean_key = gemini_key.strip() if gemini_key else ""
+    if not clean_key:
         rules = [
             {"pattern": r"(war|military|missile|conflict|sanction|attack|invad|escalat|iran|israel|russia|ukraine|tensions)", "name": "Geopolitical Conflict & War Escalation", "icon": "💣", "dur": "1-2 Weeks", "impacts": {"USD": +0.10, "CHF": +0.25, "Gold": +0.35, "Oil": +0.25, "EUR": -0.15, "GBP": -0.12}},
             {"pattern": r"(treasury.*buyback|bond repurchase|yields.*decline|yield.*fall|dollar.*decline)", "name": "US Treasury Bond Buybacks / Yield Drop", "icon": "📉", "dur": "1-3 Days", "impacts": {"Gold": +0.35, "EUR": +0.20, "GBP": +0.18, "USD": -0.35}},
@@ -340,9 +342,8 @@ def analyze_news_with_gemini(articles: list, gemini_key: str) -> dict:
                         detected.add(r["name"])
         for k in scores:
             scores[k] = float(np.clip(scores[k], -0.60, 0.60))
-        return {"scores": scores, "drivers": drivers, "ai_summary": "Rule-based engine active (Add Gemini API Key in sidebar for advanced AI reasoning).", "ai_active": False}
+        return {"scores": scores, "drivers": drivers, "ai_summary": "Rule-based engine active.", "ai_active": False}
 
-    # Advanced Google Gemini Flash Engine
     news_corpus = "\n".join([f"[{i+1}] {a.get('title','')} - {a.get('description','')[:180]}" for i, a in enumerate(articles[:8])])
     prompt = f"""
 You are an elite Institutional Macro Strategist and Quantitative FX & Commodity Portfolio Manager.
@@ -377,7 +378,7 @@ Return ONLY a JSON object strictly matching this schema:
 }}
 """
     try:
-        client = genai.Client(api_key=gemini_key.strip())
+        client = genai.Client(api_key=clean_key)
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=prompt,
@@ -389,7 +390,7 @@ Return ONLY a JSON object strictly matching this schema:
         data = json.loads(response.text)
         data["ai_active"] = True
         return data
-    except Exception as e:
+    except Exception:
         return analyze_news_with_gemini(articles, "")
 
 
@@ -431,7 +432,7 @@ def calc_mtf(vals: list, cat: str) -> dict | None:
     }
 
 
-def compute_composite(currency: str, fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL, gemini_key: str = "") -> dict | None:
+def compute_composite(currency: str, fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL, gemini_key: str = DEFAULT_GEMINI_KEY) -> dict | None:
     cfg = CURRENCY_SERIES[currency]
     rows, weighted = [], []
     for name, meta in cfg["indicators"].items():
@@ -676,7 +677,7 @@ def page_dashboard(fred_key: str, channel_name: str, gemini_key: str) -> None:
             """)
 
     with d_col:
-        ai_badge = '<span style="color:#10b981;font-size:10px;font-weight:800;">🤖 Gemini 2.5 Flash Active</span>' if result["ai_active"] else '<span style="color:#f59e0b;font-size:10px;font-weight:700;">⚙️ Rule Engine (Key Error)</span>'
+        ai_badge = '<span style="color:#10b981;font-size:10px;font-weight:800;">🤖 Gemini 2.5 Flash Active</span>' if result["ai_active"] else '<span style="color:#f59e0b;font-size:10px;font-weight:700;">⚙️ Rule Engine (Add API Key)</span>'
         render_html(f'<div class="sec-title">Macro + AI Sentiment Composite &nbsp; {ai_badge}</div>')
         s = result["score"]
         m_s = result["macro_score"]
@@ -881,7 +882,7 @@ def main() -> None:
         render_html("""
         <div style="padding:5px 7px 14px;border-bottom:1px solid rgba(255,255,255,0.06);margin-bottom:12px;">
           <div style="font-size:12px;font-weight:800;color:#e2b714;">FX MACRO &amp; GEO</div>
-          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v9.1 (AI)</div>
+          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v9.2 (AI)</div>
         </div>
         """)
         page = st.radio("Navigation:", [
