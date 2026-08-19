@@ -1,7 +1,7 @@
 """
-FX Macro & Geopolitical Intelligence Desk — v8 Telegram Integrated
+FX Macro & Geopolitical Intelligence Desk — v8.2 Pro
 Institutional-Grade Multi-Timeframe Macro Analysis & Predictive Calendar
-Live Integration: Telegram (@Forex_LiveStream) + Multi-Feed RSS + FRED Engine
+Live Integration: Telegram (@Forex_LiveStream) + Multi-Feed RSS + FRED (DFII10 Direct Real Yield)
 """
 from __future__ import annotations
 import streamlit as st
@@ -134,22 +134,11 @@ CURRENCY_SERIES = {
     },
 }
 
-GOLD_SERIES  = {"yield": "DGS10", "inflation_exp": "T10YIE"}
-OIL_SERIES   = {"wti": "DCOILWTICO", "brent": "DCOILBRENTEU"}
-CAT_ICONS    = {"inflation": "📈", "labor_pos": "👥", "labor_neg": "📉", "growth": "🏭", "rate": "🏦"}
-CAT_LABELS   = {"inflation": "Inflation", "labor_pos": "Labour Market", "labor_neg": "Unemployment", "growth": "Growth", "rate": "Interest Rate"}
-
-IMPACT_MATRIX = [
-    {"event": "Military Conflict & War Escalation",   "icon": "💣",
-     "bullish": ["USD","CHF","Gold"], "bearish": ["EUR","AUD","GBP"],
-     "reason": "Capital flight to safe-haven assets during geopolitical escalations."},
-    {"event": "Treasury Bond Buyback / Yield Drop",   "icon": "📉",
-     "bullish": ["Gold","EUR","GBP"], "bearish": ["USD"],
-     "reason": "Falling yields decrease USD appeal and reduce opportunity cost of holding gold."},
-    {"event": "Oil Price Spike (Energy Surge)",        "icon": "🛢️",
-     "bullish": ["CAD","NOK","USD","Oil"], "bearish": ["JPY","EUR"],
-     "reason": "Exporters (CAD) benefit from revenues; major importers (JPY, EUR) suffer trade deficits."},
-]
+# DFII10 is the 10-Year Treasury Inflation-Indexed Security (Direct Real Yield)
+GOLD_SERIES = {"real_yield": "DFII10", "yield": "DGS10", "inflation_exp": "T10YIE"}
+OIL_SERIES  = {"wti": "DCOILWTICO", "brent": "DCOILBRENTEU"}
+CAT_ICONS   = {"inflation": "📈", "labor_pos": "👥", "labor_neg": "📉", "growth": "🏭", "rate": "🏦"}
+CAT_LABELS  = {"inflation": "Inflation", "labor_pos": "Labour Market", "labor_neg": "Unemployment", "growth": "Growth", "rate": "Interest Rate"}
 
 def render_html(html_str: str) -> None:
     clean = "\n".join(line.strip() for line in html_str.splitlines() if line.strip())
@@ -216,8 +205,6 @@ div[data-testid="stMetric"] label{color:#8a99ad!important;font-size:12px!importa
 .pct-n{color:#6b7280;font-weight:700;}
 
 .chart-card{background:#090e1a;border:1px solid rgba(255,255,255,0.07);border-radius:14px;padding:16px;}
-.chart-hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;}
-
 .badge{display:inline-block;padding:4px 10px;border-radius:999px;font-size:11px;font-weight:700;}
 .b-bull{background:rgba(16,185,129,0.12);color:#10b981;border:1px solid rgba(16,185,129,0.2);}
 .b-bear{background:rgba(239,68,68,0.12);color:#ef4444;border:1px solid rgba(239,68,68,0.2);}
@@ -261,7 +248,7 @@ def fetch_fred(series_id: str, key: str, limit: int = 48) -> pd.DataFrame | None
 
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_telegram_channel_news(channel_username: str = DEFAULT_TELEGRAM_CHANNEL) -> list:
-    """خوێندنەوەی ڕاستەوخۆی پۆستەکانی چەناڵی تێلیگرام بەبێ تاخیربوون"""
+    """Live Telegram Scraper without API delay."""
     clean_username = channel_username.replace("@", "").replace("https://t.me/", "").strip()
     url = f"https://t.me/s/{clean_username}"
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -289,7 +276,6 @@ def fetch_telegram_channel_news(channel_username: str = DEFAULT_TELEGRAM_CHANNEL
 
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_all_instant_news(channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> list:
-    """کۆکردنەوەی پۆستەکانی تێلیگرام لەگەڵ RSS Feeds بە یەک پاکێج"""
     tg_news = fetch_telegram_channel_news(channel_name)
     rss_urls = [
         ("ForexLive", "https://www.forexlive.com/feed/news"),
@@ -311,7 +297,6 @@ def fetch_all_instant_news(channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> list
                 })
         except Exception:
             continue
-    # تێلیگرام پێشەنگی پێ دەدرێت چونکە دەستبەجێترینە
     return tg_news + rss_news
 
 
@@ -434,7 +419,6 @@ def compute_composite(currency: str, fred_key: str, channel_name: str = DEFAULT_
     tw = sum(r["weight"] for r in rows)
     macro_score = sum(weighted) / tw if tw else 0.0
 
-    # تێکەڵکردنی هەواڵی دەستبەجێی تێلیگرام و RSS
     all_news = fetch_all_instant_news(channel_name)
     sentiment_res = analyze_news_sentiment(all_news)
     news_points = sentiment_res["scores"].get(currency, 0.0)
@@ -522,7 +506,7 @@ def render_top_header() -> None:
 <div class="top-brand"><span>📊</span><span>FX MACRO &amp; GEOPOLITICAL DESK</span></div>
 <div class="top-tickers">
 <div class="t-pill"><span>🇺🇸 USD</span><span class="t-up">Live Baseline</span></div>
-<div class="t-pill"><span>🥇 Gold</span><span class="t-up">XAU/USD Active</span></div>
+<div class="t-pill"><span>🥇 Gold</span><span class="t-up">XAU/USD (DFII10 Yield)</span></div>
 <div class="t-pill"><span>📡 Feed</span><span class="t-up">Telegram @Forex_LiveStream</span></div>
 </div>
 </div>
@@ -676,7 +660,7 @@ def page_dashboard(fred_key: str, channel_name: str) -> None:
 
 
 # ============================================================
-# PAGE 2 — GOLD INTELLIGENCE
+# PAGE 2 — GOLD INTELLIGENCE (WITH DFII10 DIRECT REAL YIELD)
 # ============================================================
 def page_gold(fred_key: str, channel_name: str) -> None:
     render_top_header()
@@ -684,27 +668,38 @@ def page_gold(fred_key: str, channel_name: str) -> None:
 <div class="pg-title">
 <div class="pg-sub">COMMODITY &amp; SAFE-HAVEN INTELLIGENCE</div>
 <h1 class="pg-h1">Gold (XAUUSD) — Real Yield &amp; Telegram Feed</h1>
-<div class="pg-bread">Real Yield 10Y (DGS10 - T10YIE) + Instant Geopolitical Telegram Alerts</div>
+<div class="pg-bread">Direct 10Y Real Yield (DFII10) + Instant Geopolitical Telegram Alerts</div>
 </div>
 """)
-    with st.spinner("Analyzing Gold Real Yield & Telegram News..."):
-        y_df  = fetch_fred(GOLD_SERIES["yield"], fred_key, limit=60)
-        i_df  = fetch_fred(GOLD_SERIES["inflation_exp"], fred_key, limit=60)
-        usd_r = compute_composite("USD", fred_key, channel_name)
-
-    if y_df is None or i_df is None:
-        st.warning("⚠️ Could not load yield data.")
+    if not fred_key:
+        st.info("🔑 FRED API Key is required.")
         return
 
-    merged = pd.merge(y_df, i_df, on="date", suffixes=("_y", "_i"))
-    merged["ry"] = merged["value_y"] - merged["value_i"]
-    ry_vals = merged["ry"].tail(36).tolist()
+    with st.spinner("Analyzing Gold Real Yield (DFII10) & Telegram News..."):
+        ry_df = fetch_fred(GOLD_SERIES["real_yield"], fred_key, limit=60)
+        
+        # Fallback if DFII10 is unavailable
+        if ry_df is None or ry_df.empty:
+            y_df = fetch_fred(GOLD_SERIES["yield"], fred_key, limit=60)
+            i_df = fetch_fred(GOLD_SERIES["inflation_exp"], fred_key, limit=60)
+            if y_df is not None and i_df is not None and not y_df.empty and not i_df.empty:
+                merged = pd.merge(y_df, i_df, on="date", suffixes=("_y", "_i"))
+                if not merged.empty:
+                    merged["value"] = merged["value_y"] - merged["value_i"]
+                    ry_df = merged[["date", "value"]]
+
+        usd_r = compute_composite("USD", fred_key, channel_name)
+
+    if ry_df is None or ry_df.empty:
+        st.warning("⚠️ Could not load yield data. Please check FRED API key or clear cache.")
+        return
+
+    ry_vals = ry_df["value"].tail(36).tolist()
     ry_mf   = calc_mtf(ry_vals, "rate")
 
     gold_ry  = -ry_mf["score"] if ry_mf else 0.0
     gold_usd = -(usd_r["macro_score"]) if usd_r else 0.0
     
-    # خوێندنەوەی پۆینتی زێڕ لە تێلیگرامەوە
     all_news = fetch_all_instant_news(channel_name)
     sentiment_res = analyze_news_sentiment(all_news)
     gold_news_pts = sentiment_res["scores"].get("Gold", 0.0)
@@ -714,7 +709,7 @@ def page_gold(fred_key: str, channel_name: str) -> None:
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.metric("Real Yield 10Y", f"{ry_vals[-1]:.2f}%", delta=f"{ry_mf['mom']:+.2f}% m/m" if ry_mf else None, delta_color="inverse")
+        st.metric("Real Yield 10Y (DFII10)", f"{ry_vals[-1]:.2f}%", delta=f"{ry_mf['mom']:+.2f}% m/m" if ry_mf else None, delta_color="inverse")
     with c2:
         st.metric("USD Composite Score", f"{usd_r['score']:+.3f}" if usd_r else "N/A")
     with c3:
@@ -728,12 +723,12 @@ def page_gold(fred_key: str, channel_name: str) -> None:
         """)
 
     st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
-    render_html('<div class="sec-title">10Y Real Yield Dynamic</div>')
-    ry_df2  = merged[["date","ry"]].rename(columns={"ry":"value"})
-    exp_df2 = merged[["date","value_i"]].rename(columns={"value_i":"value"})
-    fig = dual_chart(ry_df2, exp_df2, "Real Yield 10Y", "Inflation Expectation 10Y")
+    render_html('<div class="sec-title">10Y Real Yield Dynamic (DFII10)</div>')
+    fig = dynamic_chart(ry_df, "10Y Real Yield (DFII10)", "USD")
     if fig:
+        render_html('<div class="chart-card">')
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        render_html('</div>')
 
 
 # ============================================================
@@ -837,7 +832,7 @@ def main() -> None:
         render_html("""
         <div style="padding:5px 7px 14px;border-bottom:1px solid rgba(255,255,255,0.06);margin-bottom:12px;">
           <div style="font-size:12px;font-weight:800;color:#e2b714;">FX MACRO &amp; GEO</div>
-          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v8</div>
+          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v8.2</div>
         </div>
         """)
         page = st.radio("Navigation:", [
@@ -864,7 +859,7 @@ def main() -> None:
     elif page == "📊 Currency Impact Matrix":
         render_top_header()
         render_html('<div class="sec-title">Currency Impact Matrix</div>')
-        render_html('<div class="dt-wrap" style="padding:16px;">Reference table active in memory.</div>')
+        render_html('<div class="dt-wrap" style="padding:16px;">Real-Time Matrix active in memory.</div>')
 
     render_html(f"""
     <div class="app-foot">
