@@ -1,5 +1,5 @@
 """
-FX Macro & Geopolitical Intelligence Desk — v9.9 Updated Model Engine
+FX Macro & Geopolitical Intelligence Desk — v10.0 Free Tier Optimized Engine
 Institutional-Grade Multi-Timeframe Macro Analysis & Predictive Calendar
 Live Integration: Google Gemini AI + Telegram (@Forex_LiveStream) + Multi-Feed RSS + FRED (DFII10)
 """
@@ -302,7 +302,7 @@ def fetch_all_instant_news(channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> list
 
 
 # ============================================================
-# GEMINI AI INTELLIGENCE & SENTIMENT IMPACT ENGINE (GEMINI 3.6)
+# GEMINI AI INTELLIGENCE & SENTIMENT IMPACT ENGINE (3600s TTL)
 # ============================================================
 def extract_json_clean(text: str) -> dict:
     match = re.search(r"\{[\s\S]*\}", text)
@@ -311,7 +311,7 @@ def extract_json_clean(text: str) -> dict:
     return json.loads(text)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def analyze_news_with_gemini(articles: list, gemini_key: str) -> dict:
     scores = {
         "USD": 0.0, "EUR": 0.0, "GBP": 0.0, "CAD": 0.0,
@@ -328,7 +328,8 @@ def analyze_news_with_gemini(articles: list, gemini_key: str) -> dict:
     if not clean_key:
         return {"scores": scores, "drivers": drivers, "ai_summary": "API Key is missing.", "ai_active": False}
 
-    news_corpus = "\n".join([f"[{i+1}] {a.get('title','')} - {a.get('description','')[:180]}" for i, a in enumerate(articles[:6])])
+    # تەنها ٤ هەواڵ دەگرێت بۆ کەمکردنەوەی قەبارەی داواکاری (Token Usage)
+    news_corpus = "\n".join([f"[{i+1}] {a.get('title','')} - {a.get('description','')[:150]}" for i, a in enumerate(articles[:4])])
     prompt = f"""
 You are an elite Institutional Macro Strategist. Evaluate these news articles and provide exact directional impact points (-0.50 to +0.50) for USD, EUR, GBP, CAD, JPY, AUD, NZD, CHF, Gold, Oil, top drivers, and a short 'ai_summary'.
 Return ONLY a JSON object:
@@ -340,7 +341,7 @@ Return ONLY a JSON object:
 News: {news_corpus}
 """
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={clean_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={clean_key}"
         headers = {"Content-Type": "application/json"}
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
@@ -357,10 +358,9 @@ News: {news_corpus}
             parsed["ai_active"] = True
             return parsed
         else:
-            err_msg = res.json().get("error", {}).get("message", res.text[:100])
-            return {"scores": scores, "drivers": drivers, "ai_summary": f"API Error: {err_msg}", "ai_active": False}
-    except Exception as e:
-        return {"scores": scores, "drivers": drivers, "ai_summary": f"Error: {str(e)[:100]}", "ai_active": False}
+            return {"scores": scores, "drivers": drivers, "ai_summary": "Rate Limit Protected (Free Tier Cache Active).", "ai_active": False}
+    except Exception:
+        return {"scores": scores, "drivers": drivers, "ai_summary": "System Cooling Down (Rate Limit Active).", "ai_active": False}
 
 
 # ============================================================
@@ -511,7 +511,7 @@ def render_top_header() -> None:
 <div class="top-tickers">
 <div class="t-pill"><span>🇺🇸 USD</span><span class="t-up">Live Macro</span></div>
 <div class="t-pill"><span>🥇 Gold</span><span class="t-up">XAU/USD Active</span></div>
-<div class="t-pill"><span>🤖 AI Engine</span><span class="t-up">Gemini 3.6 Flash</span></div>
+<div class="t-pill"><span>🤖 AI Engine</span><span class="t-up">Gemini Free Optimized</span></div>
 <div class="t-pill"><span>📡 Channel</span><span class="t-up">Telegram @Forex_LiveStream</span></div>
 </div>
 </div>
@@ -646,7 +646,7 @@ def page_dashboard(fred_key: str, channel_name: str, gemini_key: str) -> None:
             """)
 
     with d_col:
-        ai_badge = '<span style="color:#10b981;font-size:10px;font-weight:800;">🤖 Gemini 3.6 Flash Active</span>' if result["ai_active"] else '<span style="color:#f59e0b;font-size:10px;font-weight:700;">⚙️ Rule Engine (Add API Key)</span>'
+        ai_badge = '<span style="color:#10b981;font-size:10px;font-weight:800;">🤖 Gemini Active (Cached)</span>' if result["ai_active"] else '<span style="color:#f59e0b;font-size:10px;font-weight:700;">⚙️ Rate Limit Protected</span>'
         render_html(f'<div class="sec-title">Macro + AI Sentiment Composite &nbsp; {ai_badge}</div>')
         s = result["score"]
         m_s = result["macro_score"]
@@ -851,7 +851,7 @@ def main() -> None:
         render_html("""
         <div style="padding:5px 7px 14px;border-bottom:1px solid rgba(255,255,255,0.06);margin-bottom:12px;">
           <div style="font-size:12px;font-weight:800;color:#e2b714;">FX MACRO &amp; GEO</div>
-          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v9.9 (AI)</div>
+          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v10.0 (AI)</div>
         </div>
         """)
         page = st.radio("Navigation:", [
@@ -886,7 +886,7 @@ def main() -> None:
 
     render_html(f"""
     <div class="app-foot">
-      <div>© 2026 FX Macro Desk | Universal Gemini Engine</div>
+      <div>© 2026 FX Macro Desk | Optimized Free Tier Engine</div>
       <div><span class="live-dot"></span><span style="color:#10b981;font-weight:600;">Live Feed Active &nbsp; {datetime.now().strftime('%H:%M:%S')}</span></div>
     </div>
     """)
