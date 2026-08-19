@@ -1,5 +1,5 @@
 """
-FX Macro & Geopolitical Intelligence Desk — v9.0 AI-Powered
+FX Macro & Geopolitical Intelligence Desk — v9.2 Full Gemini AI Embedded
 Institutional-Grade Multi-Timeframe Macro Analysis & Predictive Calendar
 Live Integration: Google Gemini AI + Telegram (@Forex_LiveStream) + Multi-Feed RSS + FRED (DFII10)
 """
@@ -143,7 +143,8 @@ CAT_ICONS   = {"inflation": "📈", "labor_pos": "👥", "labor_neg": "📉", "g
 CAT_LABELS  = {"inflation": "Inflation", "labor_pos": "Labour Market", "labor_neg": "Unemployment", "growth": "Growth", "rate": "Interest Rate"}
 
 def render_html(html_str: str) -> None:
-    clean = "\n".join(line.strip() for line in html_str.splitlines() if line.strip())
+    clean = "
+".join(line.strip() for line in html_str.splitlines() if line.strip())
     st.markdown(clean, unsafe_allow_html=True)
 
 def inject_css() -> None:
@@ -218,7 +219,6 @@ div[data-testid="stMetric"] label{color:#8a99ad!important;font-size:12px!importa
 .pills{display:flex;gap:5px;flex-wrap:wrap;}
 .pill-g{background:rgba(16,185,129,0.13);color:#10b981;border:1px solid rgba(16,185,129,0.28);padding:3px 9px;border-radius:6px;font-weight:700;font-size:11px;}
 .pill-r{background:rgba(239,68,68,0.13);color:#ef4444;border:1px solid rgba(239,68,68,0.28);padding:3px 9px;border-radius:6px;font-weight:700;font-size:11px;}
-.pill-ai{background:rgba(226,183,20,0.13);color:#e2b714;border:1px solid rgba(226,183,20,0.28);padding:3px 9px;border-radius:6px;font-weight:700;font-size:11px;}
 .app-foot{display:flex;justify-content:space-between;align-items:center;padding:16px 22px;margin-top:36px;border-top:1px solid rgba(255,255,255,0.05);font-size:11px;color:#4b5563;}
 .live-dot{width:6px;height:6px;border-radius:50%;background:#10b981;box-shadow:0 0 7px #10b981;display:inline-block;margin-right:5px;}
 </style>
@@ -318,8 +318,8 @@ def analyze_news_with_gemini(articles: list, gemini_key: str) -> dict:
     if not articles:
         return {"scores": scores, "drivers": drivers, "ai_summary": ai_summary, "ai_active": False}
 
-    # Fallback Rule-Based Engine if Gemini Key is not supplied
-    if not gemini_key or not gemini_key.strip():
+    clean_key = gemini_key.strip() if gemini_key else ""
+    if not clean_key:
         rules = [
             {"pattern": r"(war|military|missile|conflict|sanction|attack|invad|escalat|iran|israel|russia|ukraine|tensions)", "name": "Geopolitical Conflict & War Escalation", "icon": "💣", "dur": "1-2 Weeks", "impacts": {"USD": +0.10, "CHF": +0.25, "Gold": +0.35, "Oil": +0.25, "EUR": -0.15, "GBP": -0.12}},
             {"pattern": r"(treasury.*buyback|bond repurchase|yields.*decline|yield.*fall|dollar.*decline)", "name": "US Treasury Bond Buybacks / Yield Drop", "icon": "📉", "dur": "1-3 Days", "impacts": {"Gold": +0.35, "EUR": +0.20, "GBP": +0.18, "USD": -0.35}},
@@ -339,10 +339,10 @@ def analyze_news_with_gemini(articles: list, gemini_key: str) -> dict:
                         detected.add(r["name"])
         for k in scores:
             scores[k] = float(np.clip(scores[k], -0.60, 0.60))
-        return {"scores": scores, "drivers": drivers, "ai_summary": "Rule-based engine active (Add Gemini API Key in sidebar for advanced AI reasoning).", "ai_active": False}
+        return {"scores": scores, "drivers": drivers, "ai_summary": "Rule-based engine active.", "ai_active": False}
 
-    # Advanced Google Gemini 2.5 Flash Institutional Engine
-    news_corpus = "\n".join([f"[{i+1}] {a.get('title','')} - {a.get('description','')[:180]}" for i, a in enumerate(articles[:8])])
+    news_corpus = "
+".join([f"[{i+1}] {a.get('title','')} - {a.get('description','')[:180]}" for i, a in enumerate(articles[:8])])
     prompt = f"""
 You are an elite Institutional Macro Strategist and Quantitative FX & Commodity Portfolio Manager.
 Evaluate the following breaking news articles and determine exact directional impact points, expected duration, and key drivers.
@@ -376,7 +376,7 @@ Return ONLY a JSON object strictly matching this schema:
 }}
 """
     try:
-        client = genai.Client(api_key=gemini_key.strip())
+        client = genai.Client(api_key=clean_key)
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=prompt,
@@ -388,7 +388,7 @@ Return ONLY a JSON object strictly matching this schema:
         data = json.loads(response.text)
         data["ai_active"] = True
         return data
-    except Exception as e:
+    except Exception:
         return analyze_news_with_gemini(articles, "")
 
 
@@ -430,7 +430,7 @@ def calc_mtf(vals: list, cat: str) -> dict | None:
     }
 
 
-def compute_composite(currency: str, fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL, gemini_key: str = "") -> dict | None:
+def compute_composite(currency: str, fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL, gemini_key: str = DEFAULT_GEMINI_KEY) -> dict | None:
     cfg = CURRENCY_SERIES[currency]
     rows, weighted = [], []
     for name, meta in cfg["indicators"].items():
@@ -448,7 +448,6 @@ def compute_composite(currency: str, fred_key: str, channel_name: str = DEFAULT_
     tw = sum(r["weight"] for r in rows)
     macro_score = sum(weighted) / tw if tw else 0.0
 
-    # AI Sentiment Analysis
     all_news = fetch_all_instant_news(channel_name)
     sentiment_res = analyze_news_with_gemini(all_news, gemini_key)
     news_points = sentiment_res["scores"].get(currency, 0.0)
@@ -456,7 +455,6 @@ def compute_composite(currency: str, fred_key: str, channel_name: str = DEFAULT_
     ai_summary = sentiment_res.get("ai_summary", "")
     ai_active = sentiment_res.get("ai_active", False)
 
-    # 50% Macro Baseline + 50% AI News Impact
     final_score = (0.50 * macro_score) + (0.50 * (news_points / 0.50))
 
     return {
@@ -542,7 +540,7 @@ def render_top_header() -> None:
 <div class="top-tickers">
 <div class="t-pill"><span>🇺🇸 USD</span><span class="t-up">Live Macro</span></div>
 <div class="t-pill"><span>🥇 Gold</span><span class="t-up">XAU/USD Active</span></div>
-<div class="t-pill"><span>🤖 AI Engine</span><span class="t-up">Gemini 2.5 Flash</span></div>
+<div class="t-pill"><span>🤖 AI Engine</span><span class="t-up">Gemini 2.5 Flash Embedded</span></div>
 <div class="t-pill"><span>📡 Channel</span><span class="t-up">Telegram @Forex_LiveStream</span></div>
 </div>
 </div>
@@ -677,7 +675,7 @@ def page_dashboard(fred_key: str, channel_name: str, gemini_key: str) -> None:
             """)
 
     with d_col:
-        ai_badge = '<span style="color:#10b981;font-size:10px;font-weight:800;">🤖 Gemini 2.5 Flash Active</span>' if result["ai_active"] else '<span style="color:#f59e0b;font-size:10px;font-weight:700;">⚙️ Rule Engine (Add API Key)</span>'
+        ai_badge = '<span style="color:#10b981;font-size:10px;font-weight:800;">🤖 Gemini 2.5 Flash Active</span>' if result["ai_active"] else '<span style="color:#f59e0b;font-size:10px;font-weight:700;">⚙️ Rule Engine (Key Error)</span>'
         render_html(f'<div class="sec-title">Macro + AI Sentiment Composite &nbsp; {ai_badge}</div>')
         s = result["score"]
         m_s = result["macro_score"]
@@ -882,7 +880,7 @@ def main() -> None:
         render_html("""
         <div style="padding:5px 7px 14px;border-bottom:1px solid rgba(255,255,255,0.06);margin-bottom:12px;">
           <div style="font-size:12px;font-weight:800;color:#e2b714;">FX MACRO &amp; GEO</div>
-          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v9.0 (AI)</div>
+          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v9.2 (AI)</div>
         </div>
         """)
         page = st.radio("Navigation:", [
@@ -895,7 +893,7 @@ def main() -> None:
 
         st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
         st.markdown("<b style='color:#e2b714;font-size:11px;'>🤖 GOOGLE GEMINI AI</b>", unsafe_allow_html=True)
-        gemini_key = st.text_input("Gemini API Key:", value="", type="password", key="gemini_key", help="Paste your Google Gemini API Key here for instant AI geopolitical reasoning.")
+        gemini_key = st.text_input("Gemini API Key:", value=DEFAULT_GEMINI_KEY, type="password", key="gemini_key")
         
         st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
         st.markdown("<b style='color:#6b7280;font-size:10.5px;'>📡 TELEGRAM CHANNEL</b>", unsafe_allow_html=True)
