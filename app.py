@@ -1,7 +1,8 @@
 """
-FX Macro & Geopolitical Intelligence Desk — v8.2 Pro
+FX Macro & Geopolitical Intelligence Desk — v8.3 High-Impact Sentiment
 Institutional-Grade Multi-Timeframe Macro Analysis & Predictive Calendar
-Live Integration: Telegram (@Forex_LiveStream) + Multi-Feed RSS + FRED (DFII10 Direct Real Yield)
+Live Integration: Telegram (@Forex_LiveStream) + Multi-Feed RSS + FRED Engine
+Weighting: 50% Macro Baseline + 50% Real-Time Telegram Sentiment Impact
 """
 from __future__ import annotations
 import streamlit as st
@@ -134,7 +135,6 @@ CURRENCY_SERIES = {
     },
 }
 
-# DFII10 is the 10-Year Treasury Inflation-Indexed Security (Direct Real Yield)
 GOLD_SERIES = {"real_yield": "DFII10", "yield": "DGS10", "inflation_exp": "T10YIE"}
 OIL_SERIES  = {"wti": "DCOILWTICO", "brent": "DCOILBRENTEU"}
 CAT_ICONS   = {"inflation": "📈", "labor_pos": "👥", "labor_neg": "📉", "growth": "🏭", "rate": "🏦"}
@@ -248,7 +248,6 @@ def fetch_fred(series_id: str, key: str, limit: int = 48) -> pd.DataFrame | None
 
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_telegram_channel_news(channel_username: str = DEFAULT_TELEGRAM_CHANNEL) -> list:
-    """Live Telegram Scraper without API delay."""
     clean_username = channel_username.replace("@", "").replace("https://t.me/", "").strip()
     url = f"https://t.me/s/{clean_username}"
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -318,31 +317,31 @@ def analyze_news_sentiment(articles: list) -> dict:
             "pattern": r"(war|military|missile|conflict|sanction|attack|invad|escalat|iran|israel|russia|ukraine|tensions)",
             "name": "Geopolitical Conflict & War Escalation",
             "icon": "💣",
-            "impacts": {"USD": +0.12, "CHF": +0.18, "Gold": +0.25, "Oil": +0.18, "EUR": -0.12, "GBP": -0.10}
+            "impacts": {"USD": +0.10, "CHF": +0.25, "Gold": +0.35, "Oil": +0.25, "EUR": -0.15, "GBP": -0.12}
         },
         {
             "pattern": r"(treasury.*buyback|bond repurchase|yields.*decline|yield.*fall|dollar.*decline)",
             "name": "US Treasury Bond Buybacks / Yield Drop",
             "icon": "📉",
-            "impacts": {"Gold": +0.22, "EUR": +0.15, "GBP": +0.12, "USD": -0.20}
+            "impacts": {"Gold": +0.35, "EUR": +0.20, "GBP": +0.18, "USD": -0.35}
         },
         {
             "pattern": r"(oil spike|opec cut|crude jump|brent surge|energy supply|pipeline)",
             "name": "Oil & Energy Supply Shock",
             "icon": "🛢️",
-            "impacts": {"CAD": +0.15, "Oil": +0.22, "USD": +0.08, "JPY": -0.18, "EUR": -0.12}
+            "impacts": {"CAD": +0.22, "Oil": +0.30, "USD": +0.10, "JPY": -0.22, "EUR": -0.15}
         },
         {
             "pattern": r"(fed hike|hawkish fed|rate increase|sticky inflation|cpi surge)",
             "name": "Hawkish Fed / Rate Hike Pressure",
             "icon": "🏦",
-            "impacts": {"USD": +0.18, "Gold": -0.15, "EUR": -0.10, "JPY": -0.12}
+            "impacts": {"USD": +0.25, "Gold": -0.20, "EUR": -0.15, "JPY": -0.18}
         },
         {
             "pattern": r"(fed cut|rate cut|dovish fed|inflation cooling|fed pivot)",
             "name": "Dovish Fed / Rate Cut Pivot",
             "icon": "📉",
-            "impacts": {"Gold": +0.20, "USD": -0.18, "EUR": +0.12, "GBP": +0.10}
+            "impacts": {"Gold": +0.30, "USD": -0.25, "EUR": +0.18, "GBP": +0.15}
         },
     ]
 
@@ -358,7 +357,7 @@ def analyze_news_sentiment(articles: list) -> dict:
                     detected.add(r["name"])
 
     for k in scores:
-        scores[k] = float(np.clip(scores[k], -0.45, 0.45))
+        scores[k] = float(np.clip(scores[k], -0.60, 0.60))
 
     return {"scores": scores, "drivers": drivers}
 
@@ -419,12 +418,13 @@ def compute_composite(currency: str, fred_key: str, channel_name: str = DEFAULT_
     tw = sum(r["weight"] for r in rows)
     macro_score = sum(weighted) / tw if tw else 0.0
 
+    # 50% Macro Baseline + 50% Real-Time Telegram News Weighting
     all_news = fetch_all_instant_news(channel_name)
     sentiment_res = analyze_news_sentiment(all_news)
     news_points = sentiment_res["scores"].get(currency, 0.0)
     detected_drivers = sentiment_res.get("drivers", [])
 
-    final_score = (0.75 * macro_score) + (0.25 * (news_points / 0.45))
+    final_score = (0.50 * macro_score) + (0.50 * (news_points / 0.50))
 
     return {
         "score": final_score,
@@ -506,8 +506,8 @@ def render_top_header() -> None:
 <div class="top-brand"><span>📊</span><span>FX MACRO &amp; GEOPOLITICAL DESK</span></div>
 <div class="top-tickers">
 <div class="t-pill"><span>🇺🇸 USD</span><span class="t-up">Live Baseline</span></div>
-<div class="t-pill"><span>🥇 Gold</span><span class="t-up">XAU/USD (DFII10 Yield)</span></div>
-<div class="t-pill"><span>📡 Feed</span><span class="t-up">Telegram @Forex_LiveStream</span></div>
+<div class="t-pill"><span>🥇 Gold</span><span class="t-up">XAU/USD Active</span></div>
+<div class="t-pill"><span>📡 50% News Weight</span><span class="t-up">Telegram @Forex_LiveStream</span></div>
 </div>
 </div>
 """)
@@ -559,7 +559,7 @@ def page_dashboard(fred_key: str, channel_name: str) -> None:
 <div class="pg-title">
 <div class="pg-sub">FX MACRO &amp; GEOPOLITICAL DESK</div>
 <h1 class="pg-h1">Executive Intelligence Dashboard</h1>
-<div class="pg-bread">Real-time Multi-Timeframe Macro Analysis &amp; Telegram Geopolitical Sentiment Engine</div>
+<div class="pg-bread">Real-time Multi-Timeframe Macro Analysis &amp; 50% Telegram News Impact Engine</div>
 </div>
 """)
     a_col, b_col = st.columns([3, 2])
@@ -653,14 +653,14 @@ def page_dashboard(fred_key: str, channel_name: str) -> None:
           <div style="font-size:10.5px;font-weight:800;color:#8a99ad;text-transform:uppercase;">{CURRENCY_SERIES[currency]['flag']} {currency} Overall Bias</div>
           <div style="margin:10px 0;">{badge(s, lg=True)}</div>
           <div style="font-size:14px;font-weight:800;color:#fff;">Composite: <span style="color:#e2b714;">{s:+.3f}</span></div>
-          <div style="font-size:11px;color:#8a99ad;margin-top:6px;">Baseline: <b>{m_s:+.3f}</b> | News Impact: <b style="color:{np_color};">{n_p:+.2f} pts</b></div>
+          <div style="font-size:11px;color:#8a99ad;margin-top:6px;">Baseline (50%): <b>{m_s:+.3f}</b> | News Impact (50%): <b style="color:{np_color};">{n_p:+.2f} pts</b></div>
           <div style="margin-top:8px;">{drivers_html}</div>
         </div>
         """)
 
 
 # ============================================================
-# PAGE 2 — GOLD INTELLIGENCE (WITH DFII10 DIRECT REAL YIELD)
+# PAGE 2 — GOLD INTELLIGENCE (50% NEWS WEIGHT)
 # ============================================================
 def page_gold(fred_key: str, channel_name: str) -> None:
     render_top_header()
@@ -668,7 +668,7 @@ def page_gold(fred_key: str, channel_name: str) -> None:
 <div class="pg-title">
 <div class="pg-sub">COMMODITY &amp; SAFE-HAVEN INTELLIGENCE</div>
 <h1 class="pg-h1">Gold (XAUUSD) — Real Yield &amp; Telegram Feed</h1>
-<div class="pg-bread">Direct 10Y Real Yield (DFII10) + Instant Geopolitical Telegram Alerts</div>
+<div class="pg-bread">50% Real Yield/Macro + 50% High-Impact Telegram Geopolitical Alerts</div>
 </div>
 """)
     if not fred_key:
@@ -677,8 +677,6 @@ def page_gold(fred_key: str, channel_name: str) -> None:
 
     with st.spinner("Analyzing Gold Real Yield (DFII10) & Telegram News..."):
         ry_df = fetch_fred(GOLD_SERIES["real_yield"], fred_key, limit=60)
-        
-        # Fallback if DFII10 is unavailable
         if ry_df is None or ry_df.empty:
             y_df = fetch_fred(GOLD_SERIES["yield"], fred_key, limit=60)
             i_df = fetch_fred(GOLD_SERIES["inflation_exp"], fred_key, limit=60)
@@ -691,7 +689,7 @@ def page_gold(fred_key: str, channel_name: str) -> None:
         usd_r = compute_composite("USD", fred_key, channel_name)
 
     if ry_df is None or ry_df.empty:
-        st.warning("⚠️ Could not load yield data. Please check FRED API key or clear cache.")
+        st.warning("⚠️ Could not load yield data.")
         return
 
     ry_vals = ry_df["value"].tail(36).tolist()
@@ -704,8 +702,8 @@ def page_gold(fred_key: str, channel_name: str) -> None:
     sentiment_res = analyze_news_sentiment(all_news)
     gold_news_pts = sentiment_res["scores"].get("Gold", 0.0)
 
-    # 40% Real Yield + 35% USD Macro + 25% Telegram Geopolitical Safe-Haven
-    gold_s = (0.40 * gold_ry) + (0.35 * gold_usd) + (0.25 * (gold_news_pts / 0.45))
+    # 30% Real Yield + 20% USD Macro + 50% Telegram Geopolitical Safe-Haven
+    gold_s = (0.30 * gold_ry) + (0.20 * gold_usd) + (0.50 * (gold_news_pts / 0.50))
 
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -757,7 +755,8 @@ def page_oil(fred_key: str, channel_name: str) -> None:
     sentiment_res = analyze_news_sentiment(all_news)
     oil_news_pts = sentiment_res["scores"].get("Oil", 0.0)
 
-    final_oil_score = (0.75 * (w_mf["score"] if w_mf else 0.0)) + (0.25 * (oil_news_pts / 0.45))
+    # 50% Macro + 50% Geopolitical Shock
+    final_oil_score = (0.50 * (w_mf["score"] if w_mf else 0.0)) + (0.50 * (oil_news_pts / 0.50))
 
     c1, c2, c3 = st.columns(3)
     with c1: st.metric("WTI Crude", f"${w_vals[-1]:.2f}/bbl", delta=f"{w_mf['mom']:+.2f}% m/m" if w_mf else None)
@@ -800,7 +799,7 @@ def page_telegram_feed(channel_name: str) -> None:
     if pills_html:
         render_html(f"""
         <div class="dt-wrap" style="padding:12px 16px;margin-bottom:16px;background:#0d1527;border-color:rgba(226,183,20,0.2);">
-          <div style="font-size:11px;font-weight:800;color:#e2b714;text-transform:uppercase;margin-bottom:6px;">⚡ Telegram Real-Time Impact Matrix</div>
+          <div style="font-size:11px;font-weight:800;color:#e2b714;text-transform:uppercase;margin-bottom:6px;">⚡ Telegram Real-Time Impact Matrix (50% Engine)</div>
           <div class="pills">{"".join(pills_html)}</div>
         </div>
         """)
@@ -832,7 +831,7 @@ def main() -> None:
         render_html("""
         <div style="padding:5px 7px 14px;border-bottom:1px solid rgba(255,255,255,0.06);margin-bottom:12px;">
           <div style="font-size:12px;font-weight:800;color:#e2b714;">FX MACRO &amp; GEO</div>
-          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v8.2</div>
+          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v8.3</div>
         </div>
         """)
         page = st.radio("Navigation:", [
@@ -863,7 +862,7 @@ def main() -> None:
 
     render_html(f"""
     <div class="app-foot">
-      <div>© 2026 FX Macro Desk | Live Telegram Integration</div>
+      <div>© 2026 FX Macro Desk | High-Impact Telegram Engine</div>
       <div><span class="live-dot"></span><span style="color:#10b981;font-weight:600;">Live Feed Active &nbsp; {datetime.now().strftime('%H:%M:%S')}</span></div>
     </div>
     """)
