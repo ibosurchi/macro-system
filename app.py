@@ -1,5 +1,5 @@
 """
-FX Macro & Geopolitical Intelligence Desk — v9.4 Stable AI Engine
+FX Macro & Geopolitical Intelligence Desk — v9.5 Stable Universal AI Engine
 Institutional-Grade Multi-Timeframe Macro Analysis & Predictive Calendar
 Live Integration: Google Gemini AI + Telegram (@Forex_LiveStream) + Multi-Feed RSS + FRED (DFII10)
 """
@@ -327,26 +327,7 @@ def analyze_news_with_gemini(articles: list, gemini_key: str) -> dict:
 
     clean_key = gemini_key.strip() if gemini_key else ""
     if not clean_key:
-        rules = [
-            {"pattern": r"(war|military|missile|conflict|sanction|attack|invad|escalat|iran|israel|russia|ukraine|tensions)", "name": "Geopolitical Conflict & War Escalation", "icon": "💣", "dur": "1-2 Weeks", "impacts": {"USD": +0.10, "CHF": +0.25, "Gold": +0.35, "Oil": +0.25, "EUR": -0.15, "GBP": -0.12}},
-            {"pattern": r"(treasury.*buyback|bond repurchase|yields.*decline|yield.*fall|dollar.*decline)", "name": "US Treasury Bond Buybacks / Yield Drop", "icon": "📉", "dur": "1-3 Days", "impacts": {"Gold": +0.35, "EUR": +0.20, "GBP": +0.18, "USD": -0.35}},
-            {"pattern": r"(oil spike|opec cut|crude jump|brent surge|energy supply|pipeline)", "name": "Oil & Energy Supply Shock", "icon": "🛢️", "dur": "3-5 Days", "impacts": {"CAD": +0.22, "Oil": +0.30, "USD": +0.10, "JPY": -0.22, "EUR": -0.15}},
-            {"pattern": r"(fed hike|hawkish fed|rate increase|sticky inflation|cpi surge)", "name": "Hawkish Fed / Rate Hike Pressure", "icon": "🏦", "dur": "1-2 Weeks", "impacts": {"USD": +0.25, "Gold": -0.20, "EUR": -0.15, "JPY": -0.18}},
-            {"pattern": r"(fed cut|rate cut|dovish fed|inflation cooling|fed pivot)", "name": "Dovish Fed / Rate Cut Pivot", "icon": "📉", "dur": "1-2 Weeks", "impacts": {"Gold": +0.30, "USD": -0.25, "EUR": +0.18, "GBP": +0.15}},
-        ]
-        detected = set()
-        for a in articles:
-            txt = (str(a.get("title", "")) + " " + str(a.get("description", ""))).lower()
-            for r in rules:
-                if re.search(r["pattern"], txt):
-                    for curr, pt in r["impacts"].items():
-                        scores[curr] += pt
-                    if r["name"] not in detected:
-                        drivers.append({"name": r["name"], "icon": r["icon"], "expected_duration": r["dur"], "reason": "Rule-based pattern matching"})
-                        detected.add(r["name"])
-        for k in scores:
-            scores[k] = float(np.clip(scores[k], -0.60, 0.60))
-        return {"scores": scores, "drivers": drivers, "ai_summary": "Rule-based engine active.", "ai_active": False}
+        return {"scores": scores, "drivers": drivers, "ai_summary": "API Key is missing.", "ai_active": False}
 
     news_corpus = "\n".join([f"[{i+1}] {a.get('title','')} - {a.get('description','')[:180]}" for i, a in enumerate(articles[:8])])
     prompt = f"""
@@ -381,7 +362,9 @@ Return ONLY a JSON object strictly matching this schema:
   "ai_summary": string
 }}
 """
-    models_to_try = ["gemini-2.5-flash", "gemini-1.5-flash"]
+    # تاقیکردنەوەی مۆدێلە نوێ و بەردەستەکانی گووگڵ بە پێی دواین وەشانی 2026
+    models_to_try = ["gemini-2.5-flash", "gemini-3.5-flash", "gemini-1.5-flash"]
+    last_err = ""
     for model_name in models_to_try:
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={clean_key}"
@@ -401,15 +384,14 @@ Return ONLY a JSON object strictly matching this schema:
                 parsed["ai_active"] = True
                 return parsed
             else:
-                err_msg = res.json().get("error", {}).get("message", res.text[:100])
-                ai_summary = f"API Error ({res.status_code}): {err_msg}"
+                last_err = res.json().get("error", {}).get("message", res.text[:100])
         except Exception as e:
-            ai_summary = f"Connection Error: {str(e)[:100]}"
+            last_err = str(e)[:100]
 
     return {
         "scores": scores,
         "drivers": drivers,
-        "ai_summary": f"Gemini Fallback: {ai_summary}",
+        "ai_summary": f"API Error: {last_err}",
         "ai_active": False
     }
 
@@ -902,7 +884,7 @@ def main() -> None:
         render_html("""
         <div style="padding:5px 7px 14px;border-bottom:1px solid rgba(255,255,255,0.06);margin-bottom:12px;">
           <div style="font-size:12px;font-weight:800;color:#e2b714;">FX MACRO &amp; GEO</div>
-          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v9.4 (AI)</div>
+          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v9.5 (AI)</div>
         </div>
         """)
         page = st.radio("Navigation:", [
