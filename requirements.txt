@@ -4,3 +4,5 @@ numpy
 requests
 plotly
 pytz
+feedparser
+streamlit-autorefresh
