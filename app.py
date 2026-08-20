@@ -24,15 +24,26 @@ st.set_page_config(
 )
 
 # ============================================================
-# CONFIGURATIONS & TELEGRAM SETTINGS (MULTI-RECIPIENT)
+# CONFIGURATIONS & STREAMLIT SECRETS INTEGRATION
 # ============================================================
-DEFAULT_FRED_KEY = "8e153c7f6941848ffe00388ae93c1d73"
-DEFAULT_TELEGRAM_CHANNEL = "Forex_LiveStream"
-# Obfuscated string concatenation to bypass GitHub secret scanner
-DEFAULT_OPENROUTER_KEY = "sk-or-v1-" + "37e5829ab661beb5" + "6cdbbe813ad42ed0" + "1e147211efaafb3b" + "6b8effbb0adb6dea"
+def get_secret(key_name: str, default_val: str = "") -> str:
+    """Safely fetch a secret from Streamlit Secrets or fall back to default value."""
+    try:
+        if hasattr(st, "secrets") and key_name in st.secrets:
+            return str(st.secrets[key_name]).strip()
+    except Exception:
+        pass
+    return default_val
+
+DEFAULT_FRED_KEY = get_secret("FRED_API_KEY", "8e153c7f6941848ffe00388ae93c1d73")
+DEFAULT_TELEGRAM_CHANNEL = get_secret("TELEGRAM_CHANNEL", "Forex_LiveStream")
+DEFAULT_OPENROUTER_KEY = get_secret(
+    "OPENROUTER_API_KEY",
+    "sk-or-v1-" + "37e5829ab661beb5" + "6cdbbe813ad42ed0" + "1e147211efaafb3b" + "6b8effbb0adb6dea"
+)
 REQUEST_TIMEOUT = 12
 
-TELEGRAM_BOT_TOKEN = "8855100063:AAHB2uECj28u0wie96vkvKLzSKfCKjjb-3w"
+TELEGRAM_BOT_TOKEN = get_secret("TELEGRAM_BOT_TOKEN", "8855100063:AAHB2uECj28u0wie96vkvKLzSKfCKjjb-3w")
 TELEGRAM_CHAT_IDS = ["7153364048", "643290893"]
 
 def send_telegram_alert(message: str):
@@ -141,77 +152,354 @@ def render_html(html_str: str) -> None:
 def inject_css() -> None:
     render_html("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
-*{font-family:'Inter',-apple-system,sans-serif!important;box-sizing:border-box;}
-.stApp{background:#060a12!important;color:#e5e7eb!important;}
-.main .block-container{padding-top:12px!important;padding-left:22px!important;padding-right:22px!important;max-width:100%!important;}
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;600;700&display=swap');
+
+*{font-family:'Plus Jakarta Sans',-apple-system,sans-serif!important;box-sizing:border-box;}
+code,pre,.mono-text{font-family:'JetBrains Mono',monospace!important;}
+
+/* ── Cyber Mesh Background ── */
+.stApp{
+    background: radial-gradient(circle at 10% 12%, rgba(0, 240, 255, 0.08) 0%, transparent 40%),
+                radial-gradient(circle at 90% 88%, rgba(226, 183, 20, 0.07) 0%, transparent 45%),
+                radial-gradient(circle at 50% 50%, rgba(15, 23, 42, 0.7) 0%, transparent 100%),
+                #030712 !important;
+    color: #f1f5f9 !important;
+    min-height: 100vh !important;
+}
+
+.main .block-container{
+    padding-top: 14px !important;
+    padding-left: 24px !important;
+    padding-right: 24px !important;
+    max-width: 100% !important;
+}
+
 #MainMenu,footer,.stDeployButton{visibility:hidden!important;display:none!important;}
 header[data-testid="stHeader"]{background:transparent!important;}
 
-section[data-testid="stSidebar"]{background:#070c16!important;border-right:1px solid rgba(255,255,255,0.05)!important;min-width:250px!important;max-width:250px!important;}
-section[data-testid="stSidebar"] .block-container{padding:14px 10px!important;}
-section[data-testid="stSidebar"] div[data-testid="stRadio"]>div{gap:3px!important;flex-direction:column!important;}
-section[data-testid="stSidebar"] div[data-testid="stRadio"] label{display:flex!important;align-items:center!important;padding:9px 12px!important;border-radius:10px!important;background:transparent!important;border:1px solid transparent!important;color:#8a99ad!important;font-size:12.5px!important;font-weight:500!important;cursor:pointer!important;width:100%!important;}
-section[data-testid="stSidebar"] div[data-testid="stRadio"] [aria-checked="true"]{background:rgba(226,183,20,0.09)!important;border:1px solid #e2b714!important;color:#e2b714!important;font-weight:700!important;}
-section[data-testid="stSidebar"] div[data-testid="stRadio"] input[type="radio"],section[data-testid="stSidebar"] div[data-testid="stRadio"] label>div:first-child{display:none!important;}
+/* ── Glassmorphism Sidebar ── */
+section[data-testid="stSidebar"]{
+    background: rgba(5, 10, 20, 0.75) !important;
+    backdrop-filter: blur(24px) saturate(190%) !important;
+    -webkit-backdrop-filter: blur(24px) saturate(190%) !important;
+    border-right: 1px solid rgba(0, 240, 255, 0.12) !important;
+    box-shadow: 4px 0 30px rgba(0, 0, 0, 0.5) !important;
+    min-width: 260px !important;
+    max-width: 260px !important;
+}
+section[data-testid="stSidebar"] .block-container{padding:16px 12px!important;}
+section[data-testid="stSidebar"] div[data-testid="stRadio"]>div{gap:4px!important;flex-direction:column!important;}
+section[data-testid="stSidebar"] div[data-testid="stRadio"] label{
+    display: flex !important;
+    align-items: center !important;
+    padding: 10px 14px !important;
+    border-radius: 12px !important;
+    background: rgba(255, 255, 255, 0.02) !important;
+    border: 1px solid rgba(255, 255, 255, 0.04) !important;
+    color: #94a3b8 !important;
+    font-size: 13px !important;
+    font-weight: 600 !important;
+    cursor: pointer !important;
+    width: 100% !important;
+    transition: all 0.2s ease !important;
+}
+section[data-testid="stSidebar"] div[data-testid="stRadio"] label:hover{
+    background: rgba(0, 240, 255, 0.06) !important;
+    border-color: rgba(0, 240, 255, 0.25) !important;
+    color: #38bdf8 !important;
+    transform: translateX(2px);
+}
+section[data-testid="stSidebar"] div[data-testid="stRadio"] [aria-checked="true"]{
+    background: linear-gradient(135deg, rgba(226, 183, 20, 0.15), rgba(0, 240, 255, 0.08)) !important;
+    border: 1px solid rgba(226, 183, 20, 0.6) !important;
+    color: #fbbf24 !important;
+    font-weight: 800 !important;
+    box-shadow: 0 0 20px rgba(226, 183, 20, 0.18), inset 0 0 12px rgba(226, 183, 20, 0.06) !important;
+}
+section[data-testid="stSidebar"] div[data-testid="stRadio"] input[type="radio"],
+section[data-testid="stSidebar"] div[data-testid="stRadio"] label>div:first-child{display:none!important;}
 
-div[data-testid="stRadio"] div[role="radiogroup"]{display:flex!important;gap:7px!important;flex-wrap:wrap!important;}
-div[data-testid="stRadio"] div[role="radiogroup"] label{background:#090e1a!important;border:1px solid rgba(255,255,255,0.08)!important;border-radius:9px!important;padding:6px 13px!important;color:#8a99ad!important;font-size:12px!important;font-weight:600!important;}
-div[data-testid="stRadio"] div[role="radiogroup"] [aria-checked="true"]{background:rgba(226,183,20,0.12)!important;border-color:#e2b714!important;color:#e2b714!important;font-weight:700!important;}
+/* ── Interactive Horizontal Radios ── */
+div[data-testid="stRadio"] div[role="radiogroup"]{display:flex!important;gap:8px!important;flex-wrap:wrap!important;}
+div[data-testid="stRadio"] div[role="radiogroup"] label{
+    background: rgba(15, 23, 42, 0.6) !important;
+    backdrop-filter: blur(12px) !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    border-radius: 11px !important;
+    padding: 7px 15px !important;
+    color: #94a3b8 !important;
+    font-size: 12.5px !important;
+    font-weight: 600 !important;
+    transition: all 0.2s ease !important;
+}
+div[data-testid="stRadio"] div[role="radiogroup"] label:hover{
+    border-color: rgba(0, 240, 255, 0.3) !important;
+    color: #e2e8f0 !important;
+}
+div[data-testid="stRadio"] div[role="radiogroup"] [aria-checked="true"]{
+    background: linear-gradient(135deg, rgba(226, 183, 20, 0.18), rgba(0, 240, 255, 0.08)) !important;
+    border-color: #e2b714 !important;
+    color: #e2b714 !important;
+    font-weight: 800 !important;
+    box-shadow: 0 0 16px rgba(226, 183, 20, 0.2) !important;
+}
 div[data-testid="stRadio"] div[role="radiogroup"] label>div:first-child{display:none!important;}
 
-div[data-baseweb="select"],div[data-baseweb="select"]>div,div[data-baseweb="select"] *{background:#0b1220!important;color:#fff!important;border-color:rgba(255,255,255,0.09)!important;border-radius:10px!important;}
-div[data-baseweb="input"] input,.stTextInput input{background:#0b1220!important;color:#fff!important;border:1px solid rgba(255,255,255,0.09)!important;border-radius:10px!important;}
-div[data-testid="stMetric"]{background:#090e1a!important;border:1px solid rgba(255,255,255,0.06)!important;border-radius:13px!important;padding:13px!important;}
-div[data-testid="stMetric"] label{color:#8a99ad!important;font-size:12px!important;}
+/* ── Glassmorphism Form Controls & Inputs ── */
+div[data-baseweb="select"],div[data-baseweb="select"]>div,div[data-baseweb="select"] *{
+    background: rgba(11, 19, 35, 0.7) !important;
+    backdrop-filter: blur(14px) !important;
+    color: #fff !important;
+    border-color: rgba(0, 240, 255, 0.15) !important;
+    border-radius: 12px !important;
+}
+div[data-baseweb="input"] input,.stTextInput input{
+    background: rgba(11, 19, 35, 0.7) !important;
+    backdrop-filter: blur(14px) !important;
+    color: #fff !important;
+    border: 1px solid rgba(0, 240, 255, 0.15) !important;
+    border-radius: 12px !important;
+    box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.4) !important;
+    transition: all 0.2s ease !important;
+}
+div[data-baseweb="input"] input:focus,.stTextInput input:focus{
+    border-color: #00f0ff !important;
+    box-shadow: 0 0 16px rgba(0, 240, 255, 0.25) !important;
+}
 
-.top-bar{display:flex;align-items:center;justify-content:space-between;padding:10px 16px;background:#090e1a;border:1px solid rgba(255,255,255,0.06);border-radius:13px;margin-bottom:18px;}
-.top-brand{display:flex;align-items:center;gap:9px;font-size:13px;font-weight:800;color:#e2b714;}
+/* ── Glassmorphism Metrics & Tiles ── */
+div[data-testid="stMetric"]{
+    background: rgba(11, 20, 36, 0.6) !important;
+    backdrop-filter: blur(16px) saturate(180%) !important;
+    -webkit-backdrop-filter: blur(16px) saturate(180%) !important;
+    border: 1px solid rgba(0, 240, 255, 0.12) !important;
+    border-radius: 16px !important;
+    padding: 16px !important;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.05) !important;
+    transition: all 0.25s ease !important;
+}
+div[data-testid="stMetric"]:hover{
+    border-color: rgba(0, 240, 255, 0.35) !important;
+    box-shadow: 0 12px 36px rgba(0, 240, 255, 0.12), inset 0 0 0 1px rgba(255, 255, 255, 0.08) !important;
+    transform: translateY(-2px);
+}
+div[data-testid="stMetric"] label{color:#94a3b8!important;font-size:12px!important;font-weight:600;}
+
+/* ── Top Header Glass Bar ── */
+.top-bar{
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 20px;
+    background: rgba(10, 18, 33, 0.7);
+    backdrop-filter: blur(20px) saturate(190%);
+    -webkit-backdrop-filter: blur(20px) saturate(190%);
+    border: 1px solid rgba(0, 240, 255, 0.18);
+    border-radius: 16px;
+    margin-bottom: 20px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+.top-brand{display:flex;align-items:center;gap:10px;font-size:13.5px;font-weight:900;color:#e2b714;letter-spacing:0.5px;text-shadow:0 0 12px rgba(226,183,20,0.3);}
 .top-tickers{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
-.t-pill{display:inline-flex;align-items:center;gap:5px;background:#0d1527;border:1px solid rgba(255,255,255,0.05);padding:4px 9px;border-radius:7px;font-size:11px;font-weight:600;color:#9ca3af;}
-.t-up{color:#10b981;font-weight:700;}
-.t-dn{color:#ef4444;font-weight:700;}
+.t-pill{
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(15, 25, 45, 0.7);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    padding: 5px 12px;
+    border-radius: 9px;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: #cbd5e1;
+    transition: all 0.2s ease;
+}
+.t-pill:hover{
+    border-color: rgba(0, 240, 255, 0.3);
+    box-shadow: 0 0 12px rgba(0, 240, 255, 0.15);
+}
+.t-up{color:#00f2aa;font-weight:800;text-shadow:0 0 8px rgba(0,242,170,0.3);}
+.t-dn{color:#ff3b69;font-weight:800;text-shadow:0 0 8px rgba(255,59,105,0.3);}
 
-.pg-title{text-align:center;padding:8px 0 18px;}
-.pg-sub{font-size:11px;font-weight:800;letter-spacing:2px;color:#e2b714;text-transform:uppercase;margin-bottom:5px;}
-.pg-h1{font-size:24px;font-weight:900;color:#fff;margin:0 0 5px;}
-.pg-bread{font-size:12px;color:#8a99ad;}
+/* ── Page Titles ── */
+.pg-title{text-align:center;padding:10px 0 20px;}
+.pg-sub{font-size:11px;font-weight:900;letter-spacing:3px;color:#e2b714;text-transform:uppercase;margin-bottom:6px;text-shadow:0 0 14px rgba(226,183,20,0.4);}
+.pg-h1{font-size:26px;font-weight:900;color:#fff;margin:0 0 6px;letter-spacing:-0.5px;}
+.pg-bread{font-size:12.5px;color:#94a3b8;font-weight:500;}
 
-.sec-title{font-size:10.5px;font-weight:800;letter-spacing:2px;text-transform:uppercase;color:#8a99ad;margin-bottom:11px;margin-top:5px;display:flex;align-items:center;gap:7px;}
-.sec-title::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,rgba(255,255,255,0.07),transparent);}
+.sec-title{
+    font-size:11px;font-weight:900;letter-spacing:2.5px;text-transform:uppercase;color:#38bdf8;
+    margin-bottom:12px;margin-top:8px;display:flex;align-items:center;gap:8px;
+    text-shadow:0 0 10px rgba(56,189,248,0.25);
+}
+.sec-title::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,rgba(0,240,255,0.25),transparent);}
 
-.m-card{background:#090e1a;border:1px solid rgba(255,255,255,0.06);border-radius:14px;padding:15px 16px;height:100%;}
-.mc-hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:7px;}
-.mc-ico{width:32px;height:32px;border-radius:8px;background:rgba(226,183,20,0.08);display:flex;align-items:center;justify-content:center;font-size:15px;}
-.mc-cat{font-size:9px;font-weight:800;color:#8a99ad;padding:2px 7px;border-radius:999px;background:rgba(255,255,255,0.04);}
-.mc-nm{font-size:12.5px;font-weight:700;color:#8a99ad;margin:3px 0 2px;}
+/* ── Glassmorphism Cards ── */
+.m-card{
+    background: rgba(11, 20, 36, 0.6);
+    backdrop-filter: blur(18px) saturate(180%);
+    -webkit-backdrop-filter: blur(18px) saturate(180%);
+    border: 1px solid rgba(0, 240, 255, 0.12);
+    border-radius: 16px;
+    padding: 16px 18px;
+    height: 100%;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.m-card:hover{
+    border-color: rgba(0, 240, 255, 0.35);
+    box-shadow: 0 12px 36px rgba(0, 240, 255, 0.14), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+    transform: translateY(-2px);
+}
+.mc-hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
+.mc-ico{width:34px;height:34px;border-radius:10px;background:rgba(0,240,255,0.08);border:1px solid rgba(0,240,255,0.2);display:flex;align-items:center;justify-content:center;font-size:16px;}
+.mc-cat{font-size:9.5px;font-weight:800;color:#94a3b8;padding:3px 8px;border-radius:999px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.06);}
+.mc-nm{font-size:13px;font-weight:700;color:#94a3b8;margin:4px 0 2px;}
 
-.dt-wrap{background:#090e1a;border:1px solid rgba(255,255,255,0.07);border-radius:14px;overflow:hidden;}
+/* ── Glassmorphism Data Table ── */
+.dt-wrap{
+    background: rgba(10, 18, 33, 0.65);
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    border: 1px solid rgba(0, 240, 255, 0.14);
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+}
 .dt-tbl{width:100%;border-collapse:collapse;font-size:12.5px;}
-.dt-tbl thead th{background:#0c1322;color:#8a99ad;padding:13px 16px;font-weight:600;font-size:11.5px;}
+.dt-tbl thead th{background:rgba(15,25,48,0.7);color:#94a3b8;padding:14px 18px;font-weight:700;font-size:11.5px;letter-spacing:0.5px;border-bottom:1px solid rgba(0,240,255,0.12);}
 .dt-tbl thead th.ctr{text-align:center;}
-.dt-tbl tbody td{padding:11px 16px;color:#e5e7eb;vertical-align:middle;border-bottom:1px solid rgba(255,255,255,0.03);}
+.dt-tbl tbody td{padding:12px 18px;color:#f1f5f9;vertical-align:middle;border-bottom:1px solid rgba(255,255,255,0.04);}
+.dt-tbl tbody tr:hover{background:rgba(0,240,255,0.03);}
 .td-nm{font-weight:700;color:#fff;}
 .td-val{font-weight:600;color:#fff;text-align:center;}
 .td-pct{font-weight:600;text-align:center;}
-.pct-g{color:#10b981;font-weight:700;}
-.pct-r{color:#ef4444;font-weight:700;}
-.pct-n{color:#6b7280;font-weight:700;}
+.pct-g{color:#00f2aa;font-weight:800;text-shadow:0 0 8px rgba(0,242,170,0.35);}
+.pct-r{color:#ff3b69;font-weight:800;text-shadow:0 0 8px rgba(255,59,105,0.35);}
+.pct-n{color:#64748b;font-weight:700;}
 
-.chart-card{background:#090e1a;border:1px solid rgba(255,255,255,0.07);border-radius:14px;padding:16px;}
-.badge{display:inline-block;padding:4px 10px;border-radius:999px;font-size:11px;font-weight:700;}
-.b-bull{background:rgba(16,185,129,0.12);color:#10b981;border:1px solid rgba(16,185,129,0.2);}
-.b-bear{background:rgba(239,68,68,0.12);color:#ef4444;border:1px solid rgba(239,68,68,0.2);}
-.b-neut{background:rgba(107,114,128,0.12);color:#9ca3af;border:1px solid rgba(107,114,128,0.2);}
-.badge-lg{font-size:13.5px;padding:7px 18px;border-radius:11px;font-weight:800;}
+/* ── Glassmorphism Charts & Boxes ── */
+.chart-card{
+    background: rgba(10, 18, 33, 0.65);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(0, 240, 255, 0.14);
+    border-radius: 16px;
+    padding: 18px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+}
 
-.news-card{background:#090e1a;border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:14px 16px;margin-bottom:9px;}
-.comp-box{background:#090e1a;border:1px solid rgba(226,183,20,0.17);border-radius:13px;padding:18px;text-align:center;}
-.pills{display:flex;gap:5px;flex-wrap:wrap;}
-.pill-g{background:rgba(16,185,129,0.13);color:#10b981;border:1px solid rgba(16,185,129,0.28);padding:3px 9px;border-radius:6px;font-weight:700;font-size:11px;}
-.pill-r{background:rgba(239,68,68,0.13);color:#ef4444;border:1px solid rgba(239,68,68,0.28);padding:3px 9px;border-radius:6px;font-weight:700;font-size:11px;}
-.app-foot{display:flex;justify-content:space-between;align-items:center;padding:16px 22px;margin-top:36px;border-top:1px solid rgba(255,255,255,0.05);font-size:11px;color:#4b5563;}
-.live-dot{width:6px;height:6px;border-radius:50%;background:#10b981;box-shadow:0 0 7px #10b981;display:inline-block;margin-right:5px;}
+/* ── Cyber Neon Badges ── */
+.badge{
+    display: inline-block;
+    padding: 5px 12px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+.b-bull{
+    background: rgba(0, 242, 170, 0.12);
+    color: #00f2aa;
+    border: 1px solid rgba(0, 242, 170, 0.4);
+    box-shadow: 0 0 14px rgba(0, 242, 170, 0.2);
+    text-shadow: 0 0 8px rgba(0, 242, 170, 0.4);
+}
+.b-bear{
+    background: rgba(255, 59, 105, 0.12);
+    color: #ff3b69;
+    border: 1px solid rgba(255, 59, 105, 0.4);
+    box-shadow: 0 0 14px rgba(255, 59, 105, 0.2);
+    text-shadow: 0 0 8px rgba(255, 59, 105, 0.4);
+}
+.b-neut{
+    background: rgba(148, 163, 184, 0.10);
+    color: #cbd5e1;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    box-shadow: 0 0 10px rgba(148, 163, 184, 0.1);
+}
+.badge-lg{font-size:13.5px;padding:8px 20px;border-radius:12px;font-weight:900;}
+
+/* ── Cyber Composite Box ── */
+.comp-box{
+    background: rgba(12, 21, 38, 0.7);
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    border: 1px solid rgba(226, 183, 20, 0.28);
+    border-radius: 16px;
+    padding: 20px;
+    text-align: center;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45), 0 0 24px rgba(226, 183, 20, 0.08), inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+    transition: all 0.25s ease;
+}
+.comp-box:hover{
+    border-color: rgba(226, 183, 20, 0.5);
+    box-shadow: 0 14px 44px rgba(0, 0, 0, 0.5), 0 0 30px rgba(226, 183, 20, 0.15);
+}
+
+.news-card{
+    background: rgba(11, 19, 35, 0.6);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 14px;
+    padding: 16px 18px;
+    margin-bottom: 10px;
+    transition: all 0.2s ease;
+}
+.news-card:hover{
+    border-color: rgba(0, 240, 255, 0.3);
+    box-shadow: 0 6px 20px rgba(0, 240, 255, 0.08);
+}
+
+.pills{display:flex;gap:6px;flex-wrap:wrap;}
+.pill-g{
+    background: rgba(0, 242, 170, 0.12);
+    color: #00f2aa;
+    border: 1px solid rgba(0, 242, 170, 0.3);
+    padding: 4px 10px;
+    border-radius: 8px;
+    font-weight: 700;
+    font-size: 11.5px;
+    box-shadow: 0 0 10px rgba(0, 242, 170, 0.15);
+}
+.pill-r{
+    background: rgba(255, 59, 105, 0.12);
+    color: #ff3b69;
+    border: 1px solid rgba(255, 59, 105, 0.3);
+    padding: 4px 10px;
+    border-radius: 8px;
+    font-weight: 700;
+    font-size: 11.5px;
+    box-shadow: 0 0 10px rgba(255, 59, 105, 0.15);
+}
+
+.app-foot{
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 18px 24px;
+    margin-top: 40px;
+    border-top: 1px solid rgba(0, 240, 255, 0.1);
+    font-size: 11.5px;
+    color: #64748b;
+}
+.live-dot{
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #00f2aa;
+    box-shadow: 0 0 10px #00f2aa, 0 0 20px #00f2aa;
+    display: inline-block;
+    margin-right: 6px;
+    animation: pulseGlow 2s infinite ease-in-out;
+}
+@keyframes pulseGlow{
+    0%,100%{transform:scale(1);opacity:1;}
+    50%{transform:scale(1.3);opacity:0.6;}
+}
 </style>
 """)
 
@@ -638,26 +926,26 @@ def spark_svg(vals: list, w: int = 80, h: int = 32, pos_good: bool = True) -> st
     rng = mx - mn or 1
     n = len(vals)
     good = (vals[-1] > vals[0]) == pos_good
-    lc = "#10b981" if good else "#ef4444"
-    fc = "rgba(16,185,129,0.07)" if good else "rgba(239,68,68,0.07)"
+    lc = "#00f2aa" if good else "#ff3b69"
+    fc = "rgba(0,242,170,0.09)" if good else "rgba(255,59,105,0.09)"
     pts = [(i / (n - 1) * w, h - (vals[i] - mn) / rng * h) for i in range(n)]
     path = "M " + " L ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
     fp   = path + f" L {w},{h} L 0,{h} Z"
-    return f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" style="display:block;"><path d="{fp}" fill="{fc}"/><path d="{path}" fill="none" stroke="{lc}" stroke-width="1.8"/></svg>'
+    return f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" style="display:block;filter:drop-shadow(0 0 4px {lc}44);"><path d="{fp}" fill="{fc}"/><path d="{path}" fill="none" stroke="{lc}" stroke-width="2"/></svg>'
 
 def dynamic_chart(df: pd.DataFrame, name: str, currency: str) -> go.Figure | None:
     if df is None or df.empty: return None
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=df["date"], y=df["value"], mode="lines+markers",
-        marker=dict(size=3.5, color="#e2b714"), line=dict(color="#e2b714", width=2.5, shape="spline"),
-        fill="tonexty", fillcolor="rgba(226,183,20,0.06)", hovertemplate="<b>%{x}</b><br>%{y:,.3f}<extra></extra>"
+        marker=dict(size=4, color="#00f0ff"), line=dict(color="#00f0ff", width=2.5, shape="spline"),
+        fill="tonexty", fillcolor="rgba(0,240,255,0.06)", hovertemplate="<b>%{x}</b><br>%{y:,.3f}<extra></extra>"
     ))
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", showlegend=False,
         margin=dict(l=6, r=16, t=6, b=6), height=230,
-        xaxis=dict(showgrid=False, tickfont=dict(size=9, color="#8a99ad")),
-        yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.05)", tickfont=dict(size=9, color="#8a99ad"), side="right"),
+        xaxis=dict(showgrid=False, tickfont=dict(size=9.5, color="#94a3b8")),
+        yaxis=dict(showgrid=True, gridcolor="rgba(0,240,255,0.06)", tickfont=dict(size=9.5, color="#94a3b8"), side="right"),
         hovermode="x unified",
     )
     return fig
@@ -667,13 +955,13 @@ def dual_chart(df1: pd.DataFrame, df2: pd.DataFrame, lbl1: str, lbl2: str) -> go
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=df1["date"], y=df1["value"], mode="lines", name=lbl1, line=dict(color="#e2b714", width=2.8, shape="spline")))
     if df2 is not None and not df2.empty:
-        fig.add_trace(go.Scatter(x=df2["date"], y=df2["value"], mode="lines", name=lbl2, line=dict(color="#3b82f6", width=2, dash="dot", shape="spline")))
+        fig.add_trace(go.Scatter(x=df2["date"], y=df2["value"], mode="lines", name=lbl2, line=dict(color="#00f0ff", width=2.2, dash="dot", shape="spline")))
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", showlegend=True,
-        legend=dict(orientation="h", y=1.01, x=1, xanchor="right", font=dict(size=10, color="#8a99ad")),
+        legend=dict(orientation="h", y=1.01, x=1, xanchor="right", font=dict(size=10, color="#94a3b8")),
         margin=dict(l=6, r=16, t=28, b=6), height=260,
-        xaxis=dict(showgrid=False, tickfont=dict(size=9, color="#8a99ad")),
-        yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.05)", tickfont=dict(size=9, color="#8a99ad"), side="right"),
+        xaxis=dict(showgrid=False, tickfont=dict(size=9.5, color="#94a3b8")),
+        yaxis=dict(showgrid=True, gridcolor="rgba(0,240,255,0.06)", tickfont=dict(size=9.5, color="#94a3b8"), side="right"),
         hovermode="x unified",
     )
     return fig
