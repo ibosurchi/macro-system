@@ -234,6 +234,125 @@ def fetch_fred(series_id: str, key: str, limit: int = 48) -> pd.DataFrame | None
     except Exception:
         return None
 
+def _calc_score_only(currency: str, fred_key: str) -> float:
+    """Calculate composite macro score WITHOUT triggering shift alerts."""
+    cfg = CURRENCY_SERIES[currency]
+    weighted, tw = [], 0.0
+    for name, meta in cfg["indicators"].items():
+        df = fetch_fred(meta["series"], fred_key)
+        if df is None or df.empty:
+            continue
+        mf = calc_mtf(df["value"].tolist(), meta["cat"])
+        if mf is None:
+            continue
+        weighted.append(mf["score"] * meta["w"])
+        tw += meta["w"]
+    return sum(weighted) / tw if tw else 0.0
+
+def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> str:
+    """Ultra-compact hourly report — Gold on top, USD, EUR, EUR/USD only."""
+    now = datetime.utcnow()
+
+    usd_score = _calc_score_only("USD", fred_key)
+    eur_score = _calc_score_only("EUR", fred_key)
+
+    gold_s = 0.0
+    ry_val_str = "N/A"
+    ry_df = fetch_fred(GOLD_SERIES["real_yield"], fred_key, limit=60)
+    if ry_df is None or ry_df.empty:
+        y_df = fetch_fred(GOLD_SERIES["yield"], fred_key, limit=60)
+        i_df = fetch_fred(GOLD_SERIES["inflation_exp"], fred_key, limit=60)
+        if y_df is not None and i_df is not None:
+            merged = pd.merge(y_df, i_df, on="date", suffixes=("_y", "_i"))
+            if not merged.empty:
+                merged["value"] = merged["value_y"] - merged["value_i"]
+                ry_df = merged[["date", "value"]]
+    if ry_df is not None and not ry_df.empty:
+        ry_vals = ry_df["value"].tail(36).tolist()
+        ry_mf = calc_mtf(ry_vals, "rate")
+        gold_ry = -ry_mf["score"] if ry_mf else 0.0
+        gold_usd = -usd_score
+        gold_s = (0.30 * gold_ry) + (0.20 * gold_usd)
+        ry_val_str = f"{ry_vals[-1]:.2f}%"
+
+    def _emoji(s: float) -> str:
+        if s > 0.15:  return "📈 BULLISH"
+        if s < -0.15: return "📉 BEARISH"
+        return "⚖️ NEUTRAL"
+
+    eur_usd_diff = eur_score - usd_score
+    xau_lbl  = _emoji(gold_s)
+    usd_lbl  = _emoji(usd_score)
+    eur_lbl  = _emoji(eur_score)
+    eurusd_lbl = _emoji(eur_usd_diff)
+
+    lines = [
+        f"🥇 *FX MACRO DESK* | {now.strftime('%H:%M')} UTC",
+        "",
+        f"🥇 XAU/USD: *{xau_lbl}*",
+        f"🇺🇸 USD:     *{usd_lbl}*",
+        f"🇪🇺 EUR:     *{eur_lbl}*",
+        "",
+        f"💱 EUR/USD: *{eurusd_lbl}*",
+        "",
+        f"_Real Yield 10Y: {ry_val_str}_",
+        f"_📅 {now.strftime('%Y-%m-%d')} | FX Macro Desk v11.8_",
+    ]
+    return "\n".join(lines)
+
+def check_global_gold_shift_alert(fred_key: str, channel_name: str) -> None:
+    """Checks Gold shift alert continuously in background on every refresh, regardless of active page."""
+    if not fred_key:
+        return
+    if "alert_history" not in st.session_state:
+        st.session_state.alert_history = {}
+
+    try:
+        ry_df = fetch_fred(GOLD_SERIES["real_yield"], fred_key, limit=60)
+        if ry_df is None or ry_df.empty:
+            y_df = fetch_fred(GOLD_SERIES["yield"], fred_key, limit=60)
+            i_df = fetch_fred(GOLD_SERIES["inflation_exp"], fred_key, limit=60)
+            if y_df is not None and i_df is not None:
+                merged = pd.merge(y_df, i_df, on="date", suffixes=("_y", "_i"))
+                if not merged.empty:
+                    merged["value"] = merged["value_y"] - merged["value_i"]
+                    ry_df = merged[["date", "value"]]
+
+        if ry_df is None or ry_df.empty:
+            return
+
+        ry_vals = ry_df["value"].tail(36).tolist()
+        ry_mf = calc_mtf(ry_vals, "rate")
+        gold_ry = -ry_mf["score"] if ry_mf else 0.0
+
+        usd_score = _calc_score_only("USD", fred_key)
+        gold_usd = -usd_score
+
+        all_news = fetch_all_instant_news(channel_name)
+        sentiment_res = analyze_news_rule_based(all_news)
+        gold_news_pts = sentiment_res["scores"].get("Gold", 0.0)
+
+        gold_s = (0.30 * gold_ry) + (0.20 * gold_usd) + (0.50 * (gold_news_pts / 0.50))
+        current_gold_bias, _, _ = bias_from_score(gold_s)
+
+        if "Gold" not in st.session_state.alert_history:
+            st.session_state.alert_history["Gold"] = current_gold_bias
+        else:
+            last_gold_bias = st.session_state.alert_history["Gold"]
+            if current_gold_bias != last_gold_bias:
+                alert_msg = (
+                    f"🔄 *Gold Shift Alert*\n"
+                    f"🥇 *Gold (XAUUSD)* Direction Changed!\n"
+                    f"• Previous: {last_gold_bias} ➔ New: {current_gold_bias}\n"
+                    f"• Composite Score: `{gold_s:+.3f}`\n"
+                    f"• Sentiment: `{gold_news_pts:+.2f}pts`"
+                )
+                send_telegram_alert(alert_msg)
+                st.session_state.alert_history["Gold"] = current_gold_bias
+    except Exception:
+        pass
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_telegram_channel_news(channel_username: str = DEFAULT_TELEGRAM_CHANNEL) -> list:
     clean_username = channel_username.replace("@", "").replace("https://t.me/", "").strip()
@@ -810,7 +929,7 @@ def main() -> None:
         render_html("""
         <div style="padding:5px 7px 14px;border-bottom:1px solid rgba(255,255,255,0.06);margin-bottom:12px;">
           <div style="font-size:12px;font-weight:800;color:#e2b714;">FX MACRO &amp; GEO</div>
-          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v11.7 (Multi-Alert)</div>
+          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v11.8 (Auto-Report)</div>
         </div>
         """)
         page = st.radio("Navigation:", [
@@ -825,6 +944,38 @@ def main() -> None:
         st.markdown("<b style='color:#8a99ad;font-size:10.5px;'>📡 TELEGRAM CHANNEL</b>", unsafe_allow_html=True)
         channel_name = st.text_input("Channel Username:", value=DEFAULT_TELEGRAM_CHANNEL, key="tg_channel")
         fred_key = st.text_input("FRED API Key:", value=DEFAULT_FRED_KEY, type="password", key="fred_key")
+
+        # ── HOURLY AUTO-REPORT SECTION ──────────────────────────────────────
+        st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+        st.markdown("<b style='color:#8a99ad;font-size:10.5px;'>⏰ AUTO-REPORT &amp; ALERTS</b>", unsafe_allow_html=True)
+
+        auto_report_on = st.toggle("📤 Hourly Report to Telegram", value=True, key="auto_report_toggle")
+
+        if st.button("📤 Send Report Now", key="manual_report_btn", use_container_width=True):
+            with st.spinner("Building report..."):
+                report_text = build_hourly_report(fred_key, channel_name)
+            results = send_telegram_alert(report_text)
+            all_ok = all(r.get("ok") for r in results)
+            if all_ok:
+                st.sidebar.success("✅ Report Sent to Telegram!")
+            else:
+                st.sidebar.error("⚠️ Send failed — check bot settings.")
+
+        # ── BACKGROUND CONTINUOUS GOLD SHIFT CHECK ──────────────────────────
+        check_global_gold_shift_alert(fred_key, channel_name)
+
+        # ── HOURLY AUTO-SEND LOGIC ──────────────────────────────────────────
+        if auto_report_on and fred_key:
+            now = datetime.utcnow()
+            current_hour_key = now.strftime("%Y-%m-%d-%H")
+            if "last_hourly_report_key" not in st.session_state:
+                st.session_state.last_hourly_report_key = ""
+
+            if st.session_state.last_hourly_report_key != current_hour_key:
+                report_text = build_hourly_report(fred_key, channel_name)
+                send_telegram_alert(report_text)
+                st.session_state.last_hourly_report_key = current_hour_key
+                st.sidebar.info(f"✅ Auto-Report sent at {now.strftime('%H:%M')} UTC")
 
     if page == "🏠 Executive Dashboard":
         page_dashboard(fred_key, channel_name)
@@ -845,6 +996,7 @@ def main() -> None:
       <div><span class="live-dot"></span><span style="color:#10b981;font-weight:600;">Live Feed Active &nbsp; {datetime.now().strftime('%H:%M:%S')}</span></div>
     </div>
     """)
+
 
 if __name__ == "__main__":
     main()
