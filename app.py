@@ -35,15 +35,15 @@ def get_secret(key_name: str, default_val: str = "") -> str:
         pass
     return default_val
 
-DEFAULT_FRED_KEY = get_secret("FRED_API_KEY", "")
+DEFAULT_FRED_KEY = get_secret("FRED_API_KEY", "8e153c7f6941848ffe00388ae93c1d73")
 DEFAULT_TELEGRAM_CHANNEL = get_secret("TELEGRAM_CHANNEL", "Forex_LiveStream")
 DEFAULT_OPENROUTER_KEY = get_secret(
     "OPENROUTER_API_KEY",
     "sk-or-v1-" + "37e5829ab661beb5" + "6cdbbe813ad42ed0" + "1e147211efaafb3b" + "6b8effbb0adb6dea"
 )
-REQUEST_TIMEOUT = 12
+REQUEST_TIMEOUT = 8
 
-TELEGRAM_BOT_TOKEN = get_secret("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_BOT_TOKEN = get_secret("TELEGRAM_BOT_TOKEN", "8855100063:AAHB2uECj28u0wie96vkvKLzSKfCKjjb-3w")
 TELEGRAM_CHAT_IDS = ["7153364048", "643290893"]
 
 def send_telegram_alert(message: str):
@@ -953,8 +953,8 @@ def page_oil(fred_key: str, channel_name: str) -> None:
         render_html(f'<div style="margin-top:12px;padding:12px 16px;background:rgba(255,209,102,0.06);border:1px solid rgba(255,209,102,0.2);border-radius:10px;font-size:12px;color:#ecf7ff;"><b style="color:#ffd166;">🤖 GPT-4o-mini Energy AI Intelligence:</b> {ai_oil_summary}</div>')
 
 def main() -> None:
-    # ── 5-SECOND AUTOREFRESH ENGINE ──
-    st_autorefresh(interval=5 * 1000, key="auto_refresh_counter")
+    # ── 60-SECOND AUTOREFRESH ENGINE (FAST & OPTIMIZED) ──
+    st_autorefresh(interval=60 * 1000, key="auto_refresh_counter")
     inject_css()
 
     fred_key = DEFAULT_FRED_KEY
