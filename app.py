@@ -714,10 +714,23 @@ def render_top_header() -> None:
     render_html(f"""
 <div class="top-bar">
   <div class="top-brand">
-    <span style="font-size:22px;filter:drop-shadow(0 0 10px #00f5ff);">🏛️</span>
+    <div style="display:flex;align-items:center;justify-content:center;width:38px;height:38px;background:rgba(0,245,255,0.06);border:1px solid rgba(0,245,255,0.25);border-radius:10px;box-shadow:0 0 16px rgba(0,245,255,0.2);">
+      <svg width="24" height="24" viewBox="0 0 36 36" fill="none" style="filter:drop-shadow(0 0 8px rgba(0,245,255,0.8));">
+        <defs>
+          <linearGradient id="apexGrad" x1="0%" y1="100%" x2="100%" y2="0%">
+            <stop offset="0%" stop-color="#00ffa3"/>
+            <stop offset="55%" stop-color="#00f5ff"/>
+            <stop offset="100%" stop-color="#ffd166"/>
+          </linearGradient>
+        </defs>
+        <path d="M18 4L4 30H11L18 16L25 30H32L18 4Z" fill="url(#apexGrad)"/>
+        <path d="M18 11L10.5 26.5H14.5L18 19.5L21.5 26.5H25.5L18 11Z" fill="#060c18"/>
+        <circle cx="18" cy="19" r="2.2" fill="#ffd166"/>
+      </svg>
+    </div>
     <div>
-      <div style="font-size:16px;font-weight:900;letter-spacing:1.5px;color:#00f5ff;text-shadow:0 0 16px rgba(0,245,255,0.5);">APEXMACRO</div>
-      <div style="font-size:9.5px;font-weight:700;color:#64748b;letter-spacing:2px;">GLOBAL INTELLIGENCE DESK</div>
+      <div style="font-size:17px;font-weight:900;letter-spacing:1.8px;color:#00f5ff;text-shadow:0 0 16px rgba(0,245,255,0.5);">APEX<span style="color:#ffd166;">MACRO</span></div>
+      <div style="font-size:9px;font-weight:800;color:#64748b;letter-spacing:2.5px;">GLOBAL INTELLIGENCE DESK</div>
     </div>
   </div>
   <div class="top-tickers">
