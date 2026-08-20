@@ -167,9 +167,8 @@ html,body,[data-testid='stAppViewContainer'],.stApp{background:
  radial-gradient(circle at 60% 24%,rgba(173,123,255,.035),transparent 30%),
  var(--bg)!important;color:var(--text)!important;}
 [data-testid='stAppViewContainer']{min-height:100vh;}
-.main .block-container{max-width:1580px!important;padding:18px 24px 42px!important;}
-#MainMenu,footer,.stDeployButton{display:none!important;}
-header[data-testid='stHeader']{background:transparent!important;}
+#MainMenu,footer,.stDeployButton,[data-testid="collapsedControl"],[data-testid="stSidebarCollapsedControl"],button[kind="header"],[data-testid="stHeaderActionElements"]{display:none!important;visibility:hidden!important;}
+header[data-testid='stHeader']{display:none!important;background:transparent!important;}
 
 /* Reference-inspired top navigation */
 .nav-shell{display:grid;grid-template-columns:240px 1fr 270px;align-items:center;gap:18px;padding:12px 14px 12px 20px;margin-bottom:14px;background:rgba(7,14,22,.84);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow),inset 0 0 0 1px rgba(255,255,255,.025);backdrop-filter:blur(20px) saturate(160%);}
@@ -356,6 +355,21 @@ def _calc_gold_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CH
     gold_s = (0.30 * gold_ry) + (0.20 * gold_usd) + (0.50 * (gold_news_pts / 0.50))
     return gold_s, ry_val_str, gold_news_pts
 
+def _calc_oil_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> tuple[float | None, float]:
+    """Calculates EXACT Crude Oil score and News Sentiment safely."""
+    w_df = fetch_fred(OIL_SERIES["wti"], fred_key, limit=60)
+    if w_df is None or w_df.empty:
+        return None, 0.0
+    w_vals = w_df["value"].tolist()
+    w_mf = calc_mtf(w_vals, "growth")
+    if not w_mf:
+        return None, 0.0
+    all_news = fetch_all_instant_news(channel_name)
+    sentiment_res = analyze_news_rule_based(all_news)
+    oil_news_pts = sentiment_res["scores"].get("Oil", 0.0)
+    final_oil_score = (0.50 * w_mf["score"]) + (0.50 * (oil_news_pts / 0.50))
+    return final_oil_score, oil_news_pts
+
 def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> str:
     """Ultra-compact hourly report — Gold on top, USD, EUR, EUR/USD only. 100% matched with UI."""
     now = datetime.utcnow()
@@ -391,12 +405,12 @@ def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHAN
     return "\n".join(lines)
 
 def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
-    """Checks Gold, USD, and EUR in background — ONLY sends alert on genuine direction change with 15min cooldown."""
+    """Checks Gold, Crude Oil, and All Currencies in background — sends clean shift alert on genuine direction change."""
     if not fred_key:
         return
     import time
     now_ts = time.time()
-    COOLDOWN_SECONDS = 900  # 15 minutes cooldown per asset
+    COOLDOWN_SECONDS = 900  # 15 minutes cooldown per asset shift
 
     try:
         # 1. Check Gold
@@ -410,55 +424,74 @@ def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
                 GLOBAL_ALERT_STATE["Gold"] = current_gold_bias
             elif current_gold_bias != last_gold_bias and (now_ts - last_gold_time > COOLDOWN_SECONDS):
                 alert_msg = (
-                    f"🔄 *Gold Shift Alert*\n"
-                    f"🥇 *Gold (XAUUSD)* Direction Changed!\n"
-                    f"• Previous: {last_gold_bias} ➔ New: {current_gold_bias}\n"
-                    f"• Composite Score: `{gold_s:+.3f}`\n"
-                    f"• Sentiment: `{gold_news_pts:+.2f}pts`"
+                    "🔄 *APEX MACRO — SHIFT ALERT*\n"
+                    "━━━━━━━━━━━━━━━━━━━\n"
+                    "🥇 *Asset:* `Gold (XAUUSD)`\n"
+                    "📊 *Status:* `Direction Changed`\n\n"
+                    f"▫️ *Previous Bias:*  `{last_gold_bias}`\n"
+                    f"▫️ *New Bias:*       `{current_gold_bias}`\n\n"
+                    f"📈 *Composite Score:*  `{gold_s:+.3f}`\n"
+                    f"📡 *News Sentiment:*   `{gold_news_pts:+.2f} pts`\n"
+                    "━━━━━━━━━━━━━━━━━━━\n"
+                    "⚡ *ApexMacro Terminal v13.0*"
                 )
                 send_telegram_alert(alert_msg)
                 GLOBAL_ALERT_STATE["Gold"] = current_gold_bias
                 GLOBAL_ALERT_TIMESTAMPS["Gold"] = now_ts
 
-        # 2. Check USD
-        usd_s = _calc_currency_score_only("USD", fred_key, channel_name)
-        if usd_s is not None:
-            current_usd_bias, _, _ = bias_from_score(usd_s)
-            last_usd_bias = GLOBAL_ALERT_STATE.get("USD")
-            last_usd_time = GLOBAL_ALERT_TIMESTAMPS.get("USD", 0)
+        # 2. Check Crude Oil
+        oil_s, oil_news_pts = _calc_oil_score_only(fred_key, channel_name)
+        if oil_s is not None:
+            current_oil_bias, _, _ = bias_from_score(oil_s)
+            last_oil_bias = GLOBAL_ALERT_STATE.get("Oil")
+            last_oil_time = GLOBAL_ALERT_TIMESTAMPS.get("Oil", 0)
 
-            if last_usd_bias is None:
-                GLOBAL_ALERT_STATE["USD"] = current_usd_bias
-            elif current_usd_bias != last_usd_bias and (now_ts - last_usd_time > COOLDOWN_SECONDS):
+            if last_oil_bias is None:
+                GLOBAL_ALERT_STATE["Oil"] = current_oil_bias
+            elif current_oil_bias != last_oil_bias and (now_ts - last_oil_time > COOLDOWN_SECONDS):
                 alert_msg = (
-                    f"🔄 *USD Shift Alert*\n"
-                    f"🇺🇸 *US Dollar* Direction Changed!\n"
-                    f"• Previous: {last_usd_bias} ➔ New: {current_usd_bias}\n"
-                    f"• Composite Score: `{usd_s:+.3f}`"
+                    "🔄 *APEX MACRO — SHIFT ALERT*\n"
+                    "━━━━━━━━━━━━━━━━━━━\n"
+                    "🛢️ *Asset:* `Crude Oil (WTI/Brent)`\n"
+                    "📊 *Status:* `Direction Changed`\n\n"
+                    f"▫️ *Previous Bias:*  `{last_oil_bias}`\n"
+                    f"▫️ *New Bias:*       `{current_oil_bias}`\n\n"
+                    f"📈 *Composite Score:*  `{oil_s:+.3f}`\n"
+                    f"📡 *News Sentiment:*   `{oil_news_pts:+.2f} pts`\n"
+                    "━━━━━━━━━━━━━━━━━━━\n"
+                    "⚡ *ApexMacro Terminal v13.0*"
                 )
                 send_telegram_alert(alert_msg)
-                GLOBAL_ALERT_STATE["USD"] = current_usd_bias
-                GLOBAL_ALERT_TIMESTAMPS["USD"] = now_ts
+                GLOBAL_ALERT_STATE["Oil"] = current_oil_bias
+                GLOBAL_ALERT_TIMESTAMPS["Oil"] = now_ts
 
-        # 3. Check EUR
-        eur_s = _calc_currency_score_only("EUR", fred_key, channel_name)
-        if eur_s is not None:
-            current_eur_bias, _, _ = bias_from_score(eur_s)
-            last_eur_bias = GLOBAL_ALERT_STATE.get("EUR")
-            last_eur_time = GLOBAL_ALERT_TIMESTAMPS.get("EUR", 0)
+        # 3. Check All Currencies (USD, EUR, GBP, CAD, JPY, CHF)
+        for cur, meta in CURRENCY_SERIES.items():
+            cur_s = _calc_currency_score_only(cur, fred_key, channel_name)
+            if cur_s is not None:
+                curr_bias, _, _ = bias_from_score(cur_s)
+                last_bias = GLOBAL_ALERT_STATE.get(cur)
+                last_time = GLOBAL_ALERT_TIMESTAMPS.get(cur, 0)
 
-            if last_eur_bias is None:
-                GLOBAL_ALERT_STATE["EUR"] = current_eur_bias
-            elif current_eur_bias != last_eur_bias and (now_ts - last_eur_time > COOLDOWN_SECONDS):
-                alert_msg = (
-                    f"🔄 *EUR Shift Alert*\n"
-                    f"🇪🇺 *Euro* Direction Changed!\n"
-                    f"• Previous: {last_eur_bias} ➔ New: {current_eur_bias}\n"
-                    f"• Composite Score: `{eur_s:+.3f}`"
-                )
-                send_telegram_alert(alert_msg)
-                GLOBAL_ALERT_STATE["EUR"] = current_eur_bias
-                GLOBAL_ALERT_TIMESTAMPS["EUR"] = now_ts
+                if last_bias is None:
+                    GLOBAL_ALERT_STATE[cur] = curr_bias
+                elif curr_bias != last_bias and (now_ts - last_time > COOLDOWN_SECONDS):
+                    flag = meta["flag"]
+                    name = meta["name"]
+                    alert_msg = (
+                        "🔄 *APEX MACRO — SHIFT ALERT*\n"
+                        "━━━━━━━━━━━━━━━━━━━\n"
+                        f"{flag} *Asset:* `{name} ({cur})`\n"
+                        "📊 *Status:* `Direction Changed`\n\n"
+                        f"▫️ *Previous Bias:*  `{last_bias}`\n"
+                        f"▫️ *New Bias:*       `{curr_bias}`\n\n"
+                        f"📈 *Composite Score:*  `{cur_s:+.3f}`\n"
+                        "━━━━━━━━━━━━━━━━━━━\n"
+                        "⚡ *ApexMacro Terminal v13.0*"
+                    )
+                    send_telegram_alert(alert_msg)
+                    GLOBAL_ALERT_STATE[cur] = curr_bias
+                    GLOBAL_ALERT_TIMESTAMPS[cur] = now_ts
 
     except Exception:
         pass
