@@ -714,18 +714,15 @@ def render_top_header() -> None:
     render_html(f"""
 <div class="top-bar">
   <div class="top-brand">
-    <div style="display:flex;align-items:center;justify-content:center;width:38px;height:38px;background:rgba(0,245,255,0.06);border:1px solid rgba(0,245,255,0.25);border-radius:10px;box-shadow:0 0 16px rgba(0,245,255,0.2);">
-      <svg width="24" height="24" viewBox="0 0 36 36" fill="none" style="filter:drop-shadow(0 0 8px rgba(0,245,255,0.8));">
+    <div style="display:flex;align-items:center;justify-content:center;width:40px;height:40px;background:rgba(0,245,255,0.06);border:1px solid rgba(0,245,255,0.25);border-radius:10px;box-shadow:0 0 16px rgba(0,245,255,0.2);">
+      <svg width="26" height="26" viewBox="0 0 360 365" fill="none" style="filter:drop-shadow(0 0 8px rgba(0,255,255,0.85));">
         <defs>
-          <linearGradient id="apexGrad" x1="0%" y1="100%" x2="100%" y2="0%">
-            <stop offset="0%" stop-color="#00ffa3"/>
-            <stop offset="55%" stop-color="#00f5ff"/>
-            <stop offset="100%" stop-color="#ffd166"/>
+          <linearGradient id="aGrad" x1="0" y1="0" x2="1" y2="1">
+            <stop stop-color="#00FFFF"/>
+            <stop offset="1" stop-color="#00D7E8"/>
           </linearGradient>
         </defs>
-        <path d="M18 4L4 30H11L18 16L25 30H32L18 4Z" fill="url(#apexGrad)"/>
-        <path d="M18 11L10.5 26.5H14.5L18 19.5L21.5 26.5H25.5L18 11Z" fill="#060c18"/>
-        <circle cx="18" cy="19" r="2.2" fill="#ffd166"/>
+        <path d="M0 365L180 0L360 365H288L180 130L72 365Z" fill="url(#aGrad)"/>
       </svg>
     </div>
     <div>
