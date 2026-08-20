@@ -1,7 +1,6 @@
 """
-FX Macro & Geopolitical Intelligence Desk — v11.7 Complete Multi-Alert Engine
-Institutional-Grade Multi-Timeframe Macro Analysis & Predictive Calendar
-Live Integration: Telegram Bot Direct + Multi-Recipient Shift Alerts + Debug System
+ApexMacro — Global Macro & Geopolitical Intelligence Desk
+Institutional-Grade Multi-Timeframe Macro Analysis, Safe-Haven & Energy Intelligence
 """
 from __future__ import annotations
 import streamlit as st
@@ -17,8 +16,8 @@ from bs4 import BeautifulSoup
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(
-    page_title="FX Macro & Geopolitical Desk",
-    page_icon="📊",
+    page_title="ApexMacro — Global Intelligence Desk",
+    page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -378,7 +377,7 @@ def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHAN
     eurusd_lbl = _emoji(eur_usd_diff)
 
     lines = [
-        f"🥇 *FX MACRO DESK* | {now.strftime('%H:%M')} UTC",
+        f"🏛️ *APEXMACRO DESK* | {now.strftime('%H:%M')} UTC",
         "",
         f"🥇 XAU/USD: *{xau_lbl}*",
         f"🇺🇸 USD:     *{usd_lbl}*",
@@ -387,7 +386,7 @@ def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHAN
         f"💱 EUR/USD: *{eurusd_lbl}*",
         "",
         f"_Real Yield 10Y: {ry_val_str}_",
-        f"_📅 {now.strftime('%Y-%m-%d')} | FX Macro Desk v11.8_",
+        f"_📅 {now.strftime('%Y-%m-%d')} | ApexMacro Intelligence Desk_",
     ]
     return "\n".join(lines)
 
@@ -522,8 +521,8 @@ def get_openrouter_analysis(news_text: str, api_key: str = DEFAULT_OPENROUTER_KE
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
-        "HTTP-Referer": "https://github.com/fx-macro-desk",
-        "X-Title": "FX Macro Desk",
+        "HTTP-Referer": "https://apexmacro.com",
+        "X-Title": "ApexMacro Desk",
         "Content-Type": "application/json",
     }
     payload = {
@@ -717,7 +716,7 @@ def render_top_header() -> None:
   <div class="top-brand">
     <span style="font-size:22px;filter:drop-shadow(0 0 10px #00f5ff);">🏛️</span>
     <div>
-      <div style="font-size:16px;font-weight:900;letter-spacing:1.5px;color:#00f5ff;text-shadow:0 0 16px rgba(0,245,255,0.5);">FORTRESS MACRO</div>
+      <div style="font-size:16px;font-weight:900;letter-spacing:1.5px;color:#00f5ff;text-shadow:0 0 16px rgba(0,245,255,0.5);">APEXMACRO</div>
       <div style="font-size:9.5px;font-weight:700;color:#64748b;letter-spacing:2px;">GLOBAL INTELLIGENCE DESK</div>
     </div>
   </div>
@@ -1108,8 +1107,6 @@ def page_oil(fred_key: str, channel_name: str) -> None:
             """)
 
 def main() -> None:
-    # ── 60-SECOND AUTOREFRESH ENGINE (FAST & OPTIMIZED) ──
-    st_autorefresh(interval=60 * 1000, key="auto_refresh_counter")
     inject_css()
 
     fred_key = DEFAULT_FRED_KEY
@@ -1122,21 +1119,21 @@ def main() -> None:
     if fred_key:
         check_global_market_shifts(fred_key, channel_name)
 
-        # ── AUTOMATIC HOURLY REPORT ENGINE ──
+        # ── AUTOMATIC HOURLY REPORT ENGINE (GLOBAL UTC HOURLY DISPATCH) ──
         current_hour_str = datetime.utcnow().strftime("%Y-%m-%d %H")
-        if "last_hourly_sent" not in st.session_state:
-            st.session_state.last_hourly_sent = current_hour_str
-        elif st.session_state.last_hourly_sent != current_hour_str:
+        if "GLOBAL_LAST_HOURLY_SENT" not in st.session_state:
+            st.session_state["GLOBAL_LAST_HOURLY_SENT"] = current_hour_str
+        elif st.session_state["GLOBAL_LAST_HOURLY_SENT"] != current_hour_str:
             report_text = build_hourly_report(fred_key, channel_name)
             send_telegram_alert(report_text)
-            st.session_state.last_hourly_sent = current_hour_str
+            st.session_state["GLOBAL_LAST_HOURLY_SENT"] = current_hour_str
 
     # ── MAIN EXECUTIVE DASHBOARD ──
     page_dashboard(fred_key, channel_name)
 
     render_html(f"""
     <div class="app-foot">
-      <div>© 2026 FX Macro Desk • Institutional Macro Intelligence</div>
+      <div>© 2026 ApexMacro • Institutional Macro Intelligence</div>
       <div><span class="live-dot"></span><span style="color:#00ffa3;font-weight:700;">Engine Active &nbsp; {datetime.now().strftime('%H:%M:%S')}</span></div>
     </div>
     """)
