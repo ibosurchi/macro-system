@@ -1,7 +1,7 @@
 """
-FX Macro & Geopolitical Intelligence Desk — v11.5 Continuous Alert Engine
+FX Macro & Geopolitical Intelligence Desk — v11.7 Complete Multi-Alert Engine
 Institutional-Grade Multi-Timeframe Macro Analysis & Predictive Calendar
-Live Integration: Telegram Bot Direct + Every-Shift Universal Alerts
+Live Integration: Telegram Bot Direct + Multi-Recipient Shift Alerts + Debug System
 """
 from __future__ import annotations
 import streamlit as st
@@ -44,8 +44,12 @@ def send_telegram_alert(message: str):
         }
         try:
             response = requests.post(url, json=payload, timeout=10)
-            results.append(response.json())
+            res_data = response.json()
+            if not res_data.get("ok"):
+                st.sidebar.error(f"❌ Telegram Error for {chat_id}: {res_data.get('description')}")
+            results.append(res_data)
         except Exception as e:
+            st.sidebar.error(f"❌ Exception for {chat_id}: {e}")
             results.append({"ok": False, "error": str(e)})
     return results
 
@@ -292,7 +296,7 @@ def analyze_news_rule_based(articles: list) -> dict:
         {"name": "Macro Data Momentum", "icon": "📊", "expected_duration": "Active Session", "reason": "Evaluated via multi-timeframe FRED indicators."},
         {"name": "Geopolitical & Feed Flow", "icon": "📡", "expected_duration": "1-2 Days", "reason": "Real-time Telegram & RSS news stream monitored."}
     ]
-    ai_summary = "System operating in Continuous Universal Alert mode."
+    ai_summary = "System operating in Complete Multi-Alert mode."
 
     if not articles:
         return {"scores": scores, "drivers": drivers, "ai_summary": ai_summary, "ai_active": True}
@@ -379,7 +383,7 @@ def compute_composite(currency: str, fred_key: str, channel_name: str = DEFAULT_
 
     final_score = (0.50 * macro_score) + (0.50 * (news_points / 0.50))
 
-    # --- CONTINUOUS SHIFT ALERT TRIGGER (ANY CHANGE) ---
+    # --- CONTINUOUS MULTI-RECIPIENT SHIFT ALERT ---
     if "alert_history" not in st.session_state:
         st.session_state.alert_history = {}
     
@@ -471,7 +475,7 @@ def render_top_header() -> None:
 <div class="top-tickers">
 <div class="t-pill"><span>🇺🇸 USD</span><span class="t-up">Live Macro</span></div>
 <div class="t-pill"><span>🥇 Gold</span><span class="t-up">XAU/USD Active</span></div>
-<div class="t-pill"><span>⚡ Engine</span><span class="t-up">Continuous Alert Active</span></div>
+<div class="t-pill"><span>⚡ Engine</span><span class="t-up">Multi-Alert Active</span></div>
 <div class="t-pill"><span>📡 Channel</span><span class="t-up">Telegram Direct Alerts</span></div>
 </div>
 </div>
@@ -520,7 +524,7 @@ def page_dashboard(fred_key: str, channel_name: str) -> None:
 <div class="pg-title">
 <div class="pg-sub">FX MACRO &amp; GEOPOLITICAL DESK</div>
 <h1 class="pg-h1">Executive Intelligence Dashboard</h1>
-<div class="pg-bread">Real-time Multi-Timeframe Macro Analysis &amp; Continuous Alerts</div>
+<div class="pg-bread">Real-time Multi-Timeframe Macro Analysis &amp; Multi-Recipient Alerts</div>
 </div>
 """)
     a_col, b_col = st.columns([3, 2])
@@ -602,7 +606,7 @@ def page_dashboard(fred_key: str, channel_name: str) -> None:
             """)
 
     with d_col:
-        ai_badge = '<span style="color:#10b981;font-size:10px;font-weight:800;">⚡ Continuous Alert Active</span>'
+        ai_badge = '<span style="color:#10b981;font-size:10px;font-weight:800;">⚡ Multi-Alert Active</span>'
         render_html(f'<div class="sec-title">Macro + Sentiment Composite &nbsp; {ai_badge}</div>')
         s = result["score"]
         m_s = result["macro_score"]
@@ -670,7 +674,7 @@ def page_gold(fred_key: str, channel_name: str) -> None:
 
     gold_s = (0.30 * gold_ry) + (0.20 * gold_usd) + (0.50 * (gold_news_pts / 0.50))
 
-    # --- GOLD SHIFT ALERT TRIGGER (ANY CHANGE) ---
+    # --- GOLD SHIFT ALERT TRIGGER (MULTI-RECIPIENT) ---
     if "alert_history" not in st.session_state:
         st.session_state.alert_history = {}
     
@@ -730,7 +734,7 @@ def page_oil(fred_key: str, channel_name: str) -> None:
 
     final_oil_score = (0.50 * (w_mf["score"] if w_mf else 0.0)) + (0.50 * (oil_news_pts / 0.50))
 
-    # --- OIL SHIFT ALERT TRIGGER (ANY CHANGE) ---
+    # --- OIL SHIFT ALERT TRIGGER (MULTI-RECIPIENT) ---
     if "alert_history" not in st.session_state:
         st.session_state.alert_history = {}
     
@@ -806,7 +810,7 @@ def main() -> None:
         render_html("""
         <div style="padding:5px 7px 14px;border-bottom:1px solid rgba(255,255,255,0.06);margin-bottom:12px;">
           <div style="font-size:12px;font-weight:800;color:#e2b714;">FX MACRO &amp; GEO</div>
-          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v11.5 (Continuous Alerts)</div>
+          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v11.7 (Multi-Alert)</div>
         </div>
         """)
         page = st.radio("Navigation:", [
@@ -837,7 +841,7 @@ def main() -> None:
 
     render_html(f"""
     <div class="app-foot">
-      <div>© 2026 FX Macro Desk | Continuous Alert Engine</div>
+      <div>© 2026 FX Macro Desk | Multi-Recipient Alert Engine</div>
       <div><span class="live-dot"></span><span style="color:#10b981;font-weight:600;">Live Feed Active &nbsp; {datetime.now().strftime('%H:%M:%S')}</span></div>
     </div>
     """)
