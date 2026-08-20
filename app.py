@@ -234,8 +234,8 @@ def fetch_fred(series_id: str, key: str, limit: int = 48) -> pd.DataFrame | None
     except Exception:
         return None
 
-def _calc_score_only(currency: str, fred_key: str) -> float:
-    """Calculate composite macro score WITHOUT triggering shift alerts."""
+def _calc_currency_score_only(currency: str, fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> float:
+    """Calculates EXACT full composite score (Macro 50% + News 50%) without sending shift alert."""
     cfg = CURRENCY_SERIES[currency]
     weighted, tw = [], 0.0
     for name, meta in cfg["indicators"].items():
@@ -247,17 +247,21 @@ def _calc_score_only(currency: str, fred_key: str) -> float:
             continue
         weighted.append(mf["score"] * meta["w"])
         tw += meta["w"]
-    return sum(weighted) / tw if tw else 0.0
+    macro_score = sum(weighted) / tw if tw else 0.0
 
-def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> str:
-    """Ultra-compact hourly report — Gold on top, USD, EUR, EUR/USD only."""
-    now = datetime.utcnow()
+    all_news = fetch_all_instant_news(channel_name)
+    sentiment_res = analyze_news_rule_based(all_news)
+    news_points = sentiment_res["scores"].get(currency, 0.0)
 
-    usd_score = _calc_score_only("USD", fred_key)
-    eur_score = _calc_score_only("EUR", fred_key)
+    final_score = (0.50 * macro_score) + (0.50 * (news_points / 0.50))
+    return final_score
 
-    gold_s = 0.0
+def _calc_gold_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> tuple[float, str, float]:
+    """Calculates EXACT Gold score, Real Yield, and News Sentiment matching page_gold() 100%."""
     ry_val_str = "N/A"
+    gold_s = 0.0
+    gold_news_pts = 0.0
+
     ry_df = fetch_fred(GOLD_SERIES["real_yield"], fred_key, limit=60)
     if ry_df is None or ry_df.empty:
         y_df = fetch_fred(GOLD_SERIES["yield"], fred_key, limit=60)
@@ -267,13 +271,44 @@ def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHAN
             if not merged.empty:
                 merged["value"] = merged["value_y"] - merged["value_i"]
                 ry_df = merged[["date", "value"]]
+
     if ry_df is not None and not ry_df.empty:
         ry_vals = ry_df["value"].tail(36).tolist()
         ry_mf = calc_mtf(ry_vals, "rate")
         gold_ry = -ry_mf["score"] if ry_mf else 0.0
-        gold_usd = -usd_score
-        gold_s = (0.30 * gold_ry) + (0.20 * gold_usd)
         ry_val_str = f"{ry_vals[-1]:.2f}%"
+
+        # USD macro score
+        cfg = CURRENCY_SERIES["USD"]
+        weighted, tw = [], 0.0
+        for name, meta in cfg["indicators"].items():
+            df = fetch_fred(meta["series"], fred_key)
+            if df is None or df.empty:
+                continue
+            mf = calc_mtf(df["value"].tolist(), meta["cat"])
+            if mf is None:
+                continue
+            weighted.append(mf["score"] * meta["w"])
+            tw += meta["w"]
+        usd_macro = sum(weighted) / tw if tw else 0.0
+        gold_usd = -usd_macro
+
+        all_news = fetch_all_instant_news(channel_name)
+        sentiment_res = analyze_news_rule_based(all_news)
+        gold_news_pts = sentiment_res["scores"].get("Gold", 0.0)
+
+        # EXACT SAME FORMULA AS page_gold()
+        gold_s = (0.30 * gold_ry) + (0.20 * gold_usd) + (0.50 * (gold_news_pts / 0.50))
+
+    return gold_s, ry_val_str, gold_news_pts
+
+def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> str:
+    """Ultra-compact hourly report — Gold on top, USD, EUR, EUR/USD only. 100% matched with UI."""
+    now = datetime.utcnow()
+
+    usd_score = _calc_currency_score_only("USD", fred_key, channel_name)
+    eur_score = _calc_currency_score_only("EUR", fred_key, channel_name)
+    gold_s, ry_val_str, _ = _calc_gold_score_only(fred_key, channel_name)
 
     def _emoji(s: float) -> str:
         if s > 0.15:  return "📈 BULLISH"
@@ -300,39 +335,16 @@ def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHAN
     ]
     return "\n".join(lines)
 
-def check_global_gold_shift_alert(fred_key: str, channel_name: str) -> None:
-    """Checks Gold shift alert continuously in background on every refresh, regardless of active page."""
+def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
+    """Checks Gold, USD, and EUR in background — ONLY sends alert if direction changed!"""
     if not fred_key:
         return
     if "alert_history" not in st.session_state:
         st.session_state.alert_history = {}
 
     try:
-        ry_df = fetch_fred(GOLD_SERIES["real_yield"], fred_key, limit=60)
-        if ry_df is None or ry_df.empty:
-            y_df = fetch_fred(GOLD_SERIES["yield"], fred_key, limit=60)
-            i_df = fetch_fred(GOLD_SERIES["inflation_exp"], fred_key, limit=60)
-            if y_df is not None and i_df is not None:
-                merged = pd.merge(y_df, i_df, on="date", suffixes=("_y", "_i"))
-                if not merged.empty:
-                    merged["value"] = merged["value_y"] - merged["value_i"]
-                    ry_df = merged[["date", "value"]]
-
-        if ry_df is None or ry_df.empty:
-            return
-
-        ry_vals = ry_df["value"].tail(36).tolist()
-        ry_mf = calc_mtf(ry_vals, "rate")
-        gold_ry = -ry_mf["score"] if ry_mf else 0.0
-
-        usd_score = _calc_score_only("USD", fred_key)
-        gold_usd = -usd_score
-
-        all_news = fetch_all_instant_news(channel_name)
-        sentiment_res = analyze_news_rule_based(all_news)
-        gold_news_pts = sentiment_res["scores"].get("Gold", 0.0)
-
-        gold_s = (0.30 * gold_ry) + (0.20 * gold_usd) + (0.50 * (gold_news_pts / 0.50))
+        # 1. Check Gold
+        gold_s, ry_val_str, gold_news_pts = _calc_gold_score_only(fred_key, channel_name)
         current_gold_bias, _, _ = bias_from_score(gold_s)
 
         if "Gold" not in st.session_state.alert_history:
@@ -349,6 +361,41 @@ def check_global_gold_shift_alert(fred_key: str, channel_name: str) -> None:
                 )
                 send_telegram_alert(alert_msg)
                 st.session_state.alert_history["Gold"] = current_gold_bias
+
+        # 2. Check USD
+        usd_s = _calc_currency_score_only("USD", fred_key, channel_name)
+        current_usd_bias, _, _ = bias_from_score(usd_s)
+        if "USD" not in st.session_state.alert_history:
+            st.session_state.alert_history["USD"] = current_usd_bias
+        else:
+            last_usd_bias = st.session_state.alert_history["USD"]
+            if current_usd_bias != last_usd_bias:
+                alert_msg = (
+                    f"🔄 *USD Shift Alert*\n"
+                    f"🇺🇸 *US Dollar* Direction Changed!\n"
+                    f"• Previous: {last_usd_bias} ➔ New: {current_usd_bias}\n"
+                    f"• Composite Score: `{usd_s:+.3f}`"
+                )
+                send_telegram_alert(alert_msg)
+                st.session_state.alert_history["USD"] = current_usd_bias
+
+        # 3. Check EUR
+        eur_s = _calc_currency_score_only("EUR", fred_key, channel_name)
+        current_eur_bias, _, _ = bias_from_score(eur_s)
+        if "EUR" not in st.session_state.alert_history:
+            st.session_state.alert_history["EUR"] = current_eur_bias
+        else:
+            last_eur_bias = st.session_state.alert_history["EUR"]
+            if current_eur_bias != last_eur_bias:
+                alert_msg = (
+                    f"🔄 *EUR Shift Alert*\n"
+                    f"🇪🇺 *Euro* Direction Changed!\n"
+                    f"• Previous: {last_eur_bias} ➔ New: {current_eur_bias}\n"
+                    f"• Composite Score: `{eur_s:+.3f}`"
+                )
+                send_telegram_alert(alert_msg)
+                st.session_state.alert_history["EUR"] = current_eur_bias
+
     except Exception:
         pass
 
@@ -945,13 +992,14 @@ def main() -> None:
         channel_name = st.text_input("Channel Username:", value=DEFAULT_TELEGRAM_CHANNEL, key="tg_channel")
         fred_key = st.text_input("FRED API Key:", value=DEFAULT_FRED_KEY, type="password", key="fred_key")
 
-        # ── HOURLY AUTO-REPORT SECTION ──────────────────────────────────────
+        # ── TELEGRAM SHIFT ALERTS SECTION ───────────────────────────────────
         st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
-        st.markdown("<b style='color:#8a99ad;font-size:10.5px;'>⏰ AUTO-REPORT &amp; ALERTS</b>", unsafe_allow_html=True)
+        st.markdown("<b style='color:#8a99ad;font-size:10.5px;'>⚡ REAL-TIME SHIFT ALERTS</b>", unsafe_allow_html=True)
 
-        auto_report_on = st.toggle("📤 Hourly Report to Telegram", value=True, key="auto_report_toggle")
+        shift_alerts_on = st.toggle("🔔 Auto-Alert on Direction Change", value=True, key="shift_alerts_toggle",
+                                    help="Sends a Telegram message ONLY when Gold, USD, or EUR changes direction (Bullish / Bearish / Neutral).")
 
-        if st.button("📤 Send Report Now", key="manual_report_btn", use_container_width=True):
+        if st.button("📤 Send Report Now (Manual)", key="manual_report_btn", use_container_width=True):
             with st.spinner("Building report..."):
                 report_text = build_hourly_report(fred_key, channel_name)
             results = send_telegram_alert(report_text)
@@ -961,21 +1009,9 @@ def main() -> None:
             else:
                 st.sidebar.error("⚠️ Send failed — check bot settings.")
 
-        # ── BACKGROUND CONTINUOUS GOLD SHIFT CHECK ──────────────────────────
-        check_global_gold_shift_alert(fred_key, channel_name)
-
-        # ── HOURLY AUTO-SEND LOGIC ──────────────────────────────────────────
-        if auto_report_on and fred_key:
-            now = datetime.utcnow()
-            current_hour_key = now.strftime("%Y-%m-%d-%H")
-            if "last_hourly_report_key" not in st.session_state:
-                st.session_state.last_hourly_report_key = ""
-
-            if st.session_state.last_hourly_report_key != current_hour_key:
-                report_text = build_hourly_report(fred_key, channel_name)
-                send_telegram_alert(report_text)
-                st.session_state.last_hourly_report_key = current_hour_key
-                st.sidebar.info(f"✅ Auto-Report sent at {now.strftime('%H:%M')} UTC")
+        # ── BACKGROUND MARKET SHIFT RADAR (ONLY SENDS ON CHANGE) ───────────
+        if shift_alerts_on and fred_key:
+            check_global_market_shifts(fred_key, channel_name)
 
     if page == "🏠 Executive Dashboard":
         page_dashboard(fred_key, channel_name)
