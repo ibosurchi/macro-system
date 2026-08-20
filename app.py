@@ -262,6 +262,7 @@ button[kind='primary']:hover,.stButton>button:hover{border-color:rgba(0,245,255,
 """)
 
 
+@st.cache_data(ttl=7200, show_spinner=False)
 def fetch_fred(series_id: str, key: str, limit: int = 48) -> pd.DataFrame | None:
     if not key:
         return None
@@ -285,6 +286,7 @@ def fetch_fred(series_id: str, key: str, limit: int = 48) -> pd.DataFrame | None
 GLOBAL_ALERT_STATE: dict[str, str] = {}
 GLOBAL_ALERT_TIMESTAMPS: dict[str, float] = {}
 
+@st.cache_data(ttl=1800, show_spinner=False)
 def _calc_currency_score_only(currency: str, fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> float | None:
     """Calculates EXACT full composite score (Macro 50% + News 50%) safely."""
     cfg = CURRENCY_SERIES[currency]
@@ -309,6 +311,7 @@ def _calc_currency_score_only(currency: str, fred_key: str, channel_name: str = 
     final_score = (0.50 * macro_score) + (0.50 * (news_points / 0.50))
     return final_score
 
+@st.cache_data(ttl=1800, show_spinner=False)
 def _calc_gold_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> tuple[float | None, str, float]:
     """Calculates EXACT Gold score, Real Yield, and News Sentiment safely."""
     ry_val_str = "N/A"
@@ -355,6 +358,7 @@ def _calc_gold_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CH
     gold_s = (0.30 * gold_ry) + (0.20 * gold_usd) + (0.50 * (gold_news_pts / 0.50))
     return gold_s, ry_val_str, gold_news_pts
 
+@st.cache_data(ttl=1800, show_spinner=False)
 def _calc_oil_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> tuple[float | None, float]:
     """Calculates EXACT Crude Oil score and News Sentiment safely."""
     w_df = fetch_fred(OIL_SERIES["wti"], fred_key, limit=60)
@@ -659,6 +663,7 @@ def calc_mtf(vals: list, cat: str) -> dict | None:
         "z": round(z, 2), "score": float(score), "reverse": reverse,
     }
 
+@st.cache_data(ttl=1800, show_spinner=False)
 def compute_composite(currency: str, fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> dict | None:
     cfg = CURRENCY_SERIES[currency]
     rows, weighted = [], []
