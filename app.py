@@ -191,8 +191,59 @@ section[data-testid='stSidebar']{background:rgba(5,10,16,.93)!important;border-r
 section[data-testid='stSidebar'] .block-container{padding:16px 14px!important;}
 section[data-testid='stSidebar'] div[data-testid='stRadio']{display:none!important;}
 
-/* Inputs */
-div[data-baseweb='select'],div[data-baseweb='select']>div,div[data-baseweb='select'] *{background:rgba(10,19,29,.86)!important;color:#fff!important;border-color:rgba(0,245,255,.16)!important;border-radius:11px!important;}
+/* Custom Cyber Glass Inputs & Selectbox */
+div[data-testid='stSelectbox'],
+div[data-testid='stSelectbox'] > div,
+div[data-baseweb='select'],
+div[data-baseweb='select'] > div,
+div[data-baseweb='select'] div,
+div[data-baseweb='select'] span,
+div[data-baseweb='select'] input {
+  background: rgba(8, 16, 26, 0.95) !important;
+  color: #00f5ff !important;
+  border-color: rgba(0, 245, 255, 0.35) !important;
+  border-radius: 12px !important;
+  font-weight: 750 !important;
+  letter-spacing: 0.5px !important;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.5), inset 0 0 14px rgba(0, 245, 255, 0.06) !important;
+}
+
+div[data-baseweb='select']:hover {
+  border-color: #00f5ff !important;
+  box-shadow: 0 0 20px rgba(0, 245, 255, 0.25) !important;
+}
+
+div[data-baseweb='select'] svg {
+  fill: #00f5ff !important;
+  color: #00f5ff !important;
+}
+
+/* Dropdown Menu Popup Overlay */
+ul[data-baseweb='menu'],
+div[data-baseweb='popover'],
+div[data-baseweb='popover'] > div,
+div[data-baseweb='popover'] * {
+  background: #060d17 !important;
+  color: #ecf7ff !important;
+  border: 1px solid rgba(0, 245, 255, 0.25) !important;
+  border-radius: 12px !important;
+}
+
+li[data-baseweb='menu-item'] {
+  background: transparent !important;
+  color: #cde6f5 !important;
+  font-weight: 650 !important;
+  padding: 11px 16px !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05) !important;
+}
+
+li[data-baseweb='menu-item']:hover,
+li[data-baseweb='menu-item'][aria-selected='true'] {
+  background: rgba(0, 245, 255, 0.14) !important;
+  color: #00f5ff !important;
+  border-color: rgba(0, 245, 255, 0.4) !important;
+}
+
 div[data-baseweb='input'] input,.stTextInput input{background:rgba(10,19,29,.86)!important;color:#fff!important;border:1px solid rgba(0,245,255,.16)!important;border-radius:11px!important;box-shadow:inset 0 2px 8px rgba(0,0,0,.25)!important;}
 div[data-baseweb='input'] input:focus,.stTextInput input:focus{border-color:var(--cyan)!important;box-shadow:0 0 18px rgba(0,245,255,.18)!important;}
 
@@ -820,7 +871,10 @@ def page_dashboard(fred_key: str, channel_name: str) -> None:
     with a_col:
         asset = st.radio("Market:", ["💱 Forex", "🥇 Gold & Real Yield", "🛢️ Crude Oil (WTI/Brent)"], horizontal=True, label_visibility="collapsed")
     with b_col:
-        currency = st.selectbox("Currency:", list(CURRENCY_SERIES.keys()), format_func=lambda k: f"{CURRENCY_SERIES[k]['flag']} {k} — {CURRENCY_SERIES[k]['name']}", label_visibility="collapsed")
+        if "Forex" in asset:
+            currency = st.selectbox("Currency:", list(CURRENCY_SERIES.keys()), format_func=lambda k: f"{CURRENCY_SERIES[k]['flag']} {k} • {CURRENCY_SERIES[k]['name']}", label_visibility="collapsed")
+        else:
+            currency = "USD"
 
     if "Gold" in asset:
         page_gold(fred_key, channel_name)
