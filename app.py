@@ -22,6 +22,10 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+def get_current_time() -> datetime:
+    """Accurate Local Time (UTC+3 / Kurdistan & Baghdad timezone)."""
+    return datetime.utcnow() + timedelta(hours=3)
+
 # ============================================================
 # CONFIGURATIONS & STREAMLIT SECRETS INTEGRATION
 # ============================================================
@@ -192,56 +196,52 @@ section[data-testid='stSidebar'] .block-container{padding:16px 14px!important;}
 section[data-testid='stSidebar'] div[data-testid='stRadio']{display:none!important;}
 
 /* Custom Cyber Glass Inputs & Selectbox */
-div[data-testid='stSelectbox'],
-div[data-testid='stSelectbox'] > div,
-div[data-baseweb='select'],
-div[data-baseweb='select'] > div,
-div[data-baseweb='select'] div,
-div[data-baseweb='select'] span,
-div[data-baseweb='select'] input {
-  background: rgba(8, 16, 26, 0.95) !important;
+.stSelectbox, .stSelectbox *,
+[data-testid='stSelectbox'], [data-testid='stSelectbox'] *,
+[data-baseweb='select'], [data-baseweb='select'] *,
+div[role='combobox'], div[role='combobox'] * {
+  background-color: #08101a !important;
+  background: #08101a !important;
   color: #00f5ff !important;
   border-color: rgba(0, 245, 255, 0.35) !important;
-  border-radius: 12px !important;
   font-weight: 750 !important;
-  letter-spacing: 0.5px !important;
+}
+
+[data-baseweb='select'] {
+  border-radius: 12px !important;
   box-shadow: 0 4px 20px rgba(0,0,0,0.5), inset 0 0 14px rgba(0, 245, 255, 0.06) !important;
 }
 
-div[data-baseweb='select']:hover {
+[data-baseweb='select']:hover {
   border-color: #00f5ff !important;
   box-shadow: 0 0 20px rgba(0, 245, 255, 0.25) !important;
 }
 
-div[data-baseweb='select'] svg {
+.stSelectbox svg, [data-baseweb='select'] svg {
   fill: #00f5ff !important;
   color: #00f5ff !important;
 }
 
 /* Dropdown Menu Popup Overlay */
-ul[data-baseweb='menu'],
-div[data-baseweb='popover'],
-div[data-baseweb='popover'] > div,
-div[data-baseweb='popover'] * {
+ul[data-baseweb='menu'], ul[data-baseweb='menu'] *,
+div[data-baseweb='popover'], div[data-baseweb='popover'] * {
+  background-color: #060d17 !important;
   background: #060d17 !important;
   color: #ecf7ff !important;
-  border: 1px solid rgba(0, 245, 255, 0.25) !important;
-  border-radius: 12px !important;
+  border-color: rgba(0, 245, 255, 0.25) !important;
 }
 
-li[data-baseweb='menu-item'] {
+li[data-baseweb='menu-item'], li[data-baseweb='menu-item'] * {
   background: transparent !important;
   color: #cde6f5 !important;
   font-weight: 650 !important;
-  padding: 11px 16px !important;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05) !important;
 }
 
 li[data-baseweb='menu-item']:hover,
 li[data-baseweb='menu-item'][aria-selected='true'] {
-  background: rgba(0, 245, 255, 0.14) !important;
+  background-color: rgba(0, 245, 255, 0.16) !important;
+  background: rgba(0, 245, 255, 0.16) !important;
   color: #00f5ff !important;
-  border-color: rgba(0, 245, 255, 0.4) !important;
 }
 
 div[data-baseweb='input'] input,.stTextInput input{background:rgba(10,19,29,.86)!important;color:#fff!important;border:1px solid rgba(0,245,255,.16)!important;border-radius:11px!important;box-shadow:inset 0 2px 8px rgba(0,0,0,.25)!important;}
@@ -427,7 +427,7 @@ def _calc_oil_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHA
 
 def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> str:
     """Ultra-compact hourly report — Gold on top, USD, EUR, EUR/USD only. 100% matched with UI."""
-    now = datetime.utcnow()
+    now = get_current_time()
 
     usd_score = _calc_currency_score_only("USD", fred_key, channel_name) or 0.0
     eur_score = _calc_currency_score_only("EUR", fred_key, channel_name) or 0.0
@@ -446,7 +446,7 @@ def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHAN
     eurusd_lbl = _emoji(eur_usd_diff)
 
     lines = [
-        f"🏛️ *APEXMACRO DESK* | {now.strftime('%H:%M')} UTC",
+        f"🏛️ *APEXMACRO DESK* | {now.strftime('%H:%M')}",
         "",
         f"🥇 XAU/USD: *{xau_lbl}*",
         f"🇺🇸 USD:     *{usd_lbl}*",
@@ -798,8 +798,9 @@ def dual_chart(df1: pd.DataFrame, df2: pd.DataFrame, lbl1: str, lbl2: str) -> go
     return fig
 
 def render_top_header() -> None:
-    now_str = datetime.utcnow().strftime("%H:%M UTC")
-    date_str = datetime.utcnow().strftime("%b %d, %Y")
+    now = get_current_time()
+    now_str = now.strftime("%H:%M")
+    date_str = now.strftime("%b %d, %Y")
     render_html(f"""
 <div class="top-bar">
   <div class="top-brand">
@@ -1236,7 +1237,7 @@ def main() -> None:
     render_html(f"""
     <div class="app-foot">
       <div>© 2026 ApexMacro • Institutional Macro Intelligence</div>
-      <div><span class="live-dot"></span><span style="color:#00ffa3;font-weight:700;">Engine Active &nbsp; {datetime.now().strftime('%H:%M:%S')}</span></div>
+      <div><span class="live-dot"></span><span style="color:#00ffa3;font-weight:700;">Engine Active &nbsp; {get_current_time().strftime('%H:%M:%S')}</span></div>
     </div>
     """)
 
