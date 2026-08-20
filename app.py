@@ -1,7 +1,7 @@
 """
-FX Macro & Geopolitical Intelligence Desk — v11.0 Rule-Based Multi-Asset Engine
+FX Macro & Geopolitical Intelligence Desk — v11.1 Telegram Direct Alert Engine
 Institutional-Grade Multi-Timeframe Macro Analysis & Predictive Calendar
-Live Integration: Telegram + RSS + FRED (DFII10) [Fully Patched Sentiment Matrix]
+Live Integration: Telegram Bot + RSS + FRED (DFII10) [Personal Alert Active]
 """
 from __future__ import annotations
 import streamlit as st
@@ -24,11 +24,28 @@ st.set_page_config(
 )
 
 # ============================================================
-# CONFIGURATIONS
+# CONFIGURATIONS & TELEGRAM SETTINGS
 # ============================================================
 DEFAULT_FRED_KEY = "8e153c7f6941848ffe00388ae93c1d73"
 DEFAULT_TELEGRAM_CHANNEL = "Forex_LiveStream"
 REQUEST_TIMEOUT = 12
+
+# Telegram Personal Direct Settings
+TELEGRAM_BOT_TOKEN = "8855100063:AAHB2uECj28u0wie96vkvKLzSKfCKjjb-3w"
+TELEGRAM_CHAT_ID = "7153364048"
+
+def send_telegram_alert(message: str):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        return response.json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 CURRENCY_SERIES = {
     "USD": {
@@ -328,13 +345,10 @@ def analyze_news_rule_based(articles: list) -> dict:
         if any(k in text for k in bearish_keywords):
             sentiment_delta -= 0.04
 
-    # Apply sentiment across all assets with appropriate safe-haven logic
     for k in scores:
         if k in ["Gold", "CHF"]:
-            # Safe havens benefit from tension/bearish news
             scores[k] = max(min(-sentiment_delta + 0.05, 0.5), -0.5)
         elif k in ["Oil"]:
-            # Oil benefits from geopolitical tension
             scores[k] = max(min(sentiment_delta + 0.08, 0.5), -0.5)
         else:
             scores[k] = max(min(sentiment_delta, 0.5), -0.5)
@@ -491,7 +505,7 @@ def render_top_header() -> None:
 <div class="t-pill"><span>🇺🇸 USD</span><span class="t-up">Live Macro</span></div>
 <div class="t-pill"><span>🥇 Gold</span><span class="t-up">XAU/USD Active</span></div>
 <div class="t-pill"><span>⚡ Engine</span><span class="t-up">Rule-Based Active</span></div>
-<div class="t-pill"><span>📡 Channel</span><span class="t-up">Telegram @Forex_LiveStream</span></div>
+<div class="t-pill"><span>📡 Channel</span><span class="t-up">Telegram Direct Alerts</span></div>
 </div>
 </div>
 """)
@@ -821,7 +835,7 @@ def main() -> None:
         render_html("""
         <div style="padding:5px 7px 14px;border-bottom:1px solid rgba(255,255,255,0.06);margin-bottom:12px;">
           <div style="font-size:12px;font-weight:800;color:#e2b714;">FX MACRO &amp; GEO</div>
-          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v11.0 (Clean)</div>
+          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v11.1 (Direct Alert)</div>
         </div>
         """)
         page = st.radio("Navigation:", [
@@ -852,7 +866,7 @@ def main() -> None:
 
     render_html(f"""
     <div class="app-foot">
-      <div>© 2026 FX Macro Desk | Rule-Based Multi-Asset Engine</div>
+      <div>© 2026 FX Macro Desk | Direct Telegram Alert Engine</div>
       <div><span class="live-dot"></span><span style="color:#10b981;font-weight:600;">Live Feed Active &nbsp; {datetime.now().strftime('%H:%M:%S')}</span></div>
     </div>
     """)
