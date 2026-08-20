@@ -256,140 +256,74 @@ def fetch_fred_live(series_id: str, key: str, limit: int = 14) -> pd.DataFrame |
     except Exception:
         return None
 
+def _calc_score_only(currency: str, fred_key: str) -> float:
+    """Calculate composite macro score WITHOUT triggering shift alerts.
+    Used internally by the hourly report to avoid duplicate Telegram sends."""
+    cfg = CURRENCY_SERIES[currency]
+    weighted, tw = [], 0.0
+    for name, meta in cfg["indicators"].items():
+        df = fetch_fred(meta["series"], fred_key)
+        if df is None or df.empty:
+            continue
+        mf = calc_mtf(df["value"].tolist(), meta["cat"])
+        if mf is None:
+            continue
+        weighted.append(mf["score"] * meta["w"])
+        tw += meta["w"]
+    return sum(weighted) / tw if tw else 0.0
+
 def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> str:
-    """Build Hourly Intelligence Report using THE EXACT SAME data the system UI shows.
-    Uses compute_composite() + fetch_fred() (same cached calls as the dashboard).
-    """
+    """Ultra-compact hourly report — one clean line per asset, no duplicates."""
     now = datetime.utcnow()
-    lines = [
-        "🏛️ *FX MACRO & GEO DESK — HOURLY INTELLIGENCE REPORT*",
-        f"📅 {now.strftime('%Y-%m-%d')}  |  ⏰ {now.strftime('%H:%M')} UTC",
-        "━━━━━━━━━━━━━━━━━━━━━━━",
-        "📊 *CURRENCY STRENGTH MATRIX* (Same data as system dashboard):",
-    ]
 
-    currency_results = {}
+    # ── Scores (no shift alerts triggered) ──────────────────────────────────
+    usd_score = _calc_score_only("USD", fred_key)
+    eur_score = _calc_score_only("EUR", fred_key)
 
-    for cur, cfg in CURRENCY_SERIES.items():
-        result = compute_composite(cur, fred_key, channel_name)
-        if result is None:
-            continue
-        score      = result["score"]
-        macro_s    = result["macro_score"]
-        news_pts   = result["news_points"]
-        lbl, _, _  = bias_from_score(score)
-        flag       = cfg["flag"]
-        np_sign    = "+" if news_pts >= 0 else ""
-        lines.append(
-            f"{flag} *{cur}*: `{score:+.3f}` ➔ {lbl}"
-            f"  _(Macro: `{macro_s:+.3f}` | News: `{np_sign}{news_pts:.2f}pts`)_"
-        )
-        currency_results[cur] = {"score": score, "macro": macro_s, "news": news_pts, "rows": result["rows"], "lbl": lbl, "flag": flag}
-
-    # ── Key indicator details (same rows the table shows) ──────────────────
-    lines.append("")
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append("📋 *KEY INDICATOR DETAILS* (matching system table):")
-    for cur, info in currency_results.items():
-        ki = CURRENCY_SERIES[cur]["key_indicators"]
-        key_rows = [r for r in info["rows"] if r["name"] in ki]
-        if not key_rows:
-            continue
-        lines.append(f"\n{info['flag']} *{cur}*:")
-        for r in key_rows:
-            pg   = r["cat"] not in ("labor_neg",)
-            mom  = r["mom"]
-            arr  = "▲" if (mom > 0) == pg else "▼"
-            yoy  = f" | y/y: {r['yoy']:+.2f}%" if r.get("yoy") is not None else ""
-            lines.append(f"  • {r['name']}: {arr} {abs(mom):.2f}% m/m{yoy}  [{r['date']}]")
-
-    # ── Gold — same calculation as page_gold() ──────────────────────────────
-    lines.append("")
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append("🥇 *GOLD (XAUUSD) DESK* (same as Gold page):")
+    # ── Gold score (same formula as page_gold) ──────────────────────────────
+    gold_s = 0.0
+    ry_val_str = "N/A"
     ry_df = fetch_fred(GOLD_SERIES["real_yield"], fred_key, limit=60)
     if ry_df is None or ry_df.empty:
         y_df = fetch_fred(GOLD_SERIES["yield"], fred_key, limit=60)
         i_df = fetch_fred(GOLD_SERIES["inflation_exp"], fred_key, limit=60)
-        if y_df is not None and i_df is not None and not y_df.empty and not i_df.empty:
+        if y_df is not None and i_df is not None:
             merged = pd.merge(y_df, i_df, on="date", suffixes=("_y", "_i"))
             if not merged.empty:
                 merged["value"] = merged["value_y"] - merged["value_i"]
                 ry_df = merged[["date", "value"]]
-    usd_r_for_gold = currency_results.get("USD")
-    gold_s = 0.0
     if ry_df is not None and not ry_df.empty:
         ry_vals = ry_df["value"].tail(36).tolist()
-        ry_mf   = calc_mtf(ry_vals, "rate")
-        gold_ry  = -ry_mf["score"] if ry_mf else 0.0
-        gold_usd = -(usd_r_for_gold["macro"]) if usd_r_for_gold else 0.0
-        all_news = fetch_all_instant_news(channel_name)
-        sentiment_res = analyze_news_rule_based(all_news)
-        gold_news_pts = sentiment_res["scores"].get("Gold", 0.0)
-        gold_s = (0.30 * gold_ry) + (0.20 * gold_usd) + (0.50 * (gold_news_pts / 0.50))
-        gold_lbl, _, _ = bias_from_score(gold_s)
-        ry_last = ry_vals[-1]
-        ry_mom  = ry_mf["mom"] if ry_mf else 0.0
-        gn_sign = "+" if gold_news_pts >= 0 else ""
-        lines.append(f"• Real Yield 10Y (DFII10): `{ry_last:.2f}%`  ({ry_mom:+.2f}% m/m)")
-        lines.append(f"• USD Composite Score: `{usd_r_for_gold['score']:+.3f}`" if usd_r_for_gold else "• USD Score: N/A")
-        lines.append(f"• Gold (XAUUSD) Direction: {gold_lbl}")
-        lines.append(f"• Score: `{gold_s:+.3f}` | Sentiment: `{gn_sign}{gold_news_pts:.2f} pts`")
-    else:
-        lines.append("• Real Yield data unavailable.")
+        ry_mf = calc_mtf(ry_vals, "rate")
+        gold_ry = -ry_mf["score"] if ry_mf else 0.0
+        gold_usd = -usd_score
+        gold_s = (0.30 * gold_ry) + (0.20 * gold_usd)
+        ry_val_str = f"{ry_vals[-1]:.2f}%"
 
-    # ── Crude Oil — same fetch as page_oil() ───────────────────────────────
-    lines.append("")
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append("🛢️ *CRUDE OIL DESK* (same as Oil page):")
-    wti_df   = fetch_fred(OIL_SERIES["wti"],   fred_key, limit=60)
-    brent_df = fetch_fred(OIL_SERIES["brent"], fred_key, limit=60)
-    if wti_df is not None and not wti_df.empty:
-        wti_vals = wti_df["value"].tolist()
-        wti_mf   = calc_mtf(wti_vals, "growth")
-        wti_mom  = wti_mf["mom"] if wti_mf else 0.0
-        wti_last = wti_vals[-1]
-        wti_date = wti_df["date"].iloc[-1]
-        lines.append(f"• WTI Crude: `${wti_last:.2f}/bbl`  [{wti_date}]  ({wti_mom:+.2f}% m/m)")
-    if brent_df is not None and not brent_df.empty:
-        brent_last = brent_df["value"].iloc[-1]
-        brent_date = brent_df["date"].iloc[-1]
-        lines.append(f"• Brent Crude: `${brent_last:.2f}/bbl`  [{brent_date}]")
-    if wti_df is not None and not wti_df.empty and brent_df is not None and not brent_df.empty:
-        spread = brent_df["value"].iloc[-1] - wti_df["value"].iloc[-1]
-        lines.append(f"• Brent–WTI Spread: `+${spread:.2f}`")
+    def _emoji(s: float) -> str:
+        if s > 0.15:  return "📈 BULLISH"
+        if s < -0.15: return "📉 BEARISH"
+        return "⚖️ NEUTRAL"
 
-    # ── Major Pair Outlooks (now including XAU/USD) ────────────────────────
-    lines.append("")
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append("🎯 *MAJOR PAIR DIRECTIONAL OUTLOOKS*:")
-    forex_pairs = [
-        ("EUR/USD", "EUR", "USD"),
-        ("GBP/USD", "GBP", "USD"),
-        ("USD/JPY", "USD", "JPY"),
-        ("USD/CAD", "USD", "CAD"),
-        ("USD/CHF", "USD", "CHF"),
+    eur_usd_diff = eur_score - usd_score
+    xau_lbl  = _emoji(gold_s)
+    usd_lbl  = _emoji(usd_score)
+    eur_lbl  = _emoji(eur_score)
+    eurusd_lbl = _emoji(eur_usd_diff)
+
+    lines = [
+        f"🥇 *FX MACRO DESK* | {now.strftime('%H:%M')} UTC",
+        "",
+        f"🥇 XAU/USD: *{xau_lbl}*",
+        f"🇺🇸 USD:     *{usd_lbl}*",
+        f"🇪🇺 EUR:     *{eur_lbl}*",
+        "",
+        f"💱 EUR/USD: *{eurusd_lbl}*",
+        "",
+        f"_Real Yield 10Y: {ry_val_str}_",
+        f"_📅 {now.strftime('%Y-%m-%d')} | FX Macro Desk v11.8_",
     ]
-    for pair, base, quote in forex_pairs:
-        if base in currency_results and quote in currency_results:
-            diff = currency_results[base]["score"] - currency_results[quote]["score"]
-            lbl_p, _, _ = bias_from_score(diff)
-            arrow = "🚀" if diff > 0.15 else ("🔻" if diff < -0.15 else "⚖️")
-            lines.append(f"• *{pair}*: {arrow} {lbl_p}  (Δ: `{diff:+.3f}`)")
-
-    # XAU/USD — inverse of USD strength + gold score
-    if "USD" in currency_results and ry_df is not None:
-        xau_arrow = "🚀" if gold_s > 0.15 else ("🔻" if gold_s < -0.15 else "⚖️")
-        xau_lbl, _, _ = bias_from_score(gold_s)
-        lines.append(f"• *XAU/USD*: {xau_arrow} {xau_lbl}  (Score: `{gold_s:+.3f}`)")
-
-    lines.append("")
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append(f"🤖 _FX Macro Desk v11.8 — Auto Hourly Engine_")
-    lines.append(f"_⚡ Data: Identical to system dashboard display_")
-
     return "\n".join(lines)
-
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
