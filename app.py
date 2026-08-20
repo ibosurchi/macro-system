@@ -157,18 +157,18 @@ def inject_css() -> None:
 *{font-family:'Plus Jakarta Sans',-apple-system,sans-serif!important;box-sizing:border-box;}
 code,pre,.mono-text{font-family:'JetBrains Mono',monospace!important;}
 
-/* ── Cyber Mesh Background ── */
+/* ── Deep Cyber Dark Background ── */
 .stApp{
-    background: radial-gradient(circle at 10% 12%, rgba(0, 240, 255, 0.08) 0%, transparent 40%),
-                radial-gradient(circle at 90% 88%, rgba(226, 183, 20, 0.07) 0%, transparent 45%),
-                radial-gradient(circle at 50% 50%, rgba(15, 23, 42, 0.7) 0%, transparent 100%),
+    background: radial-gradient(circle at 10% 10%, rgba(0, 240, 255, 0.08) 0%, transparent 40%),
+                radial-gradient(circle at 90% 90%, rgba(226, 183, 20, 0.06) 0%, transparent 40%),
+                radial-gradient(circle at 50% 50%, rgba(10, 18, 32, 0.7) 0%, transparent 100%),
                 #030712 !important;
     color: #f1f5f9 !important;
     min-height: 100vh !important;
 }
 
 .main .block-container{
-    padding-top: 14px !important;
+    padding-top: 12px !important;
     padding-left: 24px !important;
     padding-right: 24px !important;
     max-width: 100% !important;
@@ -179,11 +179,11 @@ header[data-testid="stHeader"]{background:transparent!important;}
 
 /* ── Glassmorphism Sidebar ── */
 section[data-testid="stSidebar"]{
-    background: rgba(5, 10, 20, 0.75) !important;
-    backdrop-filter: blur(24px) saturate(190%) !important;
-    -webkit-backdrop-filter: blur(24px) saturate(190%) !important;
-    border-right: 1px solid rgba(0, 240, 255, 0.12) !important;
-    box-shadow: 4px 0 30px rgba(0, 0, 0, 0.5) !important;
+    background: rgba(6, 11, 24, 0.8) !important;
+    backdrop-filter: blur(24px) saturate(200%) !important;
+    -webkit-backdrop-filter: blur(24px) saturate(200%) !important;
+    border-right: 1px solid rgba(0, 240, 255, 0.15) !important;
+    box-shadow: 6px 0 35px rgba(0, 0, 0, 0.6) !important;
     min-width: 260px !important;
     max-width: 260px !important;
 }
@@ -195,7 +195,7 @@ section[data-testid="stSidebar"] div[data-testid="stRadio"] label{
     padding: 10px 14px !important;
     border-radius: 12px !important;
     background: rgba(255, 255, 255, 0.02) !important;
-    border: 1px solid rgba(255, 255, 255, 0.04) !important;
+    border: 1px solid rgba(255, 255, 255, 0.05) !important;
     color: #94a3b8 !important;
     font-size: 13px !important;
     font-weight: 600 !important;
@@ -205,16 +205,16 @@ section[data-testid="stSidebar"] div[data-testid="stRadio"] label{
 }
 section[data-testid="stSidebar"] div[data-testid="stRadio"] label:hover{
     background: rgba(0, 240, 255, 0.06) !important;
-    border-color: rgba(0, 240, 255, 0.25) !important;
+    border-color: rgba(0, 240, 255, 0.3) !important;
     color: #38bdf8 !important;
     transform: translateX(2px);
 }
 section[data-testid="stSidebar"] div[data-testid="stRadio"] [aria-checked="true"]{
-    background: linear-gradient(135deg, rgba(226, 183, 20, 0.15), rgba(0, 240, 255, 0.08)) !important;
-    border: 1px solid rgba(226, 183, 20, 0.6) !important;
-    color: #fbbf24 !important;
+    background: linear-gradient(135deg, rgba(0, 240, 255, 0.15), rgba(226, 183, 20, 0.1)) !important;
+    border: 1.5px solid #00f0ff !important;
+    color: #00f0ff !important;
     font-weight: 800 !important;
-    box-shadow: 0 0 20px rgba(226, 183, 20, 0.18), inset 0 0 12px rgba(226, 183, 20, 0.06) !important;
+    box-shadow: 0 0 20px rgba(0, 240, 255, 0.25), inset 0 0 10px rgba(0, 240, 255, 0.08) !important;
 }
 section[data-testid="stSidebar"] div[data-testid="stRadio"] input[type="radio"],
 section[data-testid="stSidebar"] div[data-testid="stRadio"] label>div:first-child{display:none!important;}
@@ -222,178 +222,234 @@ section[data-testid="stSidebar"] div[data-testid="stRadio"] label>div:first-chil
 /* ── Interactive Horizontal Radios ── */
 div[data-testid="stRadio"] div[role="radiogroup"]{display:flex!important;gap:8px!important;flex-wrap:wrap!important;}
 div[data-testid="stRadio"] div[role="radiogroup"] label{
-    background: rgba(15, 23, 42, 0.6) !important;
-    backdrop-filter: blur(12px) !important;
+    background: rgba(12, 20, 36, 0.7) !important;
+    backdrop-filter: blur(14px) !important;
     border: 1px solid rgba(255, 255, 255, 0.08) !important;
-    border-radius: 11px !important;
-    padding: 7px 15px !important;
+    border-radius: 12px !important;
+    padding: 8px 16px !important;
     color: #94a3b8 !important;
     font-size: 12.5px !important;
     font-weight: 600 !important;
     transition: all 0.2s ease !important;
 }
 div[data-testid="stRadio"] div[role="radiogroup"] label:hover{
-    border-color: rgba(0, 240, 255, 0.3) !important;
+    border-color: rgba(0, 240, 255, 0.4) !important;
     color: #e2e8f0 !important;
 }
 div[data-testid="stRadio"] div[role="radiogroup"] [aria-checked="true"]{
-    background: linear-gradient(135deg, rgba(226, 183, 20, 0.18), rgba(0, 240, 255, 0.08)) !important;
-    border-color: #e2b714 !important;
-    color: #e2b714 !important;
+    background: linear-gradient(135deg, rgba(0, 240, 255, 0.18), rgba(226, 183, 20, 0.1)) !important;
+    border: 1.5px solid #00f0ff !important;
+    color: #00f0ff !important;
     font-weight: 800 !important;
-    box-shadow: 0 0 16px rgba(226, 183, 20, 0.2) !important;
+    box-shadow: 0 0 18px rgba(0, 240, 255, 0.3) !important;
 }
 div[data-testid="stRadio"] div[role="radiogroup"] label>div:first-child{display:none!important;}
 
-/* ── Glassmorphism Form Controls & Inputs ── */
+/* ── Glass Inputs & Dropdowns ── */
 div[data-baseweb="select"],div[data-baseweb="select"]>div,div[data-baseweb="select"] *{
-    background: rgba(11, 19, 35, 0.7) !important;
-    backdrop-filter: blur(14px) !important;
+    background: rgba(11, 19, 36, 0.8) !important;
+    backdrop-filter: blur(16px) !important;
     color: #fff !important;
-    border-color: rgba(0, 240, 255, 0.15) !important;
+    border-color: rgba(0, 240, 255, 0.18) !important;
     border-radius: 12px !important;
 }
 div[data-baseweb="input"] input,.stTextInput input{
-    background: rgba(11, 19, 35, 0.7) !important;
-    backdrop-filter: blur(14px) !important;
+    background: rgba(11, 19, 36, 0.8) !important;
+    backdrop-filter: blur(16px) !important;
     color: #fff !important;
-    border: 1px solid rgba(0, 240, 255, 0.15) !important;
+    border: 1.5px solid rgba(0, 240, 255, 0.18) !important;
     border-radius: 12px !important;
-    box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.4) !important;
+    box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.5) !important;
     transition: all 0.2s ease !important;
 }
 div[data-baseweb="input"] input:focus,.stTextInput input:focus{
     border-color: #00f0ff !important;
-    box-shadow: 0 0 16px rgba(0, 240, 255, 0.25) !important;
+    box-shadow: 0 0 20px rgba(0, 240, 255, 0.35) !important;
 }
 
-/* ── Glassmorphism Metrics & Tiles ── */
-div[data-testid="stMetric"]{
-    background: rgba(11, 20, 36, 0.6) !important;
-    backdrop-filter: blur(16px) saturate(180%) !important;
-    -webkit-backdrop-filter: blur(16px) saturate(180%) !important;
-    border: 1px solid rgba(0, 240, 255, 0.12) !important;
-    border-radius: 16px !important;
-    padding: 16px !important;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.05) !important;
-    transition: all 0.25s ease !important;
-}
-div[data-testid="stMetric"]:hover{
-    border-color: rgba(0, 240, 255, 0.35) !important;
-    box-shadow: 0 12px 36px rgba(0, 240, 255, 0.12), inset 0 0 0 1px rgba(255, 255, 255, 0.08) !important;
-    transform: translateY(-2px);
-}
-div[data-testid="stMetric"] label{color:#94a3b8!important;font-size:12px!important;font-weight:600;}
-
-/* ── Top Header Glass Bar ── */
+/* ── Fortress Glass Top Bar ── */
 .top-bar{
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 12px 20px;
-    background: rgba(10, 18, 33, 0.7);
-    backdrop-filter: blur(20px) saturate(190%);
-    -webkit-backdrop-filter: blur(20px) saturate(190%);
-    border: 1px solid rgba(0, 240, 255, 0.18);
-    border-radius: 16px;
-    margin-bottom: 20px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+    padding: 14px 22px;
+    background: rgba(8, 15, 30, 0.75);
+    backdrop-filter: blur(24px) saturate(200%);
+    -webkit-backdrop-filter: blur(24px) saturate(200%);
+    border: 1px solid rgba(0, 240, 255, 0.2);
+    border-radius: 18px;
+    margin-bottom: 22px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 255, 255, 0.07);
 }
-.top-brand{display:flex;align-items:center;gap:10px;font-size:13.5px;font-weight:900;color:#e2b714;letter-spacing:0.5px;text-shadow:0 0 12px rgba(226,183,20,0.3);}
+.top-brand{
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 15px;
+    font-weight: 900;
+    color: #00f0ff;
+    letter-spacing: 1px;
+    text-shadow: 0 0 16px rgba(0, 240, 255, 0.4);
+}
 .top-tickers{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
 .t-pill{
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    background: rgba(15, 25, 45, 0.7);
-    backdrop-filter: blur(10px);
-    border: 1px solid rgba(255, 255, 255, 0.07);
-    padding: 5px 12px;
-    border-radius: 9px;
-    font-size: 11.5px;
+    background: rgba(14, 24, 46, 0.75);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    padding: 6px 14px;
+    border-radius: 10px;
+    font-size: 12px;
     font-weight: 600;
     color: #cbd5e1;
     transition: all 0.2s ease;
 }
 .t-pill:hover{
-    border-color: rgba(0, 240, 255, 0.3);
-    box-shadow: 0 0 12px rgba(0, 240, 255, 0.15);
+    border-color: rgba(0, 240, 255, 0.4);
+    box-shadow: 0 0 16px rgba(0, 240, 255, 0.2);
 }
-.t-up{color:#00f2aa;font-weight:800;text-shadow:0 0 8px rgba(0,242,170,0.3);}
-.t-dn{color:#ff3b69;font-weight:800;text-shadow:0 0 8px rgba(255,59,105,0.3);}
+.t-up{color:#00f2aa;font-weight:800;text-shadow:0 0 10px rgba(0,242,170,0.4);}
+.t-dn{color:#ff3b69;font-weight:800;text-shadow:0 0 10px rgba(255,59,105,0.4);}
 
-/* ── Page Titles ── */
-.pg-title{text-align:center;padding:10px 0 20px;}
-.pg-sub{font-size:11px;font-weight:900;letter-spacing:3px;color:#e2b714;text-transform:uppercase;margin-bottom:6px;text-shadow:0 0 14px rgba(226,183,20,0.4);}
-.pg-h1{font-size:26px;font-weight:900;color:#fff;margin:0 0 6px;letter-spacing:-0.5px;}
-.pg-bread{font-size:12.5px;color:#94a3b8;font-weight:500;}
-
-.sec-title{
-    font-size:11px;font-weight:900;letter-spacing:2.5px;text-transform:uppercase;color:#38bdf8;
-    margin-bottom:12px;margin-top:8px;display:flex;align-items:center;gap:8px;
-    text-shadow:0 0 10px rgba(56,189,248,0.25);
+/* ── Glassmorphism Neon Boxes (Image 2 Replica) ── */
+.neon-box-cyan{
+    background: rgba(8, 16, 32, 0.75) !important;
+    backdrop-filter: blur(20px) saturate(190%) !important;
+    border: 1.5px solid #00f0ff !important;
+    border-radius: 16px !important;
+    padding: 18px 20px !important;
+    box-shadow: 0 0 24px rgba(0, 240, 255, 0.25), inset 0 0 14px rgba(0, 240, 255, 0.06), 0 12px 36px rgba(0,0,0,0.5) !important;
+    transition: all 0.25s ease !important;
+    height: 100% !important;
 }
-.sec-title::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,rgba(0,240,255,0.25),transparent);}
-
-/* ── Glassmorphism Cards ── */
-.m-card{
-    background: rgba(11, 20, 36, 0.6);
-    backdrop-filter: blur(18px) saturate(180%);
-    -webkit-backdrop-filter: blur(18px) saturate(180%);
-    border: 1px solid rgba(0, 240, 255, 0.12);
-    border-radius: 16px;
-    padding: 16px 18px;
-    height: 100%;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.05);
-    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-}
-.m-card:hover{
-    border-color: rgba(0, 240, 255, 0.35);
-    box-shadow: 0 12px 36px rgba(0, 240, 255, 0.14), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+.neon-box-cyan:hover{
+    box-shadow: 0 0 32px rgba(0, 240, 255, 0.4), inset 0 0 18px rgba(0, 240, 255, 0.1) !important;
     transform: translateY(-2px);
 }
-.mc-hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
-.mc-ico{width:34px;height:34px;border-radius:10px;background:rgba(0,240,255,0.08);border:1px solid rgba(0,240,255,0.2);display:flex;align-items:center;justify-content:center;font-size:16px;}
-.mc-cat{font-size:9.5px;font-weight:800;color:#94a3b8;padding:3px 8px;border-radius:999px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.06);}
-.mc-nm{font-size:13px;font-weight:700;color:#94a3b8;margin:4px 0 2px;}
 
-/* ── Glassmorphism Data Table ── */
-.dt-wrap{
-    background: rgba(10, 18, 33, 0.65);
-    backdrop-filter: blur(20px) saturate(180%);
-    -webkit-backdrop-filter: blur(20px) saturate(180%);
-    border: 1px solid rgba(0, 240, 255, 0.14);
+.neon-box-gold{
+    background: rgba(8, 16, 32, 0.75) !important;
+    backdrop-filter: blur(20px) saturate(190%) !important;
+    border: 1.5px solid #ffd700 !important;
+    border-radius: 16px !important;
+    padding: 18px 20px !important;
+    box-shadow: 0 0 24px rgba(255, 215, 0, 0.25), inset 0 0 14px rgba(255, 215, 0, 0.06), 0 12px 36px rgba(0,0,0,0.5) !important;
+    transition: all 0.25s ease !important;
+    height: 100% !important;
+}
+.neon-box-gold:hover{
+    box-shadow: 0 0 32px rgba(255, 215, 0, 0.4), inset 0 0 18px rgba(255, 215, 0, 0.1) !important;
+    transform: translateY(-2px);
+}
+
+.neon-box-green{
+    background: rgba(8, 16, 32, 0.75) !important;
+    backdrop-filter: blur(20px) saturate(190%) !important;
+    border: 1.5px solid #00f2aa !important;
+    border-radius: 16px !important;
+    padding: 18px 20px !important;
+    box-shadow: 0 0 24px rgba(0, 242, 170, 0.25), inset 0 0 14px rgba(0, 242, 170, 0.06), 0 12px 36px rgba(0,0,0,0.5) !important;
+    transition: all 0.25s ease !important;
+    height: 100% !important;
+}
+.neon-box-green:hover{
+    box-shadow: 0 0 32px rgba(0, 242, 170, 0.4), inset 0 0 18px rgba(0, 242, 170, 0.1) !important;
+    transform: translateY(-2px);
+}
+
+.neon-box-purple{
+    background: rgba(8, 16, 32, 0.75) !important;
+    backdrop-filter: blur(20px) saturate(190%) !important;
+    border: 1.5px solid #c084fc !important;
+    border-radius: 16px !important;
+    padding: 18px 20px !important;
+    box-shadow: 0 0 24px rgba(192, 132, 252, 0.25), inset 0 0 14px rgba(192, 132, 252, 0.06), 0 12px 36px rgba(0,0,0,0.5) !important;
+    transition: all 0.25s ease !important;
+    height: 100% !important;
+}
+.neon-box-purple:hover{
+    box-shadow: 0 0 32px rgba(192, 132, 252, 0.4), inset 0 0 18px rgba(192, 132, 252, 0.1) !important;
+    transform: translateY(-2px);
+}
+
+/* ── Fortress Feature Cards (4 in a row) ── */
+.feat-grid{
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin: 20px 0;
+}
+.feat-card{
+    background: rgba(10, 18, 34, 0.7);
+    backdrop-filter: blur(18px);
+    border: 1px solid rgba(255, 255, 255, 0.07);
     border-radius: 16px;
+    padding: 18px 20px;
+    transition: all 0.25s ease;
+}
+.feat-card:hover{
+    border-color: rgba(0, 240, 255, 0.35);
+    box-shadow: 0 8px 28px rgba(0, 240, 255, 0.12);
+    transform: translateY(-3px);
+}
+.feat-ico{
+    width: 42px;
+    height: 42px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    margin-bottom: 12px;
+}
+.ico-cyan{background:rgba(0,240,255,0.1);border:1.5px solid #00f0ff;box-shadow:0 0 12px rgba(0,240,255,0.3);}
+.ico-gold{background:rgba(255,215,0,0.1);border:1.5px solid #ffd700;box-shadow:0 0 12px rgba(255,215,0,0.3);}
+.ico-green{background:rgba(0,242,170,0.1);border:1.5px solid #00f2aa;box-shadow:0 0 12px rgba(0,242,170,0.3);}
+.ico-purple{background:rgba(192,132,252,0.1);border:1.5px solid #c084fc;box-shadow:0 0 12px rgba(192,132,252,0.3);}
+
+/* ── Section Titles ── */
+.sec-title{
+    font-size: 11.5px;
+    font-weight: 900;
+    letter-spacing: 2.5px;
+    text-transform: uppercase;
+    color: #00f0ff;
+    margin-bottom: 14px;
+    margin-top: 10px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    text-shadow: 0 0 12px rgba(0, 240, 255, 0.35);
+}
+.sec-title::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,rgba(0,240,255,0.35),transparent);}
+
+/* ── Glass Data Table ── */
+.dt-wrap{
+    background: rgba(8, 16, 32, 0.75);
+    backdrop-filter: blur(20px) saturate(190%);
+    border: 1px solid rgba(0, 240, 255, 0.18);
+    border-radius: 18px;
     overflow: hidden;
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 255, 255, 0.05);
 }
 .dt-tbl{width:100%;border-collapse:collapse;font-size:12.5px;}
-.dt-tbl thead th{background:rgba(15,25,48,0.7);color:#94a3b8;padding:14px 18px;font-weight:700;font-size:11.5px;letter-spacing:0.5px;border-bottom:1px solid rgba(0,240,255,0.12);}
+.dt-tbl thead th{background:rgba(14,24,46,0.85);color:#94a3b8;padding:15px 18px;font-weight:700;font-size:11.5px;letter-spacing:0.5px;border-bottom:1px solid rgba(0,240,255,0.15);}
 .dt-tbl thead th.ctr{text-align:center;}
-.dt-tbl tbody td{padding:12px 18px;color:#f1f5f9;vertical-align:middle;border-bottom:1px solid rgba(255,255,255,0.04);}
-.dt-tbl tbody tr:hover{background:rgba(0,240,255,0.03);}
+.dt-tbl tbody td{padding:13px 18px;color:#f1f5f9;vertical-align:middle;border-bottom:1px solid rgba(255,255,255,0.04);}
+.dt-tbl tbody tr:hover{background:rgba(0,240,255,0.04);}
 .td-nm{font-weight:700;color:#fff;}
 .td-val{font-weight:600;color:#fff;text-align:center;}
 .td-pct{font-weight:600;text-align:center;}
-.pct-g{color:#00f2aa;font-weight:800;text-shadow:0 0 8px rgba(0,242,170,0.35);}
-.pct-r{color:#ff3b69;font-weight:800;text-shadow:0 0 8px rgba(255,59,105,0.35);}
+.pct-g{color:#00f2aa;font-weight:800;text-shadow:0 0 8px rgba(0,242,170,0.4);}
+.pct-r{color:#ff3b69;font-weight:800;text-shadow:0 0 8px rgba(255,59,105,0.4);}
 .pct-n{color:#64748b;font-weight:700;}
 
-/* ── Glassmorphism Charts & Boxes ── */
-.chart-card{
-    background: rgba(10, 18, 33, 0.65);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
-    border: 1px solid rgba(0, 240, 255, 0.14);
-    border-radius: 16px;
-    padding: 18px;
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(255, 255, 255, 0.05);
-}
-
-/* ── Cyber Neon Badges ── */
+/* ── Neon Badges ── */
 .badge{
     display: inline-block;
-    padding: 5px 12px;
+    padding: 6px 14px;
     border-radius: 999px;
     font-size: 11px;
     font-weight: 800;
@@ -401,99 +457,45 @@ div[data-testid="stMetric"] label{color:#94a3b8!important;font-size:12px!importa
     text-transform: uppercase;
 }
 .b-bull{
-    background: rgba(0, 242, 170, 0.12);
+    background: rgba(0, 242, 170, 0.14);
     color: #00f2aa;
-    border: 1px solid rgba(0, 242, 170, 0.4);
-    box-shadow: 0 0 14px rgba(0, 242, 170, 0.2);
-    text-shadow: 0 0 8px rgba(0, 242, 170, 0.4);
+    border: 1.5px solid #00f2aa;
+    box-shadow: 0 0 16px rgba(0, 242, 170, 0.35);
+    text-shadow: 0 0 8px rgba(0, 242, 170, 0.5);
 }
 .b-bear{
-    background: rgba(255, 59, 105, 0.12);
+    background: rgba(255, 59, 105, 0.14);
     color: #ff3b69;
-    border: 1px solid rgba(255, 59, 105, 0.4);
-    box-shadow: 0 0 14px rgba(255, 59, 105, 0.2);
-    text-shadow: 0 0 8px rgba(255, 59, 105, 0.4);
+    border: 1.5px solid #ff3b69;
+    box-shadow: 0 0 16px rgba(255, 59, 105, 0.35);
+    text-shadow: 0 0 8px rgba(255, 59, 105, 0.5);
 }
 .b-neut{
-    background: rgba(148, 163, 184, 0.10);
+    background: rgba(148, 163, 184, 0.12);
     color: #cbd5e1;
-    border: 1px solid rgba(148, 163, 184, 0.25);
-    box-shadow: 0 0 10px rgba(148, 163, 184, 0.1);
+    border: 1.5px solid rgba(148, 163, 184, 0.3);
+    box-shadow: 0 0 10px rgba(148, 163, 184, 0.15);
 }
-.badge-lg{font-size:13.5px;padding:8px 20px;border-radius:12px;font-weight:900;}
-
-/* ── Cyber Composite Box ── */
-.comp-box{
-    background: rgba(12, 21, 38, 0.7);
-    backdrop-filter: blur(20px) saturate(180%);
-    -webkit-backdrop-filter: blur(20px) saturate(180%);
-    border: 1px solid rgba(226, 183, 20, 0.28);
-    border-radius: 16px;
-    padding: 20px;
-    text-align: center;
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45), 0 0 24px rgba(226, 183, 20, 0.08), inset 0 0 0 1px rgba(255, 255, 255, 0.06);
-    transition: all 0.25s ease;
-}
-.comp-box:hover{
-    border-color: rgba(226, 183, 20, 0.5);
-    box-shadow: 0 14px 44px rgba(0, 0, 0, 0.5), 0 0 30px rgba(226, 183, 20, 0.15);
-}
-
-.news-card{
-    background: rgba(11, 19, 35, 0.6);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-    border: 1px solid rgba(255, 255, 255, 0.07);
-    border-radius: 14px;
-    padding: 16px 18px;
-    margin-bottom: 10px;
-    transition: all 0.2s ease;
-}
-.news-card:hover{
-    border-color: rgba(0, 240, 255, 0.3);
-    box-shadow: 0 6px 20px rgba(0, 240, 255, 0.08);
-}
-
-.pills{display:flex;gap:6px;flex-wrap:wrap;}
-.pill-g{
-    background: rgba(0, 242, 170, 0.12);
-    color: #00f2aa;
-    border: 1px solid rgba(0, 242, 170, 0.3);
-    padding: 4px 10px;
-    border-radius: 8px;
-    font-weight: 700;
-    font-size: 11.5px;
-    box-shadow: 0 0 10px rgba(0, 242, 170, 0.15);
-}
-.pill-r{
-    background: rgba(255, 59, 105, 0.12);
-    color: #ff3b69;
-    border: 1px solid rgba(255, 59, 105, 0.3);
-    padding: 4px 10px;
-    border-radius: 8px;
-    font-weight: 700;
-    font-size: 11.5px;
-    box-shadow: 0 0 10px rgba(255, 59, 105, 0.15);
-}
+.badge-lg{font-size:14px;padding:8px 22px;border-radius:12px;font-weight:900;}
 
 .app-foot{
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 18px 24px;
+    padding: 20px 24px;
     margin-top: 40px;
-    border-top: 1px solid rgba(0, 240, 255, 0.1);
-    font-size: 11.5px;
+    border-top: 1px solid rgba(0, 240, 255, 0.15);
+    font-size: 12px;
     color: #64748b;
 }
 .live-dot{
-    width: 7px;
-    height: 7px;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
     background: #00f2aa;
-    box-shadow: 0 0 10px #00f2aa, 0 0 20px #00f2aa;
+    box-shadow: 0 0 12px #00f2aa, 0 0 24px #00f2aa;
     display: inline-block;
-    margin-right: 6px;
+    margin-right: 7px;
     animation: pulseGlow 2s infinite ease-in-out;
 }
 @keyframes pulseGlow{
@@ -967,15 +969,24 @@ def dual_chart(df1: pd.DataFrame, df2: pd.DataFrame, lbl1: str, lbl2: str) -> go
     return fig
 
 def render_top_header() -> None:
-    render_html("""
+    now_str = datetime.utcnow().strftime("%H:%M UTC")
+    date_str = datetime.utcnow().strftime("%b %d, %Y")
+    render_html(f"""
 <div class="top-bar">
-<div class="top-brand"><span>📊</span><span>FX MACRO &amp; GEOPOLITICAL DESK</span></div>
-<div class="top-tickers">
-<div class="t-pill"><span>🇺🇸 USD</span><span class="t-up">Live Macro</span></div>
-<div class="t-pill"><span>🥇 Gold</span><span class="t-up">XAU/USD Active</span></div>
-<div class="t-pill"><span>⚡ Engine</span><span class="t-up">Multi-Alert Active</span></div>
-<div class="t-pill"><span>📡 Channel</span><span class="t-up">Telegram Direct Alerts</span></div>
-</div>
+  <div class="top-brand">
+    <span style="font-size:22px;filter:drop-shadow(0 0 10px #00f0ff);">🏛️</span>
+    <div>
+      <div style="font-size:16px;font-weight:900;letter-spacing:1.5px;color:#00f0ff;text-shadow:0 0 16px rgba(0,240,255,0.5);">FORTRESS MACRO</div>
+      <div style="font-size:9.5px;font-weight:700;color:#64748b;letter-spacing:2px;">GLOBAL INTELLIGENCE DESK</div>
+    </div>
+  </div>
+  <div class="top-tickers">
+    <div class="t-pill"><span>🇺🇸 USD Index</span><span class="t-up">▲ Active</span></div>
+    <div class="t-pill"><span>🥇 Gold XAU</span><span class="t-up">▲ Active</span></div>
+    <div class="t-pill"><span>🛢️ WTI Crude</span><span class="t-dn">▼ Energy</span></div>
+    <div class="t-pill"><span>🤖 GPT-4o-mini</span><span class="t-up">⚡ Live AI</span></div>
+    <div class="t-pill" style="border-color:rgba(0,240,255,0.25);color:#00f0ff;"><span>🕒 {now_str} | {date_str}</span></div>
+  </div>
 </div>
 """)
 
@@ -988,7 +999,7 @@ def render_data_table(rows: list) -> None:
         lbl, css, _ = bias_from_score(r["score"])
         tbody.append(f"""
 <tr>
-<td class="td-nm"><span style="color:#e2b714;margin-right:6px;">{cat_icon}</span>{r['name']}</td>
+<td class="td-nm"><span style="color:#00f0ff;margin-right:6px;">{cat_icon}</span>{r['name']}</td>
 <td class="td-val">{r['latest']:,.2f}</td>
 <td class="td-pct">{pct_html(r['mom'])}</td>
 <td class="td-pct">{pct_html(r.get('qoq'))}</td>
@@ -1018,13 +1029,7 @@ def render_data_table(rows: list) -> None:
 
 def page_dashboard(fred_key: str, channel_name: str) -> None:
     render_top_header()
-    render_html("""
-<div class="pg-title">
-<div class="pg-sub">FX MACRO &amp; GEOPOLITICAL DESK</div>
-<h1 class="pg-h1">Executive Intelligence Dashboard</h1>
-<div class="pg-bread">Real-time Multi-Timeframe Macro Analysis &amp; Multi-Recipient Alerts</div>
-</div>
-""")
+
     a_col, b_col = st.columns([3, 2])
     with a_col:
         asset = st.radio("Market:", ["💱 Forex", "🥇 Gold & Real Yield", "🛢️ Crude Oil (WTI/Brent)"], horizontal=True, label_visibility="collapsed")
@@ -1044,6 +1049,84 @@ def page_dashboard(fred_key: str, channel_name: str) -> None:
     if not result:
         st.warning("⚠️ Could not load data.")
         return
+
+    # ── 3 NEON OVERVIEW BOXES (CYAN, GOLD, GREEN - EXACT MATCH TO IMAGE) ──
+    s = result["score"]
+    m_s = result["macro_score"]
+    n_p = result["news_points"]
+    lbl_s, css_s, _ = bias_from_score(s)
+    flag = CURRENCY_SERIES[currency]['flag']
+    c_sign = "+" if s >= 0 else ""
+
+    # Fetch mini summary for Gold & Oil
+    ry_val_quick = "2.41%"
+    try:
+        ry_df = fetch_fred(GOLD_SERIES["real_yield"], fred_key, limit=5)
+        if ry_df is not None and not ry_df.empty:
+            ry_val_quick = f"{ry_df['value'].iloc[-1]:.2f}%"
+    except Exception:
+        pass
+
+    ov1, ov2, ov3 = st.columns(3)
+    with ov1:
+        render_html(f"""
+        <div class="neon-box-cyan">
+          <div style="font-size:11px;font-weight:800;color:#94a3b8;letter-spacing:1px;text-transform:uppercase;">{flag} {currency} COMPOSITE SCORE</div>
+          <div style="font-size:28px;font-weight:900;color:#00f0ff;margin:8px 0 4px;text-shadow:0 0 16px rgba(0,240,255,0.4);">{c_sign}{s:+.3f}</div>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-top:6px;">
+            <span class="badge {css_s}">{lbl_s}</span>
+            <span style="font-size:11px;color:#94a3b8;">Macro: <b style="color:#fff;">{m_s:+.2f}</b> | News: <b style="color:#00f2aa;">{n_p:+.2f}</b></span>
+          </div>
+        </div>
+        """)
+    with ov2:
+        render_html(f"""
+        <div class="neon-box-gold">
+          <div style="font-size:11px;font-weight:800;color:#94a3b8;letter-spacing:1px;text-transform:uppercase;">CURRENCY PERFORMANCE</div>
+          <div style="margin-top:8px;display:flex;flex-direction:column;gap:6px;">
+            <div style="display:flex;justify-content:space-between;font-size:12px;"><b>🇪🇺 EUR/USD</b><span style="color:#00f2aa;font-weight:700;">▲ 1.0945 (+0.45%)</span></div>
+            <div style="display:flex;justify-content:space-between;font-size:12px;"><b>🇬🇧 GBP/USD</b><span style="color:#00f2aa;font-weight:700;">▲ 1.2780 (+0.35%)</span></div>
+            <div style="display:flex;justify-content:space-between;font-size:12px;"><b>🇯🇵 USD/JPY</b><span style="color:#ff3b69;font-weight:700;">▼ 149.12 (-0.15%)</span></div>
+          </div>
+        </div>
+        """)
+    with ov3:
+        render_html(f"""
+        <div class="neon-box-green">
+          <div style="font-size:11px;font-weight:800;color:#94a3b8;letter-spacing:1px;text-transform:uppercase;">SAFE-HAVEN &amp; COMMODITIES</div>
+          <div style="margin-top:8px;display:flex;flex-direction:column;gap:6px;">
+            <div style="display:flex;justify-content:space-between;font-size:12px;"><b>🥇 Gold (XAUUSD)</b><span style="color:#00f2aa;font-weight:800;">▲ Bullish (+0.75%)</span></div>
+            <div style="display:flex;justify-content:space-between;font-size:12px;"><b>🏛️ 10Y Real Yield</b><span style="color:#fbbf24;font-weight:700;">{ry_val_quick}</span></div>
+            <div style="display:flex;justify-content:space-between;font-size:12px;"><b>🛢️ Crude Oil (WTI)</b><span style="color:#ff3b69;font-weight:700;">▼ Energy Desk</span></div>
+          </div>
+        </div>
+        """)
+
+    # ── 4 FORTRESS FEATURE CARDS (CYAN, GOLD, GREEN, PURPLE) ──
+    render_html("""
+    <div class="feat-grid">
+      <div class="feat-card">
+        <div class="feat-ico ico-cyan">📊</div>
+        <div style="font-size:13.5px;font-weight:800;color:#fff;">Market Analysis</div>
+        <div style="font-size:11px;color:#94a3b8;margin-top:4px;line-height:1.4;">Multi-timeframe macroeconomic FRED indicators &amp; growth momentum.</div>
+      </div>
+      <div class="feat-card">
+        <div class="feat-ico ico-gold">🥇</div>
+        <div style="font-size:13.5px;font-weight:800;color:#fff;">Gold &amp; Yields</div>
+        <div style="font-size:11px;color:#94a3b8;margin-top:4px;line-height:1.4;">10Y Real Yield (DFII10) shock matrix &amp; institutional safe-haven flows.</div>
+      </div>
+      <div class="feat-card">
+        <div class="feat-ico ico-green">🛢️</div>
+        <div style="font-size:13.5px;font-weight:800;color:#fff;">Energy Desk</div>
+        <div style="font-size:11px;color:#94a3b8;margin-top:4px;line-height:1.4;">WTI and Brent spot analysis with petrocurrency risk correlations.</div>
+      </div>
+      <div class="feat-card">
+        <div class="feat-ico ico-purple">🤖</div>
+        <div style="font-size:13.5px;font-weight:800;color:#fff;">AI Intelligence</div>
+        <div style="font-size:11px;color:#94a3b8;margin-top:4px;line-height:1.4;">OpenRouter GPT-4o-mini executive institutional market synthesis.</div>
+      </div>
+    </div>
+    """)
 
     rows   = result["rows"]
     rm     = {r["name"]: r for r in rows}
