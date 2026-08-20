@@ -234,6 +234,164 @@ def fetch_fred(series_id: str, key: str, limit: int = 48) -> pd.DataFrame | None
     except Exception:
         return None
 
+def fetch_fred_live(series_id: str, key: str, limit: int = 14) -> pd.DataFrame | None:
+    """Fetch LIVE data directly from FRED — NO CACHE. Used for hourly reports."""
+    if not key:
+        return None
+    try:
+        r = requests.get(
+            "https://api.stlouisfed.org/fred/series/observations",
+            params={"series_id": series_id, "api_key": key, "file_type": "json",
+                    "sort_order": "desc", "limit": str(limit)},
+            timeout=REQUEST_TIMEOUT,
+        )
+        r.raise_for_status()
+        obs = r.json().get("observations", [])
+        df = pd.DataFrame(obs)
+        if df.empty:
+            return None
+        df["value"] = pd.to_numeric(df["value"], errors="coerce")
+        df = df.dropna(subset=["value"])
+        return df[["date", "value"]].sort_values("date").reset_index(drop=True)
+    except Exception:
+        return None
+
+def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> str:
+    """Build Hourly Intelligence Report using THE EXACT SAME data the system UI shows.
+    Uses compute_composite() + fetch_fred() (same cached calls as the dashboard).
+    """
+    now = datetime.utcnow()
+    lines = [
+        "🏛️ *FX MACRO & GEO DESK — HOURLY INTELLIGENCE REPORT*",
+        f"📅 {now.strftime('%Y-%m-%d')}  |  ⏰ {now.strftime('%H:%M')} UTC",
+        "━━━━━━━━━━━━━━━━━━━━━━━",
+        "📊 *CURRENCY STRENGTH MATRIX* (Same data as system dashboard):",
+    ]
+
+    currency_results = {}
+
+    for cur, cfg in CURRENCY_SERIES.items():
+        result = compute_composite(cur, fred_key, channel_name)
+        if result is None:
+            continue
+        score      = result["score"]
+        macro_s    = result["macro_score"]
+        news_pts   = result["news_points"]
+        lbl, _, _  = bias_from_score(score)
+        flag       = cfg["flag"]
+        np_sign    = "+" if news_pts >= 0 else ""
+        lines.append(
+            f"{flag} *{cur}*: `{score:+.3f}` ➔ {lbl}"
+            f"  _(Macro: `{macro_s:+.3f}` | News: `{np_sign}{news_pts:.2f}pts`)_"
+        )
+        currency_results[cur] = {"score": score, "macro": macro_s, "news": news_pts, "rows": result["rows"], "lbl": lbl, "flag": flag}
+
+    # ── Key indicator details (same rows the table shows) ──────────────────
+    lines.append("")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("📋 *KEY INDICATOR DETAILS* (matching system table):")
+    for cur, info in currency_results.items():
+        ki = CURRENCY_SERIES[cur]["key_indicators"]
+        key_rows = [r for r in info["rows"] if r["name"] in ki]
+        if not key_rows:
+            continue
+        lines.append(f"\n{info['flag']} *{cur}*:")
+        for r in key_rows:
+            pg   = r["cat"] not in ("labor_neg",)
+            mom  = r["mom"]
+            arr  = "▲" if (mom > 0) == pg else "▼"
+            yoy  = f" | y/y: {r['yoy']:+.2f}%" if r.get("yoy") is not None else ""
+            lines.append(f"  • {r['name']}: {arr} {abs(mom):.2f}% m/m{yoy}  [{r['date']}]")
+
+    # ── Gold — same calculation as page_gold() ──────────────────────────────
+    lines.append("")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("🥇 *GOLD (XAUUSD) DESK* (same as Gold page):")
+    ry_df = fetch_fred(GOLD_SERIES["real_yield"], fred_key, limit=60)
+    if ry_df is None or ry_df.empty:
+        y_df = fetch_fred(GOLD_SERIES["yield"], fred_key, limit=60)
+        i_df = fetch_fred(GOLD_SERIES["inflation_exp"], fred_key, limit=60)
+        if y_df is not None and i_df is not None and not y_df.empty and not i_df.empty:
+            merged = pd.merge(y_df, i_df, on="date", suffixes=("_y", "_i"))
+            if not merged.empty:
+                merged["value"] = merged["value_y"] - merged["value_i"]
+                ry_df = merged[["date", "value"]]
+    usd_r_for_gold = currency_results.get("USD")
+    gold_s = 0.0
+    if ry_df is not None and not ry_df.empty:
+        ry_vals = ry_df["value"].tail(36).tolist()
+        ry_mf   = calc_mtf(ry_vals, "rate")
+        gold_ry  = -ry_mf["score"] if ry_mf else 0.0
+        gold_usd = -(usd_r_for_gold["macro"]) if usd_r_for_gold else 0.0
+        all_news = fetch_all_instant_news(channel_name)
+        sentiment_res = analyze_news_rule_based(all_news)
+        gold_news_pts = sentiment_res["scores"].get("Gold", 0.0)
+        gold_s = (0.30 * gold_ry) + (0.20 * gold_usd) + (0.50 * (gold_news_pts / 0.50))
+        gold_lbl, _, _ = bias_from_score(gold_s)
+        ry_last = ry_vals[-1]
+        ry_mom  = ry_mf["mom"] if ry_mf else 0.0
+        gn_sign = "+" if gold_news_pts >= 0 else ""
+        lines.append(f"• Real Yield 10Y (DFII10): `{ry_last:.2f}%`  ({ry_mom:+.2f}% m/m)")
+        lines.append(f"• USD Composite Score: `{usd_r_for_gold['score']:+.3f}`" if usd_r_for_gold else "• USD Score: N/A")
+        lines.append(f"• Gold (XAUUSD) Direction: {gold_lbl}")
+        lines.append(f"• Score: `{gold_s:+.3f}` | Sentiment: `{gn_sign}{gold_news_pts:.2f} pts`")
+    else:
+        lines.append("• Real Yield data unavailable.")
+
+    # ── Crude Oil — same fetch as page_oil() ───────────────────────────────
+    lines.append("")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("🛢️ *CRUDE OIL DESK* (same as Oil page):")
+    wti_df   = fetch_fred(OIL_SERIES["wti"],   fred_key, limit=60)
+    brent_df = fetch_fred(OIL_SERIES["brent"], fred_key, limit=60)
+    if wti_df is not None and not wti_df.empty:
+        wti_vals = wti_df["value"].tolist()
+        wti_mf   = calc_mtf(wti_vals, "growth")
+        wti_mom  = wti_mf["mom"] if wti_mf else 0.0
+        wti_last = wti_vals[-1]
+        wti_date = wti_df["date"].iloc[-1]
+        lines.append(f"• WTI Crude: `${wti_last:.2f}/bbl`  [{wti_date}]  ({wti_mom:+.2f}% m/m)")
+    if brent_df is not None and not brent_df.empty:
+        brent_last = brent_df["value"].iloc[-1]
+        brent_date = brent_df["date"].iloc[-1]
+        lines.append(f"• Brent Crude: `${brent_last:.2f}/bbl`  [{brent_date}]")
+    if wti_df is not None and not wti_df.empty and brent_df is not None and not brent_df.empty:
+        spread = brent_df["value"].iloc[-1] - wti_df["value"].iloc[-1]
+        lines.append(f"• Brent–WTI Spread: `+${spread:.2f}`")
+
+    # ── Major Pair Outlooks (now including XAU/USD) ────────────────────────
+    lines.append("")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("🎯 *MAJOR PAIR DIRECTIONAL OUTLOOKS*:")
+    forex_pairs = [
+        ("EUR/USD", "EUR", "USD"),
+        ("GBP/USD", "GBP", "USD"),
+        ("USD/JPY", "USD", "JPY"),
+        ("USD/CAD", "USD", "CAD"),
+        ("USD/CHF", "USD", "CHF"),
+    ]
+    for pair, base, quote in forex_pairs:
+        if base in currency_results and quote in currency_results:
+            diff = currency_results[base]["score"] - currency_results[quote]["score"]
+            lbl_p, _, _ = bias_from_score(diff)
+            arrow = "🚀" if diff > 0.15 else ("🔻" if diff < -0.15 else "⚖️")
+            lines.append(f"• *{pair}*: {arrow} {lbl_p}  (Δ: `{diff:+.3f}`)")
+
+    # XAU/USD — inverse of USD strength + gold score
+    if "USD" in currency_results and ry_df is not None:
+        xau_arrow = "🚀" if gold_s > 0.15 else ("🔻" if gold_s < -0.15 else "⚖️")
+        xau_lbl, _, _ = bias_from_score(gold_s)
+        lines.append(f"• *XAU/USD*: {xau_arrow} {xau_lbl}  (Score: `{gold_s:+.3f}`)")
+
+    lines.append("")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append(f"🤖 _FX Macro Desk v11.8 — Auto Hourly Engine_")
+    lines.append(f"_⚡ Data: Identical to system dashboard display_")
+
+    return "\n".join(lines)
+
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_telegram_channel_news(channel_username: str = DEFAULT_TELEGRAM_CHANNEL) -> list:
     clean_username = channel_username.replace("@", "").replace("https://t.me/", "").strip()
@@ -810,7 +968,7 @@ def main() -> None:
         render_html("""
         <div style="padding:5px 7px 14px;border-bottom:1px solid rgba(255,255,255,0.06);margin-bottom:12px;">
           <div style="font-size:12px;font-weight:800;color:#e2b714;">FX MACRO &amp; GEO</div>
-          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v11.7 (Multi-Alert)</div>
+          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v11.8 (Auto-Report)</div>
         </div>
         """)
         page = st.radio("Navigation:", [
@@ -825,6 +983,37 @@ def main() -> None:
         st.markdown("<b style='color:#8a99ad;font-size:10.5px;'>📡 TELEGRAM CHANNEL</b>", unsafe_allow_html=True)
         channel_name = st.text_input("Channel Username:", value=DEFAULT_TELEGRAM_CHANNEL, key="tg_channel")
         fred_key = st.text_input("FRED API Key:", value=DEFAULT_FRED_KEY, type="password", key="fred_key")
+
+        # ── HOURLY AUTO-REPORT SECTION ──────────────────────────────────────
+        st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+        st.markdown("<b style='color:#8a99ad;font-size:10.5px;'>⏰ AUTO-REPORT ENGINE</b>", unsafe_allow_html=True)
+
+        auto_report_on = st.toggle("📤 Hourly Auto-Report to Telegram", value=True, key="auto_report_toggle")
+
+        if st.button("📤 Send Report Now (Live Data)", key="manual_report_btn", use_container_width=True):
+            with st.spinner("Building report from system data... ~20s"):
+                report_text = build_hourly_report(fred_key, channel_name)
+            results = send_telegram_alert(report_text)
+            all_ok = all(r.get("ok") for r in results)
+            if all_ok:
+                st.sidebar.success("✅ Live Report Sent to Telegram!")
+            else:
+                st.sidebar.error("⚠️ Some sends failed — check bot token/chat IDs.")
+
+        # ── HOURLY AUTO-SEND LOGIC ──────────────────────────────────────────
+        if auto_report_on and fred_key:
+            now = datetime.utcnow()
+            current_hour_key = now.strftime("%Y-%m-%d-%H")
+            if "last_hourly_report_key" not in st.session_state:
+                st.session_state.last_hourly_report_key = ""
+
+            if st.session_state.last_hourly_report_key != current_hour_key:
+                # New hour detected — send report using same data as dashboard
+                report_text = build_hourly_report(fred_key, channel_name)
+                send_telegram_alert(report_text)
+                st.session_state.last_hourly_report_key = current_hour_key
+                st.sidebar.info(f"✅ Auto-Report sent at {now.strftime('%H:%M')} UTC")
+
 
     if page == "🏠 Executive Dashboard":
         page_dashboard(fred_key, channel_name)
