@@ -1,7 +1,7 @@
 """
-FX Macro & Geopolitical Intelligence Desk — v11.1 Telegram Direct Alert Engine
+FX Macro & Geopolitical Intelligence Desk — v11.2 Smart Auto-Alert Engine
 Institutional-Grade Multi-Timeframe Macro Analysis & Predictive Calendar
-Live Integration: Telegram Bot + RSS + FRED (DFII10) [Personal Alert Active]
+Live Integration: Telegram Bot Direct + Auto-Alert Thresholds [Personal]
 """
 from __future__ import annotations
 import streamlit as st
@@ -30,7 +30,6 @@ DEFAULT_FRED_KEY = "8e153c7f6941848ffe00388ae93c1d73"
 DEFAULT_TELEGRAM_CHANNEL = "Forex_LiveStream"
 REQUEST_TIMEOUT = 12
 
-# Telegram Personal Direct Settings
 TELEGRAM_BOT_TOKEN = "8855100063:AAHB2uECj28u0wie96vkvKLzSKfCKjjb-3w"
 TELEGRAM_CHAT_ID = "7153364048"
 
@@ -64,16 +63,6 @@ CURRENCY_SERIES = {
             "Interest Rate": {"series": "FEDFUNDS",  "cat": "rate",       "w": 2.0, "impact": "high"},
         },
         "key_indicators": ["Core CPI", "Core PCE", "NFP", "Interest Rate"],
-        "calendar": [
-            {"name": "NFP",          "day": 4,  "impact": "high",   "cat": "labor_pos",  "quarterly": False, "hint": "Non-Farm Payrolls — First Friday"},
-            {"name": "Unemployment", "day": 4,  "impact": "high",   "cat": "labor_neg",  "quarterly": False, "hint": "Unemployment Rate (BLS)"},
-            {"name": "Core CPI",     "day": 11, "impact": "high",   "cat": "inflation",  "quarterly": False, "hint": "Core CPI ex-Food & Energy"},
-            {"name": "CPI",          "day": 11, "impact": "high",   "cat": "inflation",  "quarterly": False, "hint": "Consumer Price Index"},
-            {"name": "Core PPI",     "day": 13, "impact": "high",   "cat": "inflation",  "quarterly": False, "hint": "Producer Prices Final Demand"},
-            {"name": "Retail Sales", "day": 15, "impact": "high",   "cat": "growth",     "quarterly": False, "hint": "Retail Spending"},
-            {"name": "Core PCE",     "day": 25, "impact": "high",   "cat": "inflation",  "quarterly": False, "hint": "Fed Preferred Inflation Metric"},
-            {"name": "Interest Rate","day": 18, "impact": "high",   "cat": "rate",       "quarterly": False, "hint": "FOMC Rate Decision"},
-        ],
     },
     "EUR": {
         "flag": "🇪🇺", "name": "Euro Area",
@@ -86,11 +75,6 @@ CURRENCY_SERIES = {
             "GDP":           {"series": "CLVMNACSCAB1GQEA19",   "cat": "growth",     "w": 1.5, "impact": "high"},
         },
         "key_indicators": ["CPI", "Core CPI", "Unemployment", "Interest Rate"],
-        "calendar": [
-            {"name": "CPI",          "day": 1,  "impact": "high",   "cat": "inflation",  "quarterly": False, "hint": "Flash HICP Eurozone"},
-            {"name": "Unemployment", "day": 1,  "impact": "high",   "cat": "labor_neg",  "quarterly": False, "hint": "Eurozone Unemployment Rate"},
-            {"name": "Interest Rate","day": 12, "impact": "high",   "cat": "rate",       "quarterly": False, "hint": "ECB Policy Rate Decision"},
-        ],
     },
     "GBP": {
         "flag": "🇬🇧", "name": "British Pound",
@@ -102,10 +86,6 @@ CURRENCY_SERIES = {
             "Interest Rate": {"series": "BOERUKM",          "cat": "rate",       "w": 1.8, "impact": "high"},
         },
         "key_indicators": ["CPI", "Core CPI", "Unemployment", "Interest Rate"],
-        "calendar": [
-            {"name": "CPI",          "day": 17, "impact": "high",   "cat": "inflation",  "quarterly": False, "hint": "UK CPI (ONS)"},
-            {"name": "Interest Rate","day": 19, "impact": "high",   "cat": "rate",       "quarterly": False, "hint": "Bank of England Rate Decision"},
-        ],
     },
     "CAD": {
         "flag": "🇨🇦", "name": "Canadian Dollar",
@@ -117,10 +97,6 @@ CURRENCY_SERIES = {
             "Interest Rate": {"series": "IRSTCB01CAM156N",  "cat": "rate",       "w": 1.8, "impact": "high"},
         },
         "key_indicators": ["CPI", "Employment", "Unemployment", "Interest Rate"],
-        "calendar": [
-            {"name": "CPI",          "day": 17, "impact": "high",   "cat": "inflation",  "quarterly": False, "hint": "Canada CPI"},
-            {"name": "Interest Rate","day": 14, "impact": "high",   "cat": "rate",       "quarterly": False, "hint": "Bank of Canada Rate Decision"},
-        ],
     },
     "JPY": {
         "flag": "🇯🇵", "name": "Japanese Yen",
@@ -132,10 +108,6 @@ CURRENCY_SERIES = {
             "Interest Rate": {"series": "IRSTCB01JPM156N",  "cat": "rate",       "w": 2.0, "impact": "high"},
         },
         "key_indicators": ["CPI", "Core CPI", "Production", "Interest Rate"],
-        "calendar": [
-            {"name": "CPI",          "day": 19, "impact": "high",   "cat": "inflation",  "quarterly": False, "hint": "Japan National CPI"},
-            {"name": "Interest Rate","day": 18, "impact": "high",   "cat": "rate",       "quarterly": False, "hint": "Bank of Japan Policy Rate"},
-        ],
     },
     "CHF": {
         "flag": "🇨🇭", "name": "Swiss Franc",
@@ -145,9 +117,6 @@ CURRENCY_SERIES = {
             "Interest Rate": {"series": "IRLTLT01CHM156N", "cat": "rate",       "w": 2.0, "impact": "high"},
         },
         "key_indicators": ["CPI", "Unemployment", "Interest Rate"],
-        "calendar": [
-            {"name": "Interest Rate","day": 20, "impact": "high",   "cat": "rate",       "quarterly": True, "hint": "SNB Rate Decision"},
-        ],
     },
 }
 
@@ -237,9 +206,6 @@ div[data-testid="stMetric"] label{color:#8a99ad!important;font-size:12px!importa
 </style>
 """)
 
-# ============================================================
-# DATA FETCHING ENGINE (FRED + TELEGRAM + RSS)
-# ============================================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_fred(series_id: str, key: str, limit: int = 48) -> pd.DataFrame | None:
     if not key:
@@ -260,7 +226,6 @@ def fetch_fred(series_id: str, key: str, limit: int = 48) -> pd.DataFrame | None
         return df[["date", "value"]].tail(limit).reset_index(drop=True)
     except Exception:
         return None
-
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_telegram_channel_news(channel_username: str = DEFAULT_TELEGRAM_CHANNEL) -> list:
@@ -288,7 +253,6 @@ def fetch_telegram_channel_news(channel_username: str = DEFAULT_TELEGRAM_CHANNEL
         pass
     return list(reversed(articles))
 
-
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_all_instant_news(channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> list:
     tg_news = fetch_telegram_channel_news(channel_name)
@@ -314,10 +278,6 @@ def fetch_all_instant_news(channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> list
             continue
     return tg_news + rss_news
 
-
-# ============================================================
-# RULE-BASED INTELLIGENCE & MULTI-ASSET SENTIMENT ENGINE
-# ============================================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def analyze_news_rule_based(articles: list) -> dict:
     scores = {
@@ -329,7 +289,7 @@ def analyze_news_rule_based(articles: list) -> dict:
         {"name": "Macro Data Momentum", "icon": "📊", "expected_duration": "Active Session", "reason": "Evaluated via multi-timeframe FRED indicators."},
         {"name": "Geopolitical & Feed Flow", "icon": "📡", "expected_duration": "1-2 Days", "reason": "Real-time Telegram & RSS news stream monitored."}
     ]
-    ai_summary = "System operating in Rule-Based High-Performance mode. Live news keywords are dynamically parsed across all asset classes."
+    ai_summary = "System operating in Rule-Based Smart Auto-Alert mode."
 
     if not articles:
         return {"scores": scores, "drivers": drivers, "ai_summary": ai_summary, "ai_active": True}
@@ -355,10 +315,6 @@ def analyze_news_rule_based(articles: list) -> dict:
 
     return {"scores": scores, "drivers": drivers, "ai_summary": ai_summary, "ai_active": True}
 
-
-# ============================================================
-# MULTI-TIMEFRAME ENGINE
-# ============================================================
 def calc_mtf(vals: list, cat: str) -> dict | None:
     if not vals or len(vals) < 2:
         return None
@@ -393,7 +349,6 @@ def calc_mtf(vals: list, cat: str) -> dict | None:
         "z": round(z, 2), "score": float(score), "reverse": reverse,
     }
 
-
 def compute_composite(currency: str, fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> dict | None:
     cfg = CURRENCY_SERIES[currency]
     rows, weighted = [], []
@@ -421,6 +376,18 @@ def compute_composite(currency: str, fred_key: str, channel_name: str = DEFAULT_
 
     final_score = (0.50 * macro_score) + (0.50 * (news_points / 0.50))
 
+    # --- SMART TELEGRAM AUTO-ALERT TRIGGER ---
+    if "alert_history" not in st.session_state:
+        st.session_state.alert_history = {}
+    
+    last_score = st.session_state.alert_history.get(currency, 0.0)
+    if abs(final_score - last_score) >= 0.15:
+        flag = cfg["flag"]
+        bias_lbl, _, _ = bias_from_score(final_score)
+        alert_msg = f"🚨 *FX Macro Alert*\n{flag} *{currency}* Bias Shifted!\n• New Composite: `{final_score:+.3f}`\n• Macro: `{macro_score:+.3f}` | Sentiment: `{news_points:+.2f}pts`\n• Status: {bias_lbl}"
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": alert_msg, "parse_mode": "Markdown"})
+        st.session_state.alert_history[currency] = final_score
+
     return {
         "score": final_score,
         "macro_score": macro_score,
@@ -431,10 +398,6 @@ def compute_composite(currency: str, fred_key: str, channel_name: str = DEFAULT_
         "rows": rows
     }
 
-
-# ============================================================
-# HELPERS & CHARTS
-# ============================================================
 def bias_from_score(s: float) -> tuple[str, str, str]:
     if s > 0.15: return "📈 Bullish", "b-bull", "#10b981"
     if s < -0.15: return "📉 Bearish", "b-bear", "#ef4444"
@@ -504,7 +467,7 @@ def render_top_header() -> None:
 <div class="top-tickers">
 <div class="t-pill"><span>🇺🇸 USD</span><span class="t-up">Live Macro</span></div>
 <div class="t-pill"><span>🥇 Gold</span><span class="t-up">XAU/USD Active</span></div>
-<div class="t-pill"><span>⚡ Engine</span><span class="t-up">Rule-Based Active</span></div>
+<div class="t-pill"><span>⚡ Engine</span><span class="t-up">Smart Auto-Alert Active</span></div>
 <div class="t-pill"><span>📡 Channel</span><span class="t-up">Telegram Direct Alerts</span></div>
 </div>
 </div>
@@ -547,17 +510,13 @@ def render_data_table(rows: list) -> None:
 </div>
 """)
 
-
-# ============================================================
-# PAGE 1 — EXECUTIVE DASHBOARD
-# ============================================================
 def page_dashboard(fred_key: str, channel_name: str) -> None:
     render_top_header()
     render_html("""
 <div class="pg-title">
 <div class="pg-sub">FX MACRO &amp; GEOPOLITICAL DESK</div>
 <h1 class="pg-h1">Executive Intelligence Dashboard</h1>
-<div class="pg-bread">Real-time Multi-Timeframe Macro Analysis &amp; Robust Rule-Based Engine</div>
+<div class="pg-bread">Real-time Multi-Timeframe Macro Analysis &amp; Smart Telegram Alerts</div>
 </div>
 """)
     a_col, b_col = st.columns([3, 2])
@@ -639,7 +598,7 @@ def page_dashboard(fred_key: str, channel_name: str) -> None:
             """)
 
     with d_col:
-        ai_badge = '<span style="color:#10b981;font-size:10px;font-weight:800;">⚡ Engine Active</span>'
+        ai_badge = '<span style="color:#10b981;font-size:10px;font-weight:800;">⚡ Auto-Alert Active</span>'
         render_html(f'<div class="sec-title">Macro + Sentiment Composite &nbsp; {ai_badge}</div>')
         s = result["score"]
         m_s = result["macro_score"]
@@ -665,10 +624,6 @@ def page_dashboard(fred_key: str, channel_name: str) -> None:
         </div>
         """)
 
-
-# ============================================================
-# PAGE 2 — GOLD INTELLIGENCE
-# ============================================================
 def page_gold(fred_key: str, channel_name: str) -> None:
     render_top_header()
     render_html("""
@@ -734,10 +689,6 @@ def page_gold(fred_key: str, channel_name: str) -> None:
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
         render_html('</div>')
 
-
-# ============================================================
-# PAGE 3 — CRUDE OIL
-# ============================================================
 def page_oil(fred_key: str, channel_name: str) -> None:
     render_top_header()
     render_html("""
@@ -775,10 +726,6 @@ def page_oil(fred_key: str, channel_name: str) -> None:
     if fig:
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-
-# ============================================================
-# PAGE 4 — REAL-TIME TELEGRAM FEED SCANNER
-# ============================================================
 def page_telegram_feed(channel_name: str) -> None:
     render_top_header()
     render_html(f"""
@@ -823,10 +770,6 @@ def page_telegram_feed(channel_name: str) -> None:
         </div>
         """)
 
-
-# ============================================================
-# MAIN APPLICATION CONTROLLER
-# ============================================================
 def main() -> None:
     st_autorefresh(interval=60 * 1000, key="auto_refresh_counter")
     inject_css()
@@ -835,7 +778,7 @@ def main() -> None:
         render_html("""
         <div style="padding:5px 7px 14px;border-bottom:1px solid rgba(255,255,255,0.06);margin-bottom:12px;">
           <div style="font-size:12px;font-weight:800;color:#e2b714;">FX MACRO &amp; GEO</div>
-          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v11.1 (Direct Alert)</div>
+          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v11.2 (Auto-Alert)</div>
         </div>
         """)
         page = st.radio("Navigation:", [
@@ -866,11 +809,10 @@ def main() -> None:
 
     render_html(f"""
     <div class="app-foot">
-      <div>© 2026 FX Macro Desk | Direct Telegram Alert Engine</div>
+      <div>© 2026 FX Macro Desk | Smart Auto-Alert Engine</div>
       <div><span class="live-dot"></span><span style="color:#10b981;font-weight:600;">Live Feed Active &nbsp; {datetime.now().strftime('%H:%M:%S')}</span></div>
     </div>
     """)
-
 
 if __name__ == "__main__":
     main()
