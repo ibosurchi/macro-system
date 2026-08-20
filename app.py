@@ -1,7 +1,7 @@
 """
-FX Macro & Geopolitical Intelligence Desk — v11.3 Universal Shift Alert Engine
+FX Macro & Geopolitical Intelligence Desk — v11.4 Multi-Recipient Alert Engine
 Institutional-Grade Multi-Timeframe Macro Analysis & Predictive Calendar
-Live Integration: Telegram Bot Direct + Universal Bias-Shift Alerts [Personal]
+Live Integration: Telegram Bot Direct + Multi-Chat Shift Alerts
 """
 from __future__ import annotations
 import streamlit as st
@@ -24,27 +24,30 @@ st.set_page_config(
 )
 
 # ============================================================
-# CONFIGURATIONS & TELEGRAM SETTINGS
+# CONFIGURATIONS & TELEGRAM SETTINGS (MULTI-RECIPIENT)
 # ============================================================
 DEFAULT_FRED_KEY = "8e153c7f6941848ffe00388ae93c1d73"
 DEFAULT_TELEGRAM_CHANNEL = "Forex_LiveStream"
 REQUEST_TIMEOUT = 12
 
 TELEGRAM_BOT_TOKEN = "8855100063:AAHB2uECj28u0wie96vkvKLzSKfCKjjb-3w"
-TELEGRAM_CHAT_ID = "7153364048"
+TELEGRAM_CHAT_IDS = ["7153364048", "643290893"]
 
 def send_telegram_alert(message: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "Markdown"
-    }
-    try:
-        response = requests.post(url, json=payload, timeout=10)
-        return response.json()
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+    results = []
+    for chat_id in TELEGRAM_CHAT_IDS:
+        payload = {
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "Markdown"
+        }
+        try:
+            response = requests.post(url, json=payload, timeout=10)
+            results.append(response.json())
+        except Exception as e:
+            results.append({"ok": False, "error": str(e)})
+    return results
 
 CURRENCY_SERIES = {
     "USD": {
@@ -289,7 +292,7 @@ def analyze_news_rule_based(articles: list) -> dict:
         {"name": "Macro Data Momentum", "icon": "📊", "expected_duration": "Active Session", "reason": "Evaluated via multi-timeframe FRED indicators."},
         {"name": "Geopolitical & Feed Flow", "icon": "📡", "expected_duration": "1-2 Days", "reason": "Real-time Telegram & RSS news stream monitored."}
     ]
-    ai_summary = "System operating in Rule-Based Universal Shift Alert mode."
+    ai_summary = "System operating in Rule-Based Multi-Recipient Alert mode."
 
     if not articles:
         return {"scores": scores, "drivers": drivers, "ai_summary": ai_summary, "ai_active": True}
@@ -376,7 +379,7 @@ def compute_composite(currency: str, fred_key: str, channel_name: str = DEFAULT_
 
     final_score = (0.50 * macro_score) + (0.50 * (news_points / 0.50))
 
-    # --- UNIVERSAL BIAS SHIFT ALERT TRIGGER ---
+    # --- MULTI-RECIPIENT SHIFT ALERT TRIGGER ---
     if "alert_history" not in st.session_state:
         st.session_state.alert_history = {}
     
@@ -386,7 +389,7 @@ def compute_composite(currency: str, fred_key: str, channel_name: str = DEFAULT_
     if current_bias != last_bias:
         flag = cfg["flag"]
         alert_msg = f"🚨 *FX Bias Shift Alert*\n{flag} *{currency}* Direction Changed!\n• New Bias: {current_bias}\n• Composite Score: `{final_score:+.3f}`\n• Sentiment: `{news_points:+.2f}pts`"
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": alert_msg, "parse_mode": "Markdown"})
+        send_telegram_alert(alert_msg)
         st.session_state.alert_history[currency] = current_bias
 
     return {
@@ -468,7 +471,7 @@ def render_top_header() -> None:
 <div class="top-tickers">
 <div class="t-pill"><span>🇺🇸 USD</span><span class="t-up">Live Macro</span></div>
 <div class="t-pill"><span>🥇 Gold</span><span class="t-up">XAU/USD Active</span></div>
-<div class="t-pill"><span>⚡ Engine</span><span class="t-up">Universal Shift Alert Active</span></div>
+<div class="t-pill"><span>⚡ Engine</span><span class="t-up">Multi-Recipient Alerts Active</span></div>
 <div class="t-pill"><span>📡 Channel</span><span class="t-up">Telegram Direct Alerts</span></div>
 </div>
 </div>
@@ -517,7 +520,7 @@ def page_dashboard(fred_key: str, channel_name: str) -> None:
 <div class="pg-title">
 <div class="pg-sub">FX MACRO &amp; GEOPOLITICAL DESK</div>
 <h1 class="pg-h1">Executive Intelligence Dashboard</h1>
-<div class="pg-bread">Real-time Multi-Timeframe Macro Analysis &amp; Universal Shift Alerts</div>
+<div class="pg-bread">Real-time Multi-Timeframe Macro Analysis &amp; Multi-Recipient Alerts</div>
 </div>
 """)
     a_col, b_col = st.columns([3, 2])
@@ -599,7 +602,7 @@ def page_dashboard(fred_key: str, channel_name: str) -> None:
             """)
 
     with d_col:
-        ai_badge = '<span style="color:#10b981;font-size:10px;font-weight:800;">⚡ Shift Alert Active</span>'
+        ai_badge = '<span style="color:#10b981;font-size:10px;font-weight:800;">⚡ Multi-Alert Active</span>'
         render_html(f'<div class="sec-title">Macro + Sentiment Composite &nbsp; {ai_badge}</div>')
         s = result["score"]
         m_s = result["macro_score"]
@@ -676,7 +679,7 @@ def page_gold(fred_key: str, channel_name: str) -> None:
     
     if current_gold_bias != last_gold_bias:
         alert_msg = f"🚨 *Gold Shift Alert*\n🥇 *Gold (XAUUSD)* Direction Changed!\n• New Bias: {current_gold_bias}\n• Composite Score: `{gold_s:+.3f}`\n• Sentiment: `{gold_news_pts:+.2f}pts`"
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": alert_msg, "parse_mode": "Markdown"})
+        send_telegram_alert(alert_msg)
         st.session_state.alert_history["Gold"] = current_gold_bias
 
     c1, c2, c3 = st.columns(3)
@@ -736,7 +739,7 @@ def page_oil(fred_key: str, channel_name: str) -> None:
     
     if current_oil_bias != last_oil_bias:
         alert_msg = f"🚨 *Oil Shift Alert*\n🛢️ *Crude Oil* Direction Changed!\n• New Bias: {current_oil_bias}\n• Composite Score: `{final_oil_score:+.3f}`"
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": alert_msg, "parse_mode": "Markdown"})
+        send_telegram_alert(alert_msg)
         st.session_state.alert_history["Oil"] = current_oil_bias
 
     c1, c2, c3 = st.columns(3)
@@ -803,7 +806,7 @@ def main() -> None:
         render_html("""
         <div style="padding:5px 7px 14px;border-bottom:1px solid rgba(255,255,255,0.06);margin-bottom:12px;">
           <div style="font-size:12px;font-weight:800;color:#e2b714;">FX MACRO &amp; GEO</div>
-          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v11.3 (Universal Alerts)</div>
+          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v11.4 (Multi-Alert)</div>
         </div>
         """)
         page = st.radio("Navigation:", [
@@ -834,7 +837,7 @@ def main() -> None:
 
     render_html(f"""
     <div class="app-foot">
-      <div>© 2026 FX Macro Desk | Universal Shift Alert Engine</div>
+      <div>© 2026 FX Macro Desk | Multi-Recipient Alert Engine</div>
       <div><span class="live-dot"></span><span style="color:#10b981;font-weight:600;">Live Feed Active &nbsp; {datetime.now().strftime('%H:%M:%S')}</span></div>
     </div>
     """)
