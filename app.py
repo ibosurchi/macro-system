@@ -1,7 +1,7 @@
 """
-FX Macro & Geopolitical Intelligence Desk — v10.9 Rule-Based Clean Engine
+FX Macro & Geopolitical Intelligence Desk — v11.0 Rule-Based Multi-Asset Engine
 Institutional-Grade Multi-Timeframe Macro Analysis & Predictive Calendar
-Live Integration: Telegram + RSS + FRED (DFII10) [No AI Key Required]
+Live Integration: Telegram + RSS + FRED (DFII10) [Fully Patched Sentiment Matrix]
 """
 from __future__ import annotations
 import streamlit as st
@@ -299,7 +299,7 @@ def fetch_all_instant_news(channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> list
 
 
 # ============================================================
-# RULE-BASED INTELLIGENCE & SENTIMENT ENGINE (No AI Key Needed)
+# RULE-BASED INTELLIGENCE & MULTI-ASSET SENTIMENT ENGINE
 # ============================================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def analyze_news_rule_based(articles: list) -> dict:
@@ -312,27 +312,32 @@ def analyze_news_rule_based(articles: list) -> dict:
         {"name": "Macro Data Momentum", "icon": "📊", "expected_duration": "Active Session", "reason": "Evaluated via multi-timeframe FRED indicators."},
         {"name": "Geopolitical & Feed Flow", "icon": "📡", "expected_duration": "1-2 Days", "reason": "Real-time Telegram & RSS news stream monitored."}
     ]
-    ai_summary = "System operating in Rule-Based High-Performance mode. Macro indicators and live news feeds are synchronized."
+    ai_summary = "System operating in Rule-Based High-Performance mode. Live news keywords are dynamically parsed across all asset classes."
 
     if not articles:
         return {"scores": scores, "drivers": drivers, "ai_summary": ai_summary, "ai_active": True}
 
-    # Smart Keyword Analysis
-    bullish_keywords = ["surge", "jump", "higher", "beat", "strong", "rally", "growth", "bull", "cut inflation"]
-    bearish_keywords = ["drop", "fall", "lower", "miss", "weak", "slump", "bear", "inflation rise", "tension"]
+    bullish_keywords = ["surge", "jump", "higher", "beat", "strong", "rally", "growth", "bull", "cut inflation", "options", "profit"]
+    bearish_keywords = ["drop", "fall", "lower", "miss", "weak", "slump", "bear", "inflation rise", "tension", "attacking", "military", "war"]
 
+    sentiment_delta = 0.0
     for art in articles:
         text = (art.get("title", "") + " " + art.get("description", "")).lower()
         if any(k in text for k in bullish_keywords):
-            scores["USD"] += 0.05
-            scores["Gold"] += 0.04
+            sentiment_delta += 0.04
         if any(k in text for k in bearish_keywords):
-            scores["USD"] -= 0.05
-            scores["Gold"] += 0.06
+            sentiment_delta -= 0.04
 
-    # Cap scores between -0.5 and +0.5
+    # Apply sentiment across all assets with appropriate safe-haven logic
     for k in scores:
-        scores[k] = max(min(scores[k], 0.5), -0.5)
+        if k in ["Gold", "CHF"]:
+            # Safe havens benefit from tension/bearish news
+            scores[k] = max(min(-sentiment_delta + 0.05, 0.5), -0.5)
+        elif k in ["Oil"]:
+            # Oil benefits from geopolitical tension
+            scores[k] = max(min(sentiment_delta + 0.08, 0.5), -0.5)
+        else:
+            scores[k] = max(min(sentiment_delta, 0.5), -0.5)
 
     return {"scores": scores, "drivers": drivers, "ai_summary": ai_summary, "ai_active": True}
 
@@ -816,7 +821,7 @@ def main() -> None:
         render_html("""
         <div style="padding:5px 7px 14px;border-bottom:1px solid rgba(255,255,255,0.06);margin-bottom:12px;">
           <div style="font-size:12px;font-weight:800;color:#e2b714;">FX MACRO &amp; GEO</div>
-          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v10.9 (Clean)</div>
+          <div style="font-size:9.5px;color:#6b7280;">INTELLIGENCE DESK v11.0 (Clean)</div>
         </div>
         """)
         page = st.radio("Navigation:", [
@@ -847,7 +852,7 @@ def main() -> None:
 
     render_html(f"""
     <div class="app-foot">
-      <div>© 2026 FX Macro Desk | Rule-Based Clean Engine</div>
+      <div>© 2026 FX Macro Desk | Rule-Based Multi-Asset Engine</div>
       <div><span class="live-dot"></span><span style="color:#10b981;font-weight:600;">Live Feed Active &nbsp; {datetime.now().strftime('%H:%M:%S')}</span></div>
     </div>
     """)
