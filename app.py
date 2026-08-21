@@ -996,45 +996,59 @@ def render_data_table(rows: list) -> None:
 def page_dashboard(fred_key: str, channel_name: str, auth_user: dict | None = None) -> None:
     is_admin_user = auth_user and auth_user.get("is_admin", False)
     
-    if is_admin_user:
-        market_cols = st.columns([2.5, 2.5, 2.5, 2.5])
-    else:
-        market_cols = st.columns([3.5, 3.5, 3.0])
+    # ── CLEAN PILL NAVIGATION BUTTONS FOR ASSETS (FOREX, GOLD, OIL) ──
+    st.markdown("""
+    <style>
+    div[data-testid="stHorizontalBlock"] > div {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
-    with market_cols[0]:
-        sel_market = st.radio("Market:", ["💱 Forex", "🥇 Gold", "🛢️ Oil"], horizontal=True, label_visibility="collapsed", key="main_market_radio")
+    if "active_tab" not in st.session_state:
+        st.session_state["active_tab"] = "💱 Forex"
+
+    col_nav1, col_nav2, col_nav3, col_nav4 = st.columns([1.2, 1.2, 1.2, 1.5 if is_admin_user else 0.1])
     
-    if "Forex" in sel_market:
-        asset = "💱 Forex"
-    elif "Gold" in sel_market:
-        asset = "🥇 Gold & Real Yield"
-    else:
-        asset = "🛢️ Crude Oil (WTI/Brent)"
-
+    with col_nav1:
+        if st.button("💱 Forex", use_container_width=True, type="primary" if st.session_state["active_tab"] == "💱 Forex" else "secondary"):
+            st.session_state["active_tab"] = "💱 Forex"
+            st.rerun()
+    with col_nav2:
+        if st.button("🥇 Gold", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🥇 Gold" else "secondary"):
+            st.session_state["active_tab"] = "🥇 Gold"
+            st.rerun()
+    with col_nav3:
+        if st.button("🛢️ Oil", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🛢️ Oil" else "secondary"):
+            st.session_state["active_tab"] = "🛢️ Oil"
+            st.rerun()
+            
     if is_admin_user:
-        with market_cols[1]:
-            currency = st.selectbox("Currency:", list(CURRENCY_SERIES.keys()), format_func=lambda k: f"{CURRENCY_SERIES[k]['flag']} {k}", label_visibility="collapsed", key="main_curr_sel")
-        with market_cols[2]:
-            admin_toggle = st.selectbox("⚙️ Panel:", ["📊 Dashboard", "👑 MASTER ADMIN"], label_visibility="collapsed", key="admin_panel_toggle")
-        with market_cols[3]:
-            st.markdown("<div style='height:2px;'></div>", unsafe_allow_html=True)
-    else:
-        with market_cols[1]:
-            currency = st.selectbox("Currency:", list(CURRENCY_SERIES.keys()), format_func=lambda k: f"{CURRENCY_SERIES[k]['flag']} {k} • {CURRENCY_SERIES[k]['name']}", label_visibility="collapsed", key="main_curr_sel")
-        admin_toggle = "📊 Dashboard"
-        with market_cols[2]:
-            st.markdown("<div style='height:2px;'></div>", unsafe_allow_html=True)
+        with col_nav4:
+            if st.button("👑 MASTER ADMIN", use_container_width=True, type="primary" if st.session_state["active_tab"] == "👑 MASTER ADMIN" else "secondary"):
+                st.session_state["active_tab"] = "👑 MASTER ADMIN"
+                st.rerun()
 
-    if admin_toggle == "👑 MASTER ADMIN" and is_admin_user:
+    st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+
+    # ── ROUTING BASED ON ACTIVE TAB ──
+    current_tab = st.session_state["active_tab"]
+
+    if current_tab == "👑 MASTER ADMIN" and is_admin_user:
         render_admin_key_generator()
         return
 
-    if "Gold" in asset:
+    if current_tab == "🥇 Gold":
         page_gold(fred_key, channel_name)
         return
-    if "Oil" in asset:
+    if current_tab == "🛢️ Oil":
         page_oil(fred_key, channel_name)
         return
+
+    # ── FOREX VIEW WITH CURRENCY SELECTOR ──
+    currency = st.selectbox("Currency:", list(CURRENCY_SERIES.keys()), format_func=lambda k: f"{CURRENCY_SERIES[k]['flag']} {k} • {CURRENCY_SERIES[k]['name']}", label_visibility="collapsed")
 
     with st.spinner(f"Reading {currency} macro data & processing live feeds..."):
         result = compute_composite(currency, fred_key, channel_name)
@@ -1553,6 +1567,7 @@ def render_admin_key_generator() -> None:
             })
         st.dataframe(pd.DataFrame(tbl_data), use_container_width=True, hide_index=True)
         
+        # ── EDIT TELEGRAM ID SECTION ──
         st.markdown("---")
         render_html('<div style="font-size:11px;font-weight:800;color:#79dff0;margin-bottom:6px;">⚙️ EDIT CLIENT TELEGRAM ID</div>')
         edit_col1, edit_col2, edit_col3 = st.columns([2, 2, 1.5])
