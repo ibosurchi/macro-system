@@ -590,14 +590,45 @@ def start_background_alert_daemon(fred_key: str, channel_name: str) -> None:
     t.start()
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_telegram_channel_news(channel_username: str = DEFAULT_TELEGRAM_CHANNEL) -> list:
+def is_duplicate_news(title1: str, title2: str, threshold: float = 0.55) -> bool:
+    """Computes keyword Jaccard similarity to detect duplicate headlines across different news sources."""
+    stop_words = {"the", "a", "an", "in", "on", "of", "to", "for", "and", "is", "at", "by", "from", "as", "with", "news", "breaking", "update", "alert", "says", "report", "live"}
+    def get_keywords(t: str) -> set:
+        words = re.findall(r'\b[a-zA-Z]{3,}\b', t.lower())
+        return set(w for w in words if w not in stop_words)
+
+    kw1 = get_keywords(title1)
+    kw2 = get_keywords(title2)
+    if not kw1 or not kw2:
+        return False
+    inter = kw1.intersection(kw2)
+    union = kw1.union(kw2)
+    return (len(inter) / len(union)) >= threshold if union else False
+
+def deduplicate_news_articles(articles: list) -> list:
+    """Filters out duplicate or rephrased news so AI/sentiment never double-counts the same event."""
+    unique_articles = []
+    for art in articles:
+        title = art.get("title", "").strip()
+        if not title or len(title) < 14:
+            continue
+        is_dup = False
+        for u_art in unique_articles:
+            if is_duplicate_news(title, u_art.get("title", "")):
+                is_dup = True
+                break
+        if not is_dup:
+            unique_articles.append(art)
+    return unique_articles
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_telegram_channel_news(channel_username: str) -> list:
     clean_username = channel_username.replace("@", "").replace("https://t.me/", "").strip()
     url = f"https://t.me/s/{clean_username}"
     headers = {"User-Agent": "Mozilla/5.0"}
     articles = []
     try:
-        r = requests.get(url, headers=headers, timeout=10)
+        r = requests.get(url, headers=headers, timeout=8)
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, "html.parser")
             messages = soup.find_all("div", class_="tgme_widget_message_text")
@@ -608,28 +639,38 @@ def fetch_telegram_channel_news(channel_username: str = DEFAULT_TELEGRAM_CHANNEL
                     articles.append({
                         "title": txt[:110] + "..." if len(txt) > 110 else txt,
                         "description": txt,
-                        "publishedAt": tm.get("datetime", "")[:16].replace("T", " "),
+                        "publishedAt": tm.get("datetime", "")[:16].replace("T", " ") if tm else datetime.now().strftime("%Y-%m-%d %H:%M"),
                         "source": {"name": "Institutional Wire"},
                     })
     except Exception:
         pass
     return list(reversed(articles))
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def fetch_all_instant_news(channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> list:
-    tg_news = fetch_telegram_channel_news(channel_name)
+    """Aggregates high-speed breaking wires (Telegram + RSS) and strictly deduplicates them."""
+    all_raw = []
+    
+    # 1. High-speed Telegram Wires (FinancialJuice, ForexLive, FirstSquawk, etc.)
+    tg_channels = [channel_name, "financialjuice", "forexlive", "firstsquawk"]
+    for ch in tg_channels:
+        if ch:
+            all_raw.extend(fetch_telegram_channel_news(ch))
+
+    # 2. Major Financial RSS Feeds
     rss_urls = [
-        ("Macro Terminal", "https://www.forexlive.com/feed/news"),
-        ("Financial Wire", "https://www.fxstreet.com/rss/news"),
-        ("Global Desk", "https://www.investing.com/rss/news_25.rss")
+        ("ForexLive", "https://www.forexlive.com/feed/news"),
+        ("FXStreet", "https://www.fxstreet.com/rss/news"),
+        ("Investing Macro", "https://www.investing.com/rss/news_25.rss"),
+        ("DailyFX", "https://www.dailyfx.com/feeds/market-news"),
+        ("MarketWatch", "http://feeds.marketwatch.com/marketwatch/topstories/"),
     ]
-    rss_news = []
     for src_name, url in rss_urls:
         try:
             feed = feedparser.parse(url)
-            for entry in feed.entries[:3]:
-                desc = re.sub(r'<[^>]+>', '', entry.get("summary", ""))[:130]
-                rss_news.append({
+            for entry in feed.entries[:4]:
+                desc = re.sub(r'<[^>]+>', '', entry.get("summary", ""))[:140]
+                all_raw.append({
                     "title": entry.get("title", ""),
                     "description": desc,
                     "publishedAt": entry.get("published", "")[:16] or datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -637,7 +678,9 @@ def fetch_all_instant_news(channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> list
                 })
         except Exception:
             continue
-    return tg_news + rss_news
+
+    # 3. Apply Intelligent Deduplication
+    return deduplicate_news_articles(all_raw)
 
 @st.cache_data(ttl=900, show_spinner=False)
 def get_openrouter_analysis(news_text: str, api_key: str = DEFAULT_OPENROUTER_KEY) -> str:
