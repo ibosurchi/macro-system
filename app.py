@@ -331,83 +331,11 @@ html,body,[data-testid='stAppViewContainer'],.stApp{background:
 #MainMenu,footer,.stDeployButton,[data-testid="collapsedControl"],[data-testid="stSidebarCollapsedControl"],button[kind="header"],[data-testid="stHeaderActionElements"]{display:none!important;visibility:hidden!important;}
 header[data-testid='stHeader']{display:none!important;background:transparent!important;}
 
-.nav-shell{display:grid;grid-template-columns:240px 1fr 270px;align-items:center;gap:18px;padding:12px 14px 12px 20px;margin-bottom:14px;background:rgba(7,14,22,.84);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow),inset 0 0 0 1px rgba(255,255,255,.025);backdrop-filter:blur(20px) saturate(160%);}
-.nav-brand{display:flex;align-items:center;gap:10px;}
-.nav-logo{font-size:22px;font-weight:900;letter-spacing:.5px;color:var(--cyan);text-shadow:0 0 18px rgba(0,245,255,.35);}
-.nav-sub{font-size:9px;letter-spacing:1.2px;color:#9ab0bf;margin-top:1px;text-transform:uppercase;}
-.nav-status{display:flex;justify-content:flex-end;align-items:center;gap:8px;white-space:nowrap;}
-.status-dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 12px rgba(0,255,163,.8);display:inline-block;}
-.status-chip{display:inline-flex;align-items:center;gap:7px;padding:7px 11px;border-radius:10px;background:rgba(0,255,163,.05);border:1px solid rgba(0,255,163,.18);font-size:10px;color:#c9e9df;font-weight:700;}
-
-div[data-testid='stRadio'] div[role='radiogroup']{display:flex!important;justify-content:center!important;gap:6px!important;flex-wrap:wrap!important;}
-div[data-testid='stRadio'] div[role='radiogroup'] label{border:1px solid transparent!important;background:transparent!important;color:#a6b6c4!important;border-radius:10px!important;padding:8px 13px!important;font-size:12px!important;font-weight:650!important;transition:.2s ease!important;}
-div[data-testid='stRadio'] div[role='radiogroup'] label:hover{background:rgba(0,245,255,.05)!important;color:#eaf7ff!important;}
-div[data-testid='stRadio'] div[role='radiogroup'] [aria-checked='true']{background:linear-gradient(135deg,rgba(0,245,255,.10),rgba(0,255,163,.06))!important;border-color:rgba(0,245,255,.35)!important;color:#dffcff!important;box-shadow:0 0 20px rgba(0,245,255,.08)!important;}
-div[data-testid='stRadio'] div[role='radiogroup'] label>div:first-child{display:none!important;}
-
-section[data-testid='stSidebar']{background:rgba(5,10,16,.93)!important;border-right:1px solid rgba(0,245,255,.10)!important;backdrop-filter:blur(24px)!important;box-shadow:18px 0 60px rgba(0,0,0,.32)!important;}
-section[data-testid='stSidebar'] .block-container{padding:16px 14px!important;}
-section[data-testid='stSidebar'] div[data-testid='stRadio']{display:none!important;}
-
-.stSelectbox, .stSelectbox *,
-[data-testid='stSelectbox'], [data-testid='stSelectbox'] *,
-[data-baseweb='select'], [data-baseweb='select'] *,
-div[role='combobox'], div[role='combobox'] * {
-  background-color: #08101a !important;
-  background: #08101a !important;
-  color: #00f5ff !important;
-  border-color: rgba(0, 245, 255, 0.35) !important;
-  font-weight: 750 !important;
-}
-
-[data-baseweb='select'] {
-  border-radius: 12px !important;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.5), inset 0 0 14px rgba(0, 245, 255, 0.06) !important;
-}
-
-[data-baseweb='select']:hover {
-  border-color: #00f5ff !important;
-  box-shadow: 0 0 20px rgba(0, 245, 255, 0.25) !important;
-}
-
-.stSelectbox svg, [data-baseweb='select'] svg {
-  fill: #00f5ff !important;
-  color: #00f5ff !important;
-}
-
-ul[data-baseweb='menu'], ul[data-baseweb='menu'] *,
-div[data-baseweb='popover'], div[data-baseweb='popover'] * {
-  background-color: #060d17 !important;
-  background: #060d17 !important;
-  color: #ecf7ff !important;
-  border-color: rgba(0, 245, 255, 0.25) !important;
-}
-
-li[data-baseweb='menu-item'], li[data-baseweb='menu-item'] * {
-  background: transparent !important;
-  color: #cde6f5 !important;
-  font-weight: 650 !important;
-}
-
-li[data-baseweb='menu-item']:hover,
-li[data-baseweb='menu-item'][aria-selected='true'] {
-  background-color: rgba(0, 245, 255, 0.16) !important;
-  background: rgba(0, 245, 255, 0.16) !important;
-  color: #00f5ff !important;
-}
-
-div[data-baseweb='input'] input,.stTextInput input{background:rgba(10,19,29,.86)!important;color:#fff!important;border:1px solid rgba(0,245,255,.16)!important;border-radius:11px!important;box-shadow:inset 0 2px 8px rgba(0,0,0,.25)!important;}
-div[data-baseweb='input'] input:focus,.stTextInput input:focus{border-color:var(--cyan)!important;box-shadow:0 0 18px rgba(0,245,255,.18)!important;}
-
-.pg-title{text-align:left;padding:16px 4px 20px;}
-.pg-sub{font-size:10px;font-weight:800;letter-spacing:2.5px;color:var(--cyan);text-transform:uppercase;margin-bottom:8px;text-shadow:0 0 14px rgba(0,245,255,.28);}
-.pg-h1{font-size:34px;line-height:1.08;font-weight:900;color:#f7fbff;margin:0 0 8px;letter-spacing:-1.2px;}
-.pg-bread{font-size:12.5px;color:var(--muted);font-weight:500;max-width:880px;}
-
-.top-bar{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:10px 14px;margin-bottom:18px;background:rgba(8,16,24,.68);border:1px solid rgba(0,245,255,.10);border-radius:14px;backdrop-filter:blur(16px);}
-.top-brand{display:flex;align-items:center;gap:8px;font-size:11px;font-weight:900;color:#dffcff;letter-spacing:.7px;}
-.top-tickers{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end;}
-.t-pill{display:inline-flex;align-items:center;gap:6px;background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.07);padding:5px 9px;border-radius:8px;font-size:10px;font-weight:650;color:#b7c5cf;}
+/* ── Clean Responsive Flex Header Container (Top Bar) ── */
+.top-bar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;padding:12px 18px;margin-bottom:18px;background:rgba(8,16,24,.82);border:1px solid rgba(0,245,255,.14);border-radius:16px;backdrop-filter:blur(18px);box-shadow:var(--shadow);}
+.top-brand{display:flex;align-items:center;gap:10px;}
+.top-tickers{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-start;}
+.t-pill{display:inline-flex;align-items:center;gap:6px;background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.07);padding:5px 10px;border-radius:9px;font-size:10px;font-weight:650;color:#b7c5cf;}
 .t-up{color:var(--green);font-weight:800;text-shadow:0 0 8px rgba(0,255,163,.25);}
 .t-dn{color:#ff5e75;font-weight:800;}
 
@@ -455,7 +383,7 @@ button[kind='primary']:hover,.stButton>button:hover{border-color:rgba(0,245,255,
 
 .app-foot{display:flex;justify-content:space-between;align-items:center;padding:16px 10px;margin-top:30px;border-top:1px solid rgba(0,245,255,.08);font-size:10.5px;color:#5f7382;}.live-dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 10px rgba(0,255,163,.8);display:inline-block;margin-right:5px;}
 
-@media (max-width:1050px){.nav-shell{grid-template-columns:1fr;gap:8px}.nav-status{justify-content:flex-start}.main .block-container{padding-left:14px!important;padding-right:14px!important}.pg-h1{font-size:28px;}}
+@media (max-width:1050px){.top-bar{flex-direction:column;align-items:stretch;gap:10px}.top-tickers{justify-content:flex-start}.main .block-container{padding-left:14px!important;padding-right:14px!important}.pg-h1{font-size:28px;}}
 </style>
 """)
 
@@ -604,12 +532,10 @@ def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHAN
     return "\n".join(lines)
 
 def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
-    """Checks Gold, Crude Oil, and US Dollar — sends Telegram alert strictly ONCE when bias transitions, preventing spam."""
     if not fred_key:
         return
 
     try:
-        # 1. Check Gold (XAUUSD)
         gold_s, ry_val_str, gold_news_pts = _calc_gold_score_only(fred_key, channel_name)
         if gold_s is not None:
             current_gold_bias, _, _ = bias_from_score(gold_s)
@@ -632,7 +558,6 @@ def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
             
             GLOBAL_ALERT_STATE["Gold"] = current_gold_bias
 
-        # 2. Check Crude Oil (WTI/Brent)
         oil_s, oil_news_pts = _calc_oil_score_only(fred_key, channel_name)
         if oil_s is not None:
             current_oil_bias, _, _ = bias_from_score(oil_s)
@@ -655,7 +580,6 @@ def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
             
             GLOBAL_ALERT_STATE["Oil"] = current_oil_bias
 
-        # 3. Check US Dollar Index (USD)
         usd_s = _calc_currency_score_only("USD", fred_key, channel_name)
         if usd_s is not None:
             curr_bias, _, _ = bias_from_score(usd_s)
