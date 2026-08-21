@@ -1790,12 +1790,12 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list) -> dict:
         bias_label = "🔺 LIKELY HIGHER THAN FORECAST"
         bias_color = "#00ffa3"
         outcome_desc = "Precursor pipeline indicators (wholesale inflation & energy momentum) combined with wire sentiment signal high upside surprise probability against consensus."
-        currency_action_ku = f"📈 {cur} بەرز دەبێتەوە (Appreciation / Bullish)"
+        currency_action_en = f"📈 {cur} Expected to Appreciate (Bullish Rally)"
         currency_action_color = "#00ffa3"
         if cur == "USD":
-            currency_action_desc_ku = "دۆلاری ئەمریکی (USD) بەرز دەبێتەوە بەهۆی کەمبوونەوەی ئەگەری دابەزاندنی سوود و بەهێزیی سووڕی ئابووری ئەمریکا."
+            currency_action_desc_en = "US Dollar (USD) is poised to strengthen on reduced rate-cut urgency and expanding sovereign yield support."
         else:
-            currency_action_desc_ku = f"دراوی ({cur}) بەرز دەبێتەوە و بەهێز دەبێت، چونکە ئەم داتایە سوودی ئابووریی ڕاستەوخۆ دەگەیەنێت بەم دراوە."
+            currency_action_desc_en = f"{cur} is expected to rally on macroeconomic growth resilience and supportive monetary yield differentials."
         gold_implication = "📉 Bearish Drag on Gold (Surging yields & Hawkish USD pushback)"
         usd_implication = "📈 Bullish Tailwind for USD (Yield advantage expansion)"
         oil_implication = "📈 Bullish Support (Active energy demand pull)"
@@ -1803,12 +1803,12 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list) -> dict:
         bias_label = "🔻 LIKELY LOWER THAN FORECAST"
         bias_color = "#ff5e75"
         outcome_desc = "Leading indicators (disinflation pipeline & labor cooling signals) point toward potential downside miss or softer print relative to consensus."
-        currency_action_ku = f"📉 {cur} دەشکێت و دادەبەزێت (Weakening / Bearish)"
+        currency_action_en = f"📉 {cur} Expected to Weaken / Depreciate (Bearish Drag)"
         currency_action_color = "#ff5e75"
         if cur == "USD":
-            currency_action_desc_ku = "دۆلاری ئەمریکی (USD) دەشکێت و دادەبەزێت، چونکە سستبوونی داتاکە ڕێگە بۆ فیدراڵی خۆش دەکات ڕێژەی سوود دابەزێنێت."
+            currency_action_desc_en = "US Dollar (USD) is vulnerable to selling pressure as cooling inflation opens the door for Fed interest rate cuts."
         else:
-            currency_action_desc_ku = f"دراوی ({cur}) دەشکێت و لاواز دەبێت، بەهۆی سستبوونی گەشە یان زیادبوونی ئەگەری کەمکردنەوەی سوود لە بانکی ناوەندی."
+            currency_action_desc_en = f"{cur} is likely to face downside weakness due to macroeconomic deceleration and dovish central bank easing prospects."
         gold_implication = "📈 Bullish Surge for Gold (Yields retreat & Rate cut optimism accelerates)"
         usd_implication = "📉 Bearish Drag on USD (Dovish repricing across FX majors)"
         oil_implication = "📉 Bearish Drag (Cooling macroeconomic demand signals)"
@@ -1816,9 +1816,9 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list) -> dict:
         bias_label = "⚖️ IN-LINE WITH CONSENSUS"
         bias_color = "#ffd166"
         outcome_desc = "Balanced precursor metrics and neutral wire tone suggest official print will land near consensus expectations with limited deviation."
-        currency_action_ku = f"⚖️ {cur} لە جووڵەی سنوورداردا دەمێنێتەوە (Range-Bound / Neutral)"
+        currency_action_en = f"⚖️ {cur} Range-Bound Consolidation (Neutral)"
         currency_action_color = "#ffd166"
-        currency_action_desc_ku = f"دراوی ({cur}) گۆڕانکاریی گەورەی بەسەردا نایەت، چونکە داتاکە لەگەڵ پێشبینییەکانی بازاڕدا یەکدەگرێتەوە."
+        currency_action_desc_en = f"{cur} is expected to maintain range-bound consolidation with limited volatility as data matches consensus expectations."
         gold_implication = "⚖️ Neutral / Range-Bound (Awaiting secondary drivers)"
         usd_implication = "⚖️ Balanced (Consolidation against major currency crosses)"
         oil_implication = "⚖️ Range-Bound (Dominated by physical supply news)"
@@ -1833,9 +1833,9 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list) -> dict:
         "bias_color": bias_color,
         "confidence": confidence_val,
         "outcome_desc": outcome_desc,
-        "currency_action_ku": currency_action_ku,
+        "currency_action_en": currency_action_en,
         "currency_action_color": currency_action_color,
-        "currency_action_desc_ku": currency_action_desc_ku,
+        "currency_action_desc_en": currency_action_desc_en,
         "gold_implication": gold_implication,
         "usd_implication": usd_implication,
         "oil_implication": oil_implication
@@ -1962,20 +1962,20 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str) -> None:
             </div>
           </div>
 
-          <!-- Prominent Currency Direction Box (ئاراستەی دراوەکە) -->
+          <!-- Prominent Currency Direction Box (English) -->
           <div style="margin-top:12px;padding:12px 14px;background:rgba(0,245,255,0.05);border:1px solid rgba(0,245,255,0.25);border-radius:10px;">
             <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:4px;">
-              <span style="font-size:11px;font-weight:900;color:#00f5ff;text-transform:uppercase;">🎯 ئاراستەی ڕاستەوخۆی دراوەکە ({cur} CURRENCY OUTLOOK):</span>
-              <span style="font-size:12px;font-weight:900;color:{nowcast['currency_action_color']};">{nowcast['currency_action_ku']}</span>
+              <span style="font-size:11px;font-weight:900;color:#00f5ff;text-transform:uppercase;">🎯 DIRECT CURRENCY TRAJECTORY ({cur} OUTLOOK):</span>
+              <span style="font-size:12px;font-weight:900;color:{nowcast['currency_action_color']};">{nowcast['currency_action_en']}</span>
             </div>
             <div style="font-size:11.5px;color:#ecf7ff;line-height:1.45;">
-              {nowcast['currency_action_desc_ku']}
+              {nowcast['currency_action_desc_en']}
             </div>
           </div>
 
-          <!-- Cross-Asset Impact -->
+          <!-- Cross-Asset Impact (English) -->
           <div style="margin-top:10px;padding:12px 14px;background:rgba(0,0,0,0.25);border:1px solid rgba(0,245,255,0.12);border-radius:10px;font-size:11.5px;">
-            <div style="font-size:10.5px;font-weight:800;color:#00f5ff;text-transform:uppercase;margin-bottom:6px;">🌐 کاریگەری لەسەر کانزا و ئاڵوگۆڕەکانی تر (Cross-Asset Projection):</div>
+            <div style="font-size:10.5px;font-weight:800;color:#00f5ff;text-transform:uppercase;margin-bottom:6px;">🌐 CROSS-ASSET TACTICAL PROJECTION:</div>
             <div style="color:#ecf7ff;margin-bottom:3px;">• <b>Gold (XAUUSD):</b> {nowcast['gold_implication']}</div>
             <div style="color:#ecf7ff;margin-bottom:3px;">• <b>US Dollar (USD):</b> {nowcast['usd_implication']}</div>
             <div style="color:#ecf7ff;">• <b>Crude Oil:</b> {nowcast['oil_implication']}</div>
