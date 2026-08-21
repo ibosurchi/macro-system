@@ -926,25 +926,16 @@ def render_top_header(auth_user: dict | None = None) -> None:
         crown = "👑 " if is_adm else "👤 "
         user_badge = f'<div class="t-pill" style="border-color:rgba(255,209,102,0.35);color:#ffd166;"><span>{crown}{u_name}</span> &nbsp;<span style="color:#00ffa3;font-size:9.5px;">({exp_txt})</span></div>'
 
+    # ── LOGO IS NOW A CLICKABLE BUTTON REDIRECTING TO HOME/FOREX ──
+    col_logo_btn, col_tickers = st.columns([1.8, 3.2])
+    with col_logo_btn:
+        if st.button("🏛️ APEXMACRO • GLOBAL DESK", use_container_width=True):
+            st.session_state["active_tab"] = "💱 Forex"
+            st.rerun()
+
     render_html(f"""
-<div class="top-bar">
-  <div class="top-brand">
-    <div style="display:flex;align-items:center;justify-content:center;width:40px;height:40px;background:rgba(0,245,255,0.06);border:1px solid rgba(0,245,255,0.25);border-radius:10px;box-shadow:0 0 16px rgba(0,245,255,0.2);">
-      <svg width="26" height="26" viewBox="0 0 360 365" fill="none" style="filter:drop-shadow(0 0 8px rgba(0,255,255,0.85));">
-        <defs>
-          <linearGradient id="aGrad" x1="0" y1="0" x2="1" y2="1">
-            <stop stop-color="#00FFFF"/>
-            <stop offset="1" stop-color="#00D7E8"/>
-          </linearGradient>
-        </defs>
-        <path d="M0 365L180 0L360 365H288L180 130L72 365Z" fill="url(#aGrad)"/>
-      </svg>
-    </div>
-    <div>
-      <div style="font-size:17px;font-weight:900;letter-spacing:1.8px;color:#00f5ff;text-shadow:0 0 16px rgba(0,245,255,0.5);">APEX<span style="color:#ffd166;">MACRO</span></div>
-      <div style="font-size:9px;font-weight:800;color:#64748b;letter-spacing:2.5px;">GLOBAL INTELLIGENCE DESK</div>
-    </div>
-  </div>
+<div class="top-bar" style="margin-top:-10px;">
+  <div style="font-size:9px;font-weight:800;color:#64748b;letter-spacing:2.5px;">INSTITUTIONAL INTELLIGENCE TERMINAL</div>
   <div class="top-tickers">
     {user_badge}
     <div class="t-pill"><span>🇺🇸 USD Index</span><span class="t-up">▲ Active</span></div>
@@ -995,45 +986,46 @@ def render_data_table(rows: list) -> None:
 
 def page_dashboard(fred_key: str, channel_name: str, auth_user: dict | None = None) -> None:
     is_admin_user = auth_user and auth_user.get("is_admin", False)
-    
-    # ── CLEAN PILL NAVIGATION BUTTONS FOR ASSETS (FOREX, GOLD, OIL) ──
-    st.markdown("""
-    <style>
-    div[data-testid="stHorizontalBlock"] > div {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-    }
-    </style>
-    """, unsafe_allow_html=True)
 
     if "active_tab" not in st.session_state:
         st.session_state["active_tab"] = "💱 Forex"
 
-    col_nav1, col_nav2, col_nav3, col_nav4 = st.columns([1.2, 1.2, 1.2, 1.5 if is_admin_user else 0.1])
-    
-    with col_nav1:
-        if st.button("💱 Forex", use_container_width=True, type="primary" if st.session_state["active_tab"] == "💱 Forex" else "secondary"):
-            st.session_state["active_tab"] = "💱 Forex"
-            st.rerun()
-    with col_nav2:
-        if st.button("🥇 Gold", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🥇 Gold" else "secondary"):
-            st.session_state["active_tab"] = "🥇 Gold"
-            st.rerun()
-    with col_nav3:
-        if st.button("🛢️ Oil", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🛢️ Oil" else "secondary"):
-            st.session_state["active_tab"] = "🛢️ Oil"
-            st.rerun()
-            
+    # ── STYLISH FULL-WIDTH ROW BUTTONS FOR NAVIGATION ──
     if is_admin_user:
-        with col_nav4:
+        b1, b2, b3, b4 = st.columns(4)
+        with b1:
+            if st.button("💱 Forex", use_container_width=True, type="primary" if st.session_state["active_tab"] == "💱 Forex" else "secondary"):
+                st.session_state["active_tab"] = "💱 Forex"
+                st.rerun()
+        with b2:
+            if st.button("🥇 Gold", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🥇 Gold" else "secondary"):
+                st.session_state["active_tab"] = "🥇 Gold"
+                st.rerun()
+        with b3:
+            if st.button("🛢️ Oil", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🛢️ Oil" else "secondary"):
+                st.session_state["active_tab"] = "🛢️ Oil"
+                st.rerun()
+        with b4:
             if st.button("👑 MASTER ADMIN", use_container_width=True, type="primary" if st.session_state["active_tab"] == "👑 MASTER ADMIN" else "secondary"):
                 st.session_state["active_tab"] = "👑 MASTER ADMIN"
                 st.rerun()
+    else:
+        b1, b2, b3 = st.columns(3)
+        with b1:
+            if st.button("💱 Forex", use_container_width=True, type="primary" if st.session_state["active_tab"] == "💱 Forex" else "secondary"):
+                st.session_state["active_tab"] = "💱 Forex"
+                st.rerun()
+        with b2:
+            if st.button("🥇 Gold", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🥇 Gold" else "secondary"):
+                st.session_state["active_tab"] = "🥇 Gold"
+                st.rerun()
+        with b3:
+            if st.button("🛢️ Oil", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🛢️ Oil" else "secondary"):
+                st.session_state["active_tab"] = "🛢️ Oil"
+                st.rerun()
 
-    st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
 
-    # ── ROUTING BASED ON ACTIVE TAB ──
     current_tab = st.session_state["active_tab"]
 
     if current_tab == "👑 MASTER ADMIN" and is_admin_user:
@@ -1047,7 +1039,7 @@ def page_dashboard(fred_key: str, channel_name: str, auth_user: dict | None = No
         page_oil(fred_key, channel_name)
         return
 
-    # ── FOREX VIEW WITH CURRENCY SELECTOR ──
+    # ── FOREX VIEW ──
     currency = st.selectbox("Currency:", list(CURRENCY_SERIES.keys()), format_func=lambda k: f"{CURRENCY_SERIES[k]['flag']} {k} • {CURRENCY_SERIES[k]['name']}", label_visibility="collapsed")
 
     with st.spinner(f"Reading {currency} macro data & processing live feeds..."):
