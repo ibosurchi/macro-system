@@ -57,12 +57,53 @@ APEX_MASTER_KEY = get_secret("APEX_MASTER_KEY", "APEX-MASTER-2026")
 APEX_SECRET_SALT = "APEX_MACRO_SECRET_2026_SALT"
 REGISTRY_FILE = os.path.join(os.path.dirname(__file__), "vip_registry.json")
 
-def get_client_device_identifier() -> str:
-    """Extracts a unique client fingerprint to bind license to a single device."""
+def get_client_device_info() -> tuple[str, str]:
+    """Extracts a unique client fingerprint and detects device class (Mobile vs PC/Laptop)."""
     if "CLIENT_DEVICE_ID" not in st.session_state:
         import uuid
         st.session_state["CLIENT_DEVICE_ID"] = str(uuid.uuid4())[:12]
-    return st.session_state["CLIENT_DEVICE_ID"]
+    
+    # Detect device type via User-Agent header
+    ua = ""
+    try:
+        if hasattr(st, "context") and hasattr(st.context, "headers"):
+            ua = str(st.context.headers.get("user-agent", "")).lower()
+    except Exception:
+        pass
+        
+    is_mobile = any(k in ua for k in ["iphone", "android", "ipad", "mobile", "ipod", "touch"])
+    dev_type = "📱 Mobile" if is_mobile else "💻 PC/Laptop"
+    return st.session_state["CLIENT_DEVICE_ID"], dev_type
+
+def send_admin_security_alert(client_name: str, key: str, violation_reason: str, dev_type: str) -> None:
+    """Dispatches instant high-priority fraud notification directly to Master Admin Telegram ID 7153364048."""
+    admin_tg_id = "7153364048"
+    token = TELEGRAM_BOT_TOKEN or DEFAULT_TELEGRAM_BOT_TOKEN
+    if not token or not admin_tg_id:
+        return
+    now_str = get_current_time().strftime("%Y-%m-%d %H:%M:%S")
+    msg = (
+        f"🚨 <b>APEX SECURITY ALERT: KEY SHARING BLOCKED!</b>\n\n"
+        f"👤 <b>Client:</b> <code>{client_name}</code>\n"
+        f"🔑 <b>Key:</b> <code>{key}</code>\n"
+        f"📱 <b>Device Attempted:</b> {dev_type}\n"
+        f"⚠️ <b>Violation:</b> {violation_reason}\n"
+        f"🛡️ <b>Status:</b> <b>BLOCKED (Access Denied)</b>\n"
+        f"🕒 <b>Time:</b> {now_str} (KRD / UTC+3)\n\n"
+        f"<i>A second user attempted to reuse this license on an unauthorized device.</i>"
+    )
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": admin_tg_id,
+        "text": msg,
+        "parse_mode": "HTML"
+    }
+    try:
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=4)
+    except Exception:
+        pass
 
 def load_vip_registry() -> list[dict]:
     """Loads all registered VIP client licenses from disk."""
@@ -94,7 +135,8 @@ def register_new_client_key(name: str, key: str, duration_label: str, exp_date_s
         "created_at": get_current_time().strftime("%Y-%m-%d"),
         "expires_at": exp_date_str,
         "status": "Active",
-        "bound_device_id": "",
+        "bound_mobile_id": "",
+        "bound_pc_id": "",
         "bound_at": ""
     })
     save_vip_registry(clients)
@@ -112,8 +154,8 @@ def generate_vip_key(client_name: str, duration_days: int = 30) -> str:
     sig = hashlib.sha256(payload.encode()).hexdigest()[:4].upper()
     return f"APEX-{clean_name}-{exp_str}-{sig}"
 
-def verify_vip_key(key: str, client_id: str = "") -> tuple[bool, str, str]:
-    """Verifies a VIP key and enforces strict 1-Device Binding."""
+def verify_vip_key(key: str, client_id: str = "", dev_type: str = "💻 PC/Laptop") -> tuple[bool, str, str]:
+    """Verifies a VIP key with Smart 1-Mobile + 1-PC Dual Device Binding & Instant Admin Alerts."""
     if not key:
         return False, "", "Please enter a key"
     clean_k = key.strip().upper()
@@ -129,16 +171,29 @@ def verify_vip_key(key: str, client_id: str = "") -> tuple[bool, str, str]:
             break
 
     if matched_client:
+        c_name = matched_client.get("client_name", "CLIENT")
         if matched_client.get("status") == "Revoked":
-            return False, matched_client.get("client_name", ""), "License Revoked by Administrator"
+            return False, c_name, "License Revoked by Administrator"
 
-        bound_id = matched_client.get("bound_device_id")
-        if not bound_id and client_id:
-            matched_client["bound_device_id"] = client_id
-            matched_client["bound_at"] = get_current_time().strftime("%Y-%m-%d %H:%M")
-            save_vip_registry(clients)
-        elif bound_id and bound_id != client_id and client_id:
-            return False, matched_client.get("client_name", ""), "⛔ Access Denied: This license is already bound to another device."
+        is_mobile = ("Mobile" in dev_type)
+        if is_mobile:
+            bound_mob = matched_client.get("bound_mobile_id")
+            if not bound_mob and client_id:
+                matched_client["bound_mobile_id"] = client_id
+                matched_client["bound_at"] = get_current_time().strftime("%Y-%m-%d %H:%M")
+                save_vip_registry(clients)
+            elif bound_mob and bound_mob != client_id:
+                send_admin_security_alert(c_name, clean_k, "Unauthorized 2nd Mobile Login Attempt (Possible Key Sharing)", dev_type)
+                return False, c_name, "⛔ Access Denied: This license already has a mobile device registered. Key sharing is prohibited."
+        else:
+            bound_pc = matched_client.get("bound_pc_id")
+            if not bound_pc and client_id:
+                matched_client["bound_pc_id"] = client_id
+                matched_client["bound_at"] = get_current_time().strftime("%Y-%m-%d %H:%M")
+                save_vip_registry(clients)
+            elif bound_pc and bound_pc != client_id:
+                send_admin_security_alert(c_name, clean_k, "Unauthorized 2nd PC/Laptop Login Attempt (Possible Key Sharing)", dev_type)
+                return False, c_name, "⛔ Access Denied: This license already has a PC/Laptop registered. Key sharing is prohibited."
 
     static_keys = {
         "APEX-VIP-PREVIEW": "VIP Preview Client",
@@ -1807,7 +1862,7 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str) -> None:
 
 def render_vip_gate() -> dict | None:
     """Renders the luxury cyber-glass VIP authentication gate when not logged in."""
-    client_id = get_client_device_identifier()
+    client_id, dev_type = get_client_device_info()
 
     auth_user = st.session_state.get("APEX_AUTH_USER")
     if auth_user and auth_user.get("is_authenticated"):
@@ -1816,7 +1871,7 @@ def render_vip_gate() -> dict | None:
     col1, col2, col3 = st.columns([1, 2.2, 1])
     with col2:
         st.markdown("<div style='height:40px;'></div>", unsafe_allow_html=True)
-        render_html("""
+        render_html(f"""
         <div style="background:linear-gradient(180deg,rgba(11,20,32,0.95),rgba(5,10,18,0.97));border:1px solid rgba(0,245,255,0.25);border-radius:22px;padding:34px 28px 24px;text-align:center;box-shadow:0 25px 80px rgba(0,0,0,0.7),0 0 35px rgba(0,245,255,0.12);backdrop-filter:blur(24px);">
           <div style="display:flex;justify-content:center;margin-bottom:14px;">
             <div style="display:flex;align-items:center;justify-content:center;width:56px;height:56px;background:rgba(0,245,255,0.08);border:1px solid rgba(0,245,255,0.35);border-radius:16px;box-shadow:0 0 25px rgba(0,245,255,0.3);">
@@ -1835,7 +1890,7 @@ def render_vip_gate() -> dict | None:
           <div style="font-size:9.5px;font-weight:800;letter-spacing:3px;color:#8fa3b4;margin-top:2px;text-transform:uppercase;">Institutional Intelligence Terminal</div>
           <div style="height:1px;background:linear-gradient(90deg,transparent,rgba(0,245,255,0.3),transparent);margin:18px 0 14px;"></div>
           <div style="font-size:13.5px;color:#ecf7ff;font-weight:700;margin-bottom:4px;">🔒 Restricted VIP Terminal Access</div>
-          <div style="font-size:11.5px;color:#8fa3b4;margin-bottom:16px;">Single-Device Protection Active. Enter your authorized VIP License Key.</div>
+          <div style="font-size:11.5px;color:#8fa3b4;margin-bottom:16px;">Detected: <b>{dev_type}</b> • Dual-Device Security Active. Enter your VIP Key.</div>
         </div>
         """)
 
@@ -1851,7 +1906,7 @@ def render_vip_gate() -> dict | None:
             )
 
         if unlock_clicked:
-            is_valid, user_name, expiry_info = verify_vip_key(entered_key, client_id)
+            is_valid, user_name, expiry_info = verify_vip_key(entered_key, client_id, dev_type)
             if is_valid:
                 is_admin = (user_name == "ADMINISTRATOR")
                 st.session_state["APEX_AUTH_USER"] = {
@@ -1873,7 +1928,7 @@ def render_admin_key_generator() -> None:
     render_html("""
     <div style="background:linear-gradient(135deg,rgba(0,245,255,0.06),rgba(0,255,163,0.03));border:1px solid rgba(0,245,255,0.3);border-radius:16px;padding:20px 24px;margin-bottom:20px;box-shadow:var(--shadow);">
       <div style="font-size:16px;font-weight:900;color:#00f5ff;letter-spacing:1px;margin-bottom:4px;">👑 MASTER ADMIN CONTROL DESK</div>
-      <div style="font-size:11.5px;color:#8fa3b4;">Manage your VIP client licenses, bind devices, assign Telegram IDs, and generate secure cryptographic keys.</div>
+      <div style="font-size:11.5px;color:#8fa3b4;">Manage your VIP client licenses, dual-device bindings (1 Mobile + 1 PC), assign Telegram IDs, and generate secure cryptographic keys.</div>
     </div>
     """)
 
@@ -1956,7 +2011,17 @@ def render_admin_key_generator() -> None:
         st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
         tbl_data = []
         for c in clients:
-            b_status = "🔒 Locked to Device" if c.get("bound_device_id") else "⚪ Unbound"
+            mob_b = bool(c.get("bound_mobile_id"))
+            pc_b = bool(c.get("bound_pc_id"))
+            if mob_b and pc_b:
+                b_status = "📱 Mobile + 💻 PC"
+            elif mob_b:
+                b_status = "📱 Mobile Only"
+            elif pc_b:
+                b_status = "💻 PC Only"
+            else:
+                b_status = "⚪ Unbound (0/2)"
+                
             tbl_data.append({
                 "Client Name": c.get("client_name"),
                 "License Key": c.get("key"),
@@ -1964,7 +2029,7 @@ def render_admin_key_generator() -> None:
                 "Plan": c.get("duration"),
                 "Expires": c.get("expires_at"),
                 "Status": c.get("current_status"),
-                "Device Lock": b_status,
+                "Registered Devices": b_status,
             })
         st.dataframe(pd.DataFrame(tbl_data), use_container_width=True, hide_index=True)
         
@@ -1996,10 +2061,11 @@ def render_admin_key_generator() -> None:
             if st.button("🔄 Reset Lock", use_container_width=True):
                 for c in clients:
                     if c.get("key") == key_selected:
-                        c["bound_device_id"] = ""
+                        c["bound_mobile_id"] = ""
+                        c["bound_pc_id"] = ""
                         c["bound_at"] = ""
                 save_vip_registry(clients)
-                st.success(f"Device lock reset!")
+                st.success(f"Device lock reset (0/2 devices bound)!")
                 time.sleep(0.4)
                 st.rerun()
         with act_col3:
