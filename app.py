@@ -994,7 +994,6 @@ def render_data_table(rows: list) -> None:
 """)
 
 def page_dashboard(fred_key: str, channel_name: str, auth_user: dict | None = None) -> None:
-    # ── MODERN SELECTOR BAR FOR ASSETS AND ADMIN PANEL ──
     is_admin_user = auth_user and auth_user.get("is_admin", False)
     
     if is_admin_user:
@@ -1003,9 +1002,8 @@ def page_dashboard(fred_key: str, channel_name: str, auth_user: dict | None = No
         market_cols = st.columns([3.5, 3.5, 3.0])
 
     with market_cols[0]:
-        sel_market = st.radio("Market:", ["💱 Forex", "🥇 Gold & Real Yield", "🛢️ Crude Oil"], horizontal=True, label_visibility="collapsed", key="main_market_radio")
+        sel_market = st.radio("Market:", ["💱 Forex", "🥇 Gold", "🛢️ Oil"], horizontal=True, label_visibility="collapsed", key="main_market_radio")
     
-    # ── MAPPING RADIO SELECTION TO INTERNAL ASSET ──
     if "Forex" in sel_market:
         asset = "💱 Forex"
     elif "Gold" in sel_market:
@@ -1017,13 +1015,13 @@ def page_dashboard(fred_key: str, channel_name: str, auth_user: dict | None = No
         with market_cols[1]:
             currency = st.selectbox("Currency:", list(CURRENCY_SERIES.keys()), format_func=lambda k: f"{CURRENCY_SERIES[k]['flag']} {k}", label_visibility="collapsed", key="main_curr_sel")
         with market_cols[2]:
-            admin_toggle = st.selectbox("⚙️ Panel:", ["📊 Dashboard View", "👑 MASTER ADMIN"], label_visibility="collapsed", key="admin_panel_toggle")
+            admin_toggle = st.selectbox("⚙️ Panel:", ["📊 Dashboard", "👑 MASTER ADMIN"], label_visibility="collapsed", key="admin_panel_toggle")
         with market_cols[3]:
             st.markdown("<div style='height:2px;'></div>", unsafe_allow_html=True)
     else:
         with market_cols[1]:
             currency = st.selectbox("Currency:", list(CURRENCY_SERIES.keys()), format_func=lambda k: f"{CURRENCY_SERIES[k]['flag']} {k} • {CURRENCY_SERIES[k]['name']}", label_visibility="collapsed", key="main_curr_sel")
-        admin_toggle = "📊 Dashboard View"
+        admin_toggle = "📊 Dashboard"
         with market_cols[2]:
             st.markdown("<div style='height:2px;'></div>", unsafe_allow_html=True)
 
@@ -1457,7 +1455,6 @@ def render_vip_gate() -> dict | None:
         return None
 
 def render_admin_key_generator() -> None:
-    # ── CLEAN SEPARATE PANEL VIEW FOR MASTER ADMIN ──
     render_html("""
     <div style="background:linear-gradient(135deg,rgba(0,245,255,0.06),rgba(0,255,163,0.03));border:1px solid rgba(0,245,255,0.3);border-radius:16px;padding:20px 24px;margin-bottom:20px;box-shadow:var(--shadow);">
       <div style="font-size:16px;font-weight:900;color:#00f5ff;letter-spacing:1px;margin-bottom:4px;">👑 MASTER ADMIN CONTROL DESK</div>
@@ -1556,7 +1553,6 @@ def render_admin_key_generator() -> None:
             })
         st.dataframe(pd.DataFrame(tbl_data), use_container_width=True, hide_index=True)
         
-        # ── EDIT TELEGRAM ID SECTION ──
         st.markdown("---")
         render_html('<div style="font-size:11px;font-weight:800;color:#79dff0;margin-bottom:6px;">⚙️ EDIT CLIENT TELEGRAM ID</div>')
         edit_col1, edit_col2, edit_col3 = st.columns([2, 2, 1.5])
@@ -1626,7 +1622,6 @@ def main() -> None:
 
     render_top_header(auth_user)
 
-    # ── ROUTED AS A SEPARATE TAB BESIDE ASSETS FOR ADMINS ──
     page_dashboard(fred_key, channel_name, auth_user)
 
     render_html(f"""
