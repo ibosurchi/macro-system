@@ -58,6 +58,21 @@ APEX_MASTER_KEY = get_secret("APEX_MASTER_KEY", "APEX-MASTER-2026")
 APEX_SECRET_SALT = "APEX_MACRO_SECRET_2026_SALT"
 REGISTRY_FILE = os.path.join(os.path.dirname(__file__), "vip_registry.json")
 
+def get_client_device_identifier() -> str:
+    """Extracts a unique client IP / fingerprint to bind license strictly to a single device."""
+    try:
+        headers = getattr(st, "context", None) and getattr(st.context, "headers", None)
+        if headers:
+            ip = headers.get("x-forwarded-for") or headers.get("remote-addr") or ""
+            if ip:
+                return ip.split(",")[0].strip()
+    except Exception:
+        pass
+    if "CLIENT_DEVICE_ID" not in st.session_state:
+        import uuid
+        st.session_state["CLIENT_DEVICE_ID"] = str(uuid.uuid4())[:8]
+    return st.session_state["CLIENT_DEVICE_ID"]
+
 def load_vip_registry() -> list[dict]:
     """Loads all registered VIP client licenses from disk."""
     if os.path.exists(REGISTRY_FILE):
@@ -86,7 +101,9 @@ def register_new_client_key(name: str, key: str, duration_label: str, exp_date_s
         "duration": duration_label,
         "created_at": get_current_time().strftime("%Y-%m-%d"),
         "expires_at": exp_date_str,
-        "status": "Active"
+        "status": "Active",
+        "bound_device_id": "",
+        "bound_at": ""
     })
     save_vip_registry(clients)
 
@@ -103,21 +120,37 @@ def generate_vip_key(client_name: str, duration_days: int = 30) -> str:
     sig = hashlib.sha256(payload.encode()).hexdigest()[:4].upper()
     return f"APEX-{clean_name}-{exp_str}-{sig}"
 
-def verify_vip_key(key: str) -> tuple[bool, str, str]:
-    """Verifies a VIP key. Returns (is_valid, client_name, expiry_display)."""
+def verify_vip_key(key: str, client_id: str = "") -> tuple[bool, str, str]:
+    """Verifies a VIP key and enforces strict 1-Device Binding."""
     if not key:
         return False, "", "Please enter a key"
     clean_k = key.strip().upper()
     
-    # 1. Check Master Key
+    # 1. Check Master Key (Master Admin can login anywhere)
     if clean_k == APEX_MASTER_KEY.upper() or clean_k == "APEX-MASTER-2026":
         return True, "ADMINISTRATOR", "Master Admin Lifetime Access"
     
-    # 2. Check if key was revoked by administrator
+    # 2. Check if key exists in registry & enforce device binding
     clients = load_vip_registry()
+    matched_client = None
     for c in clients:
-        if c.get("key") == clean_k and c.get("status") == "Revoked":
-            return False, c.get("client_name", ""), "License Revoked by Administrator"
+        if c.get("key") == clean_k:
+            matched_client = c
+            break
+
+    if matched_client:
+        if matched_client.get("status") == "Revoked":
+            return False, matched_client.get("client_name", ""), "License Revoked by Administrator"
+
+        bound_id = matched_client.get("bound_device_id")
+        if not bound_id and client_id:
+            # First time activation on client device! Bind device
+            matched_client["bound_device_id"] = client_id
+            matched_client["bound_at"] = get_current_time().strftime("%Y-%m-%d %H:%M")
+            save_vip_registry(clients)
+        elif bound_id and bound_id != client_id and client_id:
+            # Someone else is trying to use this key on a 2nd device!
+            return False, matched_client.get("client_name", ""), "⛔ Access Denied: This license is already bound to another device. Multi-device sharing is not allowed."
 
     # 3. Check Static Demo/Preview Keys
     static_keys = {
@@ -1430,11 +1463,28 @@ def page_oil(fred_key: str, channel_name: str) -> None:
 
 def render_vip_gate() -> dict | None:
     """Renders the luxury cyber-glass VIP authentication gate when not logged in."""
+    client_id = get_client_device_identifier()
+
+    # 1. Check Session State
     auth_user = st.session_state.get("APEX_AUTH_USER")
     if auth_user and auth_user.get("is_authenticated"):
         return auth_user
 
-    # Centered VIP Gate UI
+    # 2. Check Auto-Login from Browser State
+    saved_key = st.query_params.get("auth")
+    if saved_key:
+        is_valid, user_name, expiry_info = verify_vip_key(saved_key, client_id)
+        if is_valid:
+            st.session_state["APEX_AUTH_USER"] = {
+                "is_authenticated": True,
+                "user_name": user_name,
+                "expiry_info": expiry_info,
+                "is_admin": (user_name == "ADMINISTRATOR"),
+                "key": saved_key
+            }
+            return st.session_state["APEX_AUTH_USER"]
+
+    # 3. Centered VIP Gate UI
     col1, col2, col3 = st.columns([1, 2.2, 1])
     with col2:
         st.markdown("<div style='height:40px;'></div>", unsafe_allow_html=True)
@@ -1457,7 +1507,7 @@ def render_vip_gate() -> dict | None:
           <div style="font-size:9.5px;font-weight:800;letter-spacing:3px;color:#8fa3b4;margin-top:2px;text-transform:uppercase;">Institutional Intelligence Terminal</div>
           <div style="height:1px;background:linear-gradient(90deg,transparent,rgba(0,245,255,0.3),transparent);margin:18px 0 14px;"></div>
           <div style="font-size:13.5px;color:#ecf7ff;font-weight:700;margin-bottom:4px;">🔒 Restricted VIP Terminal Access</div>
-          <div style="font-size:11.5px;color:#8fa3b4;margin-bottom:16px;">Enter your authorized VIP License Key to unlock institutional macro intelligence.</div>
+          <div style="font-size:11.5px;color:#8fa3b4;margin-bottom:16px;">Single-Device Protection Active. Enter your authorized VIP License Key.</div>
         </div>
         """)
 
@@ -1473,7 +1523,7 @@ def render_vip_gate() -> dict | None:
             )
 
         if unlock_clicked:
-            is_valid, user_name, expiry_info = verify_vip_key(entered_key)
+            is_valid, user_name, expiry_info = verify_vip_key(entered_key, client_id)
             if is_valid:
                 st.session_state["APEX_AUTH_USER"] = {
                     "is_authenticated": True,
@@ -1482,18 +1532,20 @@ def render_vip_gate() -> dict | None:
                     "is_admin": (user_name == "ADMINISTRATOR"),
                     "key": entered_key
                 }
+                # Remember key on this device
+                st.query_params["auth"] = entered_key
                 st.success(f"✅ Access Granted! Welcome, {user_name}.")
                 time.sleep(0.4)
                 st.rerun()
             else:
-                st.error(f"❌ Access Denied: {expiry_info}")
+                st.error(f"❌ {expiry_info}")
 
         return None
 
 def render_admin_key_generator() -> None:
     """Renders the Admin VIP License Generator & Client Registry (visible strictly to Master Admin)."""
     with st.expander("👑 MASTER ADMIN — VIP LICENSE MANAGER & CLIENT REGISTRY", expanded=False):
-        render_html('<div style="font-size:12px;color:#8fa3b4;margin-bottom:10px;">Generate time-locked cryptographic VIP keys and manage all registered clients:</div>')
+        render_html('<div style="font-size:12px;color:#8fa3b4;margin-bottom:10px;">Generate time-locked cryptographic VIP keys, enforce 1-device binding, and manage clients:</div>')
         g1, g2, g3 = st.columns([2, 2, 1.5])
         with g1:
             c_name = st.text_input("Client Name:", placeholder="e.g. KARDO", key="adm_client_name")
@@ -1573,28 +1625,40 @@ def render_admin_key_generator() -> None:
             st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
             tbl_data = []
             for c in clients:
+                b_status = "🔒 Locked to Device" if c.get("bound_device_id") else "⚪ Unbound"
                 tbl_data.append({
                     "Client Name": c.get("client_name"),
                     "License Key": c.get("key"),
                     "Plan": c.get("duration"),
-                    "Created": c.get("created_at"),
                     "Expires": c.get("expires_at"),
                     "Status": c.get("current_status"),
+                    "Device Lock": b_status,
                 })
             st.dataframe(pd.DataFrame(tbl_data), use_container_width=True, hide_index=True)
             
-            # Action: Revoke key
-            rev_col1, rev_col2 = st.columns([3, 1])
-            with rev_col1:
-                key_to_revoke = st.selectbox("Select Key to Revoke / Cancel Access:", [c.get("key") for c in clients], key="sel_key_revoke")
-            with rev_col2:
+            # Actions: Revoke or Reset Device Lock
+            act_col1, act_col2, act_col3 = st.columns([3, 1.5, 1.5])
+            with act_col1:
+                key_selected = st.selectbox("Select Client Key:", [c.get("key") for c in clients], key="sel_key_action")
+            with act_col2:
+                st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+                if st.button("🔄 Reset Device Lock", use_container_width=True):
+                    for c in clients:
+                        if c.get("key") == key_selected:
+                            c["bound_device_id"] = ""
+                            c["bound_at"] = ""
+                    save_vip_registry(clients)
+                    st.success(f"Device lock for {key_selected} reset! Client can now bind their new phone.")
+                    time.sleep(0.4)
+                    st.rerun()
+            with act_col3:
                 st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
                 if st.button("⛔ Revoke Key", type="secondary", use_container_width=True):
                     for c in clients:
-                        if c.get("key") == key_to_revoke:
+                        if c.get("key") == key_selected:
                             c["status"] = "Revoked"
                     save_vip_registry(clients)
-                    st.warning(f"Key {key_to_revoke} has been revoked!")
+                    st.warning(f"Key {key_selected} has been revoked!")
                     time.sleep(0.4)
                     st.rerun()
         else:
