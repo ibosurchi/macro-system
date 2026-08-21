@@ -755,6 +755,7 @@ def _get_daemon_controller():
     return {
         "running": False,
         "last_hour": get_current_time().strftime("%Y-%m-%d %H"),
+        "seen_weekend_news": set(),
     }
 
 def start_background_alert_daemon(fred_key: str, channel_name: str) -> None:
@@ -766,12 +767,50 @@ def start_background_alert_daemon(fred_key: str, channel_name: str) -> None:
     def _daemon_loop():
         while True:
             try:
-                current_hour = get_current_time().strftime("%Y-%m-%d %H")
-                if current_hour != ctrl["last_hour"]:
-                    ctrl["last_hour"] = current_hour
-                    # Send exactly ONE comprehensive hourly report to all registered clients
-                    report_msg = build_hourly_report(fred_key, channel_name)
-                    send_telegram_alert(report_msg)
+                now = get_current_time()
+                current_hour = now.strftime("%Y-%m-%d %H")
+                is_weekend = (now.weekday() in (5, 6)) # Saturday = 5, Sunday = 6
+
+                if is_weekend:
+                    # During Weekend Market Close: Pause routine hourly report
+                    # Instead, monitor for critical breaking emergency catalysts (e.g. Geopolitics, OPEC, Wars)
+                    try:
+                        all_news = fetch_all_instant_news(channel_name)
+                        emergency_keywords = [
+                            "war", "attack", "missile", "middle east", "israel", "iran", "russia", "ukraine",
+                            "opec", "emergency", "crisis", "escalation", "sanction", "tariff", "threat", "strait",
+                            "explosion", "military", "ceasefire", "assassination", "nuclear"
+                        ]
+                        for art in all_news[:4]:
+                            title = art.get("title", "").strip()
+                            if title and title not in ctrl["seen_weekend_news"]:
+                                t_lower = title.lower()
+                                if any(k in t_lower for k in emergency_keywords):
+                                    ctrl["seen_weekend_news"].add(title)
+                                    alert_msg = (
+                                        "🚨 *APEX MACRO — WEEKEND CATALYST ALERT*\n"
+                                        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                        "⚠️ *Market Status:* `Weekend Session (Global Markets Closed)`\n"
+                                        f"📡 *Breaking Wire:* \"{title}\"\n\n"
+                                        "🎯 *Monday Open Implication:* Heightened gap risk and safe-haven volatility (Gold / Oil / USD).\n"
+                                        f"🕒 *Time:* `{now.strftime('%Y-%m-%d %H:%M')} (KRD / UTC+3)`\n"
+                                        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                        "⚡ *ApexMacro Institutional Terminal v14.0*"
+                                    )
+                                    send_telegram_alert(alert_msg)
+                                    break
+                    except Exception:
+                        pass
+                else:
+                    # Clear weekend seen cache when work week starts
+                    if ctrl["seen_weekend_news"]:
+                        ctrl["seen_weekend_news"].clear()
+
+                    # During Open Market Hours (Monday - Friday): Send unified hourly report
+                    if current_hour != ctrl["last_hour"]:
+                        ctrl["last_hour"] = current_hour
+                        report_msg = build_hourly_report(fred_key, channel_name)
+                        send_telegram_alert(report_msg)
             except Exception:
                 pass
             
