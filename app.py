@@ -496,7 +496,7 @@ def _calc_oil_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHA
     final_oil_score = (0.50 * (w_mf["score"] if w_mf else 0.0)) + (0.50 * (oil_news_pts / 0.50))
     return final_oil_score, oil_news_pts
 
-# ── NEW HOURLY REPORT FORMAT (USD, GOLD, EUR, GBP, OIL) WITHOUT EUR/USD & NO SPAM ──
+# ── HOURLY REPORT FORMAT WITH USD, GOLD, EUR, GBP, OIL ──
 def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> str:
     now = get_current_time()
 
@@ -623,7 +623,6 @@ def start_background_alert_daemon(fred_key: str, channel_name: str) -> None:
         while True:
             try:
                 current_hour = get_current_time().strftime("%Y-%m-%d %H")
-                # ── STRICT HOURLY TRIGGER TO PREVENT SPAM ──
                 if current_hour != ctrl["last_hour"]:
                     ctrl["last_hour"] = current_hour
                     report_msg = build_hourly_report(fred_key, channel_name)
