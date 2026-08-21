@@ -283,7 +283,8 @@ def inject_css() -> None:
   --text:#ecf7ff; --muted:#8fa3b4; --line:rgba(165,220,235,.12);
   --shadow:0 18px 60px rgba(0,0,0,.42);
 }
-*{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif!important;box-sizing:border-box;}
+html,body,p,div,span,button,input,select,textarea{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;box-sizing:border-box;}
+[data-testid="stExpander"] summary span[data-testid="stIconMaterial"]{font-family:"Material Symbols Rounded","Material Symbols Outlined",monospace!important;}
 code,pre,.mono-text{font-family:'JetBrains Mono',monospace!important;}
 html,body,[data-testid='stAppViewContainer'],.stApp{background:
  radial-gradient(circle at 12% 0%,rgba(0,245,255,.08),transparent 28%),
@@ -1703,10 +1704,22 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str) -> None:
     render_html('<div class="sec-title">Upcoming High-Impact Catalyst Radar &amp; AI Nowcasts</div>')
 
     # Render Event Cards
+    CURRENCY_FLAGS = {
+        "USD": "🇺🇸",
+        "EUR": "🇪🇺",
+        "GBP": "🇬🇧",
+        "CAD": "🇨🇦",
+        "JPY": "🇯🇵",
+        "AUD": "🇦🇺",
+        "NZD": "🇳🇿",
+        "CHF": "🇨🇭"
+    }
+
     for idx, ev in enumerate(events):
         nowcast = compute_event_nowcast(ev, fred_key, all_news)
         
-        cur_flag = "🇺🇸" if ev["currency"] == "USD" else ("🇪🇺" if ev["currency"] == "EUR" else "🇬🇧")
+        cur = ev.get("currency", "USD")
+        cur_flag = CURRENCY_FLAGS.get(cur, "🌐")
         badge_bg = "rgba(0,255,163,0.12)" if nowcast["bias_color"] == "#00ffa3" else ("rgba(255,94,117,0.12)" if nowcast["bias_color"] == "#ff5e75" else "rgba(255,209,102,0.12)")
         
         # Main Event Card
@@ -1716,6 +1729,7 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str) -> None:
             <div>
               <div style="display:flex;align-items:center;gap:8px;">
                 <span style="font-size:18px;">{cur_flag}</span>
+                <span style="font-size:11px;font-weight:900;color:#00f5ff;background:rgba(0,245,255,0.12);border:1px solid rgba(0,245,255,0.3);padding:2px 7px;border-radius:6px;">{cur}</span>
                 <span style="font-size:15px;font-weight:800;color:#fff;">{ev['title']}</span>
                 <span style="font-size:10px;background:rgba(255,94,117,0.18);border:1px solid rgba(255,94,117,0.4);color:#ff5e75;padding:2px 8px;border-radius:8px;font-weight:700;">{ev['impact']} Impact</span>
               </div>
