@@ -155,11 +155,9 @@ def verify_vip_key(key: str, client_id: str = "") -> tuple[bool, str, str]:
         return False, "", "Please enter a key"
     clean_k = key.strip().upper()
     
-    # 1. Check Master Key (Master Admin can login anywhere)
     if clean_k == APEX_MASTER_KEY.upper() or clean_k == "APEX-MASTER-2026":
         return True, "ADMINISTRATOR", "Master Admin Lifetime Access"
     
-    # 2. Check if key exists in registry & enforce device binding
     clients = load_vip_registry()
     matched_client = None
     for c in clients:
@@ -173,15 +171,12 @@ def verify_vip_key(key: str, client_id: str = "") -> tuple[bool, str, str]:
 
         bound_id = matched_client.get("bound_device_id")
         if not bound_id and client_id:
-            # First time activation on client device! Bind device
             matched_client["bound_device_id"] = client_id
             matched_client["bound_at"] = get_current_time().strftime("%Y-%m-%d %H:%M")
             save_vip_registry(clients)
         elif bound_id and bound_id != client_id and client_id:
-            # Someone else is trying to use this key on a 2nd device!
-            return False, matched_client.get("client_name", ""), "⛔ Access Denied: This license is already bound to another device. Multi-device sharing is not allowed."
+            return False, matched_client.get("client_name", ""), "⛔ Access Denied: This license is already bound to another device."
 
-    # 3. Check Static Demo/Preview Keys
     static_keys = {
         "APEX-VIP-PREVIEW": "VIP Preview Client",
         "APEX-2026-VIP": "Executive VIP",
@@ -190,7 +185,6 @@ def verify_vip_key(key: str, client_id: str = "") -> tuple[bool, str, str]:
     if clean_k in static_keys:
         return True, static_keys[clean_k], "Active VIP License"
         
-    # 4. Check Cryptographic Key Format: APEX-<NAME>-<EXPIRY>-<SIG>
     parts = clean_k.split("-")
     if len(parts) == 4 and parts[0] == "APEX":
         name, exp_str, sig = parts[1], parts[2], parts[3]
@@ -333,7 +327,6 @@ html,body,[data-testid='stAppViewContainer'],.stApp{background:
 #MainMenu,footer,.stDeployButton,[data-testid="collapsedControl"],[data-testid="stSidebarCollapsedControl"],button[kind="header"],[data-testid="stHeaderActionElements"]{display:none!important;visibility:hidden!important;}
 header[data-testid='stHeader']{display:none!important;background:transparent!important;}
 
-/* Reference-inspired top navigation */
 .nav-shell{display:grid;grid-template-columns:240px 1fr 270px;align-items:center;gap:18px;padding:12px 14px 12px 20px;margin-bottom:14px;background:rgba(7,14,22,.84);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow),inset 0 0 0 1px rgba(255,255,255,.025);backdrop-filter:blur(20px) saturate(160%);}
 .nav-brand{display:flex;align-items:center;gap:10px;}
 .nav-logo{font-size:22px;font-weight:900;letter-spacing:.5px;color:var(--cyan);text-shadow:0 0 18px rgba(0,245,255,.35);}
@@ -342,19 +335,16 @@ header[data-testid='stHeader']{display:none!important;background:transparent!imp
 .status-dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 12px rgba(0,255,163,.8);display:inline-block;}
 .status-chip{display:inline-flex;align-items:center;gap:7px;padding:7px 11px;border-radius:10px;background:rgba(0,255,163,.05);border:1px solid rgba(0,255,163,.18);font-size:10px;color:#c9e9df;font-weight:700;}
 
-/* Navigation radio */
 div[data-testid='stRadio'] div[role='radiogroup']{display:flex!important;justify-content:center!important;gap:6px!important;flex-wrap:wrap!important;}
 div[data-testid='stRadio'] div[role='radiogroup'] label{border:1px solid transparent!important;background:transparent!important;color:#a6b6c4!important;border-radius:10px!important;padding:8px 13px!important;font-size:12px!important;font-weight:650!important;transition:.2s ease!important;}
 div[data-testid='stRadio'] div[role='radiogroup'] label:hover{background:rgba(0,245,255,.05)!important;color:#eaf7ff!important;}
 div[data-testid='stRadio'] div[role='radiogroup'] [aria-checked='true']{background:linear-gradient(135deg,rgba(0,245,255,.10),rgba(0,255,163,.06))!important;border-color:rgba(0,245,255,.35)!important;color:#dffcff!important;box-shadow:0 0 20px rgba(0,245,255,.08)!important;}
 div[data-testid='stRadio'] div[role='radiogroup'] label>div:first-child{display:none!important;}
 
-/* Sidebar: settings only */
 section[data-testid='stSidebar']{background:rgba(5,10,16,.93)!important;border-right:1px solid rgba(0,245,255,.10)!important;backdrop-filter:blur(24px)!important;box-shadow:18px 0 60px rgba(0,0,0,.32)!important;}
 section[data-testid='stSidebar'] .block-container{padding:16px 14px!important;}
 section[data-testid='stSidebar'] div[data-testid='stRadio']{display:none!important;}
 
-/* Custom Cyber Glass Inputs & Selectbox */
 .stSelectbox, .stSelectbox *,
 [data-testid='stSelectbox'], [data-testid='stSelectbox'] *,
 [data-baseweb='select'], [data-baseweb='select'] *,
@@ -381,7 +371,6 @@ div[role='combobox'], div[role='combobox'] * {
   color: #00f5ff !important;
 }
 
-/* Dropdown Menu Popup Overlay */
 ul[data-baseweb='menu'], ul[data-baseweb='menu'] *,
 div[data-baseweb='popover'], div[data-baseweb='popover'] * {
   background-color: #060d17 !important;
@@ -406,14 +395,11 @@ li[data-baseweb='menu-item'][aria-selected='true'] {
 div[data-baseweb='input'] input,.stTextInput input{background:rgba(10,19,29,.86)!important;color:#fff!important;border:1px solid rgba(0,245,255,.16)!important;border-radius:11px!important;box-shadow:inset 0 2px 8px rgba(0,0,0,.25)!important;}
 div[data-baseweb='input'] input:focus,.stTextInput input:focus{border-color:var(--cyan)!important;box-shadow:0 0 18px rgba(0,245,255,.18)!important;}
 
-/* Page header */
 .pg-title{text-align:left;padding:16px 4px 20px;}
 .pg-sub{font-size:10px;font-weight:800;letter-spacing:2.5px;color:var(--cyan);text-transform:uppercase;margin-bottom:8px;text-shadow:0 0 14px rgba(0,245,255,.28);}
 .pg-h1{font-size:34px;line-height:1.08;font-weight:900;color:#f7fbff;margin:0 0 8px;letter-spacing:-1.2px;}
-.pg-h1::first-line{color:#fff;}
 .pg-bread{font-size:12.5px;color:var(--muted);font-weight:500;max-width:880px;}
 
-/* Compact market status strip */
 .top-bar{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:10px 14px;margin-bottom:18px;background:rgba(8,16,24,.68);border:1px solid rgba(0,245,255,.10);border-radius:14px;backdrop-filter:blur(16px);}
 .top-brand{display:flex;align-items:center;gap:8px;font-size:11px;font-weight:900;color:#dffcff;letter-spacing:.7px;}
 .top-tickers{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end;}
@@ -424,7 +410,6 @@ div[data-baseweb='input'] input:focus,.stTextInput input:focus{border-color:var(
 .sec-title{font-size:10px;font-weight:900;letter-spacing:2px;text-transform:uppercase;color:#79dff0;margin:6px 0 11px;display:flex;align-items:center;gap:8px;text-shadow:0 0 10px rgba(0,245,255,.20);}
 .sec-title::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,rgba(0,245,255,.22),transparent);}
 
-/* Neon/glass cards */
 .m-card,.dt-wrap,.chart-card,.comp-box,.news-card{background:linear-gradient(180deg,rgba(15,24,34,.78),rgba(8,15,23,.74));border:1px solid rgba(150,210,225,.11);backdrop-filter:blur(16px) saturate(155%);-webkit-backdrop-filter:blur(16px) saturate(155%);box-shadow:var(--shadow),inset 0 0 0 1px rgba(255,255,255,.018);}
 .m-card{border-radius:16px;padding:16px 17px;height:100%;transition:.25s ease;position:relative;overflow:hidden;}
 .m-card::before{content:'';position:absolute;inset:0;background:linear-gradient(135deg,rgba(0,245,255,.05),transparent 40%,rgba(0,255,163,.025));pointer-events:none;}
@@ -455,7 +440,6 @@ div[data-baseweb='input'] input:focus,.stTextInput input:focus{border-color:var(
 .news-card{padding:13px 15px;margin-bottom:9px;border-radius:14px;transition:.2s ease;}
 .news-card:hover{transform:translateY(-2px);border-color:rgba(0,245,255,.25);box-shadow:0 12px 30px rgba(0,0,0,.32),0 0 18px rgba(0,245,255,.07);}
 
-/* Metrics / controls */
 div[data-testid='stMetric']{background:linear-gradient(180deg,rgba(14,25,35,.82),rgba(7,14,21,.78))!important;border:1px solid rgba(0,245,255,.12)!important;border-radius:15px!important;padding:15px!important;box-shadow:var(--shadow)!important;}
 div[data-testid='stMetric'] label{color:#879aa8!important;font-size:10px!important;font-weight:750!important;}
 button[kind='primary'],.stButton>button{border-radius:11px!important;border:1px solid rgba(0,245,255,.24)!important;background:linear-gradient(135deg,rgba(0,245,255,.10),rgba(0,255,163,.06))!important;color:#e9fbff!important;font-weight:800!important;box-shadow:0 0 18px rgba(0,245,255,.06)!important;}
@@ -499,7 +483,6 @@ GLOBAL_ALERT_TIMESTAMPS: dict[str, float] = {}
 
 @st.cache_data(ttl=60, show_spinner=False)
 def _calc_currency_score_only(currency: str, fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> float | None:
-    """Calculates EXACT full composite score (Macro 50% + News 50%) safely."""
     cfg = CURRENCY_SERIES[currency]
     weighted, tw = [], 0.0
     for name, meta in cfg["indicators"].items():
@@ -524,7 +507,6 @@ def _calc_currency_score_only(currency: str, fred_key: str, channel_name: str = 
 
 @st.cache_data(ttl=60, show_spinner=False)
 def _calc_gold_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> tuple[float | None, str, float]:
-    """Calculates EXACT Gold score, Real Yield, and News Sentiment safely."""
     ry_val_str = "N/A"
     gold_news_pts = 0.0
 
@@ -546,7 +528,6 @@ def _calc_gold_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CH
     gold_ry = -ry_mf["score"] if ry_mf else 0.0
     ry_val_str = f"{ry_vals[-1]:.2f}%"
 
-    # USD macro score
     cfg = CURRENCY_SERIES["USD"]
     weighted, tw = [], 0.0
     for name, meta in cfg["indicators"].items():
@@ -565,13 +546,11 @@ def _calc_gold_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CH
     sentiment_res = analyze_news_rule_based(all_news)
     gold_news_pts = sentiment_res["scores"].get("Gold", 0.0)
 
-    # EXACT SAME FORMULA AS page_gold()
     gold_s = (0.30 * gold_ry) + (0.20 * gold_usd) + (0.50 * (gold_news_pts / 0.50))
     return gold_s, ry_val_str, gold_news_pts
 
 @st.cache_data(ttl=60, show_spinner=False)
 def _calc_oil_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> tuple[float | None, float]:
-    """Calculates EXACT Crude Oil score and News Sentiment safely."""
     w_df = fetch_fred(OIL_SERIES["wti"], fred_key, limit=90)
     if w_df is None or w_df.empty:
         w_df = fetch_fred("POILWTIUSDM", fred_key, limit=60)
@@ -589,7 +568,6 @@ def _calc_oil_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHA
     return final_oil_score, oil_news_pts
 
 def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> str:
-    """Ultra-compact hourly report — Gold on top, USD, EUR, EUR/USD only. 100% matched with UI."""
     now = get_current_time()
 
     usd_score = _calc_currency_score_only("USD", fred_key, channel_name) or 0.0
@@ -623,12 +601,12 @@ def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHAN
     return "\n".join(lines)
 
 def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
-    """Checks Gold, Crude Oil, and US Dollar in background — sends clean shift alert on significant moves without currency spam."""
+    """Checks Gold, Crude Oil, and US Dollar — sends instant Telegram alert whenever bias shifts (Bullish/Bearish/Neutral)."""
     if not fred_key:
         return
     import time
     now_ts = time.time()
-    COOLDOWN_SECONDS = 600  # 10 minutes cooldown per asset
+    COOLDOWN_SECONDS = 300  # 5 minutes cooldown between consecutive alerts per asset
 
     try:
         # 1. Check Gold (XAUUSD)
@@ -636,23 +614,19 @@ def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
         if gold_s is not None:
             current_gold_bias, _, _ = bias_from_score(gold_s)
             last_gold_bias = GLOBAL_ALERT_STATE.get("Gold")
-            last_gold_score = GLOBAL_ALERT_SCORES.get("Gold", gold_s)
             last_gold_time = GLOBAL_ALERT_TIMESTAMPS.get("Gold", 0)
-
-            score_jump = abs(gold_s - last_gold_score) >= 0.12
 
             if last_gold_bias is None:
                 GLOBAL_ALERT_STATE["Gold"] = current_gold_bias
                 GLOBAL_ALERT_SCORES["Gold"] = gold_s
-            elif (current_gold_bias != last_gold_bias or score_jump) and (now_ts - last_gold_time > COOLDOWN_SECONDS):
-                status_txt = "Direction Changed" if current_gold_bias != last_gold_bias else "Significant Score Shift"
+            elif current_gold_bias != last_gold_bias and (now_ts - last_gold_time > COOLDOWN_SECONDS):
                 alert_msg = (
-                    "🔄 *APEX MACRO — SHIFT ALERT*\n"
+                    "🔄 *APEX MACRO — BIAS SHIFT ALERT*\n"
                     "━━━━━━━━━━━━━━━━━━━\n"
                     "🥇 *Asset:* `Gold (XAUUSD)`\n"
-                    f"📊 *Status:* `{status_txt}`\n\n"
-                    f"▫️ *Previous Bias:*  `{last_gold_bias}`\n"
-                    f"▫️ *New Bias:*       `{current_gold_bias}`\n\n"
+                    f"📊 *New Trend:* `{current_gold_bias}`\n\n"
+                    f"▫️ *Previous State:*  `{last_gold_bias}`\n"
+                    f"▫️ *Current State:*   `{current_gold_bias}`\n\n"
                     f"📈 *Composite Score:*  `{gold_s:+.3f}`\n"
                     f"📡 *News Sentiment:*   `{gold_news_pts:+.2f} pts`\n"
                     "━━━━━━━━━━━━━━━━━━━\n"
@@ -668,23 +642,19 @@ def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
         if oil_s is not None:
             current_oil_bias, _, _ = bias_from_score(oil_s)
             last_oil_bias = GLOBAL_ALERT_STATE.get("Oil")
-            last_oil_score = GLOBAL_ALERT_SCORES.get("Oil", oil_s)
             last_oil_time = GLOBAL_ALERT_TIMESTAMPS.get("Oil", 0)
-
-            score_jump = abs(oil_s - last_oil_score) >= 0.12
 
             if last_oil_bias is None:
                 GLOBAL_ALERT_STATE["Oil"] = current_oil_bias
                 GLOBAL_ALERT_SCORES["Oil"] = oil_s
-            elif (current_oil_bias != last_oil_bias or score_jump) and (now_ts - last_oil_time > COOLDOWN_SECONDS):
-                status_txt = "Direction Changed" if current_oil_bias != last_oil_bias else "Significant Score Shift"
+            elif current_oil_bias != last_oil_bias and (now_ts - last_oil_time > COOLDOWN_SECONDS):
                 alert_msg = (
-                    "🔄 *APEX MACRO — SHIFT ALERT*\n"
+                    "🔄 *APEX MACRO — BIAS SHIFT ALERT*\n"
                     "━━━━━━━━━━━━━━━━━━━\n"
                     "🛢️ *Asset:* `Crude Oil (WTI/Brent)`\n"
-                    f"📊 *Status:* `{status_txt}`\n\n"
-                    f"▫️ *Previous Bias:*  `{last_oil_bias}`\n"
-                    f"▫️ *New Bias:*       `{current_oil_bias}`\n\n"
+                    f"📊 *New Trend:* `{current_oil_bias}`\n\n"
+                    f"▫️ *Previous State:*  `{last_oil_bias}`\n"
+                    f"▫️ *Current State:*   `{current_oil_bias}`\n\n"
                     f"📈 *Composite Score:*  `{oil_s:+.3f}`\n"
                     f"📡 *News Sentiment:*   `{oil_news_pts:+.2f} pts`\n"
                     "━━━━━━━━━━━━━━━━━━━\n"
@@ -700,23 +670,19 @@ def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
         if usd_s is not None:
             curr_bias, _, _ = bias_from_score(usd_s)
             last_bias = GLOBAL_ALERT_STATE.get("USD")
-            last_usd_score = GLOBAL_ALERT_SCORES.get("USD", usd_s)
             last_time = GLOBAL_ALERT_TIMESTAMPS.get("USD", 0)
-
-            score_jump = abs(usd_s - last_usd_score) >= 0.12
 
             if last_bias is None:
                 GLOBAL_ALERT_STATE["USD"] = curr_bias
                 GLOBAL_ALERT_SCORES["USD"] = usd_s
-            elif (curr_bias != last_bias or score_jump) and (now_ts - last_time > COOLDOWN_SECONDS):
-                status_txt = "Direction Changed" if curr_bias != last_bias else "Significant Score Shift"
+            elif curr_bias != last_bias and (now_ts - last_time > COOLDOWN_SECONDS):
                 alert_msg = (
-                    "🔄 *APEX MACRO — SHIFT ALERT*\n"
+                    "🔄 *APEX MACRO — BIAS SHIFT ALERT*\n"
                     "━━━━━━━━━━━━━━━━━━━\n"
                     "🇺🇸 *Asset:* `US Dollar Index (USD)`\n"
-                    f"📊 *Status:* `{status_txt}`\n\n"
-                    f"▫️ *Previous Bias:*  `{last_bias}`\n"
-                    f"▫️ *New Bias:*       `{curr_bias}`\n\n"
+                    f"📊 *New Trend:* `{curr_bias}`\n\n"
+                    f"▫️ *Previous State:*  `{last_bias}`\n"
+                    f"▫️ *Current State:*   `{curr_bias}`\n\n"
                     f"📈 *Composite Score:*  `{usd_s:+.3f}`\n"
                     "━━━━━━━━━━━━━━━━━━━\n"
                     "⚡ *ApexMacro Terminal v13.0*"
@@ -731,14 +697,12 @@ def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
 
 @st.cache_resource
 def _get_daemon_controller():
-    """Application-wide singleton controller ensuring strictly ONE background worker exists across all tabs & refreshes."""
     return {
         "running": False,
         "last_hour": get_current_time().strftime("%Y-%m-%d %H"),
     }
 
 def start_background_alert_daemon(fred_key: str, channel_name: str) -> None:
-    """Spawns strictly ONE background thread per server lifetime, preventing spam on page refresh."""
     ctrl = _get_daemon_controller()
     if ctrl["running"]:
         return
@@ -747,19 +711,16 @@ def start_background_alert_daemon(fred_key: str, channel_name: str) -> None:
     def _daemon_loop():
         while True:
             try:
-                # 1. Dispatch hourly report strictly when a NEW hour starts
                 current_hour = get_current_time().strftime("%Y-%m-%d %H")
                 if current_hour != ctrl["last_hour"]:
                     ctrl["last_hour"] = current_hour
                     report_msg = build_hourly_report(fred_key, channel_name)
                     send_telegram_alert(report_msg)
 
-                # 2. Check for genuine direction changes with cooldown
                 check_global_market_shifts(fred_key, channel_name)
             except Exception:
                 pass
             
-            # Check every 30 seconds
             time.sleep(30)
 
     t = threading.Thread(target=_daemon_loop, daemon=True, name="ApexMacroAlertDaemon")
@@ -767,7 +728,6 @@ def start_background_alert_daemon(fred_key: str, channel_name: str) -> None:
 
 
 def is_duplicate_news(title1: str, title2: str, threshold: float = 0.55) -> bool:
-    """Computes keyword Jaccard similarity to detect duplicate headlines across different news sources."""
     stop_words = {"the", "a", "an", "in", "on", "of", "to", "for", "and", "is", "at", "by", "from", "as", "with", "news", "breaking", "update", "alert", "says", "report", "live"}
     def get_keywords(t: str) -> set:
         words = re.findall(r'\b[a-zA-Z]{3,}\b', t.lower())
@@ -782,7 +742,6 @@ def is_duplicate_news(title1: str, title2: str, threshold: float = 0.55) -> bool
     return (len(inter) / len(union)) >= threshold if union else False
 
 def deduplicate_news_articles(articles: list) -> list:
-    """Filters out duplicate or rephrased news so AI/sentiment never double-counts the same event."""
     unique_articles = []
     for art in articles:
         title = art.get("title", "").strip()
@@ -824,16 +783,12 @@ def fetch_telegram_channel_news(channel_username: str) -> list:
 
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_all_instant_news(channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> list:
-    """Aggregates high-speed breaking wires (Telegram + RSS) and strictly deduplicates them."""
     all_raw = []
-    
-    # 1. High-speed Telegram Wires (FinancialJuice, ForexLive, FirstSquawk, etc.)
     tg_channels = [channel_name, "financialjuice", "forexlive", "firstsquawk"]
     for ch in tg_channels:
         if ch:
             all_raw.extend(fetch_telegram_channel_news(ch))
 
-    # 2. Major Financial RSS Feeds
     rss_urls = [
         ("ForexLive", "https://www.forexlive.com/feed/news"),
         ("FXStreet", "https://www.fxstreet.com/rss/news"),
@@ -855,12 +810,10 @@ def fetch_all_instant_news(channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> list
         except Exception:
             continue
 
-    # 3. Apply Intelligent Deduplication
     return deduplicate_news_articles(all_raw)
 
 @st.cache_data(ttl=900, show_spinner=False)
 def get_openrouter_analysis(news_text: str, api_key: str = DEFAULT_OPENROUTER_KEY) -> str:
-    """Uses OpenRouter GPT-4o-mini to analyze market news flow for Gold, USD, and Oil."""
     if not news_text or not api_key:
         return "AI analysis unavailable."
     url = "https://openrouter.ai/api/v1/chat/completions"
@@ -912,7 +865,6 @@ def analyze_news_rule_based(articles: list) -> dict:
     if not articles:
         return {"scores": scores, "drivers": drivers, "ai_summary": "No live news articles detected for AI analysis.", "ai_active": True}
 
-    # Generate real-time AI summary using OpenRouter GPT-4o-mini
     combined_news = "\n".join([f"- {a.get('title', '')}: {a.get('description', '')}" for a in articles[:6]])
     ai_summary = get_openrouter_analysis(combined_news)
 
@@ -1184,7 +1136,6 @@ def page_dashboard(fred_key: str, channel_name: str) -> None:
         with col:
             render_html(_card)
 
-    # ── SIDE-BY-SIDE: TABLE ON LEFT, COMPOSITE & AI SUMMARY ON RIGHT ──
     st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
     t_col, d_col = st.columns([1, 1])
     
@@ -1218,7 +1169,6 @@ def page_dashboard(fred_key: str, channel_name: str) -> None:
         </div>
         """)
 
-    # ── FULL-WIDTH BOTTOM: LIVE INSTITUTIONAL WIRE FEED ──
     st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
     render_html('<div class="sec-title">Live Institutional Wire &amp; Macro Flow</div>')
     arts = fetch_all_instant_news(channel_name)
@@ -1276,7 +1226,6 @@ def page_gold(fred_key: str, channel_name: str) -> None:
     gold_s = (0.30 * gold_ry) + (0.20 * gold_usd) + (0.50 * (gold_news_pts / 0.50))
     lbl_gold, css_gold, _ = bias_from_score(gold_s)
 
-    # ── 3 KEY METRICS FOR GOLD ──
     render_html('<div class="sec-title">Key Safe-Haven Indicators</div>')
     k1, k2, k3 = st.columns(3)
     with k1:
@@ -1315,7 +1264,6 @@ def page_gold(fred_key: str, channel_name: str) -> None:
         </div>
         """)
 
-    # ── SIDE-BY-SIDE: TABLE ON LEFT, COMPOSITE & AI SUMMARY ON RIGHT ──
     st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
     t_col, d_col = st.columns([1, 1])
 
@@ -1349,7 +1297,6 @@ def page_gold(fred_key: str, channel_name: str) -> None:
         </div>
         """)
 
-    # ── FULL-WIDTH BOTTOM: LIVE INSTITUTIONAL WIRE FEED ──
     st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
     render_html('<div class="sec-title">Live Safe-Haven &amp; Gold Wire Flow</div>')
     n_cols = st.columns(2)
@@ -1406,7 +1353,6 @@ def page_oil(fred_key: str, channel_name: str) -> None:
     final_oil_score = (0.50 * (w_mf["score"] if w_mf else 0.0)) + (0.50 * (oil_news_pts / 0.50))
     lbl_oil, css_oil, _ = bias_from_score(final_oil_score)
 
-    # ── 3 KEY METRICS FOR OIL ──
     render_html('<div class="sec-title">Key Energy Indicators</div>')
     k1, k2, k3 = st.columns(3)
     with k1:
@@ -1441,7 +1387,6 @@ def page_oil(fred_key: str, channel_name: str) -> None:
         </div>
         """)
 
-    # ── SIDE-BY-SIDE: TABLE ON LEFT, COMPOSITE & AI SUMMARY ON RIGHT ──
     st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
     t_col, d_col = st.columns([1, 1])
 
@@ -1474,7 +1419,6 @@ def page_oil(fred_key: str, channel_name: str) -> None:
         </div>
         """)
 
-    # ── FULL-WIDTH BOTTOM: LIVE INSTITUTIONAL WIRE FEED ──
     st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
     render_html('<div class="sec-title">Live Energy Wire &amp; Crude Flow</div>')
     n_cols = st.columns(2)
@@ -1491,22 +1435,18 @@ def page_oil(fred_key: str, channel_name: str) -> None:
             """)
 
 def render_vip_gate() -> dict | None:
-    """Renders the luxury cyber-glass VIP authentication gate when not logged in."""
     client_ip = get_client_device_identifier()
 
-    # Always keep URL clean (strip any leftover query parameters)
     try:
         if len(st.query_params) > 0:
             st.query_params.clear()
     except Exception:
         pass
 
-    # 1. Check Session State
     auth_user = st.session_state.get("APEX_AUTH_USER")
     if auth_user and auth_user.get("is_authenticated"):
         return auth_user
 
-    # 2. Check Direct IP-Whitelisted Auto-Login (Zero URL parameters!)
     if client_ip:
         auth_db = load_authorized_ips()
         ip_entry = auth_db.get(client_ip)
@@ -1523,7 +1463,6 @@ def render_vip_gate() -> dict | None:
                 }
                 return st.session_state["APEX_AUTH_USER"]
 
-    # 3. Centered VIP Gate UI
     col1, col2, col3 = st.columns([1, 2.2, 1])
     with col2:
         st.markdown("<div style='height:40px;'></div>", unsafe_allow_html=True)
@@ -1572,7 +1511,6 @@ def render_vip_gate() -> dict | None:
                     "is_admin": is_admin,
                     "key": entered_key
                 }
-                # Directly save IP to authorized server cache for silent auto-login
                 save_authorized_ip(client_ip, user_name, entered_key, expiry_info, is_admin)
                 st.success(f"✅ Access Granted! Welcome, {user_name}.")
                 time.sleep(0.4)
@@ -1583,7 +1521,6 @@ def render_vip_gate() -> dict | None:
         return None
 
 def render_admin_key_generator() -> None:
-    """Renders the Admin VIP License Generator & Client Registry (visible strictly to Master Admin)."""
     with st.expander("👑 MASTER ADMIN — VIP LICENSE MANAGER & CLIENT REGISTRY", expanded=False):
         render_html('<div style="font-size:12px;color:#8fa3b4;margin-bottom:10px;">Generate time-locked cryptographic VIP keys, enforce 1-device binding, and manage clients:</div>')
         g1, g2, g3 = st.columns([2, 2, 1.5])
@@ -1616,7 +1553,6 @@ def render_admin_key_generator() -> None:
             st.code(generated_key, language="text")
             st.info("📋 Key has been saved to your VIP Client Registry below.")
 
-        # ── CLIENT REGISTRY & STATS TABLE ──
         st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
         render_html('<div class="sec-title">VIP Client Registry &amp; Subscription Database</div>')
         
@@ -1637,7 +1573,6 @@ def render_admin_key_generator() -> None:
 
         expired_c = total_c - active_c
 
-        # 3 KPI Stats
         kpi1, kpi2, kpi3 = st.columns(3)
         with kpi1:
             render_html(f"""
@@ -1676,7 +1611,6 @@ def render_admin_key_generator() -> None:
                 })
             st.dataframe(pd.DataFrame(tbl_data), use_container_width=True, hide_index=True)
             
-            # Actions: Revoke or Reset Device Lock
             act_col1, act_col2, act_col3 = st.columns([3, 1.5, 1.5])
             with act_col1:
                 key_selected = st.selectbox("Select Client Key:", [c.get("key") for c in clients], key="sel_key_action")
@@ -1710,23 +1644,18 @@ def main() -> None:
     fred_key = DEFAULT_FRED_KEY
     channel_name = DEFAULT_TELEGRAM_CHANNEL
 
-    # ── 24/7 AUTONOMOUS BACKGROUND ALERT ENGINE (RUNS EVEN WHEN BROWSER IS CLOSED) ──
     if fred_key:
         start_background_alert_daemon(fred_key, channel_name)
 
-    # ── 🔒 VIP ACCESS PROTECTION GATE ──
     auth_user = render_vip_gate()
     if not auth_user:
         return
 
-    # ── SINGLE TOP NAVBAR ──
     render_top_header(auth_user)
 
-    # ── ADMIN KEY GENERATOR (VISIBLE ONLY TO MASTER ADMIN) ──
     if auth_user.get("is_admin"):
         render_admin_key_generator()
 
-    # ── MAIN EXECUTIVE DASHBOARD ──
     page_dashboard(fred_key, channel_name)
 
     render_html(f"""
