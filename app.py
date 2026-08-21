@@ -553,35 +553,40 @@ def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
     except Exception:
         pass
 
-_BACKGROUND_DAEMON_INITIALIZED = False
+@st.cache_resource
+def _get_daemon_controller():
+    """Application-wide singleton controller ensuring strictly ONE background worker exists across all tabs & refreshes."""
+    return {
+        "running": False,
+        "last_hour": get_current_time().strftime("%Y-%m-%d %H"),
+    }
 
 def start_background_alert_daemon(fred_key: str, channel_name: str) -> None:
-    """Spawns an autonomous background daemon thread that runs 24/7, sending hourly reports and shift alerts continuously."""
-    global _BACKGROUND_DAEMON_INITIALIZED
-    if _BACKGROUND_DAEMON_INITIALIZED:
+    """Spawns strictly ONE background thread per server lifetime, preventing spam on page refresh."""
+    ctrl = _get_daemon_controller()
+    if ctrl["running"]:
         return
-    _BACKGROUND_DAEMON_INITIALIZED = True
+    ctrl["running"] = True
 
     def _daemon_loop():
-        last_hourly_dispatched = ""
         while True:
             try:
-                # 1. Dispatch hourly report at the turn of each hour
+                # 1. Dispatch hourly report strictly when a NEW hour starts
                 current_hour = get_current_time().strftime("%Y-%m-%d %H")
-                if current_hour != last_hourly_dispatched:
+                if current_hour != ctrl["last_hour"]:
+                    ctrl["last_hour"] = current_hour
                     report_msg = build_hourly_report(fred_key, channel_name)
                     send_telegram_alert(report_msg)
-                    last_hourly_dispatched = current_hour
 
-                # 2. Check for real-time market shifts across Gold, Oil, and Currencies
+                # 2. Check for genuine direction changes with cooldown
                 check_global_market_shifts(fred_key, channel_name)
             except Exception:
                 pass
             
-            # Wait 20 seconds between background cycles
-            time.sleep(20)
+            # Check every 30 seconds
+            time.sleep(30)
 
-    t = threading.Thread(target=_daemon_loop, daemon=True)
+    t = threading.Thread(target=_daemon_loop, daemon=True, name="ApexMacroAlertDaemon")
     t.start()
 
 
