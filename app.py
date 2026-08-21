@@ -210,7 +210,6 @@ def send_telegram_alert(message: str):
     clients = load_vip_registry()
     results = []
     
-    # ناردنی دینامیکی تەنها بۆ ئەو کڕیارانەی کە مۆڵەتیان چالاکە و Telegram IDـیان هەیە
     for client in clients:
         if client.get("status") == "Active" and client.get("telegram_id"):
             chat_id = client["telegram_id"]
@@ -1600,6 +1599,26 @@ def render_admin_key_generator() -> None:
                 })
             st.dataframe(pd.DataFrame(tbl_data), use_container_width=True, hide_index=True)
             
+            # ── EDIT TELEGRAM ID SECTION ──
+            st.markdown("---")
+            render_html('<div style="font-size:11px;font-weight:800;color:#79dff0;margin-bottom:6px;">⚙️ EDIT CLIENT TELEGRAM ID</div>')
+            edit_col1, edit_col2, edit_col3 = st.columns([2, 2, 1.5])
+            with edit_col1:
+                key_to_edit = st.selectbox("Select Key to Update:", [c.get("key") for c in clients], key="sel_key_edit")
+            with edit_col2:
+                new_tg_input = st.text_input("New Telegram ID:", placeholder="e.g. 7153364048", key="new_tg_val")
+            with edit_col3:
+                st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+                if st.button("💾 Save Telegram ID", use_container_width=True):
+                    for c in clients:
+                        if c.get("key") == key_to_edit:
+                            c["telegram_id"] = new_tg_input.strip()
+                    save_vip_registry(clients)
+                    st.success(f"Telegram ID updated successfully!")
+                    time.sleep(0.4)
+                    st.rerun()
+
+            st.markdown("---")
             act_col1, act_col2, act_col3 = st.columns([3, 1.5, 1.5])
             with act_col1:
                 key_selected = st.selectbox("Select Client Key:", [c.get("key") for c in clients], key="sel_key_action")
@@ -1611,7 +1630,7 @@ def render_admin_key_generator() -> None:
                             c["bound_device_id"] = ""
                             c["bound_at"] = ""
                     save_vip_registry(clients)
-                    st.success(f"Device lock for {key_selected} reset! Client can now bind their new phone.")
+                    st.success(f"Device lock for {key_selected} reset!")
                     time.sleep(0.4)
                     st.rerun()
             with act_col3:
