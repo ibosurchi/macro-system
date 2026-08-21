@@ -1411,7 +1411,7 @@ def render_vip_gate() -> dict | None:
             unlock_clicked = st.button("⚡ Unlock Terminal", type="primary", use_container_width=True)
         with b2:
             st.markdown(
-                '<a href="https://t.me/Forex_LiveStream" target="_blank" style="text-decoration:none;"><button style="width:100%;padding:10px 12px;background:rgba(255,209,102,0.10);border:1px solid rgba(255,209,102,0.35);border-radius:11px;color:#ffd166;font-weight:750;font-size:12px;cursor:pointer;">💬 Get VIP License</button></a>',
+                '<a href="https://t.me/ibosurchii" target="_blank" style="text-decoration:none;"><button style="width:100%;padding:10px 12px;background:rgba(255,209,102,0.10);border:1px solid rgba(255,209,102,0.35);border-radius:11px;color:#ffd166;font-weight:750;font-size:12px;cursor:pointer;">💬 Get VIP License</button></a>',
                 unsafe_allow_html=True
             )
 
