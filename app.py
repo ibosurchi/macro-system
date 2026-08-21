@@ -56,24 +56,51 @@ TELEGRAM_BOT_TOKEN = get_secret("TELEGRAM_BOT_TOKEN", "8922903944:AAFP10pFW_mqXO
 APEX_MASTER_KEY = get_secret("APEX_MASTER_KEY", "APEX-MASTER-2026")
 APEX_SECRET_SALT = "APEX_MACRO_SECRET_2026_SALT"
 REGISTRY_FILE = os.path.join(os.path.dirname(__file__), "vip_registry.json")
+SESSIONS_FILE = os.path.join(os.path.dirname(__file__), "vip_sessions.json")
+
+def load_sessions_cache() -> dict:
+    """Loads rolling persistent user sessions from disk."""
+    if os.path.exists(SESSIONS_FILE):
+        try:
+            with open(SESSIONS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_sessions_cache(sessions: dict) -> None:
+    """Saves persistent sessions to disk."""
+    try:
+        with open(SESSIONS_FILE, "w", encoding="utf-8") as f:
+            json.dump(sessions, f, indent=2)
+    except Exception:
+        pass
 
 def get_client_device_info() -> tuple[str, str]:
-    """Extracts a unique client fingerprint and detects device class (Mobile vs PC/Laptop)."""
-    if "CLIENT_DEVICE_ID" not in st.session_state:
-        import uuid
-        st.session_state["CLIENT_DEVICE_ID"] = str(uuid.uuid4())[:12]
-    
-    # Detect device type via User-Agent header
+    """Extracts a persistent IP + Browser device fingerprint and detects device class."""
+    ip = ""
     ua = ""
     try:
         if hasattr(st, "context") and hasattr(st.context, "headers"):
-            ua = str(st.context.headers.get("user-agent", "")).lower()
+            headers = st.context.headers
+            ip = str(headers.get("x-forwarded-for", "")).split(",")[0].strip() or str(headers.get("x-real-ip", "")).strip()
+            ua = str(headers.get("user-agent", "")).strip().lower()
     except Exception:
         pass
         
     is_mobile = any(k in ua for k in ["iphone", "android", "ipad", "mobile", "ipod", "touch"])
     dev_type = "📱 Mobile" if is_mobile else "💻 PC/Laptop"
-    return st.session_state["CLIENT_DEVICE_ID"], dev_type
+    
+    if ip and ua:
+        raw = f"{ip}:{ua[:80]}"
+        fp = hashlib.sha256(raw.encode()).hexdigest()[:16]
+    else:
+        if "CLIENT_DEVICE_ID" not in st.session_state:
+            import uuid
+            st.session_state["CLIENT_DEVICE_ID"] = str(uuid.uuid4())[:12]
+        fp = st.session_state["CLIENT_DEVICE_ID"]
+        
+    return fp, dev_type
 
 def send_admin_security_alert(client_name: str, key: str, violation_reason: str, dev_type: str) -> None:
     """Dispatches instant high-priority fraud notification directly to Master Admin Telegram ID 7153364048."""
@@ -1807,12 +1834,69 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str) -> None:
         st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
 
 def render_vip_gate() -> dict | None:
-    """Renders the luxury cyber-glass VIP authentication gate when not logged in."""
+    """Renders the luxury cyber-glass VIP authentication gate with 5-Day Persistent Device/IP Auto-Login."""
     client_id, dev_type = get_client_device_info()
 
+    # 1. Active In-Memory Session
     auth_user = st.session_state.get("APEX_AUTH_USER")
     if auth_user and auth_user.get("is_authenticated"):
         return auth_user
+
+    # 2. Check 5-Day Persistent Session Cache via Device/IP Fingerprint
+    sessions = load_sessions_cache()
+    dev_session = sessions.get(client_id)
+    if dev_session:
+        try:
+            last_dt = datetime.strptime(dev_session.get("last_active", ""), "%Y-%m-%d %H:%M:%S")
+            # If active within 5 days (5 * 86400 seconds)
+            if (get_current_time() - last_dt).total_seconds() <= (5 * 86400):
+                # Refresh rolling 5-day timestamp
+                dev_session["last_active"] = get_current_time().strftime("%Y-%m-%d %H:%M:%S")
+                save_sessions_cache(sessions)
+                auto_user = {
+                    "is_authenticated": True,
+                    "user_name": dev_session.get("user_name", "VIP Client"),
+                    "expiry_info": dev_session.get("expiry_info", "5-Day Persistent Device Session Active"),
+                    "is_admin": dev_session.get("is_admin", False),
+                    "key": dev_session.get("key", "")
+                }
+                st.session_state["APEX_AUTH_USER"] = auto_user
+                return auto_user
+        except Exception:
+            pass
+
+    # 3. Fallback: Check Query Params if provided
+    saved_key = None
+    try:
+        if hasattr(st, "query_params"):
+            saved_key = st.query_params.get("auth") or st.query_params.get("key")
+    except Exception:
+        pass
+
+    if saved_key:
+        clean_saved = saved_key.strip().upper()
+        is_valid, user_name, expiry_info = verify_vip_key(clean_saved, client_id, dev_type)
+        if is_valid:
+            is_admin = (user_name == "ADMINISTRATOR")
+            sessions[client_id] = {
+                "key": clean_saved,
+                "device_id": client_id,
+                "dev_type": dev_type,
+                "last_active": get_current_time().strftime("%Y-%m-%d %H:%M:%S"),
+                "user_name": user_name,
+                "expiry_info": expiry_info,
+                "is_admin": is_admin
+            }
+            save_sessions_cache(sessions)
+            auto_user = {
+                "is_authenticated": True,
+                "user_name": user_name,
+                "expiry_info": expiry_info,
+                "is_admin": is_admin,
+                "key": clean_saved
+            }
+            st.session_state["APEX_AUTH_USER"] = auto_user
+            return auto_user
 
     col1, col2, col3 = st.columns([1, 2.2, 1])
     with col2:
@@ -1836,7 +1920,7 @@ def render_vip_gate() -> dict | None:
           <div style="font-size:9.5px;font-weight:800;letter-spacing:3px;color:#8fa3b4;margin-top:2px;text-transform:uppercase;">Institutional Intelligence Terminal</div>
           <div style="height:1px;background:linear-gradient(90deg,transparent,rgba(0,245,255,0.3),transparent);margin:18px 0 14px;"></div>
           <div style="font-size:13.5px;color:#ecf7ff;font-weight:700;margin-bottom:4px;">🔒 Restricted VIP Terminal Access</div>
-          <div style="font-size:11.5px;color:#8fa3b4;margin-bottom:16px;">Detected: <b>{dev_type}</b> • Dual-Device Security Active. Enter your VIP Key.</div>
+          <div style="font-size:11.5px;color:#8fa3b4;margin-bottom:16px;">Detected: <b>{dev_type}</b> • 5-Day Auto-Login Active. Enter VIP Key once.</div>
         </div>
         """)
 
@@ -1852,17 +1936,31 @@ def render_vip_gate() -> dict | None:
             )
 
         if unlock_clicked:
-            is_valid, user_name, expiry_info = verify_vip_key(entered_key, client_id, dev_type)
+            clean_entered = entered_key.strip().upper()
+            is_valid, user_name, expiry_info = verify_vip_key(clean_entered, client_id, dev_type)
             if is_valid:
                 is_admin = (user_name == "ADMINISTRATOR")
+                
+                # Save 5-Day Persistent Session by Device/IP Fingerprint
+                sessions[client_id] = {
+                    "key": clean_entered,
+                    "device_id": client_id,
+                    "dev_type": dev_type,
+                    "last_active": get_current_time().strftime("%Y-%m-%d %H:%M:%S"),
+                    "user_name": user_name,
+                    "expiry_info": expiry_info,
+                    "is_admin": is_admin
+                }
+                save_sessions_cache(sessions)
+                
                 st.session_state["APEX_AUTH_USER"] = {
                     "is_authenticated": True,
                     "user_name": user_name,
                     "expiry_info": expiry_info,
                     "is_admin": is_admin,
-                    "key": entered_key
+                    "key": clean_entered
                 }
-                st.success(f"✅ Access Granted! Welcome, {user_name}.")
+                st.success(f"✅ Access Granted! Welcome, {user_name}. Device remembered for 5 days.")
                 time.sleep(0.4)
                 st.rerun()
             else:
