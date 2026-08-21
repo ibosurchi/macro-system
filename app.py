@@ -52,7 +52,6 @@ DEFAULT_OPENROUTER_KEY = get_secret(
 REQUEST_TIMEOUT = 8
 
 TELEGRAM_BOT_TOKEN = get_secret("TELEGRAM_BOT_TOKEN", "8922903944:AAFP10pFW_mqXOOD5mm3lkXY6oMy8THcTZU")
-TELEGRAM_CHAT_IDS = ["7153364048", "643290893"]
 
 APEX_MASTER_KEY = get_secret("APEX_MASTER_KEY", "APEX-MASTER-2026")
 APEX_SECRET_SALT = "APEX_MACRO_SECRET_2026_SALT"
@@ -120,13 +119,14 @@ def save_vip_registry(clients: list[dict]) -> None:
     except Exception:
         pass
 
-def register_new_client_key(name: str, key: str, duration_label: str, exp_date_str: str) -> None:
-    """Adds a generated key to the persistent registry."""
+def register_new_client_key(name: str, key: str, duration_label: str, exp_date_str: str, tg_id: str) -> None:
+    """Adds a generated key and Telegram ID to the persistent registry."""
     clients = load_vip_registry()
     clients = [c for c in clients if c.get("key") != key]
     clients.insert(0, {
         "client_name": name,
         "key": key,
+        "telegram_id": tg_id,
         "duration": duration_label,
         "created_at": get_current_time().strftime("%Y-%m-%d"),
         "expires_at": exp_date_str,
@@ -207,19 +207,24 @@ def verify_vip_key(key: str, client_id: str = "") -> tuple[bool, str, str]:
 
 def send_telegram_alert(message: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    clients = load_vip_registry()
     results = []
-    for chat_id in TELEGRAM_CHAT_IDS:
-        payload = {
-            "chat_id": chat_id,
-            "text": message,
-            "parse_mode": "Markdown"
-        }
-        try:
-            response = requests.post(url, json=payload, timeout=10)
-            res_data = response.json()
-            results.append(res_data)
-        except Exception as e:
-            results.append({"ok": False, "error": str(e)})
+    
+    # ناردنی دینامیکی تەنها بۆ ئەو کڕیارانەی کە مۆڵەتیان چالاکە و Telegram IDـیان هەیە
+    for client in clients:
+        if client.get("status") == "Active" and client.get("telegram_id"):
+            chat_id = client["telegram_id"]
+            payload = {
+                "chat_id": chat_id,
+                "text": message,
+                "parse_mode": "Markdown"
+            }
+            try:
+                response = requests.post(url, json=payload, timeout=10)
+                res_data = response.json()
+                results.append(res_data)
+            except Exception as e:
+                results.append({"ok": False, "error": str(e)})
     return results
 
 CURRENCY_SERIES = {
@@ -1507,6 +1512,7 @@ def render_admin_key_generator() -> None:
         g1, g2, g3 = st.columns([2, 2, 1.5])
         with g1:
             c_name = st.text_input("Client Name:", placeholder="e.g. KARDO", key="adm_client_name")
+            c_tg_id = st.text_input("Telegram ID:", placeholder="e.g. 643290893", key="adm_client_tg_id")
         with g2:
             duration_opt = st.selectbox(
                 "Duration:",
@@ -1526,11 +1532,12 @@ def render_admin_key_generator() -> None:
 
         if gen_btn:
             name_val = c_name.strip() or "CLIENT"
+            tg_id_val = c_tg_id.strip()
             days_val = duration_opt[1]
             generated_key = generate_vip_key(name_val, days_val)
             exp_text = "Lifetime" if days_val >= 9999 else (get_current_time() + timedelta(days=days_val)).strftime("%Y-%m-%d")
-            register_new_client_key(name_val, generated_key, duration_opt[0], exp_text)
-            st.success(f"🎉 Generated & Registered License Key for **{name_val}** ({duration_opt[0]}):")
+            register_new_client_key(name_val, generated_key, duration_opt[0], exp_text, tg_id_val)
+            st.success(f"🎉 Generated & Registered License Key for **{name_val}** (Telegram ID: {tg_id_val or 'None'}):")
             st.code(generated_key, language="text")
             st.info("📋 Key has been saved to your VIP Client Registry below.")
 
@@ -1585,6 +1592,7 @@ def render_admin_key_generator() -> None:
                 tbl_data.append({
                     "Client Name": c.get("client_name"),
                     "License Key": c.get("key"),
+                    "Telegram ID": c.get("telegram_id", "—"),
                     "Plan": c.get("duration"),
                     "Expires": c.get("expires_at"),
                     "Status": c.get("current_status"),
