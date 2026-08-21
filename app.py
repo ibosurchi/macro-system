@@ -1619,28 +1619,36 @@ def render_admin_key_generator() -> None:
                     st.rerun()
 
             st.markdown("---")
-            act_col1, act_col2, act_col3 = st.columns([3, 1.5, 1.5])
+            act_col1, act_col2, act_col3, act_col4 = st.columns([2.2, 1.3, 1.3, 1.2])
             with act_col1:
                 key_selected = st.selectbox("Select Client Key:", [c.get("key") for c in clients], key="sel_key_action")
             with act_col2:
                 st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
-                if st.button("🔄 Reset Device Lock", use_container_width=True):
+                if st.button("🔄 Reset Lock", use_container_width=True):
                     for c in clients:
                         if c.get("key") == key_selected:
                             c["bound_device_id"] = ""
                             c["bound_at"] = ""
                     save_vip_registry(clients)
-                    st.success(f"Device lock for {key_selected} reset!")
+                    st.success(f"Device lock reset!")
                     time.sleep(0.4)
                     st.rerun()
             with act_col3:
                 st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
-                if st.button("⛔ Revoke Key", type="secondary", use_container_width=True):
+                if st.button("⛔ Revoke", type="secondary", use_container_width=True):
                     for c in clients:
                         if c.get("key") == key_selected:
                             c["status"] = "Revoked"
                     save_vip_registry(clients)
-                    st.warning(f"Key {key_selected} has been revoked!")
+                    st.warning(f"Key revoked!")
+                    time.sleep(0.4)
+                    st.rerun()
+            with act_col4:
+                st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+                if st.button("🗑️ Delete", type="secondary", use_container_width=True):
+                    updated_clients = [c for c in clients if c.get("key") != key_selected]
+                    save_vip_registry(updated_clients)
+                    st.success(f"Client deleted successfully!")
                     time.sleep(0.4)
                     st.rerun()
         else:
