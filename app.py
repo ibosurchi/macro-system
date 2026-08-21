@@ -15,6 +15,7 @@ import feedparser
 from bs4 import BeautifulSoup
 import threading
 import time
+import hashlib
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(
@@ -50,6 +51,62 @@ REQUEST_TIMEOUT = 8
 
 TELEGRAM_BOT_TOKEN = get_secret("TELEGRAM_BOT_TOKEN", "8922903944:AAFP10pFW_mqXOOD5mm3lkXY6oMy8THcTZU")
 TELEGRAM_CHAT_IDS = ["7153364048", "643290893"]
+
+APEX_MASTER_KEY = get_secret("APEX_MASTER_KEY", "APEX-MASTER-2026")
+APEX_SECRET_SALT = "APEX_MACRO_SECRET_2026_SALT"
+
+def generate_vip_key(client_name: str, duration_days: int = 30) -> str:
+    """Generates a cryptographic time-locked VIP License Key for a client."""
+    clean_name = re.sub(r'[^A-Z0-9]', '', client_name.upper())[:10] or "USER"
+    if duration_days <= 0 or duration_days >= 3650:
+        exp_str = "LIFETIME"
+    else:
+        exp_date = get_current_time() + timedelta(days=duration_days)
+        exp_str = exp_date.strftime("%Y%m%d")
+    
+    payload = f"{clean_name}:{exp_str}:{APEX_SECRET_SALT}"
+    sig = hashlib.sha256(payload.encode()).hexdigest()[:4].upper()
+    return f"APEX-{clean_name}-{exp_str}-{sig}"
+
+def verify_vip_key(key: str) -> tuple[bool, str, str]:
+    """Verifies a VIP key. Returns (is_valid, client_name, expiry_display)."""
+    if not key:
+        return False, "", "Please enter a key"
+    clean_k = key.strip().upper()
+    
+    # 1. Check Master Key
+    if clean_k == APEX_MASTER_KEY.upper() or clean_k == "APEX-MASTER-2026":
+        return True, "ADMINISTRATOR", "Master Admin Lifetime Access"
+    
+    # 2. Check Static Demo/Preview Keys
+    static_keys = {
+        "APEX-VIP-PREVIEW": "VIP Preview Client",
+        "APEX-2026-VIP": "Executive VIP",
+        "APEX-PRO-ACCESS": "Pro Trader"
+    }
+    if clean_k in static_keys:
+        return True, static_keys[clean_k], "Active VIP License"
+        
+    # 3. Check Cryptographic Key Format: APEX-<NAME>-<EXPIRY>-<SIG>
+    parts = clean_k.split("-")
+    if len(parts) == 4 and parts[0] == "APEX":
+        name, exp_str, sig = parts[1], parts[2], parts[3]
+        expected_payload = f"{name}:{exp_str}:{APEX_SECRET_SALT}"
+        expected_sig = hashlib.sha256(expected_payload.encode()).hexdigest()[:4].upper()
+        if sig == expected_sig:
+            if exp_str == "LIFETIME":
+                return True, name, "Lifetime Unlimited Access"
+            try:
+                exp_date = datetime.strptime(exp_str, "%Y%m%d").date()
+                today = get_current_time().date()
+                if today <= exp_date:
+                    days_left = (exp_date - today).days
+                    return True, name, f"Valid until {exp_date.strftime('%b %d, %Y')} ({days_left} days remaining)"
+                else:
+                    return False, name, f"Expired on {exp_date.strftime('%b %d, %Y')}"
+            except Exception:
+                pass
+    return False, "", "Invalid or unrecognized License Key"
 
 def send_telegram_alert(message: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -878,10 +935,18 @@ def dual_chart(df1: pd.DataFrame, df2: pd.DataFrame, lbl1: str, lbl2: str) -> go
     )
     return fig
 
-def render_top_header() -> None:
+def render_top_header(auth_user: dict | None = None) -> None:
     now = get_current_time()
     now_str = now.strftime("%H:%M")
     date_str = now.strftime("%b %d, %Y")
+    user_badge = ""
+    if auth_user:
+        u_name = auth_user.get("user_name", "VIP")
+        exp_txt = auth_user.get("expiry_info", "Active")
+        is_adm = auth_user.get("is_admin", False)
+        crown = "👑 " if is_adm else "👤 "
+        user_badge = f'<div class="t-pill" style="border-color:rgba(255,209,102,0.35);color:#ffd166;"><span>{crown}{u_name}</span> &nbsp;<span style="color:#00ffa3;font-size:9.5px;">({exp_txt})</span></div>'
+
     render_html(f"""
 <div class="top-bar">
   <div class="top-brand">
@@ -902,6 +967,7 @@ def render_top_header() -> None:
     </div>
   </div>
   <div class="top-tickers">
+    {user_badge}
     <div class="t-pill"><span>🇺🇸 USD Index</span><span class="t-up">▲ Active</span></div>
     <div class="t-pill"><span>🥇 Gold XAU</span><span class="t-up">▲ Active</span></div>
     <div class="t-pill"><span>🛢️ WTI Crude</span><span class="t-dn">▼ Energy</span></div>
@@ -1305,6 +1371,101 @@ def page_oil(fred_key: str, channel_name: str) -> None:
             </div>
             """)
 
+def render_vip_gate() -> dict | None:
+    """Renders the luxury cyber-glass VIP authentication gate when not logged in."""
+    auth_user = st.session_state.get("APEX_AUTH_USER")
+    if auth_user and auth_user.get("is_authenticated"):
+        return auth_user
+
+    # Centered VIP Gate UI
+    col1, col2, col3 = st.columns([1, 2.2, 1])
+    with col2:
+        st.markdown("<div style='height:40px;'></div>", unsafe_allow_html=True)
+        render_html("""
+        <div style="background:linear-gradient(180deg,rgba(11,20,32,0.95),rgba(5,10,18,0.97));border:1px solid rgba(0,245,255,0.25);border-radius:22px;padding:34px 28px 24px;text-align:center;box-shadow:0 25px 80px rgba(0,0,0,0.7),0 0 35px rgba(0,245,255,0.12);backdrop-filter:blur(24px);">
+          <div style="display:flex;justify-content:center;margin-bottom:14px;">
+            <div style="display:flex;align-items:center;justify-content:center;width:56px;height:56px;background:rgba(0,245,255,0.08);border:1px solid rgba(0,245,255,0.35);border-radius:16px;box-shadow:0 0 25px rgba(0,245,255,0.3);">
+              <svg width="34" height="34" viewBox="0 0 360 365" fill="none" style="filter:drop-shadow(0 0 10px rgba(0,255,255,0.85));">
+                <defs>
+                  <linearGradient id="gGrad" x1="0" y1="0" x2="1" y2="1">
+                    <stop stop-color="#00FFFF"/>
+                    <stop offset="1" stop-color="#00D7E8"/>
+                  </linearGradient>
+                </defs>
+                <path d="M0 365L180 0L360 365H288L180 130L72 365Z" fill="url(#gGrad)"/>
+              </svg>
+            </div>
+          </div>
+          <div style="font-size:24px;font-weight:900;letter-spacing:2.5px;color:#00f5ff;text-shadow:0 0 20px rgba(0,245,255,0.5);">APEX<span style="color:#ffd166;">MACRO</span></div>
+          <div style="font-size:9.5px;font-weight:800;letter-spacing:3px;color:#8fa3b4;margin-top:2px;text-transform:uppercase;">Institutional Intelligence Terminal</div>
+          <div style="height:1px;background:linear-gradient(90deg,transparent,rgba(0,245,255,0.3),transparent);margin:18px 0 14px;"></div>
+          <div style="font-size:13.5px;color:#ecf7ff;font-weight:700;margin-bottom:4px;">🔒 Restricted VIP Terminal Access</div>
+          <div style="font-size:11.5px;color:#8fa3b4;margin-bottom:16px;">Enter your authorized VIP License Key to unlock institutional macro intelligence.</div>
+        </div>
+        """)
+
+        entered_key = st.text_input("VIP License Key", type="password", placeholder="Enter VIP Key (e.g. APEX-XXXX-XXXX)", label_visibility="collapsed")
+
+        b1, b2 = st.columns([1.2, 1])
+        with b1:
+            unlock_clicked = st.button("⚡ Unlock Terminal", type="primary", use_container_width=True)
+        with b2:
+            st.markdown(
+                '<a href="https://t.me/Forex_LiveStream" target="_blank" style="text-decoration:none;"><button style="width:100%;padding:10px 12px;background:rgba(255,209,102,0.10);border:1px solid rgba(255,209,102,0.35);border-radius:11px;color:#ffd166;font-weight:750;font-size:12px;cursor:pointer;">💬 Get VIP License</button></a>',
+                unsafe_allow_html=True
+            )
+
+        if unlock_clicked:
+            is_valid, user_name, expiry_info = verify_vip_key(entered_key)
+            if is_valid:
+                st.session_state["APEX_AUTH_USER"] = {
+                    "is_authenticated": True,
+                    "user_name": user_name,
+                    "expiry_info": expiry_info,
+                    "is_admin": (user_name == "ADMINISTRATOR"),
+                    "key": entered_key
+                }
+                st.success(f"✅ Access Granted! Welcome, {user_name}.")
+                time.sleep(0.4)
+                st.rerun()
+            else:
+                st.error(f"❌ Access Denied: {expiry_info}")
+
+        return None
+
+def render_admin_key_generator() -> None:
+    """Renders the Admin VIP License Generator widget (visible strictly to Master Admin)."""
+    with st.expander("👑 MASTER ADMIN — VIP LICENSE KEY GENERATOR", expanded=False):
+        render_html('<div style="font-size:12px;color:#8fa3b4;margin-bottom:10px;">Generate time-locked cryptographic VIP keys for clients in 1 click:</div>')
+        g1, g2, g3 = st.columns([2, 2, 1.5])
+        with g1:
+            c_name = st.text_input("Client Name:", placeholder="e.g. KARDO", key="adm_client_name")
+        with g2:
+            duration_opt = st.selectbox(
+                "Duration:",
+                [
+                    ("30 Days (1 Month)", 30),
+                    ("7 Days (Free Trial)", 7),
+                    ("90 Days (Quarterly)", 90),
+                    ("365 Days (1 Year)", 365),
+                    ("Lifetime VIP Access", 9999),
+                ],
+                format_func=lambda x: x[0],
+                key="adm_duration_sel"
+            )
+        with g3:
+            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+            gen_btn = st.button("⚡ Generate Key", type="primary", use_container_width=True)
+
+        if gen_btn:
+            name_val = c_name.strip() or "CLIENT"
+            days_val = duration_opt[1]
+            generated_key = generate_vip_key(name_val, days_val)
+            exp_text = "Lifetime" if days_val >= 9999 else f"{days_val} Days"
+            st.success(f"🎉 Generated License Key for **{name_val}** ({exp_text}):")
+            st.code(generated_key, language="text")
+            st.info("📋 Copy this key and send it to your buyer on Telegram or WhatsApp.")
+
 def main() -> None:
     inject_css()
 
@@ -1315,8 +1476,17 @@ def main() -> None:
     if fred_key:
         start_background_alert_daemon(fred_key, channel_name)
 
+    # ── 🔒 VIP ACCESS PROTECTION GATE ──
+    auth_user = render_vip_gate()
+    if not auth_user:
+        return
+
     # ── SINGLE TOP NAVBAR ──
-    render_top_header()
+    render_top_header(auth_user)
+
+    # ── ADMIN KEY GENERATOR (VISIBLE ONLY TO MASTER ADMIN) ──
+    if auth_user.get("is_admin"):
+        render_admin_key_generator()
 
     # ── MAIN EXECUTIVE DASHBOARD ──
     page_dashboard(fred_key, channel_name)
