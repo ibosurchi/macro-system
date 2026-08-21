@@ -496,7 +496,7 @@ def _calc_oil_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHA
     final_oil_score = (0.50 * (w_mf["score"] if w_mf else 0.0)) + (0.50 * (oil_news_pts / 0.50))
     return final_oil_score, oil_news_pts
 
-# ── EXACT HOURLY REPORT FORMAT REQUESTED BY USER ──
+# ── EXACT HOURLY REPORT FORMAT REQUESTED ──
 def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> str:
     now = get_current_time()
 
@@ -938,16 +938,26 @@ def render_top_header(auth_user: dict | None = None) -> None:
         crown = "👑 " if is_adm else "👤 "
         user_badge = f'<div class="t-pill" style="border-color:rgba(255,209,102,0.35);color:#ffd166;"><span>{crown}{u_name}</span> &nbsp;<span style="color:#00ffa3;font-size:9.5px;">({exp_txt})</span></div>'
 
-    # ── EXACT ORIGINAL LOGO DESIGN RESTORED AND CLICKABLE ──
-    col_logo, col_tickers = st.columns([1.6, 3.4])
-    with col_logo:
-        if st.button("🏛️ APEXMACRO • GLOBAL DESK", use_container_width=True):
-            st.session_state["active_tab"] = "💱 Forex"
-            st.rerun()
-
+    # ── ORIGINAL LOGO RESTORED ──
     render_html(f"""
-<div class="top-bar" style="margin-top:-10px;">
-  <div style="font-size:9px;font-weight:800;color:#64748b;letter-spacing:2.5px;">INSTITUTIONAL INTELLIGENCE TERMINAL</div>
+<div class="top-bar">
+  <div class="top-brand">
+    <div style="display:flex;align-items:center;justify-content:center;width:40px;height:40px;background:rgba(0,245,255,0.06);border:1px solid rgba(0,245,255,0.25);border-radius:10px;box-shadow:0 0 16px rgba(0,245,255,0.2);">
+      <svg width="26" height="26" viewBox="0 0 360 365" fill="none" style="filter:drop-shadow(0 0 8px rgba(0,255,255,0.85));">
+        <defs>
+          <linearGradient id="aGrad" x1="0" y1="0" x2="1" y2="1">
+            <stop stop-color="#00FFFF"/>
+            <stop offset="1" stop-color="#00D7E8"/>
+          </linearGradient>
+        </defs>
+        <path d="M0 365L180 0L360 365H288L180 130L72 365Z" fill="url(#aGrad)"/>
+      </svg>
+    </div>
+    <div>
+      <div style="font-size:17px;font-weight:900;letter-spacing:1.8px;color:#00f5ff;text-shadow:0 0 16px rgba(0,245,255,0.5);">APEX<span style="color:#ffd166;">MACRO</span></div>
+      <div style="font-size:9px;font-weight:800;color:#64748b;letter-spacing:2.5px;">GLOBAL INTELLIGENCE DESK</div>
+    </div>
+  </div>
   <div class="top-tickers">
     {user_badge}
     <div class="t-pill"><span>🇺🇸 USD Index</span><span class="t-up">▲ Active</span></div>
