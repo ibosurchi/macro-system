@@ -57,13 +57,14 @@ TELEGRAM_CHAT_IDS = ["7153364048", "643290893"]
 APEX_MASTER_KEY = get_secret("APEX_MASTER_KEY", "APEX-MASTER-2026")
 APEX_SECRET_SALT = "APEX_MACRO_SECRET_2026_SALT"
 REGISTRY_FILE = os.path.join(os.path.dirname(__file__), "vip_registry.json")
+IP_CACHE_FILE = os.path.join(os.path.dirname(__file__), "authorized_ips.json")
 
 def get_client_device_identifier() -> str:
     """Extracts a unique client IP / fingerprint to bind license strictly to a single device."""
     try:
         headers = getattr(st, "context", None) and getattr(st.context, "headers", None)
         if headers:
-            ip = headers.get("x-forwarded-for") or headers.get("remote-addr") or ""
+            ip = headers.get("x-forwarded-for") or headers.get("x-real-ip") or headers.get("remote-addr") or ""
             if ip:
                 return ip.split(",")[0].strip()
     except Exception:
@@ -72,6 +73,34 @@ def get_client_device_identifier() -> str:
         import uuid
         st.session_state["CLIENT_DEVICE_ID"] = str(uuid.uuid4())[:8]
     return st.session_state["CLIENT_DEVICE_ID"]
+
+def load_authorized_ips() -> dict:
+    """Loads all pre-authorized client IPs for silent instant login without URL parameters."""
+    if os.path.exists(IP_CACHE_FILE):
+        try:
+            with open(IP_CACHE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_authorized_ip(ip: str, user_name: str, key: str, expiry_info: str, is_admin: bool) -> None:
+    """Saves an authorized client IP to persistent disk cache."""
+    if not ip:
+        return
+    data = load_authorized_ips()
+    data[ip] = {
+        "user_name": user_name,
+        "key": key,
+        "expiry_info": expiry_info,
+        "is_admin": is_admin,
+        "last_seen": get_current_time().strftime("%Y-%m-%d %H:%M")
+    }
+    try:
+        with open(IP_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
 
 def load_vip_registry() -> list[dict]:
     """Loads all registered VIP client licenses from disk."""
@@ -1463,26 +1492,36 @@ def page_oil(fred_key: str, channel_name: str) -> None:
 
 def render_vip_gate() -> dict | None:
     """Renders the luxury cyber-glass VIP authentication gate when not logged in."""
-    client_id = get_client_device_identifier()
+    client_ip = get_client_device_identifier()
+
+    # Always keep URL clean (strip any leftover query parameters)
+    try:
+        if len(st.query_params) > 0:
+            st.query_params.clear()
+    except Exception:
+        pass
 
     # 1. Check Session State
     auth_user = st.session_state.get("APEX_AUTH_USER")
     if auth_user and auth_user.get("is_authenticated"):
         return auth_user
 
-    # 2. Check Auto-Login from Browser State
-    saved_key = st.query_params.get("auth")
-    if saved_key:
-        is_valid, user_name, expiry_info = verify_vip_key(saved_key, client_id)
-        if is_valid:
-            st.session_state["APEX_AUTH_USER"] = {
-                "is_authenticated": True,
-                "user_name": user_name,
-                "expiry_info": expiry_info,
-                "is_admin": (user_name == "ADMINISTRATOR"),
-                "key": saved_key
-            }
-            return st.session_state["APEX_AUTH_USER"]
+    # 2. Check Direct IP-Whitelisted Auto-Login (Zero URL parameters!)
+    if client_ip:
+        auth_db = load_authorized_ips()
+        ip_entry = auth_db.get(client_ip)
+        if ip_entry:
+            saved_key = ip_entry.get("key", "")
+            is_valid, user_name, expiry_info = verify_vip_key(saved_key, client_ip)
+            if is_valid:
+                st.session_state["APEX_AUTH_USER"] = {
+                    "is_authenticated": True,
+                    "user_name": user_name,
+                    "expiry_info": expiry_info,
+                    "is_admin": ip_entry.get("is_admin", False) or (user_name == "ADMINISTRATOR"),
+                    "key": saved_key
+                }
+                return st.session_state["APEX_AUTH_USER"]
 
     # 3. Centered VIP Gate UI
     col1, col2, col3 = st.columns([1, 2.2, 1])
@@ -1523,17 +1562,18 @@ def render_vip_gate() -> dict | None:
             )
 
         if unlock_clicked:
-            is_valid, user_name, expiry_info = verify_vip_key(entered_key, client_id)
+            is_valid, user_name, expiry_info = verify_vip_key(entered_key, client_ip)
             if is_valid:
+                is_admin = (user_name == "ADMINISTRATOR")
                 st.session_state["APEX_AUTH_USER"] = {
                     "is_authenticated": True,
                     "user_name": user_name,
                     "expiry_info": expiry_info,
-                    "is_admin": (user_name == "ADMINISTRATOR"),
+                    "is_admin": is_admin,
                     "key": entered_key
                 }
-                # Remember key on this device
-                st.query_params["auth"] = entered_key
+                # Directly save IP to authorized server cache for silent auto-login
+                save_authorized_ip(client_ip, user_name, entered_key, expiry_info, is_admin)
                 st.success(f"✅ Access Granted! Welcome, {user_name}.")
                 time.sleep(0.4)
                 st.rerun()
