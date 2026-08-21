@@ -3,6 +3,8 @@ ApexMacro — Global Macro & Geopolitical Intelligence Desk
 Institutional-Grade Multi-Timeframe Macro Analysis, Safe-Haven & Energy Intelligence
 """
 from __future__ import annotations
+import os
+import json
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -54,6 +56,39 @@ TELEGRAM_CHAT_IDS = ["7153364048", "643290893"]
 
 APEX_MASTER_KEY = get_secret("APEX_MASTER_KEY", "APEX-MASTER-2026")
 APEX_SECRET_SALT = "APEX_MACRO_SECRET_2026_SALT"
+REGISTRY_FILE = os.path.join(os.path.dirname(__file__), "vip_registry.json")
+
+def load_vip_registry() -> list[dict]:
+    """Loads all registered VIP client licenses from disk."""
+    if os.path.exists(REGISTRY_FILE):
+        try:
+            with open(REGISTRY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+def save_vip_registry(clients: list[dict]) -> None:
+    """Saves the VIP client registry to disk."""
+    try:
+        with open(REGISTRY_FILE, "w", encoding="utf-8") as f:
+            json.dump(clients, f, indent=2)
+    except Exception:
+        pass
+
+def register_new_client_key(name: str, key: str, duration_label: str, exp_date_str: str) -> None:
+    """Adds a generated key to the persistent registry."""
+    clients = load_vip_registry()
+    clients = [c for c in clients if c.get("key") != key]
+    clients.insert(0, {
+        "client_name": name,
+        "key": key,
+        "duration": duration_label,
+        "created_at": get_current_time().strftime("%Y-%m-%d"),
+        "expires_at": exp_date_str,
+        "status": "Active"
+    })
+    save_vip_registry(clients)
 
 def generate_vip_key(client_name: str, duration_days: int = 30) -> str:
     """Generates a cryptographic time-locked VIP License Key for a client."""
@@ -78,7 +113,13 @@ def verify_vip_key(key: str) -> tuple[bool, str, str]:
     if clean_k == APEX_MASTER_KEY.upper() or clean_k == "APEX-MASTER-2026":
         return True, "ADMINISTRATOR", "Master Admin Lifetime Access"
     
-    # 2. Check Static Demo/Preview Keys
+    # 2. Check if key was revoked by administrator
+    clients = load_vip_registry()
+    for c in clients:
+        if c.get("key") == clean_k and c.get("status") == "Revoked":
+            return False, c.get("client_name", ""), "License Revoked by Administrator"
+
+    # 3. Check Static Demo/Preview Keys
     static_keys = {
         "APEX-VIP-PREVIEW": "VIP Preview Client",
         "APEX-2026-VIP": "Executive VIP",
@@ -87,7 +128,7 @@ def verify_vip_key(key: str) -> tuple[bool, str, str]:
     if clean_k in static_keys:
         return True, static_keys[clean_k], "Active VIP License"
         
-    # 3. Check Cryptographic Key Format: APEX-<NAME>-<EXPIRY>-<SIG>
+    # 4. Check Cryptographic Key Format: APEX-<NAME>-<EXPIRY>-<SIG>
     parts = clean_k.split("-")
     if len(parts) == 4 and parts[0] == "APEX":
         name, exp_str, sig = parts[1], parts[2], parts[3]
@@ -1434,9 +1475,9 @@ def render_vip_gate() -> dict | None:
         return None
 
 def render_admin_key_generator() -> None:
-    """Renders the Admin VIP License Generator widget (visible strictly to Master Admin)."""
-    with st.expander("👑 MASTER ADMIN — VIP LICENSE KEY GENERATOR", expanded=False):
-        render_html('<div style="font-size:12px;color:#8fa3b4;margin-bottom:10px;">Generate time-locked cryptographic VIP keys for clients in 1 click:</div>')
+    """Renders the Admin VIP License Generator & Client Registry (visible strictly to Master Admin)."""
+    with st.expander("👑 MASTER ADMIN — VIP LICENSE MANAGER & CLIENT REGISTRY", expanded=False):
+        render_html('<div style="font-size:12px;color:#8fa3b4;margin-bottom:10px;">Generate time-locked cryptographic VIP keys and manage all registered clients:</div>')
         g1, g2, g3 = st.columns([2, 2, 1.5])
         with g1:
             c_name = st.text_input("Client Name:", placeholder="e.g. KARDO", key="adm_client_name")
@@ -1455,16 +1496,93 @@ def render_admin_key_generator() -> None:
             )
         with g3:
             st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
-            gen_btn = st.button("⚡ Generate Key", type="primary", use_container_width=True)
+            gen_btn = st.button("⚡ Generate & Save", type="primary", use_container_width=True)
 
         if gen_btn:
             name_val = c_name.strip() or "CLIENT"
             days_val = duration_opt[1]
             generated_key = generate_vip_key(name_val, days_val)
-            exp_text = "Lifetime" if days_val >= 9999 else f"{days_val} Days"
-            st.success(f"🎉 Generated License Key for **{name_val}** ({exp_text}):")
+            exp_text = "Lifetime" if days_val >= 9999 else (get_current_time() + timedelta(days=days_val)).strftime("%Y-%m-%d")
+            register_new_client_key(name_val, generated_key, duration_opt[0], exp_text)
+            st.success(f"🎉 Generated & Registered License Key for **{name_val}** ({duration_opt[0]}):")
             st.code(generated_key, language="text")
-            st.info("📋 Copy this key and send it to your buyer on Telegram or WhatsApp.")
+            st.info("📋 Key has been saved to your VIP Client Registry below.")
+
+        # ── CLIENT REGISTRY & STATS TABLE ──
+        st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
+        render_html('<div class="sec-title">VIP Client Registry &amp; Subscription Database</div>')
+        
+        clients = load_vip_registry()
+        today_str = get_current_time().strftime("%Y-%m-%d")
+        
+        total_c = len(clients)
+        active_c = 0
+        for c in clients:
+            if c.get("status") != "Revoked":
+                if c.get("expires_at") == "Lifetime" or c.get("expires_at", "") >= today_str:
+                    c["current_status"] = "🟢 Active"
+                    active_c += 1
+                else:
+                    c["current_status"] = "🔴 Expired"
+            else:
+                c["current_status"] = "⛔ Revoked"
+
+        expired_c = total_c - active_c
+
+        # 3 KPI Stats
+        kpi1, kpi2, kpi3 = st.columns(3)
+        with kpi1:
+            render_html(f"""
+            <div style="background:rgba(0,245,255,0.05);border:1px solid rgba(0,245,255,0.2);border-radius:12px;padding:12px;text-align:center;">
+              <div style="font-size:11px;color:#8fa3b4;">TOTAL CLIENTS</div>
+              <div style="font-size:22px;font-weight:900;color:#00f5ff;">{total_c}</div>
+            </div>
+            """)
+        with kpi2:
+            render_html(f"""
+            <div style="background:rgba(0,255,163,0.05);border:1px solid rgba(0,255,163,0.2);border-radius:12px;padding:12px;text-align:center;">
+              <div style="font-size:11px;color:#8fa3b4;">ACTIVE LICENSES</div>
+              <div style="font-size:22px;font-weight:900;color:#00ffa3;">{active_c}</div>
+            </div>
+            """)
+        with kpi3:
+            render_html(f"""
+            <div style="background:rgba(255,94,117,0.05);border:1px solid rgba(255,94,117,0.2);border-radius:12px;padding:12px;text-align:center;">
+              <div style="font-size:11px;color:#8fa3b4;">EXPIRED / REVOKED</div>
+              <div style="font-size:22px;font-weight:900;color:#ff5e75;">{expired_c}</div>
+            </div>
+            """)
+
+        if clients:
+            st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+            tbl_data = []
+            for c in clients:
+                tbl_data.append({
+                    "Client Name": c.get("client_name"),
+                    "License Key": c.get("key"),
+                    "Plan": c.get("duration"),
+                    "Created": c.get("created_at"),
+                    "Expires": c.get("expires_at"),
+                    "Status": c.get("current_status"),
+                })
+            st.dataframe(pd.DataFrame(tbl_data), use_container_width=True, hide_index=True)
+            
+            # Action: Revoke key
+            rev_col1, rev_col2 = st.columns([3, 1])
+            with rev_col1:
+                key_to_revoke = st.selectbox("Select Key to Revoke / Cancel Access:", [c.get("key") for c in clients], key="sel_key_revoke")
+            with rev_col2:
+                st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+                if st.button("⛔ Revoke Key", type="secondary", use_container_width=True):
+                    for c in clients:
+                        if c.get("key") == key_to_revoke:
+                            c["status"] = "Revoked"
+                    save_vip_registry(clients)
+                    st.warning(f"Key {key_to_revoke} has been revoked!")
+                    time.sleep(0.4)
+                    st.rerun()
+        else:
+            st.info("No VIP clients registered yet. Generate a key above to start building your client base!")
 
 def main() -> None:
     inject_css()
