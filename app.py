@@ -496,7 +496,7 @@ def _calc_oil_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHA
     final_oil_score = (0.50 * (w_mf["score"] if w_mf else 0.0)) + (0.50 * (oil_news_pts / 0.50))
     return final_oil_score, oil_news_pts
 
-# ── HOURLY REPORT FORMAT WITH USD, GOLD, EUR, GBP, OIL ──
+# ── EXACT HOURLY REPORT FORMAT REQUESTED BY USER ──
 def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> str:
     now = get_current_time()
 
@@ -509,9 +509,9 @@ def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHAN
     oil_s = oil_s or 0.0
 
     def _emoji(s: float) -> str:
-        if s > 0.15:  return "📈 BULLISH"
-        if s < -0.15: return "📉 BEARISH"
-        return "⚖️ NEUTRAL"
+        if s > 0.15:  return "📈 Bullish"
+        if s < -0.15: return "📉 Bearish"
+        return "⚖️ Neutral"
 
     xau_lbl  = _emoji(gold_s)
     usd_lbl  = _emoji(usd_score)
@@ -520,16 +520,25 @@ def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHAN
     oil_lbl  = _emoji(oil_s)
 
     lines = [
-        f"🏛️ *APEXMACRO DESK* | {now.strftime('%H:%M')}",
-        "━━━━━━━━━━━━━━━━━━━",
-        f"🥇 *XAU/USD:* {xau_lbl}",
-        f"🇺🇸 *USD:*     {usd_lbl}",
-        f"🇪🇺 *EUR:*     {eur_lbl}",
-        f"🇬🇧 *GBP:*     {gbp_lbl}",
-        f"🛢️ *OIL:*     {oil_lbl}",
-        "━━━━━━━━━━━━━━━━━━━",
-        f"▫️ *Real Yield 10Y:* {ry_val_str}",
-        f"📅 *{now.strftime('%Y-%m-%d')} | ApexMacro Desk*",
+        f"Last Hour …",
+        f"━━━━━━━━━━━━━━━━━━━",
+        f"🇺🇸 Asset: US Dollar Index (USD)",
+        f"📊 STILL: {usd_lbl}",
+        f"",
+        f"🥇 XAU/USD:",
+        f"Still: {xau_lbl}",
+        f"",
+        f"🇪🇺 EUR:",
+        f"Still: {eur_lbl}",
+        f"",
+        f"🇬🇧 GBP:",
+        f"Still: {gbp_lbl}",
+        f"",
+        f"🛢️ Oil:",
+        f"Still: {oil_lbl}",
+        f"",
+        f"▫️ Real Yield 10Y: {ry_val_str}",
+        f"📅 {now.strftime('%Y-%m-%d')} | ApexMacro Desk",
     ]
     return "\n".join(lines)
 
@@ -929,6 +938,7 @@ def render_top_header(auth_user: dict | None = None) -> None:
         crown = "👑 " if is_adm else "👤 "
         user_badge = f'<div class="t-pill" style="border-color:rgba(255,209,102,0.35);color:#ffd166;"><span>{crown}{u_name}</span> &nbsp;<span style="color:#00ffa3;font-size:9.5px;">({exp_txt})</span></div>'
 
+    # ── EXACT ORIGINAL LOGO DESIGN RESTORED AND CLICKABLE ──
     col_logo, col_tickers = st.columns([1.6, 3.4])
     with col_logo:
         if st.button("🏛️ APEXMACRO • GLOBAL DESK", use_container_width=True):
