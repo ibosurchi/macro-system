@@ -1429,9 +1429,9 @@ def render_vip_gate() -> dict | None:
         return None
 
 def render_admin_key_generator() -> None:
-    # ── FIXED: CLOSED BY DEFAULT AND TITLE CLEANED TO MASTER ADMIN ──
+    # ── CLEAN EXPANDER CONTAINER WITH ONLY "MASTER ADMIN" TITLE ──
     with st.expander("👑 MASTER ADMIN", expanded=False):
-        render_html('<div style="font-size:12px;color:#8fa3b4;margin-bottom:10px;">Generate time-locked cryptographic VIP keys, enforce 1-device binding, and manage clients:</div>')
+        render_html('<div style="font-size:11.5px;color:#8fa3b4;margin-bottom:14px;">Generate time-locked cryptographic VIP keys, enforce 1-device binding, and manage active clients:</div>')
         g1, g2, g3 = st.columns([2, 2, 1.5])
         with g1:
             c_name = st.text_input("Client Name:", placeholder="e.g. KARDO", key="adm_client_name")
