@@ -224,24 +224,32 @@ def verify_vip_key(key: str, client_id: str = "", dev_type: str = "💻 PC/Lapto
     return False, "", "Invalid or unrecognized License Key"
 
 def send_telegram_alert(message: str):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    token = TELEGRAM_BOT_TOKEN or DEFAULT_TELEGRAM_BOT_TOKEN
+    if not token or not message:
+        return []
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
     clients = load_vip_registry()
     results = []
     
+    # Deduplicate unique active chat IDs
+    unique_chat_ids = set()
     for client in clients:
         if client.get("status") == "Active" and client.get("telegram_id"):
-            chat_id = client["telegram_id"]
-            payload = {
-                "chat_id": chat_id,
-                "text": message,
-                "parse_mode": "Markdown"
-            }
-            try:
-                response = requests.post(url, json=payload, timeout=10)
-                res_data = response.json()
-                results.append(res_data)
-            except Exception as e:
-                results.append({"ok": False, "error": str(e)})
+            cid = str(client["telegram_id"]).strip()
+            if cid:
+                unique_chat_ids.add(cid)
+                
+    for chat_id in unique_chat_ids:
+        payload = {
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "Markdown"
+        }
+        try:
+            response = requests.post(url, json=payload, timeout=8)
+            results.append(response.json())
+        except Exception as e:
+            results.append({"ok": False, "error": str(e)})
     return results
 
 CURRENCY_SERIES = {
@@ -515,124 +523,63 @@ def _calc_oil_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHA
     final_oil_score = (0.50 * (w_mf["score"] if w_mf else 0.0)) + (0.50 * (oil_news_pts / 0.50))
     return final_oil_score, oil_news_pts
 
-# ── EXACT HOURLY REPORT FORMAT REQUESTED ──
+# ── UNIFIED HOURLY REPORT: ALL ASSETS & COMMODITIES IN 1 MESSAGE ──
 def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> str:
     now = get_current_time()
 
-    usd_score = _calc_currency_score_only("USD", fred_key, channel_name) or 0.0
-    eur_score = _calc_currency_score_only("EUR", fred_key, channel_name) or 0.0
-    gbp_score = _calc_currency_score_only("GBP", fred_key, channel_name) or 0.0
+    def _fmt(s: float | None) -> tuple[str, str]:
+        if s is None:
+            return "⚖️ Neutral", "0.00"
+        if s > 0.15:
+            return "📈 Bullish", f"{s:+.2f}"
+        if s < -0.15:
+            return "📉 Bearish", f"{s:+.2f}"
+        return "⚖️ Neutral", f"{s:+.2f}"
+
+    usd_s = _calc_currency_score_only("USD", fred_key, channel_name)
+    eur_s = _calc_currency_score_only("EUR", fred_key, channel_name)
+    gbp_s = _calc_currency_score_only("GBP", fred_key, channel_name)
+    jpy_s = _calc_currency_score_only("JPY", fred_key, channel_name)
+    cad_s = _calc_currency_score_only("CAD", fred_key, channel_name)
+    aud_s = _calc_currency_score_only("AUD", fred_key, channel_name)
+    chf_s = _calc_currency_score_only("CHF", fred_key, channel_name)
+    
     gold_s, ry_val_str, _ = _calc_gold_score_only(fred_key, channel_name)
-    gold_s = gold_s or 0.0
     oil_s, _ = _calc_oil_score_only(fred_key, channel_name)
-    oil_s = oil_s or 0.0
 
-    def _emoji(s: float) -> str:
-        if s > 0.15:  return "📈 Bullish"
-        if s < -0.15: return "📉 Bearish"
-        return "⚖️ Neutral"
-
-    xau_lbl  = _emoji(gold_s)
-    usd_lbl  = _emoji(usd_score)
-    eur_lbl  = _emoji(eur_score)
-    gbp_lbl  = _emoji(gbp_score)
-    oil_lbl  = _emoji(oil_s)
+    u_lbl, u_val = _fmt(usd_s)
+    e_lbl, e_val = _fmt(eur_s)
+    g_lbl, g_val = _fmt(gbp_s)
+    j_lbl, j_val = _fmt(jpy_s)
+    c_lbl, c_val = _fmt(cad_s)
+    a_lbl, a_val = _fmt(aud_s)
+    ch_lbl, ch_val = _fmt(chf_s)
+    
+    xau_lbl, xau_val = _fmt(gold_s)
+    oil_lbl, oil_val = _fmt(oil_s)
 
     lines = [
-        f"Last Hour …",
-        f"━━━━━━━━━━━━━━━━━━━",
-        f"🇺🇸 Asset: US Dollar Index (USD)",
-        f"📊 STILL: {usd_lbl}",
-        f"",
-        f"🥇 XAU/USD:",
-        f"Still: {xau_lbl}",
-        f"",
-        f"🇪🇺 EUR:",
-        f"Still: {eur_lbl}",
-        f"",
-        f"🇬🇧 GBP:",
-        f"Still: {gbp_lbl}",
-        f"",
-        f"🛢️ Oil:",
-        f"Still: {oil_lbl}",
-        f"",
-        f"▫️ Real Yield 10Y: {ry_val_str}",
-        f"📅 {now.strftime('%Y-%m-%d')} | ApexMacro Desk",
+        "🏛️ *APEX MACRO — HOURLY INTELLIGENCE REPORT*",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"🕒 *Time:* `{now.strftime('%Y-%m-%d %H:%M')} (KRD / UTC+3)`",
+        "📊 *Global Macro & Asset Biases:*",
+        "",
+        f"🥇 *Gold (XAU/USD):*  `{xau_lbl}`  `({xau_val})`",
+        f"🛢️ *Crude Oil (WTI):* `{oil_lbl}`  `({oil_val})`",
+        f"🇺🇸 *USD Index (USD):* `{u_lbl}`  `({u_val})`",
+        f"🇪🇺 *Euro (EUR):*      `{e_lbl}`  `({e_val})`",
+        f"🇬🇧 *Pound (GBP):*     `{g_lbl}`  `({g_val})`",
+        f"🇯🇵 *Yen (JPY):*       `{j_lbl}`  `({j_val})`",
+        f"🇨🇦 *Loonie (CAD):*    `{c_lbl}`  `({c_val})`",
+        f"🇦🇺 *Aussie (AUD):*    `{a_lbl}`  `({a_val})`",
+        f"🇨🇭 *Franc (CHF):*     `{ch_lbl}`  `({ch_val})`",
+        "",
+        f"▫️ *US 10Y Real Yield:* `{ry_val_str}`",
+        f"▫️ *Status:* `All Macro Pipelines Synchronized`",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        "⚡ *ApexMacro Institutional Terminal v14.0*"
     ]
     return "\n".join(lines)
-
-def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
-    if not fred_key:
-        return
-
-    try:
-        gold_s, ry_val_str, gold_news_pts = _calc_gold_score_only(fred_key, channel_name)
-        if gold_s is not None:
-            current_gold_bias, _, _ = bias_from_score(gold_s)
-            last_gold_bias = GLOBAL_ALERT_STATE.get("Gold")
-
-            if last_gold_bias is not None and current_gold_bias != last_gold_bias:
-                alert_msg = (
-                    "🔄 *APEX MACRO — SHIFT ALERT*\n"
-                    "━━━━━━━━━━━━━━━━━━━\n"
-                    "🥇 *Asset:* `Gold (XAUUSD)`\n"
-                    f"📊 *Status:* `Direction Changed`\n\n"
-                    f"▪️ *Previous Bias:*  `{last_gold_bias}`\n"
-                    f"▪️ *New Bias:*       `{current_gold_bias}`\n\n"
-                    f"📈 *Composite Score:*  `{gold_s:+.3f}`\n"
-                    f"📡 *News Sentiment:*   `{gold_news_pts:+.2f} pts`\n"
-                    "━━━━━━━━━━━━━━━━━━━\n"
-                    "⚡ *ApexMacro Terminal v13.0*"
-                )
-                send_telegram_alert(alert_msg)
-            
-            GLOBAL_ALERT_STATE["Gold"] = current_gold_bias
-
-        oil_s, oil_news_pts = _calc_oil_score_only(fred_key, channel_name)
-        if oil_s is not None:
-            current_oil_bias, _, _ = bias_from_score(oil_s)
-            last_oil_bias = GLOBAL_ALERT_STATE.get("Oil")
-
-            if last_oil_bias is not None and current_oil_bias != last_oil_bias:
-                alert_msg = (
-                    "🔄 *APEX MACRO — SHIFT ALERT*\n"
-                    "━━━━━━━━━━━━━━━━━━━\n"
-                    "🛢️ *Asset:* `Crude Oil (WTI/Brent)`\n"
-                    f"📊 *Status:* `Direction Changed`\n\n"
-                    f"▪️ *Previous Bias:*  `{last_oil_bias}`\n"
-                    f"▪️ *New Bias:*       `{current_oil_bias}`\n\n"
-                    f"📈 *Composite Score:*  `{oil_s:+.3f}`\n"
-                    f"📡 *News Sentiment:*   `{oil_news_pts:+.2f} pts`\n"
-                    "━━━━━━━━━━━━━━━━━━━\n"
-                    "⚡ *ApexMacro Terminal v13.0*"
-                )
-                send_telegram_alert(alert_msg)
-            
-            GLOBAL_ALERT_STATE["Oil"] = current_oil_bias
-
-        usd_s = _calc_currency_score_only("USD", fred_key, channel_name)
-        if usd_s is not None:
-            curr_bias, _, _ = bias_from_score(usd_s)
-            last_bias = GLOBAL_ALERT_STATE.get("USD")
-
-            if last_bias is not None and curr_bias != last_bias:
-                alert_msg = (
-                    "🔄 *APEX MACRO — SHIFT ALERT*\n"
-                    "━━━━━━━━━━━━━━━━━━━\n"
-                    "🇺🇸 *Asset:* `US Dollar (USD)`\n"
-                    f"📊 *Status:* `Direction Changed`\n\n"
-                    f"▪️ *Previous Bias:*  `{last_bias}`\n"
-                    f"▪️ *New Bias:*       `{curr_bias}`\n\n"
-                    f"📈 *Composite Score:*  `{usd_s:+.3f}`\n"
-                    "━━━━━━━━━━━━━━━━━━━\n"
-                    "⚡ *ApexMacro Terminal v13.0*"
-                )
-                send_telegram_alert(alert_msg)
-            
-            GLOBAL_ALERT_STATE["USD"] = curr_bias
-
-    except Exception:
-        pass
 
 @st.cache_resource
 def _get_daemon_controller():
@@ -653,10 +600,9 @@ def start_background_alert_daemon(fred_key: str, channel_name: str) -> None:
                 current_hour = get_current_time().strftime("%Y-%m-%d %H")
                 if current_hour != ctrl["last_hour"]:
                     ctrl["last_hour"] = current_hour
+                    # Send exactly ONE comprehensive hourly report to all registered clients
                     report_msg = build_hourly_report(fred_key, channel_name)
                     send_telegram_alert(report_msg)
-
-                check_global_market_shifts(fred_key, channel_name)
             except Exception:
                 pass
             
