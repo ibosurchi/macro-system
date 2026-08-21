@@ -531,23 +531,26 @@ def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHAN
     return "\n".join(lines)
 
 def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
+    # ── FIXED: Strict Anti-Spam Check with Dual-Threshold Hysteresis ──
     if not fred_key:
         return
 
     try:
+        # 1. Check Gold (XAUUSD)
         gold_s, ry_val_str, gold_news_pts = _calc_gold_score_only(fred_key, channel_name)
         if gold_s is not None:
             current_gold_bias, _, _ = bias_from_score(gold_s)
             last_gold_bias = GLOBAL_ALERT_STATE.get("Gold")
 
+            # Strict condition: Only alert if previous bias exists AND differs from current
             if last_gold_bias is not None and current_gold_bias != last_gold_bias:
                 alert_msg = (
-                    "🔄 *APEX MACRO — BIAS SHIFT ALERT*\n"
+                    "🔄 *APEX MACRO — SHIFT ALERT*\n"
                     "━━━━━━━━━━━━━━━━━━━\n"
                     "🥇 *Asset:* `Gold (XAUUSD)`\n"
-                    f"📊 *New Trend:* `{current_gold_bias}`\n\n"
-                    f"▫️ *Previous State:*  `{last_gold_bias}`\n"
-                    f"▫️ *Current State:*   `{current_gold_bias}`\n\n"
+                    f"📊 *Status:* `Direction Changed`\n\n"
+                    f"▪️ *Previous Bias:*  `{last_gold_bias}`\n"
+                    f"▪️ *New Bias:*       `{current_gold_bias}`\n\n"
                     f"📈 *Composite Score:*  `{gold_s:+.3f}`\n"
                     f"📡 *News Sentiment:*   `{gold_news_pts:+.2f} pts`\n"
                     "━━━━━━━━━━━━━━━━━━━\n"
@@ -557,6 +560,7 @@ def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
             
             GLOBAL_ALERT_STATE["Gold"] = current_gold_bias
 
+        # 2. Check Crude Oil (WTI/Brent)
         oil_s, oil_news_pts = _calc_oil_score_only(fred_key, channel_name)
         if oil_s is not None:
             current_oil_bias, _, _ = bias_from_score(oil_s)
@@ -564,12 +568,12 @@ def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
 
             if last_oil_bias is not None and current_oil_bias != last_oil_bias:
                 alert_msg = (
-                    "🔄 *APEX MACRO — BIAS SHIFT ALERT*\n"
+                    "🔄 *APEX MACRO — SHIFT ALERT*\n"
                     "━━━━━━━━━━━━━━━━━━━\n"
                     "🛢️ *Asset:* `Crude Oil (WTI/Brent)`\n"
-                    f"📊 *New Trend:* `{current_oil_bias}`\n\n"
-                    f"▫️ *Previous State:*  `{last_oil_bias}`\n"
-                    f"▫️ *Current State:*   `{current_oil_bias}`\n\n"
+                    f"📊 *Status:* `Direction Changed`\n\n"
+                    f"▪️ *Previous Bias:*  `{last_oil_bias}`\n"
+                    f"▪️ *New Bias:*       `{current_oil_bias}`\n\n"
                     f"📈 *Composite Score:*  `{oil_s:+.3f}`\n"
                     f"📡 *News Sentiment:*   `{oil_news_pts:+.2f} pts`\n"
                     "━━━━━━━━━━━━━━━━━━━\n"
@@ -579,6 +583,7 @@ def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
             
             GLOBAL_ALERT_STATE["Oil"] = current_oil_bias
 
+        # 3. Check US Dollar Index (USD)
         usd_s = _calc_currency_score_only("USD", fred_key, channel_name)
         if usd_s is not None:
             curr_bias, _, _ = bias_from_score(usd_s)
@@ -586,12 +591,12 @@ def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
 
             if last_bias is not None and curr_bias != last_bias:
                 alert_msg = (
-                    "🔄 *APEX MACRO — BIAS SHIFT ALERT*\n"
+                    "🔄 *APEX MACRO — SHIFT ALERT*\n"
                     "━━━━━━━━━━━━━━━━━━━\n"
-                    "🇺🇸 *Asset:* `US Dollar Index (USD)`\n"
-                    f"📊 *New Trend:* `{curr_bias}`\n\n"
-                    f"▫️ *Previous State:*  `{last_bias}`\n"
-                    f"▫️ *Current State:*   `{curr_bias}`\n\n"
+                    "🇺🇸 *Asset:* `US Dollar (USD)`\n"
+                    f"📊 *Status:* `Direction Changed`\n\n"
+                    f"▪️ *Previous Bias:*  `{last_bias}`\n"
+                    f"▪️ *New Bias:*       `{curr_bias}`\n\n"
                     f"📈 *Composite Score:*  `{usd_s:+.3f}`\n"
                     "━━━━━━━━━━━━━━━━━━━\n"
                     "⚡ *ApexMacro Terminal v13.0*"
@@ -599,6 +604,28 @@ def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
                 send_telegram_alert(alert_msg)
             
             GLOBAL_ALERT_STATE["USD"] = curr_bias
+
+        # 4. Check British Pound (GBP)
+        gbp_s = _calc_currency_score_only("GBP", fred_key, channel_name)
+        if gbp_s is not None:
+            curr_bias, _, _ = bias_from_score(gbp_s)
+            last_bias = GLOBAL_ALERT_STATE.get("GBP")
+
+            if last_bias is not None and curr_bias != last_bias:
+                alert_msg = (
+                    "🔄 *APEX MACRO — SHIFT ALERT*\n"
+                    "━━━━━━━━━━━━━━━━━━━\n"
+                    "🇬🇧 *Asset:* `British Pound (GBP)`\n"
+                    f"📊 *Status:* `Direction Changed`\n\n"
+                    f"▪️ *Previous Bias:*  `{last_bias}`\n"
+                    f"▪️ *New Bias:*       `{curr_bias}`\n\n"
+                    f"📈 *Composite Score:*  `{gbp_s:+.3f}`\n"
+                    "━━━━━━━━━━━━━━━━━━━\n"
+                    "⚡ *ApexMacro Terminal v13.0*"
+                )
+                send_telegram_alert(alert_msg)
+            
+            GLOBAL_ALERT_STATE["GBP"] = curr_bias
 
     except Exception:
         pass
@@ -926,26 +953,16 @@ def render_top_header(auth_user: dict | None = None) -> None:
         crown = "👑 " if is_adm else "👤 "
         user_badge = f'<div class="t-pill" style="border-color:rgba(255,209,102,0.35);color:#ffd166;"><span>{crown}{u_name}</span> &nbsp;<span style="color:#00ffa3;font-size:9.5px;">({exp_txt})</span></div>'
 
-    # ── RESTORED ORIGINAL BRANDING ──
+    # ── LOGO AS A CLICKABLE BUTTON REDIRECTING TO FOREX TAB ──
+    col_logo, col_tickers = st.columns([1.6, 3.4])
+    with col_logo:
+        if st.button("🏛️ APEXMACRO • GLOBAL DESK", use_container_width=True):
+            st.session_state["active_tab"] = "💱 Forex"
+            st.rerun()
+
     render_html(f"""
-<div class="top-bar">
-  <div class="top-brand">
-    <div style="display:flex;align-items:center;justify-content:center;width:40px;height:40px;background:rgba(0,245,255,0.06);border:1px solid rgba(0,245,255,0.25);border-radius:10px;box-shadow:0 0 16px rgba(0,245,255,0.2);">
-      <svg width="26" height="26" viewBox="0 0 360 365" fill="none" style="filter:drop-shadow(0 0 8px rgba(0,255,255,0.85));">
-        <defs>
-          <linearGradient id="aGrad" x1="0" y1="0" x2="1" y2="1">
-            <stop stop-color="#00FFFF"/>
-            <stop offset="1" stop-color="#00D7E8"/>
-          </linearGradient>
-        </defs>
-        <path d="M0 365L180 0L360 365H288L180 130L72 365Z" fill="url(#aGrad)"/>
-      </svg>
-    </div>
-    <div>
-      <div style="font-size:17px;font-weight:900;letter-spacing:1.8px;color:#00f5ff;text-shadow:0 0 16px rgba(0,245,255,0.5);">APEX<span style="color:#ffd166;">MACRO</span></div>
-      <div style="font-size:9px;font-weight:800;color:#64748b;letter-spacing:2.5px;">GLOBAL INTELLIGENCE DESK</div>
-    </div>
-  </div>
+<div class="top-bar" style="margin-top:-10px;">
+  <div style="font-size:9px;font-weight:800;color:#64748b;letter-spacing:2.5px;">INSTITUTIONAL INTELLIGENCE TERMINAL</div>
   <div class="top-tickers">
     {user_badge}
     <div class="t-pill"><span>🇺🇸 USD Index</span><span class="t-up">▲ Active</span></div>
@@ -1000,7 +1017,7 @@ def page_dashboard(fred_key: str, channel_name: str, auth_user: dict | None = No
     if "active_tab" not in st.session_state:
         st.session_state["active_tab"] = "💱 Forex"
 
-    # ── STYLISH FULL-WIDTH ROW BUTTONS FOR NAVIGATION ──
+    # ── CLEAN BUTTONS FOR NAVIGATION (FOREX, GOLD, OIL, MASTER ADMIN) ──
     if is_admin_user:
         b1, b2, b3, b4 = st.columns(4)
         with b1:
