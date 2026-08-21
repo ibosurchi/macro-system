@@ -409,7 +409,6 @@ def fetch_fred(series_id: str, key: str, limit: int = 48) -> pd.DataFrame | None
         return None
 
 GLOBAL_ALERT_STATE: dict[str, str] = {}
-GLOBAL_ALERT_SCORES: dict[str, float] = {}
 
 @st.cache_data(ttl=60, show_spinner=False)
 def _calc_currency_score_only(currency: str, fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> float | None:
@@ -497,52 +496,53 @@ def _calc_oil_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHA
     final_oil_score = (0.50 * (w_mf["score"] if w_mf else 0.0)) + (0.50 * (oil_news_pts / 0.50))
     return final_oil_score, oil_news_pts
 
+# ── NEW HOURLY REPORT FORMAT (USD, GOLD, EUR, GBP, OIL) WITHOUT EUR/USD & NO SPAM ──
 def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> str:
     now = get_current_time()
 
     usd_score = _calc_currency_score_only("USD", fred_key, channel_name) or 0.0
     eur_score = _calc_currency_score_only("EUR", fred_key, channel_name) or 0.0
+    gbp_score = _calc_currency_score_only("GBP", fred_key, channel_name) or 0.0
     gold_s, ry_val_str, _ = _calc_gold_score_only(fred_key, channel_name)
     gold_s = gold_s or 0.0
+    oil_s, _ = _calc_oil_score_only(fred_key, channel_name)
+    oil_s = oil_s or 0.0
 
     def _emoji(s: float) -> str:
         if s > 0.15:  return "📈 BULLISH"
         if s < -0.15: return "📉 BEARISH"
         return "⚖️ NEUTRAL"
 
-    eur_usd_diff = eur_score - usd_score
     xau_lbl  = _emoji(gold_s)
     usd_lbl  = _emoji(usd_score)
     eur_lbl  = _emoji(eur_score)
-    eurusd_lbl = _emoji(eur_usd_diff)
+    gbp_lbl  = _emoji(gbp_score)
+    oil_lbl  = _emoji(oil_s)
 
     lines = [
         f"🏛️ *APEXMACRO DESK* | {now.strftime('%H:%M')}",
-        "",
-        f"🥇 XAU/USD: *{xau_lbl}*",
-        f"🇺🇸 USD:     *{usd_lbl}*",
-        f"🇪🇺 EUR:     *{eur_lbl}*",
-        "",
-        f"💱 EUR/USD: *{eurusd_lbl}*",
-        "",
-        f"_Real Yield 10Y: {ry_val_str}_",
-        f"_📅 {now.strftime('%Y-%m-%d')} | ApexMacro Intelligence Desk_",
+        "━━━━━━━━━━━━━━━━━━━",
+        f"🥇 *XAU/USD:* {xau_lbl}",
+        f"🇺🇸 *USD:*     {usd_lbl}",
+        f"🇪🇺 *EUR:*     {eur_lbl}",
+        f"🇬🇧 *GBP:*     {gbp_lbl}",
+        f"🛢️ *OIL:*     {oil_lbl}",
+        "━━━━━━━━━━━━━━━━━━━",
+        f"▫️ *Real Yield 10Y:* {ry_val_str}",
+        f"📅 *{now.strftime('%Y-%m-%d')} | ApexMacro Desk*",
     ]
     return "\n".join(lines)
 
 def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
-    # ── FIXED: Strict Anti-Spam Check with Dual-Threshold Hysteresis ──
     if not fred_key:
         return
 
     try:
-        # 1. Check Gold (XAUUSD)
         gold_s, ry_val_str, gold_news_pts = _calc_gold_score_only(fred_key, channel_name)
         if gold_s is not None:
             current_gold_bias, _, _ = bias_from_score(gold_s)
             last_gold_bias = GLOBAL_ALERT_STATE.get("Gold")
 
-            # Strict condition: Only alert if previous bias exists AND differs from current
             if last_gold_bias is not None and current_gold_bias != last_gold_bias:
                 alert_msg = (
                     "🔄 *APEX MACRO — SHIFT ALERT*\n"
@@ -560,7 +560,6 @@ def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
             
             GLOBAL_ALERT_STATE["Gold"] = current_gold_bias
 
-        # 2. Check Crude Oil (WTI/Brent)
         oil_s, oil_news_pts = _calc_oil_score_only(fred_key, channel_name)
         if oil_s is not None:
             current_oil_bias, _, _ = bias_from_score(oil_s)
@@ -583,7 +582,6 @@ def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
             
             GLOBAL_ALERT_STATE["Oil"] = current_oil_bias
 
-        # 3. Check US Dollar Index (USD)
         usd_s = _calc_currency_score_only("USD", fred_key, channel_name)
         if usd_s is not None:
             curr_bias, _, _ = bias_from_score(usd_s)
@@ -605,28 +603,6 @@ def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
             
             GLOBAL_ALERT_STATE["USD"] = curr_bias
 
-        # 4. Check British Pound (GBP)
-        gbp_s = _calc_currency_score_only("GBP", fred_key, channel_name)
-        if gbp_s is not None:
-            curr_bias, _, _ = bias_from_score(gbp_s)
-            last_bias = GLOBAL_ALERT_STATE.get("GBP")
-
-            if last_bias is not None and curr_bias != last_bias:
-                alert_msg = (
-                    "🔄 *APEX MACRO — SHIFT ALERT*\n"
-                    "━━━━━━━━━━━━━━━━━━━\n"
-                    "🇬🇧 *Asset:* `British Pound (GBP)`\n"
-                    f"📊 *Status:* `Direction Changed`\n\n"
-                    f"▪️ *Previous Bias:*  `{last_bias}`\n"
-                    f"▪️ *New Bias:*       `{curr_bias}`\n\n"
-                    f"📈 *Composite Score:*  `{gbp_s:+.3f}`\n"
-                    "━━━━━━━━━━━━━━━━━━━\n"
-                    "⚡ *ApexMacro Terminal v13.0*"
-                )
-                send_telegram_alert(alert_msg)
-            
-            GLOBAL_ALERT_STATE["GBP"] = curr_bias
-
     except Exception:
         pass
 
@@ -647,6 +623,7 @@ def start_background_alert_daemon(fred_key: str, channel_name: str) -> None:
         while True:
             try:
                 current_hour = get_current_time().strftime("%Y-%m-%d %H")
+                # ── STRICT HOURLY TRIGGER TO PREVENT SPAM ──
                 if current_hour != ctrl["last_hour"]:
                     ctrl["last_hour"] = current_hour
                     report_msg = build_hourly_report(fred_key, channel_name)
@@ -656,7 +633,7 @@ def start_background_alert_daemon(fred_key: str, channel_name: str) -> None:
             except Exception:
                 pass
             
-            time.sleep(30)
+            time.sleep(60)
 
     t = threading.Thread(target=_daemon_loop, daemon=True, name="ApexMacroAlertDaemon")
     t.start()
@@ -953,7 +930,6 @@ def render_top_header(auth_user: dict | None = None) -> None:
         crown = "👑 " if is_adm else "👤 "
         user_badge = f'<div class="t-pill" style="border-color:rgba(255,209,102,0.35);color:#ffd166;"><span>{crown}{u_name}</span> &nbsp;<span style="color:#00ffa3;font-size:9.5px;">({exp_txt})</span></div>'
 
-    # ── LOGO AS A CLICKABLE BUTTON REDIRECTING TO FOREX TAB ──
     col_logo, col_tickers = st.columns([1.6, 3.4])
     with col_logo:
         if st.button("🏛️ APEXMACRO • GLOBAL DESK", use_container_width=True):
@@ -1017,7 +993,6 @@ def page_dashboard(fred_key: str, channel_name: str, auth_user: dict | None = No
     if "active_tab" not in st.session_state:
         st.session_state["active_tab"] = "💱 Forex"
 
-    # ── CLEAN BUTTONS FOR NAVIGATION (FOREX, GOLD, OIL, MASTER ADMIN) ──
     if is_admin_user:
         b1, b2, b3, b4 = st.columns(4)
         with b1:
@@ -1066,7 +1041,6 @@ def page_dashboard(fred_key: str, channel_name: str, auth_user: dict | None = No
         page_oil(fred_key, channel_name)
         return
 
-    # ── FOREX VIEW ──
     currency = st.selectbox("Currency:", list(CURRENCY_SERIES.keys()), format_func=lambda k: f"{CURRENCY_SERIES[k]['flag']} {k} • {CURRENCY_SERIES[k]['name']}", label_visibility="collapsed")
 
     with st.spinner(f"Reading {currency} macro data & processing live feeds..."):
