@@ -1429,161 +1429,154 @@ def render_vip_gate() -> dict | None:
         return None
 
 def render_admin_key_generator() -> None:
-    # ── CUSTOM CYBER GLASS CONTAINER FOR MASTER ADMIN ──
-    render_html("""
-    <div style="background:linear-gradient(180deg,rgba(15,24,34,0.86),rgba(8,15,23,0.82));border:1px solid rgba(0,245,255,0.22);border-radius:18px;padding:20px 22px;margin-bottom:20px;box-shadow:var(--shadow),0 0 25px rgba(0,245,255,0.06);backdrop-filter:blur(18px);">
-      <div style="font-size:13px;font-weight:900;letter-spacing:1.5px;color:#00f5ff;text-transform:uppercase;margin-bottom:4px;display:flex;align-items:center;gap:8px;text-shadow:0 0 12px rgba(0,245,255,0.3);">
-        👑 MASTER ADMIN — VIP LICENSE MANAGER &amp; CLIENT REGISTRY
-      </div>
-      <div style="font-size:11.5px;color:#8fa3b4;margin-bottom:14px;">Generate time-locked cryptographic VIP keys, enforce 1-device binding, and manage active clients:</div>
-    </div>
-    """)
+    # ── FIXED: EXPANDER IS NOW CLOSED BY DEFAULT (expanded=False) ──
+    with st.expander("👑 MASTER ADMIN — VIP LICENSE MANAGER & CLIENT REGISTRY", expanded=False):
+        render_html('<div style="font-size:12px;color:#8fa3b4;margin-bottom:10px;">Generate time-locked cryptographic VIP keys, enforce 1-device binding, and manage clients:</div>')
+        g1, g2, g3 = st.columns([2, 2, 1.5])
+        with g1:
+            c_name = st.text_input("Client Name:", placeholder="e.g. KARDO", key="adm_client_name")
+            c_tg_id = st.text_input("Telegram ID:", placeholder="e.g. 643290893", key="adm_client_tg_id")
+        with g2:
+            duration_opt = st.selectbox(
+                "Duration:",
+                [
+                    ("30 Days (1 Month)", 30),
+                    ("7 Days (Free Trial)", 7),
+                    ("90 Days (Quarterly)", 90),
+                    ("365 Days (1 Year)", 365),
+                    ("Lifetime VIP Access", 9999),
+                ],
+                format_func=lambda x: x[0],
+                key="adm_duration_sel"
+            )
+        with g3:
+            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+            gen_btn = st.button("⚡ Generate & Save", type="primary", use_container_width=True)
 
-    g1, g2, g3 = st.columns([2, 2, 1.5])
-    with g1:
-        c_name = st.text_input("Client Name:", placeholder="e.g. KARDO", key="adm_client_name")
-        c_tg_id = st.text_input("Telegram ID:", placeholder="e.g. 643290893", key="adm_client_tg_id")
-    with g2:
-        duration_opt = st.selectbox(
-            "Duration:",
-            [
-                ("30 Days (1 Month)", 30),
-                ("7 Days (Free Trial)", 7),
-                ("90 Days (Quarterly)", 90),
-                ("365 Days (1 Year)", 365),
-                ("Lifetime VIP Access", 9999),
-            ],
-            format_func=lambda x: x[0],
-            key="adm_duration_sel"
-        )
-    with g3:
-        st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
-        gen_btn = st.button("⚡ Generate & Save", type="primary", use_container_width=True)
+        if gen_btn:
+            name_val = c_name.strip() or "CLIENT"
+            tg_id_val = c_tg_id.strip()
+            days_val = duration_opt[1]
+            generated_key = generate_vip_key(name_val, days_val)
+            exp_text = "Lifetime" if days_val >= 9999 else (get_current_time() + timedelta(days=days_val)).strftime("%Y-%m-%d")
+            register_new_client_key(name_val, generated_key, duration_opt[0], exp_text, tg_id_val)
+            st.success(f"🎉 Generated & Registered License Key for **{name_val}** (Telegram ID: {tg_id_val or 'None'}):")
+            st.code(generated_key, language="text")
+            st.info("📋 Key has been saved to your VIP Client Registry below.")
 
-    if gen_btn:
-        name_val = c_name.strip() or "CLIENT"
-        tg_id_val = c_tg_id.strip()
-        days_val = duration_opt[1]
-        generated_key = generate_vip_key(name_val, days_val)
-        exp_text = "Lifetime" if days_val >= 9999 else (get_current_time() + timedelta(days=days_val)).strftime("%Y-%m-%d")
-        register_new_client_key(name_val, generated_key, duration_opt[0], exp_text, tg_id_val)
-        st.success(f"🎉 Generated & Registered License Key for **{name_val}** (Telegram ID: {tg_id_val or 'None'}):")
-        st.code(generated_key, language="text")
-        st.info("📋 Key has been saved to your VIP Client Registry below.")
-
-    st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
-    render_html('<div class="sec-title">VIP Client Registry &amp; Subscription Database</div>')
-    
-    clients = load_vip_registry()
-    today_str = get_current_time().strftime("%Y-%m-%d")
-    
-    total_c = len(clients)
-    active_c = 0
-    for c in clients:
-        if c.get("status") != "Revoked":
-            if c.get("expires_at") == "Lifetime" or c.get("expires_at", "") >= today_str:
-                c["current_status"] = "🟢 Active"
-                active_c += 1
-            else:
-                c["current_status"] = "🔴 Expired"
-        else:
-            c["current_status"] = "⛔ Revoked"
-
-    expired_c = total_c - active_c
-
-    kpi1, kpi2, kpi3 = st.columns(3)
-    with kpi1:
-        render_html(f"""
-        <div style="background:rgba(0,245,255,0.05);border:1px solid rgba(0,245,255,0.2);border-radius:12px;padding:12px;text-align:center;">
-          <div style="font-size:11px;color:#8fa3b4;">TOTAL CLIENTS</div>
-          <div style="font-size:22px;font-weight:900;color:#00f5ff;">{total_c}</div>
-        </div>
-        """)
-    with kpi2:
-        render_html(f"""
-        <div style="background:rgba(0,255,163,0.05);border:1px solid rgba(0,255,163,0.2);border-radius:12px;padding:12px;text-align:center;">
-          <div style="font-size:11px;color:#8fa3b4;">ACTIVE LICENSES</div>
-          <div style="font-size:22px;font-weight:900;color:#00ffa3;">{active_c}</div>
-        </div>
-        """)
-    with kpi3:
-        render_html(f"""
-        <div style="background:rgba(255,94,117,0.05);border:1px solid rgba(255,94,117,0.2);border-radius:12px;padding:12px;text-align:center;">
-          <div style="font-size:11px;color:#8fa3b4;">EXPIRED / REVOKED</div>
-          <div style="font-size:22px;font-weight:900;color:#ff5e75;">{expired_c}</div>
-        </div>
-        """)
-
-    if clients:
-        st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
-        tbl_data = []
-        for c in clients:
-            b_status = "🔒 Locked to Device" if c.get("bound_device_id") else "⚪ Unbound"
-            tbl_data.append({
-                "Client Name": c.get("client_name"),
-                "License Key": c.get("key"),
-                "Telegram ID": c.get("telegram_id", "—"),
-                "Plan": c.get("duration"),
-                "Expires": c.get("expires_at"),
-                "Status": c.get("current_status"),
-                "Device Lock": b_status,
-            })
-        st.dataframe(pd.DataFrame(tbl_data), use_container_width=True, hide_index=True)
+        st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
+        render_html('<div class="sec-title">VIP Client Registry &amp; Subscription Database</div>')
         
-        # ── EDIT TELEGRAM ID SECTION ──
-        st.markdown("---")
-        render_html('<div style="font-size:11px;font-weight:800;color:#79dff0;margin-bottom:6px;">⚙️ EDIT CLIENT TELEGRAM ID</div>')
-        edit_col1, edit_col2, edit_col3 = st.columns([2, 2, 1.5])
-        with edit_col1:
-            key_to_edit = st.selectbox("Select Key to Update:", [c.get("key") for c in clients], key="sel_key_edit")
-        with edit_col2:
-            new_tg_input = st.text_input("New Telegram ID:", placeholder="e.g. 7153364048", key="new_tg_val")
-        with edit_col3:
-            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
-            if st.button("💾 Save Telegram ID", use_container_width=True):
-                for c in clients:
-                    if c.get("key") == key_to_edit:
-                        c["telegram_id"] = new_tg_input.strip()
-                save_vip_registry(clients)
-                st.success(f"Telegram ID updated successfully!")
-                time.sleep(0.4)
-                st.rerun()
+        clients = load_vip_registry()
+        today_str = get_current_time().strftime("%Y-%m-%d")
+        
+        total_c = len(clients)
+        active_c = 0
+        for c in clients:
+            if c.get("status") != "Revoked":
+                if c.get("expires_at") == "Lifetime" or c.get("expires_at", "") >= today_str:
+                    c["current_status"] = "🟢 Active"
+                    active_c += 1
+                else:
+                    c["current_status"] = "🔴 Expired"
+            else:
+                c["current_status"] = "⛔ Revoked"
 
-        st.markdown("---")
-        act_col1, act_col2, act_col3, act_col4 = st.columns([2.2, 1.3, 1.3, 1.2])
-        with act_col1:
-            key_selected = st.selectbox("Select Client Key:", [c.get("key") for c in clients], key="sel_key_action")
-        with act_col2:
-            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
-            if st.button("🔄 Reset Lock", use_container_width=True):
-                for c in clients:
-                    if c.get("key") == key_selected:
-                        c["bound_device_id"] = ""
-                        c["bound_at"] = ""
-                save_vip_registry(clients)
-                st.success(f"Device lock reset!")
-                time.sleep(0.4)
-                st.rerun()
-        with act_col3:
-            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
-            if st.button("⛔ Revoke", type="secondary", use_container_width=True):
-                for c in clients:
-                    if c.get("key") == key_selected:
-                        c["status"] = "Revoked"
-                save_vip_registry(clients)
-                st.warning(f"Key revoked!")
-                time.sleep(0.4)
-                st.rerun()
-        with act_col4:
-            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
-            if st.button("🗑️ Delete", type="secondary", use_container_width=True):
-                updated_clients = [c for c in clients if c.get("key") != key_selected]
-                save_vip_registry(updated_clients)
-                st.success(f"Client deleted successfully!")
-                time.sleep(0.4)
-                st.rerun()
-    else:
-        st.info("No VIP clients registered yet. Generate a key above to start building your client base!")
+        expired_c = total_c - active_c
+
+        kpi1, kpi2, kpi3 = st.columns(3)
+        with kpi1:
+            render_html(f"""
+            <div style="background:rgba(0,245,255,0.05);border:1px solid rgba(0,245,255,0.2);border-radius:12px;padding:12px;text-align:center;">
+              <div style="font-size:11px;color:#8fa3b4;">TOTAL CLIENTS</div>
+              <div style="font-size:22px;font-weight:900;color:#00f5ff;">{total_c}</div>
+            </div>
+            """)
+        with kpi2:
+            render_html(f"""
+            <div style="background:rgba(0,255,163,0.05);border:1px solid rgba(0,255,163,0.2);border-radius:12px;padding:12px;text-align:center;">
+              <div style="font-size:11px;color:#8fa3b4;">ACTIVE LICENSES</div>
+              <div style="font-size:22px;font-weight:900;color:#00ffa3;">{active_c}</div>
+            </div>
+            """)
+        with kpi3:
+            render_html(f"""
+            <div style="background:rgba(255,94,117,0.05);border:1px solid rgba(255,94,117,0.2);border-radius:12px;padding:12px;text-align:center;">
+              <div style="font-size:11px;color:#8fa3b4;">EXPIRED / REVOKED</div>
+              <div style="font-size:22px;font-weight:900;color:#ff5e75;">{expired_c}</div>
+            </div>
+            """)
+
+        if clients:
+            st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+            tbl_data = []
+            for c in clients:
+                b_status = "🔒 Locked to Device" if c.get("bound_device_id") else "⚪ Unbound"
+                tbl_data.append({
+                    "Client Name": c.get("client_name"),
+                    "License Key": c.get("key"),
+                    "Telegram ID": c.get("telegram_id", "—"),
+                    "Plan": c.get("duration"),
+                    "Expires": c.get("expires_at"),
+                    "Status": c.get("current_status"),
+                    "Device Lock": b_status,
+                })
+            st.dataframe(pd.DataFrame(tbl_data), use_container_width=True, hide_index=True)
+            
+            # ── EDIT TELEGRAM ID SECTION ──
+            st.markdown("---")
+            render_html('<div style="font-size:11px;font-weight:800;color:#79dff0;margin-bottom:6px;">⚙️ EDIT CLIENT TELEGRAM ID</div>')
+            edit_col1, edit_col2, edit_col3 = st.columns([2, 2, 1.5])
+            with edit_col1:
+                key_to_edit = st.selectbox("Select Key to Update:", [c.get("key") for c in clients], key="sel_key_edit")
+            with edit_col2:
+                new_tg_input = st.text_input("New Telegram ID:", placeholder="e.g. 7153364048", key="new_tg_val")
+            with edit_col3:
+                st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+                if st.button("💾 Save Telegram ID", use_container_width=True):
+                    for c in clients:
+                        if c.get("key") == key_to_edit:
+                            c["telegram_id"] = new_tg_input.strip()
+                    save_vip_registry(clients)
+                    st.success(f"Telegram ID updated successfully!")
+                    time.sleep(0.4)
+                    st.rerun()
+
+            st.markdown("---")
+            act_col1, act_col2, act_col3, act_col4 = st.columns([2.2, 1.3, 1.3, 1.2])
+            with act_col1:
+                key_selected = st.selectbox("Select Client Key:", [c.get("key") for c in clients], key="sel_key_action")
+            with act_col2:
+                st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+                if st.button("🔄 Reset Lock", use_container_width=True):
+                    for c in clients:
+                        if c.get("key") == key_selected:
+                            c["bound_device_id"] = ""
+                            c["bound_at"] = ""
+                    save_vip_registry(clients)
+                    st.success(f"Device lock reset!")
+                    time.sleep(0.4)
+                    st.rerun()
+            with act_col3:
+                st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+                if st.button("⛔ Revoke", type="secondary", use_container_width=True):
+                    for c in clients:
+                        if c.get("key") == key_selected:
+                            c["status"] = "Revoked"
+                    save_vip_registry(clients)
+                    st.warning(f"Key revoked!")
+                    time.sleep(0.4)
+                    st.rerun()
+            with act_col4:
+                st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+                if st.button("🗑️ Delete", type="secondary", use_container_width=True):
+                    updated_clients = [c for c in clients if c.get("key") != key_selected]
+                    save_vip_registry(updated_clients)
+                    st.success(f"Client deleted successfully!")
+                    time.sleep(0.4)
+                    st.rerun()
+        else:
+            st.info("No VIP clients registered yet. Generate a key above to start building your client base!")
 
 def main() -> None:
     inject_css()
