@@ -550,18 +550,145 @@ def _calc_oil_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHA
     final_oil_score = (0.50 * (w_mf["score"] if w_mf else 0.0)) + (0.50 * (oil_news_pts / 0.50))
     return final_oil_score, oil_news_pts
 
-# ── UNIFIED HOURLY REPORT: ALL ASSETS & COMMODITIES IN 1 MESSAGE ──
+def get_macro_asset_details(asset_name: str, score: float | None, all_news: list = None) -> dict:
+    """Calculates granular conviction strength and synthesizes macroeconomic & breaking news drivers."""
+    if score is None:
+        return {
+            "strength": "⚖️ Neutral / Balanced",
+            "strength_ku": "هاوسەنگ / بێ ئاراستەی دیاریکراو",
+            "score_str": "0.00",
+            "driver": "Awaiting primary macroeconomic catalyst.",
+            "driver_ku": "چاوەڕوانی داتای یەکلاکەرەوەی نوێیە."
+        }
+        
+    s = score
+    score_str = f"{s:+.2f}"
+    
+    if s >= 0.35:
+        strength = "🚀 Strong Bullish"
+        strength_ku = "بەرزبوونەوەی بەهێز (Strong Bullish)"
+        conv_key = "Strong Bullish"
+    elif s >= 0.15:
+        strength = "📈 Moderate / Early Bullish"
+        strength_ku = "بەرزبوونەوەی مامناوەند / سەرەتایی (Moderate Bullish)"
+        conv_key = "Moderate Bullish"
+    elif s <= -0.35:
+        strength = "🔻 Strong Bearish"
+        strength_ku = "دابەزینی بەهێز (Strong Bearish)"
+        conv_key = "Strong Bearish"
+    elif s <= -0.15:
+        strength = "📉 Moderate / Early Bearish"
+        strength_ku = "دابەزینی مامناوەند / سەرەتایی (Moderate Bearish)"
+        conv_key = "Moderate Bearish"
+    else:
+        strength = "⚖️ Neutral / Balanced"
+        strength_ku = "هاوسەنگ لە مەودای تەسکدا (Neutral / Balanced)"
+        conv_key = "Neutral"
+
+    drivers_map = {
+        "Gold": {
+            "Strong Bullish": "Retreating US 10Y real yields & accelerating geopolitical safe-haven inflows.",
+            "Moderate Bullish": "Easing bond yield pressure and resilient central bank ETF accumulation.",
+            "Neutral": "Real yields and USD index consolidation keeping gold in a technical range.",
+            "Moderate Bearish": "Firming real yields & dollar strength dampening non-yielding bullion demand.",
+            "Strong Bearish": "Surging US real yields and aggressive hawkish policy repricing."
+        },
+        "Oil": {
+            "Strong Bullish": "OPEC+ supply tightness, inventory draws & solid global demand pull.",
+            "Moderate Bullish": "Positive energy momentum and resilient macroeconomic consumption.",
+            "Neutral": "Supply stability balancing modest global manufacturing growth signals.",
+            "Moderate Bearish": "Cooling industrial demand and cautious macroeconomic outlook.",
+            "Strong Bearish": "Severe inventory accumulation and global manufacturing contraction."
+        },
+        "USD": {
+            "Strong Bullish": "Persistent core inflation momentum and expanding sovereign yield differentials.",
+            "Moderate Bullish": "Yield advantage resilience vs foreign majors & firm domestic data.",
+            "Neutral": "Fed rate plateau pricing balanced against steady consumer expenditure.",
+            "Moderate Bearish": "Disinflationary pipeline progress & labor cooling supporting rate cuts.",
+            "Strong Bearish": "Aggressive dovish Fed easing expectations and capital outflow to foreign FX."
+        },
+        "EUR": {
+            "Strong Bullish": "Eurozone service resilience & ECB neutral stance outperforming soft USD.",
+            "Moderate Bullish": "ECB monetary stability providing floor against dollar crosswinds.",
+            "Neutral": "ECB rate neutrality balanced against sluggish German manufacturing output.",
+            "Moderate Bearish": "Industrial slowdown & disinflation opening door for ECB rate cuts.",
+            "Strong Bearish": "Broad manufacturing contraction & accelerated ECB monetary easing."
+        },
+        "GBP": {
+            "Strong Bullish": "Sticky UK core services inflation forcing BOE to maintain elevated rate premium.",
+            "Moderate Bullish": "Persistent wage growth sustaining British Pound yield support.",
+            "Neutral": "Sticky services inflation countered by moderate domestic growth trajectory.",
+            "Moderate Bearish": "Cooling employment numbers increasing BOE easing expectations.",
+            "Strong Bearish": "Sharp economic slowdown and expedited BOE rate-cutting cycle."
+        },
+        "JPY": {
+            "Strong Bullish": "BOJ monetary normalization/hike expectations & safe-haven repatriation.",
+            "Moderate Bullish": "Narrowing US-JP yield spread prompting initial carry trade unwinding.",
+            "Neutral": "BOJ policy patience balancing global risk sentiment flows.",
+            "Moderate Bearish": "Massive negative yield differential vs US Dollar persisting.",
+            "Strong Bearish": "Widening interest rate gap and aggressive carry-trade yen selling."
+        },
+        "CAD": {
+            "Strong Bullish": "Crude oil strength & tight Canadian labor market lifting BOC rate support.",
+            "Moderate Bullish": "Resilient commodity export prices cushioning BOC policy cycle.",
+            "Neutral": "BOC easing stance offset by support from energy market pricing.",
+            "Moderate Bearish": "BOC rate cuts outpacing Fed & softening consumer spending.",
+            "Strong Bearish": "Subdued oil prices and rapid BOC rate reductions."
+        },
+        "AUD": {
+            "Strong Bullish": "RBA hawkish policy stance & commodity demand surge lifting Aussie.",
+            "Moderate Bullish": "Sticky domestic inflation keeping RBA restrictive for longer.",
+            "Neutral": "RBA policy restraint balanced against commodity price fluctuations.",
+            "Moderate Bearish": "Weakening Asian commodity demand and cooling domestic retail volume.",
+            "Strong Bearish": "Commodity price slump and rapid RBA pivot to monetary easing."
+        },
+        "CHF": {
+            "Strong Bullish": "Safe-haven asset demand surge amidst European geopolitical caution.",
+            "Moderate Bullish": "Swiss structural current account surplus and low inflation anchor.",
+            "Neutral": "SNB policy rate reductions balancing international safe-haven flows.",
+            "Moderate Bearish": "SNB active currency interventions and negative real rate drag.",
+            "Strong Bearish": "Aggressive SNB rate cuts targeting Swiss Franc depreciation."
+        }
+    }
+    
+    asset_dict = drivers_map.get(asset_name, {})
+    base_driver = asset_dict.get(conv_key, "Macroeconomic indicator momentum & cross-asset positioning.")
+    
+    # Check if live breaking news wire is active for this asset
+    matching_wire = ""
+    if all_news:
+        kw_map = {
+            "Gold": ["gold", "xau", "middle east", "israel", "iran", "safe haven", "safe-haven", "war", "geopolitical"],
+            "Oil": ["oil", "crude", "wti", "brent", "opec", "energy", "tanker", "red sea"],
+            "USD": ["fed", "powell", "dollar", "usd", "fomc", "treasury", "inflation", "cpi", "nfp"],
+            "EUR": ["ecb", "lagarde", "euro", "eur", "germany"],
+            "GBP": ["boe", "bailey", "pound", "gbp", "bank of england"],
+            "JPY": ["boj", "ueda", "yen", "jpy", "bank of japan"],
+            "CAD": ["boc", "macklem", "cad", "loonie", "canada"],
+            "AUD": ["rba", "bullock", "aud", "aussie", "australia"],
+            "CHF": ["snb", "jordan", "chf", "franc", "swiss"]
+        }
+        keywords = kw_map.get(asset_name, [asset_name.lower()])
+        for art in all_news:
+            t = art.get("title", "").strip()
+            if any(k in t.lower() for k in keywords):
+                clean_t = t[:65] + ("..." if len(t) > 65 else "")
+                matching_wire = f"📡 Wire: \"{clean_t}\" • "
+                break
+
+    final_driver = f"{matching_wire}{base_driver}"
+    
+    return {
+        "strength": strength,
+        "strength_ku": strength_ku,
+        "score_str": score_str,
+        "driver": final_driver
+    }
+
+# ── UNIFIED HOURLY REPORT: ALL ASSETS WITH EXACT CONVICTION STRENGTH & CAUSAL DRIVERS ──
 def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> str:
     now = get_current_time()
-
-    def _fmt(s: float | None) -> tuple[str, str]:
-        if s is None:
-            return "⚖️ Neutral", "0.00"
-        if s > 0.15:
-            return "📈 Bullish", f"{s:+.2f}"
-        if s < -0.15:
-            return "📉 Bearish", f"{s:+.2f}"
-        return "⚖️ Neutral", f"{s:+.2f}"
+    all_news = fetch_all_instant_news(channel_name)
 
     usd_s = _calc_currency_score_only("USD", fred_key, channel_name)
     eur_s = _calc_currency_score_only("EUR", fred_key, channel_name)
@@ -574,35 +701,50 @@ def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHAN
     gold_s, ry_val_str, _ = _calc_gold_score_only(fred_key, channel_name)
     oil_s, _ = _calc_oil_score_only(fred_key, channel_name)
 
-    u_lbl, u_val = _fmt(usd_s)
-    e_lbl, e_val = _fmt(eur_s)
-    g_lbl, g_val = _fmt(gbp_s)
-    j_lbl, j_val = _fmt(jpy_s)
-    c_lbl, c_val = _fmt(cad_s)
-    a_lbl, a_val = _fmt(aud_s)
-    ch_lbl, ch_val = _fmt(chf_s)
-    
-    xau_lbl, xau_val = _fmt(gold_s)
-    oil_lbl, oil_val = _fmt(oil_s)
+    d_xau = get_macro_asset_details("Gold", gold_s, all_news)
+    d_oil = get_macro_asset_details("Oil", oil_s, all_news)
+    d_usd = get_macro_asset_details("USD", usd_s, all_news)
+    d_eur = get_macro_asset_details("EUR", eur_s, all_news)
+    d_gbp = get_macro_asset_details("GBP", gbp_s, all_news)
+    d_jpy = get_macro_asset_details("JPY", jpy_s, all_news)
+    d_cad = get_macro_asset_details("CAD", cad_s, all_news)
+    d_aud = get_macro_asset_details("AUD", aud_s, all_news)
+    d_chf = get_macro_asset_details("CHF", chf_s, all_news)
 
     lines = [
         "🏛️ *APEX MACRO — HOURLY INTELLIGENCE REPORT*",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━",
         f"🕒 *Time:* `{now.strftime('%Y-%m-%d %H:%M')} (KRD / UTC+3)`",
-        "📊 *Global Macro & Asset Biases:*",
+        "📊 *Global Macro Compass & Causal Drivers:*",
         "",
-        f"🥇 *Gold (XAU/USD):*  `{xau_lbl}`  `({xau_val})`",
-        f"🛢️ *Crude Oil (WTI):* `{oil_lbl}`  `({oil_val})`",
-        f"🇺🇸 *USD Index (USD):* `{u_lbl}`  `({u_val})`",
-        f"🇪🇺 *Euro (EUR):*      `{e_lbl}`  `({e_val})`",
-        f"🇬🇧 *Pound (GBP):*     `{g_lbl}`  `({g_val})`",
-        f"🇯🇵 *Yen (JPY):*       `{j_lbl}`  `({j_val})`",
-        f"🇨🇦 *Loonie (CAD):*    `{c_lbl}`  `({c_val})`",
-        f"🇦🇺 *Aussie (AUD):*    `{a_lbl}`  `({a_val})`",
-        f"🇨🇭 *Franc (CHF):*     `{ch_lbl}`  `({ch_val})`",
+        f"🥇 *Gold (XAU/USD):* `{d_xau['strength']}` `({d_xau['score_str']})`",
+        f"▫️ *Driver:* _{d_xau['driver']}_",
+        "",
+        f"🛢️ *Crude Oil (WTI):* `{d_oil['strength']}` `({d_oil['score_str']})`",
+        f"▫️ *Driver:* _{d_oil['driver']}_",
+        "",
+        f"🇺🇸 *USD Index (USD):* `{d_usd['strength']}` `({d_usd['score_str']})`",
+        f"▫️ *Driver:* _{d_usd['driver']}_",
+        "",
+        f"🇪🇺 *Euro (EUR):* `{d_eur['strength']}` `({d_eur['score_str']})`",
+        f"▫️ *Driver:* _{d_eur['driver']}_",
+        "",
+        f"🇬🇧 *Pound (GBP):* `{d_gbp['strength']}` `({d_gbp['score_str']})`",
+        f"▫️ *Driver:* _{d_gbp['driver']}_",
+        "",
+        f"🇯🇵 *Yen (JPY):* `{d_jpy['strength']}` `({d_jpy['score_str']})`",
+        f"▫️ *Driver:* _{d_jpy['driver']}_",
+        "",
+        f"🇨🇦 *Loonie (CAD):* `{d_cad['strength']}` `({d_cad['score_str']})`",
+        f"▫️ *Driver:* _{d_cad['driver']}_",
+        "",
+        f"🇦🇺 *Aussie (AUD):* `{d_aud['strength']}` `({d_aud['score_str']})`",
+        f"▫️ *Driver:* _{d_aud['driver']}_",
+        "",
+        f"🇨🇭 *Franc (CHF):* `{d_chf['strength']}` `({d_chf['score_str']})`",
+        f"▫️ *Driver:* _{d_chf['driver']}_",
         "",
         f"▫️ *US 10Y Real Yield:* `{ry_val_str}`",
-        f"▫️ *Status:* `All Macro Pipelines Synchronized`",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━",
         "⚡ *ApexMacro Institutional Terminal v14.0*"
     ]
@@ -874,9 +1016,15 @@ def compute_composite(currency: str, fred_key: str, channel_name: str = DEFAULT_
     }
 
 def bias_from_score(s: float) -> tuple[str, str, str]:
-    if s > 0.15: return "📈 Bullish", "b-bull", "#00ffa3"
-    if s < -0.15: return "📉 Bearish", "b-bear", "#ff5e75"
-    return "⚖️ Neutral", "b-neut", "#c9d4dd"
+    if s >= 0.35:
+        return "🚀 Strong Bullish", "b-bull", "#00ffa3"
+    elif s >= 0.15:
+        return "📈 Moderate Bullish", "b-bull", "#00ffa3"
+    elif s <= -0.35:
+        return "🔻 Strong Bearish", "b-bear", "#ff5e75"
+    elif s <= -0.15:
+        return "📉 Moderate Bearish", "b-bear", "#ff5e75"
+    return "⚖️ Neutral / Balanced", "b-neut", "#c9d4dd"
 
 def badge(s: float, lg: bool = False) -> str:
     lbl, css, _ = bias_from_score(s)
@@ -1629,19 +1777,25 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list) -> dict:
         if any(kw in combined_text for kw in keywords):
             correlated_articles.append(art)
             
+    cur = meta.get("currency", "USD")
     if correlated_articles:
         rule_res = analyze_news_rule_based(correlated_articles)
-        cur = meta.get("currency", "USD")
         news_sentiment_pts = rule_res["scores"].get(cur, 0.0)
     
     # 3. Composite Nowcast: 60% Precursor Macro + 40% Correlated News
     nowcast_composite = (0.60 * base_precursor_score) + (0.40 * (news_sentiment_pts / 0.50))
     confidence_val = min(94, int(62 + abs(nowcast_composite) * 48))
-    
+
     if nowcast_composite > 0.10:
         bias_label = "🔺 LIKELY HIGHER THAN FORECAST"
         bias_color = "#00ffa3"
         outcome_desc = "Precursor pipeline indicators (wholesale inflation & energy momentum) combined with wire sentiment signal high upside surprise probability against consensus."
+        currency_action_ku = f"📈 {cur} بەرز دەبێتەوە (Appreciation / Bullish)"
+        currency_action_color = "#00ffa3"
+        if cur == "USD":
+            currency_action_desc_ku = "دۆلاری ئەمریکی (USD) بەرز دەبێتەوە بەهۆی کەمبوونەوەی ئەگەری دابەزاندنی سوود و بەهێزیی سووڕی ئابووری ئەمریکا."
+        else:
+            currency_action_desc_ku = f"دراوی ({cur}) بەرز دەبێتەوە و بەهێز دەبێت، چونکە ئەم داتایە سوودی ئابووریی ڕاستەوخۆ دەگەیەنێت بەم دراوە."
         gold_implication = "📉 Bearish Drag on Gold (Surging yields & Hawkish USD pushback)"
         usd_implication = "📈 Bullish Tailwind for USD (Yield advantage expansion)"
         oil_implication = "📈 Bullish Support (Active energy demand pull)"
@@ -1649,6 +1803,12 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list) -> dict:
         bias_label = "🔻 LIKELY LOWER THAN FORECAST"
         bias_color = "#ff5e75"
         outcome_desc = "Leading indicators (disinflation pipeline & labor cooling signals) point toward potential downside miss or softer print relative to consensus."
+        currency_action_ku = f"📉 {cur} دەشکێت و دادەبەزێت (Weakening / Bearish)"
+        currency_action_color = "#ff5e75"
+        if cur == "USD":
+            currency_action_desc_ku = "دۆلاری ئەمریکی (USD) دەشکێت و دادەبەزێت، چونکە سستبوونی داتاکە ڕێگە بۆ فیدراڵی خۆش دەکات ڕێژەی سوود دابەزێنێت."
+        else:
+            currency_action_desc_ku = f"دراوی ({cur}) دەشکێت و لاواز دەبێت، بەهۆی سستبوونی گەشە یان زیادبوونی ئەگەری کەمکردنەوەی سوود لە بانکی ناوەندی."
         gold_implication = "📈 Bullish Surge for Gold (Yields retreat & Rate cut optimism accelerates)"
         usd_implication = "📉 Bearish Drag on USD (Dovish repricing across FX majors)"
         oil_implication = "📉 Bearish Drag (Cooling macroeconomic demand signals)"
@@ -1656,6 +1816,9 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list) -> dict:
         bias_label = "⚖️ IN-LINE WITH CONSENSUS"
         bias_color = "#ffd166"
         outcome_desc = "Balanced precursor metrics and neutral wire tone suggest official print will land near consensus expectations with limited deviation."
+        currency_action_ku = f"⚖️ {cur} لە جووڵەی سنوورداردا دەمێنێتەوە (Range-Bound / Neutral)"
+        currency_action_color = "#ffd166"
+        currency_action_desc_ku = f"دراوی ({cur}) گۆڕانکاریی گەورەی بەسەردا نایەت، چونکە داتاکە لەگەڵ پێشبینییەکانی بازاڕدا یەکدەگرێتەوە."
         gold_implication = "⚖️ Neutral / Range-Bound (Awaiting secondary drivers)"
         usd_implication = "⚖️ Balanced (Consolidation against major currency crosses)"
         oil_implication = "⚖️ Range-Bound (Dominated by physical supply news)"
@@ -1670,6 +1833,9 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list) -> dict:
         "bias_color": bias_color,
         "confidence": confidence_val,
         "outcome_desc": outcome_desc,
+        "currency_action_ku": currency_action_ku,
+        "currency_action_color": currency_action_color,
+        "currency_action_desc_ku": currency_action_desc_ku,
         "gold_implication": gold_implication,
         "usd_implication": usd_implication,
         "oil_implication": oil_implication
@@ -1796,9 +1962,20 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str) -> None:
             </div>
           </div>
 
+          <!-- Prominent Currency Direction Box (ئاراستەی دراوەکە) -->
+          <div style="margin-top:12px;padding:12px 14px;background:rgba(0,245,255,0.05);border:1px solid rgba(0,245,255,0.25);border-radius:10px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:4px;">
+              <span style="font-size:11px;font-weight:900;color:#00f5ff;text-transform:uppercase;">🎯 ئاراستەی ڕاستەوخۆی دراوەکە ({cur} CURRENCY OUTLOOK):</span>
+              <span style="font-size:12px;font-weight:900;color:{nowcast['currency_action_color']};">{nowcast['currency_action_ku']}</span>
+            </div>
+            <div style="font-size:11.5px;color:#ecf7ff;line-height:1.45;">
+              {nowcast['currency_action_desc_ku']}
+            </div>
+          </div>
+
           <!-- Cross-Asset Impact -->
-          <div style="margin-top:12px;padding:12px 14px;background:rgba(0,0,0,0.25);border:1px solid rgba(0,245,255,0.12);border-radius:10px;font-size:11.5px;">
-            <div style="font-size:10.5px;font-weight:800;color:#00f5ff;text-transform:uppercase;margin-bottom:6px;">🎯 Cross-Asset Tactical Projection:</div>
+          <div style="margin-top:10px;padding:12px 14px;background:rgba(0,0,0,0.25);border:1px solid rgba(0,245,255,0.12);border-radius:10px;font-size:11.5px;">
+            <div style="font-size:10.5px;font-weight:800;color:#00f5ff;text-transform:uppercase;margin-bottom:6px;">🌐 کاریگەری لەسەر کانزا و ئاڵوگۆڕەکانی تر (Cross-Asset Projection):</div>
             <div style="color:#ecf7ff;margin-bottom:3px;">• <b>Gold (XAUUSD):</b> {nowcast['gold_implication']}</div>
             <div style="color:#ecf7ff;margin-bottom:3px;">• <b>US Dollar (USD):</b> {nowcast['usd_implication']}</div>
             <div style="color:#ecf7ff;">• <b>Crude Oil:</b> {nowcast['oil_implication']}</div>
