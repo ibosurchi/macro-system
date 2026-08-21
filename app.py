@@ -479,7 +479,6 @@ def fetch_fred(series_id: str, key: str, limit: int = 48) -> pd.DataFrame | None
 
 GLOBAL_ALERT_STATE: dict[str, str] = {}
 GLOBAL_ALERT_SCORES: dict[str, float] = {}
-GLOBAL_ALERT_TIMESTAMPS: dict[str, float] = {}
 
 @st.cache_data(ttl=60, show_spinner=False)
 def _calc_currency_score_only(currency: str, fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> float | None:
@@ -601,12 +600,9 @@ def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHAN
     return "\n".join(lines)
 
 def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
-    """Checks Gold, Crude Oil, and US Dollar — sends instant Telegram alert whenever bias shifts (Bullish/Bearish/Neutral)."""
+    """Checks Gold, Crude Oil, and US Dollar — sends Telegram alert strictly ONCE when bias transitions, preventing spam."""
     if not fred_key:
         return
-    import time
-    now_ts = time.time()
-    COOLDOWN_SECONDS = 300  # 5 minutes cooldown between consecutive alerts per asset
 
     try:
         # 1. Check Gold (XAUUSD)
@@ -614,12 +610,8 @@ def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
         if gold_s is not None:
             current_gold_bias, _, _ = bias_from_score(gold_s)
             last_gold_bias = GLOBAL_ALERT_STATE.get("Gold")
-            last_gold_time = GLOBAL_ALERT_TIMESTAMPS.get("Gold", 0)
 
-            if last_gold_bias is None:
-                GLOBAL_ALERT_STATE["Gold"] = current_gold_bias
-                GLOBAL_ALERT_SCORES["Gold"] = gold_s
-            elif current_gold_bias != last_gold_bias and (now_ts - last_gold_time > COOLDOWN_SECONDS):
+            if last_gold_bias is not None and current_gold_bias != last_gold_bias:
                 alert_msg = (
                     "🔄 *APEX MACRO — BIAS SHIFT ALERT*\n"
                     "━━━━━━━━━━━━━━━━━━━\n"
@@ -633,21 +625,16 @@ def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
                     "⚡ *ApexMacro Terminal v13.0*"
                 )
                 send_telegram_alert(alert_msg)
-                GLOBAL_ALERT_STATE["Gold"] = current_gold_bias
-                GLOBAL_ALERT_SCORES["Gold"] = gold_s
-                GLOBAL_ALERT_TIMESTAMPS["Gold"] = now_ts
+            
+            GLOBAL_ALERT_STATE["Gold"] = current_gold_bias
 
         # 2. Check Crude Oil (WTI/Brent)
         oil_s, oil_news_pts = _calc_oil_score_only(fred_key, channel_name)
         if oil_s is not None:
             current_oil_bias, _, _ = bias_from_score(oil_s)
             last_oil_bias = GLOBAL_ALERT_STATE.get("Oil")
-            last_oil_time = GLOBAL_ALERT_TIMESTAMPS.get("Oil", 0)
 
-            if last_oil_bias is None:
-                GLOBAL_ALERT_STATE["Oil"] = current_oil_bias
-                GLOBAL_ALERT_SCORES["Oil"] = oil_s
-            elif current_oil_bias != last_oil_bias and (now_ts - last_oil_time > COOLDOWN_SECONDS):
+            if last_oil_bias is not None and current_oil_bias != last_oil_bias:
                 alert_msg = (
                     "🔄 *APEX MACRO — BIAS SHIFT ALERT*\n"
                     "━━━━━━━━━━━━━━━━━━━\n"
@@ -661,21 +648,16 @@ def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
                     "⚡ *ApexMacro Terminal v13.0*"
                 )
                 send_telegram_alert(alert_msg)
-                GLOBAL_ALERT_STATE["Oil"] = current_oil_bias
-                GLOBAL_ALERT_SCORES["Oil"] = oil_s
-                GLOBAL_ALERT_TIMESTAMPS["Oil"] = now_ts
+            
+            GLOBAL_ALERT_STATE["Oil"] = current_oil_bias
 
         # 3. Check US Dollar Index (USD)
         usd_s = _calc_currency_score_only("USD", fred_key, channel_name)
         if usd_s is not None:
             curr_bias, _, _ = bias_from_score(usd_s)
             last_bias = GLOBAL_ALERT_STATE.get("USD")
-            last_time = GLOBAL_ALERT_TIMESTAMPS.get("USD", 0)
 
-            if last_bias is None:
-                GLOBAL_ALERT_STATE["USD"] = curr_bias
-                GLOBAL_ALERT_SCORES["USD"] = usd_s
-            elif curr_bias != last_bias and (now_ts - last_time > COOLDOWN_SECONDS):
+            if last_bias is not None and curr_bias != last_bias:
                 alert_msg = (
                     "🔄 *APEX MACRO — BIAS SHIFT ALERT*\n"
                     "━━━━━━━━━━━━━━━━━━━\n"
@@ -688,9 +670,8 @@ def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
                     "⚡ *ApexMacro Terminal v13.0*"
                 )
                 send_telegram_alert(alert_msg)
-                GLOBAL_ALERT_STATE["USD"] = curr_bias
-                GLOBAL_ALERT_SCORES["USD"] = usd_s
-                GLOBAL_ALERT_TIMESTAMPS["USD"] = now_ts
+            
+            GLOBAL_ALERT_STATE["USD"] = curr_bias
 
     except Exception:
         pass
