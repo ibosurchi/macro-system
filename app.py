@@ -430,6 +430,67 @@ div[data-testid='stMetric'] label{color:#879aa8!important;font-size:10px!importa
 button[kind='primary'],.stButton>button{border-radius:11px!important;border:1px solid rgba(0,245,255,.24)!important;background:linear-gradient(135deg,rgba(0,245,255,.10),rgba(0,255,163,.06))!important;color:#e9fbff!important;font-weight:800!important;box-shadow:0 0 18px rgba(0,245,255,.06)!important;}
 button[kind='primary']:hover,.stButton>button:hover{border-color:rgba(0,245,255,.45)!important;box-shadow:0 0 26px rgba(0,245,255,.12)!important;}
 
+/* ── CUSTOM DARK GLASSMORPHISM SELECTBOX & DROPDOWN STYLING ── */
+div[data-baseweb="select"], div[data-baseweb="select"] > div {
+    background: linear-gradient(180deg, rgba(14,24,36,0.92), rgba(7,14,22,0.95)) !important;
+    border: 1px solid rgba(0,245,255,0.25) !important;
+    border-radius: 12px !important;
+    color: #edf7ff !important;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.35), 0 0 14px rgba(0,245,255,0.05) !important;
+    transition: all 0.2s ease-in-out !important;
+}
+
+div[data-baseweb="select"]:hover, div[data-baseweb="select"] > div:hover {
+    border-color: rgba(0,245,255,0.55) !important;
+    box-shadow: 0 6px 26px rgba(0,0,0,0.45), 0 0 20px rgba(0,245,255,0.15) !important;
+}
+
+div[data-baseweb="select"] span, div[data-baseweb="select"] div, div[data-baseweb="select"] input {
+    color: #edf7ff !important;
+    font-weight: 750 !important;
+    font-size: 12.5px !important;
+}
+
+div[data-baseweb="select"] svg {
+    fill: #00f5ff !important;
+    color: #00f5ff !important;
+}
+
+/* Dropdown Menu Popup (Popover & Menu Items) */
+div[data-baseweb="popover"], div[data-baseweb="popover"] > div, ul[data-baseweb="menu"] {
+    background: rgba(8,16,25,0.98) !important;
+    border: 1px solid rgba(0,245,255,0.3) !important;
+    border-radius: 14px !important;
+    box-shadow: 0 15px 40px rgba(0,0,0,0.6), 0 0 25px rgba(0,245,255,0.12) !important;
+    backdrop-filter: blur(20px) !important;
+    padding: 6px !important;
+}
+
+li[data-baseweb="menu-item"] {
+    background: transparent !important;
+    color: #edf7ff !important;
+    border-radius: 8px !important;
+    font-weight: 650 !important;
+    font-size: 12.5px !important;
+    padding: 8px 12px !important;
+    margin-bottom: 2px !important;
+    transition: all 0.15s ease !important;
+}
+
+li[data-baseweb="menu-item"]:hover, li[data-baseweb="menu-item"][aria-selected="true"] {
+    background: linear-gradient(90deg, rgba(0,245,255,0.15), rgba(0,255,163,0.08)) !important;
+    color: #00f5ff !important;
+    border-left: 3px solid #00f5ff !important;
+}
+
+/* Custom Text Inputs */
+div[data-baseweb="input"], div[data-baseweb="input"] > div, input.stTextInput {
+    background: rgba(11,20,30,0.92) !important;
+    border: 1px solid rgba(0,245,255,0.22) !important;
+    border-radius: 11px !important;
+    color: #ffffff !important;
+}
+
 .badge{display:inline-block;padding:5px 12px;border-radius:999px;font-size:10px;font-weight:850;letter-spacing:.5px;text-transform:uppercase;}
 .b-bull{background:rgba(0,255,163,.10);color:var(--green);border:1px solid rgba(0,255,163,.35);box-shadow:0 0 14px rgba(0,255,163,.15);}.b-bear{background:rgba(255,94,117,.10);color:#ff5e75;border:1px solid rgba(255,94,117,.35);box-shadow:0 0 14px rgba(255,94,117,.12);}.b-neut{background:rgba(148,163,184,.07);color:#c9d4dd;border:1px solid rgba(148,163,184,.20);}.badge-lg{font-size:12px;padding:8px 18px;border-radius:11px;}
 .pills{display:flex;gap:6px;flex-wrap:wrap;}.pill-g{background:rgba(0,255,163,.08);color:var(--green);border:1px solid rgba(0,255,163,.25);padding:4px 9px;border-radius:8px;font-weight:750;font-size:10px;}.pill-r{background:rgba(255,94,117,.08);color:#ff5e75;border:1px solid rgba(255,94,117,.24);padding:4px 9px;border-radius:8px;font-weight:750;font-size:10px;}
