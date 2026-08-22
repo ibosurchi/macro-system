@@ -491,6 +491,66 @@ div[data-baseweb="input"], div[data-baseweb="input"] > div, input.stTextInput {
     color: #ffffff !important;
 }
 
+/* ── CUSTOM DARK GLASSMORPHISM POPOVER & CURRENCY DROPDOWN STYLING ── */
+div[data-testid="stPopover"] {
+    width: 100% !important;
+}
+
+div[data-testid="stPopover"] > button {
+    width: 100% !important;
+    border-radius: 11px !important;
+    border: 1px solid rgba(0, 245, 255, 0.24) !important;
+    background: linear-gradient(135deg, rgba(0, 245, 255, 0.08), rgba(0, 255, 163, 0.04)) !important;
+    color: #e9fbff !important;
+    font-weight: 800 !important;
+    box-shadow: 0 0 16px rgba(0, 245, 255, 0.05) !important;
+    padding: 8px 10px !important;
+    display: flex !important;
+    justify-content: center !important;
+    align-items: center !important;
+    gap: 6px !important;
+}
+
+div[data-testid="stPopover"] > button:hover {
+    border-color: rgba(0, 245, 255, 0.55) !important;
+    box-shadow: 0 0 24px rgba(0, 245, 255, 0.16) !important;
+    transform: translateY(-1px) !important;
+}
+
+div[data-testid="stPopoverBody"] {
+    background: linear-gradient(180deg, rgba(11, 20, 32, 0.98), rgba(6, 12, 18, 0.98)) !important;
+    border: 1px solid rgba(0, 245, 255, 0.35) !important;
+    border-radius: 14px !important;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.75), 0 0 26px rgba(0, 245, 255, 0.14) !important;
+    backdrop-filter: blur(22px) !important;
+    padding: 10px 8px !important;
+    min-width: 220px !important;
+    z-index: 999999 !important;
+}
+
+div[data-testid="stPopoverBody"] button {
+    background: rgba(255, 255, 255, 0.025) !important;
+    border: 1px solid rgba(255, 255, 255, 0.06) !important;
+    border-radius: 9px !important;
+    color: #edf7ff !important;
+    font-weight: 700 !important;
+    font-size: 11.5px !important;
+    text-align: left !important;
+    padding: 9px 12px !important;
+    margin-bottom: 4px !important;
+    transition: all 0.15s ease !important;
+    width: 100% !important;
+    display: flex !important;
+    justify-content: flex-start !important;
+}
+
+div[data-testid="stPopoverBody"] button:hover {
+    background: linear-gradient(90deg, rgba(0, 245, 255, 0.16), rgba(0, 255, 163, 0.08)) !important;
+    border-color: rgba(0, 245, 255, 0.5) !important;
+    color: #00f5ff !important;
+    transform: translateX(2px) !important;
+}
+
 .badge{display:inline-block;padding:5px 12px;border-radius:999px;font-size:10px;font-weight:850;letter-spacing:.5px;text-transform:uppercase;}
 .b-bull{background:rgba(0,255,163,.10);color:var(--green);border:1px solid rgba(0,255,163,.35);box-shadow:0 0 14px rgba(0,255,163,.15);}.b-bear{background:rgba(255,94,117,.10);color:#ff5e75;border:1px solid rgba(255,94,117,.35);box-shadow:0 0 14px rgba(255,94,117,.12);}.b-neut{background:rgba(148,163,184,.07);color:#c9d4dd;border:1px solid rgba(148,163,184,.20);}.badge-lg{font-size:12px;padding:8px 18px;border-radius:11px;}
 .pills{display:flex;gap:6px;flex-wrap:wrap;}.pill-g{background:rgba(0,255,163,.08);color:var(--green);border:1px solid rgba(0,255,163,.25);padding:4px 9px;border-radius:8px;font-weight:750;font-size:10px;}.pill-r{background:rgba(255,94,117,.08);color:#ff5e75;border:1px solid rgba(255,94,117,.24);padding:4px 9px;border-radius:8px;font-weight:750;font-size:10px;}
@@ -1314,22 +1374,50 @@ def page_dashboard(fred_key: str, channel_name: str, auth_user: dict | None = No
     if "selected_currency" not in st.session_state:
         st.session_state["selected_currency"] = "USD"
 
-    # Currency Tab Buttons Row (Side-by-side responsive buttons)
-    curr_keys = list(CURRENCY_SERIES.keys())
+    # Six Major Currencies Arranged Horizontally
+    curr_keys = ["USD", "EUR", "GBP", "CAD", "JPY", "CHF"]
     curr_cols = st.columns(len(curr_keys))
+    has_popover = hasattr(st, "popover")
+
     for col, c_code in zip(curr_cols, curr_keys):
-        c_meta = CURRENCY_SERIES[c_code]
-        c_label = f"{c_meta['flag']} {c_code}"
+        c_meta = CURRENCY_SERIES.get(c_code, {"flag": "💵", "name": c_code})
+        is_active = (st.session_state["selected_currency"] == c_code)
+        btn_label = f"{c_meta['flag']} {c_code} ▾" if is_active else f"{c_meta['flag']} {c_code}"
+        
         with col:
-            is_active = (st.session_state["selected_currency"] == c_code)
-            if st.button(
-                c_label,
-                key=f"curr_btn_{c_code}",
-                use_container_width=True,
-                type="primary" if is_active else "secondary"
-            ):
-                st.session_state["selected_currency"] = c_code
-                st.rerun()
+            if has_popover:
+                with st.popover(btn_label, use_container_width=True):
+                    st.markdown("<div style='font-size:10px;font-weight:900;color:#00f5ff;text-transform:uppercase;margin-bottom:6px;letter-spacing:1px;border-bottom:1px solid rgba(0,245,255,0.2);padding-bottom:4px;'>Select Currency</div>", unsafe_allow_html=True)
+                    for opt_code in curr_keys:
+                        opt_meta = CURRENCY_SERIES[opt_code]
+                        opt_is_sel = (st.session_state["selected_currency"] == opt_code)
+                        btn_txt = f"{opt_meta['flag']}  {opt_code} — {opt_meta['name']}"
+                        if st.button(btn_txt, key=f"pop_{c_code}_to_{opt_code}", use_container_width=True, type="primary" if opt_is_sel else "secondary"):
+                            st.session_state["selected_currency"] = opt_code
+                            st.rerun()
+            else:
+                is_open = (st.session_state.get("open_currency_dropdown") == c_code)
+                disp_label = f"{c_meta['flag']} {c_code} ▾" if (is_open or is_active) else f"{c_meta['flag']} {c_code}"
+                if st.button(disp_label, key=f"curr_btn_{c_code}", use_container_width=True, type="primary" if is_active else "secondary"):
+                    if is_open:
+                        st.session_state["open_currency_dropdown"] = None
+                    else:
+                        st.session_state["open_currency_dropdown"] = c_code
+                    st.session_state["selected_currency"] = c_code
+                    st.rerun()
+                
+                if is_open:
+                    with st.container():
+                        st.markdown("<div style='background:rgba(8,16,25,0.98);border:1px solid rgba(0,245,255,0.3);border-radius:12px;padding:8px;margin-top:4px;box-shadow:0 12px 30px rgba(0,0,0,0.6);'>", unsafe_allow_html=True)
+                        for opt_code in curr_keys:
+                            opt_meta = CURRENCY_SERIES[opt_code]
+                            opt_is_sel = (st.session_state["selected_currency"] == opt_code)
+                            btn_txt = f"{opt_meta['flag']}  {opt_code} — {opt_meta['name']}"
+                            if st.button(btn_txt, key=f"fall_pop_{c_code}_to_{opt_code}", use_container_width=True, type="primary" if opt_is_sel else "secondary"):
+                                st.session_state["selected_currency"] = opt_code
+                                st.session_state["open_currency_dropdown"] = None
+                                st.rerun()
+                        st.markdown("</div>", unsafe_allow_html=True)
 
     currency = st.session_state["selected_currency"]
     st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
