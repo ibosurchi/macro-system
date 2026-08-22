@@ -493,64 +493,66 @@ div[data-baseweb="input"], div[data-baseweb="input"] > div, input.stTextInput {
     color: #ffffff !important;
 }
 
-/* ── CUSTOM DARK GLASSMORPHISM POPOVER & CURRENCY DROPDOWN STYLING ── */
+/* ── CUSTOM DARK GLASSMORPHISM POPOVER & FULL-WIDTH CURRENCY DROPDOWN STYLING ── */
 div[data-testid="stPopover"] {
     width: 100% !important;
 }
 
 div[data-testid="stPopover"] > button {
     width: 100% !important;
-    border-radius: 11px !important;
-    border: 1px solid rgba(0, 245, 255, 0.24) !important;
-    background: linear-gradient(135deg, rgba(0, 245, 255, 0.08), rgba(0, 255, 163, 0.04)) !important;
+    border-radius: 12px !important;
+    border: 1px solid rgba(0, 245, 255, 0.28) !important;
+    background: linear-gradient(180deg, rgba(14, 24, 36, 0.92), rgba(7, 14, 22, 0.95)) !important;
     color: #e9fbff !important;
-    font-weight: 800 !important;
-    box-shadow: 0 0 16px rgba(0, 245, 255, 0.05) !important;
-    padding: 8px 10px !important;
+    font-weight: 850 !important;
+    font-size: 13px !important;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35), 0 0 16px rgba(0, 245, 255, 0.08) !important;
+    padding: 10px 16px !important;
     display: flex !important;
     justify-content: center !important;
     align-items: center !important;
-    gap: 6px !important;
+    gap: 8px !important;
+    letter-spacing: 0.5px !important;
 }
 
 div[data-testid="stPopover"] > button:hover {
-    border-color: rgba(0, 245, 255, 0.55) !important;
-    box-shadow: 0 0 24px rgba(0, 245, 255, 0.16) !important;
-    transform: translateY(-1px) !important;
+    border-color: rgba(0, 245, 255, 0.65) !important;
+    box-shadow: 0 6px 28px rgba(0, 0, 0, 0.45), 0 0 24px rgba(0, 245, 255, 0.20) !important;
 }
 
 div[data-testid="stPopoverBody"] {
     background: linear-gradient(180deg, rgba(11, 20, 32, 0.98), rgba(6, 12, 18, 0.98)) !important;
     border: 1px solid rgba(0, 245, 255, 0.35) !important;
-    border-radius: 14px !important;
-    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.75), 0 0 26px rgba(0, 245, 255, 0.14) !important;
-    backdrop-filter: blur(22px) !important;
-    padding: 10px 8px !important;
-    min-width: 220px !important;
+    border-radius: 16px !important;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8), 0 0 30px rgba(0, 245, 255, 0.16) !important;
+    backdrop-filter: blur(24px) !important;
+    padding: 16px 18px !important;
+    width: 100% !important;
+    min-width: min(900px, 94vw) !important;
+    max-width: 98vw !important;
     z-index: 999999 !important;
 }
 
 div[data-testid="stPopoverBody"] button {
-    background: rgba(255, 255, 255, 0.025) !important;
-    border: 1px solid rgba(255, 255, 255, 0.06) !important;
-    border-radius: 9px !important;
+    background: linear-gradient(180deg, rgba(14, 24, 36, 0.85), rgba(7, 14, 22, 0.90)) !important;
+    border: 1px solid rgba(0, 245, 255, 0.18) !important;
+    border-radius: 10px !important;
     color: #edf7ff !important;
-    font-weight: 700 !important;
-    font-size: 11.5px !important;
-    text-align: left !important;
-    padding: 9px 12px !important;
-    margin-bottom: 4px !important;
+    font-weight: 750 !important;
+    font-size: 12px !important;
+    text-align: center !important;
+    padding: 12px 14px !important;
+    margin-bottom: 6px !important;
     transition: all 0.15s ease !important;
     width: 100% !important;
-    display: flex !important;
-    justify-content: flex-start !important;
 }
 
 div[data-testid="stPopoverBody"] button:hover {
-    background: linear-gradient(90deg, rgba(0, 245, 255, 0.16), rgba(0, 255, 163, 0.08)) !important;
-    border-color: rgba(0, 245, 255, 0.5) !important;
+    background: linear-gradient(90deg, rgba(0, 245, 255, 0.18), rgba(0, 255, 163, 0.10)) !important;
+    border-color: rgba(0, 245, 255, 0.55) !important;
     color: #00f5ff !important;
-    transform: translateX(2px) !important;
+    box-shadow: 0 0 20px rgba(0, 245, 255, 0.18) !important;
+    transform: translateY(-2px) !important;
 }
 
 .badge{display:inline-block;padding:5px 12px;border-radius:999px;font-size:10px;font-weight:850;letter-spacing:.5px;text-transform:uppercase;}
@@ -1376,7 +1378,7 @@ def page_dashboard(fred_key: str, channel_name: str, auth_user: dict | None = No
     if "selected_currency" not in st.session_state:
         st.session_state["selected_currency"] = "USD"
 
-    # Single Primary Currency Dropdown Selector
+    # Single Primary Currency Dropdown Selector (Full Width)
     curr_keys = ["USD", "EUR", "GBP", "CAD", "JPY", "CHF"]
     currency = st.session_state["selected_currency"]
     c_meta = CURRENCY_SERIES.get(currency, {"flag": "💵", "name": "US Dollar"})
@@ -1386,14 +1388,17 @@ def page_dashboard(fred_key: str, channel_name: str, auth_user: dict | None = No
 
     if has_popover:
         with st.popover(btn_label, use_container_width=True):
-            st.markdown("<div style='font-size:10px;font-weight:900;color:#00f5ff;text-transform:uppercase;margin-bottom:8px;letter-spacing:1px;border-bottom:1px solid rgba(0,245,255,0.2);padding-bottom:4px;'>Select Currency</div>", unsafe_allow_html=True)
-            for opt_code in curr_keys:
+            st.markdown("<div style='font-size:11px;font-weight:900;color:#00f5ff;text-transform:uppercase;margin-bottom:12px;letter-spacing:1.5px;border-bottom:1px solid rgba(0,245,255,0.2);padding-bottom:6px;'>Select Target Macro Currency</div>", unsafe_allow_html=True)
+            p_cols = st.columns(3)
+            for idx, opt_code in enumerate(curr_keys):
+                target_col = p_cols[idx % 3]
                 opt_meta = CURRENCY_SERIES.get(opt_code, {"flag": "💵", "name": opt_code})
                 opt_is_sel = (currency == opt_code)
                 btn_txt = f"{opt_meta['flag']}  {opt_code} — {opt_meta['name']}"
-                if st.button(btn_txt, key=f"single_pop_{opt_code}", use_container_width=True, type="primary" if opt_is_sel else "secondary"):
-                    st.session_state["selected_currency"] = opt_code
-                    st.rerun()
+                with target_col:
+                    if st.button(btn_txt, key=f"single_pop_{opt_code}", use_container_width=True, type="primary" if opt_is_sel else "secondary"):
+                        st.session_state["selected_currency"] = opt_code
+                        st.rerun()
     else:
         is_open = st.session_state.get("open_currency_dropdown", False)
         if st.button(btn_label, key="single_curr_btn", use_container_width=True, type="primary"):
@@ -1402,15 +1407,18 @@ def page_dashboard(fred_key: str, channel_name: str, auth_user: dict | None = No
         
         if is_open:
             with st.container():
-                st.markdown("<div style='background:rgba(8,16,25,0.98);border:1px solid rgba(0,245,255,0.3);border-radius:12px;padding:8px;margin-top:4px;box-shadow:0 12px 30px rgba(0,0,0,0.6);'>", unsafe_allow_html=True)
-                for opt_code in curr_keys:
+                st.markdown("<div style='background:rgba(8,16,25,0.98);border:1px solid rgba(0,245,255,0.3);border-radius:14px;padding:14px;margin-top:6px;box-shadow:0 12px 30px rgba(0,0,0,0.6);'>", unsafe_allow_html=True)
+                p_cols = st.columns(3)
+                for idx, opt_code in enumerate(curr_keys):
+                    target_col = p_cols[idx % 3]
                     opt_meta = CURRENCY_SERIES.get(opt_code, {"flag": "💵", "name": opt_code})
                     opt_is_sel = (currency == opt_code)
                     btn_txt = f"{opt_meta['flag']}  {opt_code} — {opt_meta['name']}"
-                    if st.button(btn_txt, key=f"single_fall_{opt_code}", use_container_width=True, type="primary" if opt_is_sel else "secondary"):
-                        st.session_state["selected_currency"] = opt_code
-                        st.session_state["open_currency_dropdown"] = False
-                        st.rerun()
+                    with target_col:
+                        if st.button(btn_txt, key=f"single_fall_{opt_code}", use_container_width=True, type="primary" if opt_is_sel else "secondary"):
+                            st.session_state["selected_currency"] = opt_code
+                            st.session_state["open_currency_dropdown"] = False
+                            st.rerun()
                 st.markdown("</div>", unsafe_allow_html=True)
 
     currency = st.session_state["selected_currency"]
