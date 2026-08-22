@@ -1311,7 +1311,28 @@ def page_dashboard(fred_key: str, channel_name: str, auth_user: dict | None = No
         page_catalyst_forecaster(fred_key, channel_name)
         return
 
-    currency = st.selectbox("Currency:", list(CURRENCY_SERIES.keys()), format_func=lambda k: f"{CURRENCY_SERIES[k]['flag']} {k} • {CURRENCY_SERIES[k]['name']}", label_visibility="collapsed")
+    if "selected_currency" not in st.session_state:
+        st.session_state["selected_currency"] = "USD"
+
+    # Currency Tab Buttons Row (Side-by-side responsive buttons)
+    curr_keys = list(CURRENCY_SERIES.keys())
+    curr_cols = st.columns(len(curr_keys))
+    for col, c_code in zip(curr_cols, curr_keys):
+        c_meta = CURRENCY_SERIES[c_code]
+        c_label = f"{c_meta['flag']} {c_code}"
+        with col:
+            is_active = (st.session_state["selected_currency"] == c_code)
+            if st.button(
+                c_label,
+                key=f"curr_btn_{c_code}",
+                use_container_width=True,
+                type="primary" if is_active else "secondary"
+            ):
+                st.session_state["selected_currency"] = c_code
+                st.rerun()
+
+    currency = st.session_state["selected_currency"]
+    st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
 
     with st.spinner(f"Reading {currency} macro data & processing live feeds..."):
         result = compute_composite(currency, fred_key, channel_name)
