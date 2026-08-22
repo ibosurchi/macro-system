@@ -427,8 +427,10 @@ header[data-testid='stHeader']{display:none!important;background:transparent!imp
 
 div[data-testid='stMetric']{background:linear-gradient(180deg,rgba(14,25,35,.82),rgba(7,14,21,.78))!important;border:1px solid rgba(0,245,255,.12)!important;border-radius:15px!important;padding:15px!important;box-shadow:var(--shadow)!important;}
 div[data-testid='stMetric'] label{color:#879aa8!important;font-size:10px!important;font-weight:750!important;}
-button[kind='primary'],.stButton>button{border-radius:11px!important;border:1px solid rgba(0,245,255,.24)!important;background:linear-gradient(135deg,rgba(0,245,255,.10),rgba(0,255,163,.06))!important;color:#e9fbff!important;font-weight:800!important;box-shadow:0 0 18px rgba(0,245,255,.06)!important;}
-button[kind='primary']:hover,.stButton>button:hover{border-color:rgba(0,245,255,.45)!important;box-shadow:0 0 26px rgba(0,245,255,.12)!important;}
+button[kind='primary'],.stButton>button[kind='primary']{border-radius:11px!important;border:1px solid rgba(0,245,255,.35)!important;background:linear-gradient(135deg,rgba(0,245,255,.14),rgba(0,255,163,.08))!important;color:#e9fbff!important;font-weight:800!important;box-shadow:0 0 18px rgba(0,245,255,.12)!important;}
+button[kind='primary']:hover,.stButton>button[kind='primary']:hover{border-color:rgba(0,245,255,.65)!important;box-shadow:0 0 28px rgba(0,245,255,.24)!important;}
+button[kind='secondary'],.stButton>button[kind='secondary'],button[data-testid='baseButton-secondary']{border-radius:11px!important;border:1px solid rgba(0,245,255,.18)!important;background:linear-gradient(180deg,rgba(14,24,36,.85),rgba(7,14,22,.90))!important;color:#b8c7d3!important;font-weight:750!important;}
+button[kind='secondary']:hover,.stButton>button[kind='secondary']:hover,button[data-testid='baseButton-secondary']:hover{border-color:rgba(0,245,255,.45)!important;color:#00f5ff!important;background:linear-gradient(90deg,rgba(0,245,255,.12),rgba(0,255,163,.06))!important;}
 
 /* ── CUSTOM DARK GLASSMORPHISM SELECTBOX & DROPDOWN STYLING ── */
 div[data-baseweb="select"], div[data-baseweb="select"] > div {
@@ -1374,50 +1376,42 @@ def page_dashboard(fred_key: str, channel_name: str, auth_user: dict | None = No
     if "selected_currency" not in st.session_state:
         st.session_state["selected_currency"] = "USD"
 
-    # Six Major Currencies Arranged Horizontally
+    # Single Primary Currency Dropdown Selector
     curr_keys = ["USD", "EUR", "GBP", "CAD", "JPY", "CHF"]
-    curr_cols = st.columns(len(curr_keys))
+    currency = st.session_state["selected_currency"]
+    c_meta = CURRENCY_SERIES.get(currency, {"flag": "💵", "name": "US Dollar"})
+    btn_label = f"{c_meta['flag']}  {currency} — {c_meta['name']}  ▾"
+
     has_popover = hasattr(st, "popover")
 
-    for col, c_code in zip(curr_cols, curr_keys):
-        c_meta = CURRENCY_SERIES.get(c_code, {"flag": "💵", "name": c_code})
-        is_active = (st.session_state["selected_currency"] == c_code)
-        btn_label = f"{c_meta['flag']} {c_code} ▾" if is_active else f"{c_meta['flag']} {c_code}"
-        
-        with col:
-            if has_popover:
-                with st.popover(btn_label, use_container_width=True):
-                    st.markdown("<div style='font-size:10px;font-weight:900;color:#00f5ff;text-transform:uppercase;margin-bottom:6px;letter-spacing:1px;border-bottom:1px solid rgba(0,245,255,0.2);padding-bottom:4px;'>Select Currency</div>", unsafe_allow_html=True)
-                    for opt_code in curr_keys:
-                        opt_meta = CURRENCY_SERIES[opt_code]
-                        opt_is_sel = (st.session_state["selected_currency"] == opt_code)
-                        btn_txt = f"{opt_meta['flag']}  {opt_code} — {opt_meta['name']}"
-                        if st.button(btn_txt, key=f"pop_{c_code}_to_{opt_code}", use_container_width=True, type="primary" if opt_is_sel else "secondary"):
-                            st.session_state["selected_currency"] = opt_code
-                            st.rerun()
-            else:
-                is_open = (st.session_state.get("open_currency_dropdown") == c_code)
-                disp_label = f"{c_meta['flag']} {c_code} ▾" if (is_open or is_active) else f"{c_meta['flag']} {c_code}"
-                if st.button(disp_label, key=f"curr_btn_{c_code}", use_container_width=True, type="primary" if is_active else "secondary"):
-                    if is_open:
-                        st.session_state["open_currency_dropdown"] = None
-                    else:
-                        st.session_state["open_currency_dropdown"] = c_code
-                    st.session_state["selected_currency"] = c_code
+    if has_popover:
+        with st.popover(btn_label, use_container_width=True):
+            st.markdown("<div style='font-size:10px;font-weight:900;color:#00f5ff;text-transform:uppercase;margin-bottom:8px;letter-spacing:1px;border-bottom:1px solid rgba(0,245,255,0.2);padding-bottom:4px;'>Select Currency</div>", unsafe_allow_html=True)
+            for opt_code in curr_keys:
+                opt_meta = CURRENCY_SERIES.get(opt_code, {"flag": "💵", "name": opt_code})
+                opt_is_sel = (currency == opt_code)
+                btn_txt = f"{opt_meta['flag']}  {opt_code} — {opt_meta['name']}"
+                if st.button(btn_txt, key=f"single_pop_{opt_code}", use_container_width=True, type="primary" if opt_is_sel else "secondary"):
+                    st.session_state["selected_currency"] = opt_code
                     st.rerun()
-                
-                if is_open:
-                    with st.container():
-                        st.markdown("<div style='background:rgba(8,16,25,0.98);border:1px solid rgba(0,245,255,0.3);border-radius:12px;padding:8px;margin-top:4px;box-shadow:0 12px 30px rgba(0,0,0,0.6);'>", unsafe_allow_html=True)
-                        for opt_code in curr_keys:
-                            opt_meta = CURRENCY_SERIES[opt_code]
-                            opt_is_sel = (st.session_state["selected_currency"] == opt_code)
-                            btn_txt = f"{opt_meta['flag']}  {opt_code} — {opt_meta['name']}"
-                            if st.button(btn_txt, key=f"fall_pop_{c_code}_to_{opt_code}", use_container_width=True, type="primary" if opt_is_sel else "secondary"):
-                                st.session_state["selected_currency"] = opt_code
-                                st.session_state["open_currency_dropdown"] = None
-                                st.rerun()
-                        st.markdown("</div>", unsafe_allow_html=True)
+    else:
+        is_open = st.session_state.get("open_currency_dropdown", False)
+        if st.button(btn_label, key="single_curr_btn", use_container_width=True, type="primary"):
+            st.session_state["open_currency_dropdown"] = not is_open
+            st.rerun()
+        
+        if is_open:
+            with st.container():
+                st.markdown("<div style='background:rgba(8,16,25,0.98);border:1px solid rgba(0,245,255,0.3);border-radius:12px;padding:8px;margin-top:4px;box-shadow:0 12px 30px rgba(0,0,0,0.6);'>", unsafe_allow_html=True)
+                for opt_code in curr_keys:
+                    opt_meta = CURRENCY_SERIES.get(opt_code, {"flag": "💵", "name": opt_code})
+                    opt_is_sel = (currency == opt_code)
+                    btn_txt = f"{opt_meta['flag']}  {opt_code} — {opt_meta['name']}"
+                    if st.button(btn_txt, key=f"single_fall_{opt_code}", use_container_width=True, type="primary" if opt_is_sel else "secondary"):
+                        st.session_state["selected_currency"] = opt_code
+                        st.session_state["open_currency_dropdown"] = False
+                        st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
 
     currency = st.session_state["selected_currency"]
     st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
