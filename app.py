@@ -56,79 +56,48 @@ TELEGRAM_BOT_TOKEN = get_secret("TELEGRAM_BOT_TOKEN", "8922903944:AAFP10pFW_mqXO
 APEX_MASTER_KEY = get_secret("APEX_MASTER_KEY", "APEX-MASTER-2026")
 APEX_SECRET_SALT = "APEX_MACRO_SECRET_2026_SALT"
 REGISTRY_FILE = os.path.join(os.path.dirname(__file__), "vip_registry.json")
-SESSIONS_FILE = os.path.join(os.path.dirname(__file__), "vip_sessions.json")
+IP_CACHE_FILE = os.path.join(os.path.dirname(__file__), "authorized_ips.json")
 
-def load_sessions_cache() -> dict:
-    """Loads rolling persistent user sessions from disk."""
-    if os.path.exists(SESSIONS_FILE):
+def get_client_device_identifier() -> str:
+    """Extracts a unique client IP / fingerprint to bind license strictly to a single device."""
+    try:
+        headers = getattr(st, "context", None) and getattr(st.context, "headers", None)
+        if headers:
+            ip = headers.get("x-forwarded-for") or headers.get("x-real-ip") or headers.get("remote-addr") or ""
+            if ip:
+                return ip.split(",")[0].strip()
+    except Exception:
+        pass
+    if "CLIENT_DEVICE_ID" not in st.session_state:
+        import uuid
+        st.session_state["CLIENT_DEVICE_ID"] = str(uuid.uuid4())[:8]
+    return st.session_state["CLIENT_DEVICE_ID"]
+
+def load_authorized_ips() -> dict:
+    """Loads all pre-authorized client IPs for silent instant login without URL parameters."""
+    if os.path.exists(IP_CACHE_FILE):
         try:
-            with open(SESSIONS_FILE, "r", encoding="utf-8") as f:
+            with open(IP_CACHE_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             return {}
     return {}
 
-def save_sessions_cache(sessions: dict) -> None:
-    """Saves persistent sessions to disk."""
-    try:
-        with open(SESSIONS_FILE, "w", encoding="utf-8") as f:
-            json.dump(sessions, f, indent=2)
-    except Exception:
-        pass
-
-def get_client_device_info() -> tuple[str, str]:
-    """Extracts a persistent IP + Browser device fingerprint and detects device class."""
-    ip = ""
-    ua = ""
-    try:
-        if hasattr(st, "context") and hasattr(st.context, "headers"):
-            headers = st.context.headers
-            ip = str(headers.get("x-forwarded-for", "")).split(",")[0].strip() or str(headers.get("x-real-ip", "")).strip()
-            ua = str(headers.get("user-agent", "")).strip().lower()
-    except Exception:
-        pass
-        
-    is_mobile = any(k in ua for k in ["iphone", "android", "ipad", "mobile", "ipod", "touch"])
-    dev_type = "📱 Mobile" if is_mobile else "💻 PC/Laptop"
-    
-    if ip and ua:
-        raw = f"{ip}:{ua[:80]}"
-        fp = hashlib.sha256(raw.encode()).hexdigest()[:16]
-    else:
-        if "CLIENT_DEVICE_ID" not in st.session_state:
-            import uuid
-            st.session_state["CLIENT_DEVICE_ID"] = str(uuid.uuid4())[:12]
-        fp = st.session_state["CLIENT_DEVICE_ID"]
-        
-    return fp, dev_type
-
-def send_admin_security_alert(client_name: str, key: str, violation_reason: str, dev_type: str) -> None:
-    """Dispatches instant high-priority fraud notification directly to Master Admin Telegram ID 7153364048."""
-    admin_tg_id = "7153364048"
-    token = TELEGRAM_BOT_TOKEN or DEFAULT_TELEGRAM_BOT_TOKEN
-    if not token or not admin_tg_id:
+def save_authorized_ip(ip: str, user_name: str, key: str, expiry_info: str, is_admin: bool) -> None:
+    """Saves an authorized client IP to persistent disk cache."""
+    if not ip:
         return
-    now_str = get_current_time().strftime("%Y-%m-%d %H:%M:%S")
-    msg = (
-        f"🚨 <b>APEX SECURITY ALERT: KEY SHARING BLOCKED!</b>\n\n"
-        f"👤 <b>Client:</b> <code>{client_name}</code>\n"
-        f"🔑 <b>Key:</b> <code>{key}</code>\n"
-        f"📱 <b>Device Attempted:</b> {dev_type}\n"
-        f"⚠️ <b>Violation:</b> {violation_reason}\n"
-        f"🛡️ <b>Status:</b> <b>BLOCKED (Access Denied)</b>\n"
-        f"🕒 <b>Time:</b> {now_str} (KRD / UTC+3)\n\n"
-        f"<i>A second user attempted to reuse this license on an unauthorized device.</i>"
-    )
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": admin_tg_id,
-        "text": msg,
-        "parse_mode": "HTML"
+    data = load_authorized_ips()
+    data[ip] = {
+        "user_name": user_name,
+        "key": key,
+        "expiry_info": expiry_info,
+        "is_admin": is_admin,
+        "last_seen": get_current_time().strftime("%Y-%m-%d %H:%M")
     }
     try:
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
-        urllib.request.urlopen(req, timeout=4)
+        with open(IP_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
     except Exception:
         pass
 
@@ -162,8 +131,7 @@ def register_new_client_key(name: str, key: str, duration_label: str, exp_date_s
         "created_at": get_current_time().strftime("%Y-%m-%d"),
         "expires_at": exp_date_str,
         "status": "Active",
-        "bound_mobile_id": "",
-        "bound_pc_id": "",
+        "bound_device_id": "",
         "bound_at": ""
     })
     save_vip_registry(clients)
@@ -181,8 +149,8 @@ def generate_vip_key(client_name: str, duration_days: int = 30) -> str:
     sig = hashlib.sha256(payload.encode()).hexdigest()[:4].upper()
     return f"APEX-{clean_name}-{exp_str}-{sig}"
 
-def verify_vip_key(key: str, client_id: str = "", dev_type: str = "💻 PC/Laptop") -> tuple[bool, str, str]:
-    """Verifies a VIP key with Smart 1-Mobile + 1-PC Dual Device Binding & Instant Admin Alerts."""
+def verify_vip_key(key: str, client_id: str = "") -> tuple[bool, str, str]:
+    """Verifies a VIP key and enforces strict 1-Device Binding."""
     if not key:
         return False, "", "Please enter a key"
     clean_k = key.strip().upper()
@@ -198,29 +166,16 @@ def verify_vip_key(key: str, client_id: str = "", dev_type: str = "💻 PC/Lapto
             break
 
     if matched_client:
-        c_name = matched_client.get("client_name", "CLIENT")
         if matched_client.get("status") == "Revoked":
-            return False, c_name, "License Revoked by Administrator"
+            return False, matched_client.get("client_name", ""), "License Revoked by Administrator"
 
-        is_mobile = ("Mobile" in dev_type)
-        if is_mobile:
-            bound_mob = matched_client.get("bound_mobile_id")
-            if not bound_mob and client_id:
-                matched_client["bound_mobile_id"] = client_id
-                matched_client["bound_at"] = get_current_time().strftime("%Y-%m-%d %H:%M")
-                save_vip_registry(clients)
-            elif bound_mob and bound_mob != client_id:
-                send_admin_security_alert(c_name, clean_k, "Unauthorized 2nd Mobile Login Attempt (Possible Key Sharing)", dev_type)
-                return False, c_name, "⛔ Access Denied: This license already has a mobile device registered. Key sharing is prohibited."
-        else:
-            bound_pc = matched_client.get("bound_pc_id")
-            if not bound_pc and client_id:
-                matched_client["bound_pc_id"] = client_id
-                matched_client["bound_at"] = get_current_time().strftime("%Y-%m-%d %H:%M")
-                save_vip_registry(clients)
-            elif bound_pc and bound_pc != client_id:
-                send_admin_security_alert(c_name, clean_k, "Unauthorized 2nd PC/Laptop Login Attempt (Possible Key Sharing)", dev_type)
-                return False, c_name, "⛔ Access Denied: This license already has a PC/Laptop registered. Key sharing is prohibited."
+        bound_id = matched_client.get("bound_device_id")
+        if not bound_id and client_id:
+            matched_client["bound_device_id"] = client_id
+            matched_client["bound_at"] = get_current_time().strftime("%Y-%m-%d %H:%M")
+            save_vip_registry(clients)
+        elif bound_id and bound_id != client_id and client_id:
+            return False, matched_client.get("client_name", ""), "⛔ Access Denied: This license is already bound to another device."
 
     static_keys = {
         "APEX-VIP-PREVIEW": "VIP Preview Client",
@@ -251,37 +206,28 @@ def verify_vip_key(key: str, client_id: str = "", dev_type: str = "💻 PC/Lapto
     return False, "", "Invalid or unrecognized License Key"
 
 def send_telegram_alert(message: str):
-    token = TELEGRAM_BOT_TOKEN or DEFAULT_TELEGRAM_BOT_TOKEN
-    if not token or not message:
-        return []
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     clients = load_vip_registry()
     results = []
     
-    # Deduplicate unique active chat IDs
-    unique_chat_ids = set()
     for client in clients:
         if client.get("status") == "Active" and client.get("telegram_id"):
-            cid = str(client["telegram_id"]).strip()
-            if cid:
-                unique_chat_ids.add(cid)
-                
-    for chat_id in unique_chat_ids:
-        payload = {
-            "chat_id": chat_id,
-            "text": message,
-            "parse_mode": "Markdown"
-        }
-        try:
-            response = requests.post(url, json=payload, timeout=8)
-            results.append(response.json())
-        except Exception as e:
-            results.append({"ok": False, "error": str(e)})
+            chat_id = client["telegram_id"]
+            payload = {
+                "chat_id": chat_id,
+                "text": message,
+                "parse_mode": "Markdown"
+            }
+            try:
+                response = requests.post(url, json=payload, timeout=10)
+                res_data = response.json()
+                results.append(res_data)
+            except Exception as e:
+                results.append({"ok": False, "error": str(e)})
     return results
 
 CURRENCY_SERIES = {
     "USD": {
-        "area": "US",
         "flag": "🇺🇸", "name": "US Dollar",
         "indicators": {
             "CPI":           {"series": "CPIAUCSL",  "cat": "inflation",  "w": 1.5, "impact": "high"},
@@ -299,7 +245,6 @@ CURRENCY_SERIES = {
         "key_indicators": ["Core CPI", "Core PCE", "NFP", "Interest Rate"],
     },
     "EUR": {
-        "area": "EU",
         "flag": "🇪🇺", "name": "Euro Area",
         "indicators": {
             "CPI":           {"series": "CP0000EZ19M086NEST",   "cat": "inflation",  "w": 1.8, "impact": "high"},
@@ -312,7 +257,6 @@ CURRENCY_SERIES = {
         "key_indicators": ["CPI", "Core CPI", "Unemployment", "Interest Rate"],
     },
     "GBP": {
-        "area": "GB",
         "flag": "🇬🇧", "name": "British Pound",
         "indicators": {
             "CPI":           {"series": "GBRCPIALLMINMEI",  "cat": "inflation",  "w": 1.8, "impact": "high"},
@@ -324,7 +268,6 @@ CURRENCY_SERIES = {
         "key_indicators": ["CPI", "Core CPI", "Unemployment", "Interest Rate"],
     },
     "CAD": {
-        "area": "CA",
         "flag": "🇨🇦", "name": "Canadian Dollar",
         "indicators": {
             "CPI":           {"series": "CANCPIALLMINMEI",  "cat": "inflation",  "w": 1.8, "impact": "high"},
@@ -336,7 +279,6 @@ CURRENCY_SERIES = {
         "key_indicators": ["CPI", "Employment", "Unemployment", "Interest Rate"],
     },
     "JPY": {
-        "area": "JP",
         "flag": "🇯🇵", "name": "Japanese Yen",
         "indicators": {
             "CPI":           {"series": "JPNCPIALLMINMEI",  "cat": "inflation",  "w": 1.8, "impact": "high"},
@@ -348,7 +290,6 @@ CURRENCY_SERIES = {
         "key_indicators": ["CPI", "Core CPI", "Production", "Interest Rate"],
     },
     "CHF": {
-        "area": "CH",
         "flag": "🇨🇭", "name": "Swiss Franc",
         "indicators": {
             "CPI":           {"series": "CHECPIALLMINMEI", "cat": "inflation",  "w": 1.8, "impact": "high"},
@@ -379,8 +320,7 @@ def inject_css() -> None:
   --text:#ecf7ff; --muted:#8fa3b4; --line:rgba(165,220,235,.12);
   --shadow:0 18px 60px rgba(0,0,0,.42);
 }
-html,body,p,div,span,button,input,select,textarea{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;box-sizing:border-box;}
-[data-testid="stExpander"] summary span[data-testid="stIconMaterial"]{font-family:"Material Symbols Rounded","Material Symbols Outlined",monospace!important;}
+*{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif!important;box-sizing:border-box;}
 code,pre,.mono-text{font-family:'JetBrains Mono',monospace!important;}
 html,body,[data-testid='stAppViewContainer'],.stApp{background:
  radial-gradient(circle at 12% 0%,rgba(0,245,255,.08),transparent 28%),
@@ -435,127 +375,6 @@ div[data-testid='stMetric']{background:linear-gradient(180deg,rgba(14,25,35,.82)
 div[data-testid='stMetric'] label{color:#879aa8!important;font-size:10px!important;font-weight:750!important;}
 button[kind='primary'],.stButton>button{border-radius:11px!important;border:1px solid rgba(0,245,255,.24)!important;background:linear-gradient(135deg,rgba(0,245,255,.10),rgba(0,255,163,.06))!important;color:#e9fbff!important;font-weight:800!important;box-shadow:0 0 18px rgba(0,245,255,.06)!important;}
 button[kind='primary']:hover,.stButton>button:hover{border-color:rgba(0,245,255,.45)!important;box-shadow:0 0 26px rgba(0,245,255,.12)!important;}
-
-/* ── CUSTOM DARK GLASSMORPHISM SELECTBOX & DROPDOWN STYLING ── */
-div[data-baseweb="select"], div[data-baseweb="select"] > div {
-    background: linear-gradient(180deg, rgba(14,24,36,0.92), rgba(7,14,22,0.95)) !important;
-    border: 1px solid rgba(0,245,255,0.25) !important;
-    border-radius: 12px !important;
-    color: #edf7ff !important;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.35), 0 0 14px rgba(0,245,255,0.05) !important;
-    transition: all 0.2s ease-in-out !important;
-}
-
-div[data-baseweb="select"]:hover, div[data-baseweb="select"] > div:hover {
-    border-color: rgba(0,245,255,0.55) !important;
-    box-shadow: 0 6px 26px rgba(0,0,0,0.45), 0 0 20px rgba(0,245,255,0.15) !important;
-}
-
-div[data-baseweb="select"] span, div[data-baseweb="select"] div, div[data-baseweb="select"] input {
-    color: #edf7ff !important;
-    font-weight: 750 !important;
-    font-size: 12.5px !important;
-}
-
-div[data-baseweb="select"] svg {
-    fill: #00f5ff !important;
-    color: #00f5ff !important;
-}
-
-/* Dropdown Menu Popup (Popover & Menu Items) */
-div[data-baseweb="popover"], div[data-baseweb="popover"] > div, ul[data-baseweb="menu"] {
-    background: rgba(8,16,25,0.98) !important;
-    border: 1px solid rgba(0,245,255,0.3) !important;
-    border-radius: 14px !important;
-    box-shadow: 0 15px 40px rgba(0,0,0,0.6), 0 0 25px rgba(0,245,255,0.12) !important;
-    backdrop-filter: blur(20px) !important;
-    padding: 6px !important;
-}
-
-li[data-baseweb="menu-item"] {
-    background: transparent !important;
-    color: #edf7ff !important;
-    border-radius: 8px !important;
-    font-weight: 650 !important;
-    font-size: 12.5px !important;
-    padding: 8px 12px !important;
-    margin-bottom: 2px !important;
-    transition: all 0.15s ease !important;
-}
-
-li[data-baseweb="menu-item"]:hover, li[data-baseweb="menu-item"][aria-selected="true"] {
-    background: linear-gradient(90deg, rgba(0,245,255,0.15), rgba(0,255,163,0.08)) !important;
-    color: #00f5ff !important;
-    border-left: 3px solid #00f5ff !important;
-}
-
-/* Custom Text Inputs */
-div[data-baseweb="input"], div[data-baseweb="input"] > div, input.stTextInput {
-    background: rgba(11,20,30,0.92) !important;
-    border: 1px solid rgba(0,245,255,0.22) !important;
-    border-radius: 11px !important;
-    color: #ffffff !important;
-}
-
-/* ── CURRENCY AREA LABELS / TERMINAL SELECTOR ── */
-div[data-testid="stVerticalBlock"]:has(.currency-selector-marker) {
-    margin-top: 2px;
-    margin-bottom: 2px;
-}
-div[data-testid="stVerticalBlock"]:has(.currency-selector-marker) div[data-testid="stButton"] > button {
-    min-height: 50px !important;
-    height: 50px !important;
-    padding: 7px 10px !important;
-    border-radius: 12px !important;
-    border: 1px solid rgba(0,245,255,.18) !important;
-    background:
-        linear-gradient(180deg, rgba(7,38,43,.88), rgba(4,25,30,.92)) !important;
-    color: #dcecf2 !important;
-    font-size: 14px !important;
-    font-weight: 650 !important;
-    letter-spacing: .15px !important;
-    box-shadow:
-        inset 0 1px 0 rgba(255,255,255,.025),
-        0 8px 22px rgba(0,0,0,.18) !important;
-    transition: all .18s ease !important;
-}
-div[data-testid="stVerticalBlock"]:has(.currency-selector-marker) div[data-testid="stButton"] > button:hover {
-    transform: translateY(-1px) !important;
-    border-color: rgba(0,245,255,.48) !important;
-    background:
-        linear-gradient(180deg, rgba(8,53,59,.96), rgba(4,31,37,.96)) !important;
-    color: #ffffff !important;
-    box-shadow:
-        inset 0 0 0 1px rgba(0,245,255,.06),
-        0 10px 26px rgba(0,0,0,.28),
-        0 0 20px rgba(0,245,255,.08) !important;
-}
-div[data-testid="stVerticalBlock"]:has(.currency-selector-marker) div[data-testid="stButton"] > button[kind="primary"] {
-    border-color: rgba(0,245,255,.58) !important;
-    background:
-        linear-gradient(180deg, rgba(0,245,255,.16), rgba(0,255,163,.07)) !important;
-    color: #f3fdff !important;
-    box-shadow:
-        inset 0 0 0 1px rgba(0,245,255,.06),
-        0 0 22px rgba(0,245,255,.10) !important;
-}
-div[data-testid="stVerticalBlock"]:has(.currency-selector-marker) div[data-testid="stButton"] > button[kind="primary"]:hover {
-    border-color: rgba(0,245,255,.78) !important;
-    box-shadow:
-        inset 0 0 0 1px rgba(0,245,255,.08),
-        0 0 28px rgba(0,245,255,.16) !important;
-}
-div[data-testid="stVerticalBlock"]:has(.currency-selector-marker) div[data-testid="stButton"] > button p {
-    margin: 0 !important;
-    line-height: 1 !important;
-}
-@media (max-width: 900px) {
-    div[data-testid="stVerticalBlock"]:has(.currency-selector-marker) div[data-testid="stButton"] > button {
-        min-height: 46px !important;
-        height: 46px !important;
-        font-size: 12px !important;
-    }
-}
 
 .badge{display:inline-block;padding:5px 12px;border-radius:999px;font-size:10px;font-weight:850;letter-spacing:.5px;text-transform:uppercase;}
 .b-bull{background:rgba(0,255,163,.10);color:var(--green);border:1px solid rgba(0,255,163,.35);box-shadow:0 0 14px rgba(0,255,163,.15);}.b-bear{background:rgba(255,94,117,.10);color:#ff5e75;border:1px solid rgba(255,94,117,.35);box-shadow:0 0 14px rgba(255,94,117,.12);}.b-neut{background:rgba(148,163,184,.07);color:#c9d4dd;border:1px solid rgba(148,163,184,.20);}.badge-lg{font-size:12px;padding:8px 18px;border-radius:11px;}
@@ -677,212 +496,130 @@ def _calc_oil_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHA
     final_oil_score = (0.50 * (w_mf["score"] if w_mf else 0.0)) + (0.50 * (oil_news_pts / 0.50))
     return final_oil_score, oil_news_pts
 
-def get_macro_asset_details(asset_name: str, score: float | None, all_news: list = None) -> dict:
-    """Calculates granular conviction strength and synthesizes macroeconomic & breaking news drivers."""
-    if score is None:
-        return {
-            "strength": "⚖️ Neutral / Balanced",
-            "strength_ku": "هاوسەنگ / بێ ئاراستەی دیاریکراو",
-            "score_str": "0.00",
-            "driver": "Awaiting primary macroeconomic catalyst.",
-            "driver_ku": "چاوەڕوانی داتای یەکلاکەرەوەی نوێیە."
-        }
-        
-    s = score
-    score_str = f"{s:+.2f}"
-    
-    if s >= 0.35:
-        strength = "🚀 Strong Bullish"
-        strength_ku = "بەرزبوونەوەی بەهێز (Strong Bullish)"
-        conv_key = "Strong Bullish"
-    elif s >= 0.15:
-        strength = "📈 Moderate / Early Bullish"
-        strength_ku = "بەرزبوونەوەی مامناوەند / سەرەتایی (Moderate Bullish)"
-        conv_key = "Moderate Bullish"
-    elif s <= -0.35:
-        strength = "🔻 Strong Bearish"
-        strength_ku = "دابەزینی بەهێز (Strong Bearish)"
-        conv_key = "Strong Bearish"
-    elif s <= -0.15:
-        strength = "📉 Moderate / Early Bearish"
-        strength_ku = "دابەزینی مامناوەند / سەرەتایی (Moderate Bearish)"
-        conv_key = "Moderate Bearish"
-    else:
-        strength = "⚖️ Neutral / Balanced"
-        strength_ku = "هاوسەنگ لە مەودای تەسکدا (Neutral / Balanced)"
-        conv_key = "Neutral"
-
-    drivers_map = {
-        "Gold": {
-            "Strong Bullish": "Retreating US 10Y real yields & accelerating geopolitical safe-haven inflows.",
-            "Moderate Bullish": "Easing bond yield pressure and resilient central bank ETF accumulation.",
-            "Neutral": "Real yields and USD index consolidation keeping gold in a technical range.",
-            "Moderate Bearish": "Firming real yields & dollar strength dampening non-yielding bullion demand.",
-            "Strong Bearish": "Surging US real yields and aggressive hawkish policy repricing."
-        },
-        "Oil": {
-            "Strong Bullish": "OPEC+ supply tightness, inventory draws & solid global demand pull.",
-            "Moderate Bullish": "Positive energy momentum and resilient macroeconomic consumption.",
-            "Neutral": "Supply stability balancing modest global manufacturing growth signals.",
-            "Moderate Bearish": "Cooling industrial demand and cautious macroeconomic outlook.",
-            "Strong Bearish": "Severe inventory accumulation and global manufacturing contraction."
-        },
-        "USD": {
-            "Strong Bullish": "Persistent core inflation momentum and expanding sovereign yield differentials.",
-            "Moderate Bullish": "Yield advantage resilience vs foreign majors & firm domestic data.",
-            "Neutral": "Fed rate plateau pricing balanced against steady consumer expenditure.",
-            "Moderate Bearish": "Disinflationary pipeline progress & labor cooling supporting rate cuts.",
-            "Strong Bearish": "Aggressive dovish Fed easing expectations and capital outflow to foreign FX."
-        },
-        "EUR": {
-            "Strong Bullish": "Eurozone service resilience & ECB neutral stance outperforming soft USD.",
-            "Moderate Bullish": "ECB monetary stability providing floor against dollar crosswinds.",
-            "Neutral": "ECB rate neutrality balanced against sluggish German manufacturing output.",
-            "Moderate Bearish": "Industrial slowdown & disinflation opening door for ECB rate cuts.",
-            "Strong Bearish": "Broad manufacturing contraction & accelerated ECB monetary easing."
-        },
-        "GBP": {
-            "Strong Bullish": "Sticky UK core services inflation forcing BOE to maintain elevated rate premium.",
-            "Moderate Bullish": "Persistent wage growth sustaining British Pound yield support.",
-            "Neutral": "Sticky services inflation countered by moderate domestic growth trajectory.",
-            "Moderate Bearish": "Cooling employment numbers increasing BOE easing expectations.",
-            "Strong Bearish": "Sharp economic slowdown and expedited BOE rate-cutting cycle."
-        },
-        "JPY": {
-            "Strong Bullish": "BOJ monetary normalization/hike expectations & safe-haven repatriation.",
-            "Moderate Bullish": "Narrowing US-JP yield spread prompting initial carry trade unwinding.",
-            "Neutral": "BOJ policy patience balancing global risk sentiment flows.",
-            "Moderate Bearish": "Massive negative yield differential vs US Dollar persisting.",
-            "Strong Bearish": "Widening interest rate gap and aggressive carry-trade yen selling."
-        },
-        "CAD": {
-            "Strong Bullish": "Crude oil strength & tight Canadian labor market lifting BOC rate support.",
-            "Moderate Bullish": "Resilient commodity export prices cushioning BOC policy cycle.",
-            "Neutral": "BOC easing stance offset by support from energy market pricing.",
-            "Moderate Bearish": "BOC rate cuts outpacing Fed & softening consumer spending.",
-            "Strong Bearish": "Subdued oil prices and rapid BOC rate reductions."
-        },
-        "AUD": {
-            "Strong Bullish": "RBA hawkish policy stance & commodity demand surge lifting Aussie.",
-            "Moderate Bullish": "Sticky domestic inflation keeping RBA restrictive for longer.",
-            "Neutral": "RBA policy restraint balanced against commodity price fluctuations.",
-            "Moderate Bearish": "Weakening Asian commodity demand and cooling domestic retail volume.",
-            "Strong Bearish": "Commodity price slump and rapid RBA pivot to monetary easing."
-        },
-        "CHF": {
-            "Strong Bullish": "Safe-haven asset demand surge amidst European geopolitical caution.",
-            "Moderate Bullish": "Swiss structural current account surplus and low inflation anchor.",
-            "Neutral": "SNB policy rate reductions balancing international safe-haven flows.",
-            "Moderate Bearish": "SNB active currency interventions and negative real rate drag.",
-            "Strong Bearish": "Aggressive SNB rate cuts targeting Swiss Franc depreciation."
-        }
-    }
-    
-    asset_dict = drivers_map.get(asset_name, {})
-    base_driver = asset_dict.get(conv_key, "Macroeconomic indicator momentum & cross-asset positioning.")
-    
-    # Check if live breaking news wire is active for this asset
-    matching_wire = ""
-    if all_news:
-        kw_map = {
-            "Gold": ["gold", "xau", "middle east", "israel", "iran", "safe haven", "safe-haven", "war", "geopolitical"],
-            "Oil": ["oil", "crude", "wti", "brent", "opec", "energy", "tanker", "red sea"],
-            "USD": ["fed", "powell", "dollar", "usd", "fomc", "treasury", "inflation", "cpi", "nfp"],
-            "EUR": ["ecb", "lagarde", "euro", "eur", "germany"],
-            "GBP": ["boe", "bailey", "pound", "gbp", "bank of england"],
-            "JPY": ["boj", "ueda", "yen", "jpy", "bank of japan"],
-            "CAD": ["boc", "macklem", "cad", "loonie", "canada"],
-            "AUD": ["rba", "bullock", "aud", "aussie", "australia"],
-            "CHF": ["snb", "jordan", "chf", "franc", "swiss"]
-        }
-        keywords = kw_map.get(asset_name, [asset_name.lower()])
-        for art in all_news:
-            t = art.get("title", "").strip()
-            if any(k in t.lower() for k in keywords):
-                clean_t = t[:65] + ("..." if len(t) > 65 else "")
-                matching_wire = f"📡 Wire: \"{clean_t}\" • "
-                break
-
-    final_driver = f"{matching_wire}{base_driver}"
-    
-    return {
-        "strength": strength,
-        "strength_ku": strength_ku,
-        "score_str": score_str,
-        "driver": final_driver
-    }
-
-# ── UNIFIED HOURLY REPORT: ALL ASSETS WITH EXACT CONVICTION STRENGTH & CAUSAL DRIVERS ──
+# ── EXACT HOURLY REPORT FORMAT REQUESTED ──
 def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> str:
     now = get_current_time()
-    all_news = fetch_all_instant_news(channel_name)
 
-    usd_s = _calc_currency_score_only("USD", fred_key, channel_name)
-    eur_s = _calc_currency_score_only("EUR", fred_key, channel_name)
-    gbp_s = _calc_currency_score_only("GBP", fred_key, channel_name)
-    jpy_s = _calc_currency_score_only("JPY", fred_key, channel_name)
-    cad_s = _calc_currency_score_only("CAD", fred_key, channel_name)
-    aud_s = _calc_currency_score_only("AUD", fred_key, channel_name)
-    chf_s = _calc_currency_score_only("CHF", fred_key, channel_name)
-    
+    usd_score = _calc_currency_score_only("USD", fred_key, channel_name) or 0.0
+    eur_score = _calc_currency_score_only("EUR", fred_key, channel_name) or 0.0
+    gbp_score = _calc_currency_score_only("GBP", fred_key, channel_name) or 0.0
     gold_s, ry_val_str, _ = _calc_gold_score_only(fred_key, channel_name)
+    gold_s = gold_s or 0.0
     oil_s, _ = _calc_oil_score_only(fred_key, channel_name)
+    oil_s = oil_s or 0.0
 
-    d_xau = get_macro_asset_details("Gold", gold_s, all_news)
-    d_oil = get_macro_asset_details("Oil", oil_s, all_news)
-    d_usd = get_macro_asset_details("USD", usd_s, all_news)
-    d_eur = get_macro_asset_details("EUR", eur_s, all_news)
-    d_gbp = get_macro_asset_details("GBP", gbp_s, all_news)
-    d_jpy = get_macro_asset_details("JPY", jpy_s, all_news)
-    d_cad = get_macro_asset_details("CAD", cad_s, all_news)
-    d_aud = get_macro_asset_details("AUD", aud_s, all_news)
-    d_chf = get_macro_asset_details("CHF", chf_s, all_news)
+    def _emoji(s: float) -> str:
+        if s > 0.15:  return "📈 Bullish"
+        if s < -0.15: return "📉 Bearish"
+        return "⚖️ Neutral"
+
+    xau_lbl  = _emoji(gold_s)
+    usd_lbl  = _emoji(usd_score)
+    eur_lbl  = _emoji(eur_score)
+    gbp_lbl  = _emoji(gbp_score)
+    oil_lbl  = _emoji(oil_s)
 
     lines = [
-        "🏛️ *APEX MACRO — HOURLY INTELLIGENCE REPORT*",
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        f"🕒 *Time:* `{now.strftime('%Y-%m-%d %H:%M')} (KRD / UTC+3)`",
-        "📊 *Global Macro Compass & Causal Drivers:*",
-        "",
-        f"🥇 *Gold (XAU/USD):* `{d_xau['strength']}` `({d_xau['score_str']})`",
-        f"▫️ *Driver:* _{d_xau['driver']}_",
-        "",
-        f"🛢️ *Crude Oil (WTI):* `{d_oil['strength']}` `({d_oil['score_str']})`",
-        f"▫️ *Driver:* _{d_oil['driver']}_",
-        "",
-        f"🇺🇸 *USD Index (USD):* `{d_usd['strength']}` `({d_usd['score_str']})`",
-        f"▫️ *Driver:* _{d_usd['driver']}_",
-        "",
-        f"🇪🇺 *Euro (EUR):* `{d_eur['strength']}` `({d_eur['score_str']})`",
-        f"▫️ *Driver:* _{d_eur['driver']}_",
-        "",
-        f"🇬🇧 *Pound (GBP):* `{d_gbp['strength']}` `({d_gbp['score_str']})`",
-        f"▫️ *Driver:* _{d_gbp['driver']}_",
-        "",
-        f"🇯🇵 *Yen (JPY):* `{d_jpy['strength']}` `({d_jpy['score_str']})`",
-        f"▫️ *Driver:* _{d_jpy['driver']}_",
-        "",
-        f"🇨🇦 *Loonie (CAD):* `{d_cad['strength']}` `({d_cad['score_str']})`",
-        f"▫️ *Driver:* _{d_cad['driver']}_",
-        "",
-        f"🇦🇺 *Aussie (AUD):* `{d_aud['strength']}` `({d_aud['score_str']})`",
-        f"▫️ *Driver:* _{d_aud['driver']}_",
-        "",
-        f"🇨🇭 *Franc (CHF):* `{d_chf['strength']}` `({d_chf['score_str']})`",
-        f"▫️ *Driver:* _{d_chf['driver']}_",
-        "",
-        f"▫️ *US 10Y Real Yield:* `{ry_val_str}`",
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        "⚡ *ApexMacro Institutional Terminal v14.0*"
+        f"Last Hour …",
+        f"━━━━━━━━━━━━━━━━━━━",
+        f"🇺🇸 Asset: US Dollar Index (USD)",
+        f"📊 STILL: {usd_lbl}",
+        f"",
+        f"🥇 XAU/USD:",
+        f"Still: {xau_lbl}",
+        f"",
+        f"🇪🇺 EUR:",
+        f"Still: {eur_lbl}",
+        f"",
+        f"🇬🇧 GBP:",
+        f"Still: {gbp_lbl}",
+        f"",
+        f"🛢️ Oil:",
+        f"Still: {oil_lbl}",
+        f"",
+        f"▫️ Real Yield 10Y: {ry_val_str}",
+        f"📅 {now.strftime('%Y-%m-%d')} | ApexMacro Desk",
     ]
     return "\n".join(lines)
+
+def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
+    if not fred_key:
+        return
+
+    try:
+        gold_s, ry_val_str, gold_news_pts = _calc_gold_score_only(fred_key, channel_name)
+        if gold_s is not None:
+            current_gold_bias, _, _ = bias_from_score(gold_s)
+            last_gold_bias = GLOBAL_ALERT_STATE.get("Gold")
+
+            if last_gold_bias is not None and current_gold_bias != last_gold_bias:
+                alert_msg = (
+                    "🔄 *APEX MACRO — SHIFT ALERT*\n"
+                    "━━━━━━━━━━━━━━━━━━━\n"
+                    "🥇 *Asset:* `Gold (XAUUSD)`\n"
+                    f"📊 *Status:* `Direction Changed`\n\n"
+                    f"▪️ *Previous Bias:*  `{last_gold_bias}`\n"
+                    f"▪️ *New Bias:*       `{current_gold_bias}`\n\n"
+                    f"📈 *Composite Score:*  `{gold_s:+.3f}`\n"
+                    f"📡 *News Sentiment:*   `{gold_news_pts:+.2f} pts`\n"
+                    "━━━━━━━━━━━━━━━━━━━\n"
+                    "⚡ *ApexMacro Terminal v13.0*"
+                )
+                send_telegram_alert(alert_msg)
+            
+            GLOBAL_ALERT_STATE["Gold"] = current_gold_bias
+
+        oil_s, oil_news_pts = _calc_oil_score_only(fred_key, channel_name)
+        if oil_s is not None:
+            current_oil_bias, _, _ = bias_from_score(oil_s)
+            last_oil_bias = GLOBAL_ALERT_STATE.get("Oil")
+
+            if last_oil_bias is not None and current_oil_bias != last_oil_bias:
+                alert_msg = (
+                    "🔄 *APEX MACRO — SHIFT ALERT*\n"
+                    "━━━━━━━━━━━━━━━━━━━\n"
+                    "🛢️ *Asset:* `Crude Oil (WTI/Brent)`\n"
+                    f"📊 *Status:* `Direction Changed`\n\n"
+                    f"▪️ *Previous Bias:*  `{last_oil_bias}`\n"
+                    f"▪️ *New Bias:*       `{current_oil_bias}`\n\n"
+                    f"📈 *Composite Score:*  `{oil_s:+.3f}`\n"
+                    f"📡 *News Sentiment:*   `{oil_news_pts:+.2f} pts`\n"
+                    "━━━━━━━━━━━━━━━━━━━\n"
+                    "⚡ *ApexMacro Terminal v13.0*"
+                )
+                send_telegram_alert(alert_msg)
+            
+            GLOBAL_ALERT_STATE["Oil"] = current_oil_bias
+
+        usd_s = _calc_currency_score_only("USD", fred_key, channel_name)
+        if usd_s is not None:
+            curr_bias, _, _ = bias_from_score(usd_s)
+            last_bias = GLOBAL_ALERT_STATE.get("USD")
+
+            if last_bias is not None and curr_bias != last_bias:
+                alert_msg = (
+                    "🔄 *APEX MACRO — SHIFT ALERT*\n"
+                    "━━━━━━━━━━━━━━━━━━━\n"
+                    "🇺🇸 *Asset:* `US Dollar (USD)`\n"
+                    f"📊 *Status:* `Direction Changed`\n\n"
+                    f"▪️ *Previous Bias:*  `{last_bias}`\n"
+                    f"▪️ *New Bias:*       `{curr_bias}`\n\n"
+                    f"📈 *Composite Score:*  `{usd_s:+.3f}`\n"
+                    "━━━━━━━━━━━━━━━━━━━\n"
+                    "⚡ *ApexMacro Terminal v13.0*"
+                )
+                send_telegram_alert(alert_msg)
+            
+            GLOBAL_ALERT_STATE["USD"] = curr_bias
+
+    except Exception:
+        pass
 
 @st.cache_resource
 def _get_daemon_controller():
     return {
         "running": False,
         "last_hour": get_current_time().strftime("%Y-%m-%d %H"),
-        "seen_weekend_news": set(),
     }
 
 def start_background_alert_daemon(fred_key: str, channel_name: str) -> None:
@@ -894,50 +631,13 @@ def start_background_alert_daemon(fred_key: str, channel_name: str) -> None:
     def _daemon_loop():
         while True:
             try:
-                now = get_current_time()
-                current_hour = now.strftime("%Y-%m-%d %H")
-                is_weekend = (now.weekday() in (5, 6)) # Saturday = 5, Sunday = 6
+                current_hour = get_current_time().strftime("%Y-%m-%d %H")
+                if current_hour != ctrl["last_hour"]:
+                    ctrl["last_hour"] = current_hour
+                    report_msg = build_hourly_report(fred_key, channel_name)
+                    send_telegram_alert(report_msg)
 
-                if is_weekend:
-                    # During Weekend Market Close: Pause routine hourly report
-                    # Instead, monitor for critical breaking emergency catalysts (e.g. Geopolitics, OPEC, Wars)
-                    try:
-                        all_news = fetch_all_instant_news(channel_name)
-                        emergency_keywords = [
-                            "war", "attack", "missile", "middle east", "israel", "iran", "russia", "ukraine",
-                            "opec", "emergency", "crisis", "escalation", "sanction", "tariff", "threat", "strait",
-                            "explosion", "military", "ceasefire", "assassination", "nuclear"
-                        ]
-                        for art in all_news[:4]:
-                            title = art.get("title", "").strip()
-                            if title and title not in ctrl["seen_weekend_news"]:
-                                t_lower = title.lower()
-                                if any(k in t_lower for k in emergency_keywords):
-                                    ctrl["seen_weekend_news"].add(title)
-                                    alert_msg = (
-                                        "🚨 *APEX MACRO — WEEKEND CATALYST ALERT*\n"
-                                        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                        "⚠️ *Market Status:* `Weekend Session (Global Markets Closed)`\n"
-                                        f"📡 *Breaking Wire:* \"{title}\"\n\n"
-                                        "🎯 *Monday Open Implication:* Heightened gap risk and safe-haven volatility (Gold / Oil / USD).\n"
-                                        f"🕒 *Time:* `{now.strftime('%Y-%m-%d %H:%M')} (KRD / UTC+3)`\n"
-                                        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                        "⚡ *ApexMacro Institutional Terminal v14.0*"
-                                    )
-                                    send_telegram_alert(alert_msg)
-                                    break
-                    except Exception:
-                        pass
-                else:
-                    # Clear weekend seen cache when work week starts
-                    if ctrl["seen_weekend_news"]:
-                        ctrl["seen_weekend_news"].clear()
-
-                    # During Open Market Hours (Monday - Friday): Send unified hourly report
-                    if current_hour != ctrl["last_hour"]:
-                        ctrl["last_hour"] = current_hour
-                        report_msg = build_hourly_report(fred_key, channel_name)
-                        send_telegram_alert(report_msg)
+                check_global_market_shifts(fred_key, channel_name)
             except Exception:
                 pass
             
@@ -1182,15 +882,9 @@ def compute_composite(currency: str, fred_key: str, channel_name: str = DEFAULT_
     }
 
 def bias_from_score(s: float) -> tuple[str, str, str]:
-    if s >= 0.35:
-        return "🚀 Strong Bullish", "b-bull", "#00ffa3"
-    elif s >= 0.15:
-        return "📈 Moderate Bullish", "b-bull", "#00ffa3"
-    elif s <= -0.35:
-        return "🔻 Strong Bearish", "b-bear", "#ff5e75"
-    elif s <= -0.15:
-        return "📉 Moderate Bearish", "b-bear", "#ff5e75"
-    return "⚖️ Neutral / Balanced", "b-neut", "#c9d4dd"
+    if s > 0.15: return "📈 Bullish", "b-bull", "#00ffa3"
+    if s < -0.15: return "📉 Bearish", "b-bear", "#ff5e75"
+    return "⚖️ Neutral", "b-neut", "#c9d4dd"
 
 def badge(s: float, lg: bool = False) -> str:
     lbl, css, _ = bias_from_score(s)
@@ -1319,28 +1013,6 @@ def page_dashboard(fred_key: str, channel_name: str, auth_user: dict | None = No
         st.session_state["active_tab"] = "💱 Forex"
 
     if is_admin_user:
-        b1, b2, b3, b4, b5 = st.columns(5)
-        with b1:
-            if st.button("💱 Forex", use_container_width=True, type="primary" if st.session_state["active_tab"] == "💱 Forex" else "secondary"):
-                st.session_state["active_tab"] = "💱 Forex"
-                st.rerun()
-        with b2:
-            if st.button("🥇 Gold", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🥇 Gold" else "secondary"):
-                st.session_state["active_tab"] = "🥇 Gold"
-                st.rerun()
-        with b3:
-            if st.button("🛢️ Oil", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🛢️ Oil" else "secondary"):
-                st.session_state["active_tab"] = "🛢️ Oil"
-                st.rerun()
-        with b4:
-            if st.button("🔮 Forecaster", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🔮 Forecaster" else "secondary"):
-                st.session_state["active_tab"] = "🔮 Forecaster"
-                st.rerun()
-        with b5:
-            if st.button("👑 MASTER ADMIN", use_container_width=True, type="primary" if st.session_state["active_tab"] == "👑 MASTER ADMIN" else "secondary"):
-                st.session_state["active_tab"] = "👑 MASTER ADMIN"
-                st.rerun()
-    else:
         b1, b2, b3, b4 = st.columns(4)
         with b1:
             if st.button("💱 Forex", use_container_width=True, type="primary" if st.session_state["active_tab"] == "💱 Forex" else "secondary"):
@@ -1355,8 +1027,22 @@ def page_dashboard(fred_key: str, channel_name: str, auth_user: dict | None = No
                 st.session_state["active_tab"] = "🛢️ Oil"
                 st.rerun()
         with b4:
-            if st.button("🔮 Forecaster", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🔮 Forecaster" else "secondary"):
-                st.session_state["active_tab"] = "🔮 Forecaster"
+            if st.button("👑 MASTER ADMIN", use_container_width=True, type="primary" if st.session_state["active_tab"] == "👑 MASTER ADMIN" else "secondary"):
+                st.session_state["active_tab"] = "👑 MASTER ADMIN"
+                st.rerun()
+    else:
+        b1, b2, b3 = st.columns(3)
+        with b1:
+            if st.button("💱 Forex", use_container_width=True, type="primary" if st.session_state["active_tab"] == "💱 Forex" else "secondary"):
+                st.session_state["active_tab"] = "💱 Forex"
+                st.rerun()
+        with b2:
+            if st.button("🥇 Gold", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🥇 Gold" else "secondary"):
+                st.session_state["active_tab"] = "🥇 Gold"
+                st.rerun()
+        with b3:
+            if st.button("🛢️ Oil", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🛢️ Oil" else "secondary"):
+                st.session_state["active_tab"] = "🛢️ Oil"
                 st.rerun()
 
     st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
@@ -1373,38 +1059,8 @@ def page_dashboard(fred_key: str, channel_name: str, auth_user: dict | None = No
     if current_tab == "🛢️ Oil":
         page_oil(fred_key, channel_name)
         return
-    if current_tab == "🔮 Forecaster":
-        page_catalyst_forecaster(fred_key, channel_name)
-        return
 
-    if "selected_currency" not in st.session_state:
-        st.session_state["selected_currency"] = "USD"
-
-    # Currency Area Labels — institutional selector row
-    # Native Streamlit buttons preserve session-state/rerun behavior.
-    with st.container():
-        render_html('<div class="currency-selector-marker" aria-hidden="true"></div>')
-        curr_keys = list(CURRENCY_SERIES.keys())
-        curr_cols = st.columns(len(curr_keys), gap="small")
-        for col, c_code in zip(curr_cols, curr_keys):
-            c_meta = CURRENCY_SERIES[c_code]
-            is_active = (st.session_state["selected_currency"] == c_code)
-            area_label = c_meta.get("area", c_code)
-            display_name = c_meta.get("name", c_code)
-            c_label = f"{area_label}  {c_code}"
-            with col:
-                if st.button(
-                    c_label,
-                    key=f"curr_btn_{c_code}",
-                    use_container_width=True,
-                    type="primary" if is_active else "secondary",
-                    help=f"{display_name} — select {c_code} macro desk"
-                ):
-                    st.session_state["selected_currency"] = c_code
-                    st.rerun()
-
-    currency = st.session_state["selected_currency"]
-    st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+    currency = st.selectbox("Currency:", list(CURRENCY_SERIES.keys()), format_func=lambda k: f"{CURRENCY_SERIES[k]['flag']} {k} • {CURRENCY_SERIES[k]['name']}", label_visibility="collapsed")
 
     with st.spinner(f"Reading {currency} macro data & processing live feeds..."):
         result = compute_composite(currency, fred_key, channel_name)
@@ -1738,607 +1394,39 @@ def page_oil(fred_key: str, channel_name: str) -> None:
             </div>
             """)
 
-# ============================================================
-# PREDICTIVE MACRO CATALYST FORECASTER & NOWCAST ENGINE
-# ============================================================
-# ============================================================
-# PREDICTIVE MACRO CATALYST FORECASTER & NOWCAST ENGINE
-# ============================================================
-import xml.etree.ElementTree as ET
-import urllib.request
-
-CATALYST_PRECURSOR_MAP = {
-    "NZD_RETAIL": {
-        "title": "Core Retail Sales q/q",
-        "currency": "NZD",
-        "impact": "High",
-        "keywords": ["new zealand", "rbnz", "retail sales", "consumer spending", "dairy prices", "kiwi"],
-        "precursors": [
-            {"name": "Global Commodity Demand Velocity", "series": "INDPRO", "cat": "growth", "weight": 0.50},
-            {"name": "Consumer Sentiment Momentum", "series": "UMCSENT", "cat": "growth", "weight": 0.50},
-        ],
-        "bullish_asset": "NZD/USD (Strong Consumer Momentum)",
-        "bearish_asset": "NZD/USD (Consumer Spending Contraction)",
-    },
-    "NZD_RETAIL_HEADLINE": {
-        "title": "Retail Sales q/q",
-        "currency": "NZD",
-        "impact": "High",
-        "keywords": ["retail sales", "new zealand", "rbnz", "consumption", "household demand"],
-        "precursors": [
-            {"name": "Real Disposable Income Momentum", "series": "DSPIC96", "cat": "growth", "weight": 0.50},
-            {"name": "Consumer Sentiment Index", "series": "UMCSENT", "cat": "growth", "weight": 0.50},
-        ],
-        "bullish_asset": "NZD/USD",
-        "bearish_asset": "NZD/USD",
-    },
-    "CAD_PROFITS": {
-        "title": "Corporate Profits q/q",
-        "currency": "CAD",
-        "impact": "Medium",
-        "keywords": ["corporate profits", "canada economy", "boc", "bank of canada", "crude oil canada", "wti"],
-        "precursors": [
-            {"name": "WTI Crude Oil Price Velocity (Key Petrocurrency Driver)", "series": "DCOILWTICO", "cat": "growth", "weight": 0.60, "fallback": "POILWTIUSDM"},
-            {"name": "Industrial Production Momentum", "series": "INDPRO", "cat": "growth", "weight": 0.40},
-        ],
-        "bullish_asset": "CAD (USD/CAD Downside)",
-        "bearish_asset": "USD/CAD (Corporate Margin Compression)",
-    },
-    "USD_BESSENT": {
-        "title": "Treasury Sec Bessent Speaks",
-        "currency": "USD",
-        "impact": "Medium",
-        "keywords": ["bessent", "treasury", "us debt", "fiscal policy", "tariffs", "yields", "dollar strength", "bonds"],
-        "precursors": [
-            {"name": "10-Year US Real Yield", "series": "DFII10", "cat": "rate", "weight": 0.50},
-            {"name": "10-Year Breakeven Inflation Rate", "series": "T10YIE", "cat": "inflation", "weight": 0.50},
-        ],
-        "bullish_asset": "USD (Fiscal Stability Guidance)",
-        "bearish_asset": "Gold (Hawkish Fiscal Rhetoric)",
-    },
-    "AUD_CPI": {
-        "title": "CPI y/y (Headline & Trimmed Mean)",
-        "currency": "AUD",
-        "impact": "High",
-        "keywords": ["australia cpi", "rba", "aussie inflation", "trimmed mean", "australia rates"],
-        "precursors": [
-            {"name": "Global Commodity Price Velocity", "series": "INDPRO", "cat": "inflation", "weight": 0.50},
-            {"name": "10-Year Breakeven Inflation", "series": "T10YIE", "cat": "inflation", "weight": 0.50},
-        ],
-        "bullish_asset": "AUD/USD (Hawkish RBA Rate Stance)",
-        "bearish_asset": "AUD/USD (Disinflation Momentum)",
-    },
-    "US_PCE": {
-        "title": "Core PCE Price Index m/m (Fed Preferred Metric)",
-        "currency": "USD",
-        "impact": "High",
-        "keywords": ["pce", "inflation", "fed inflation", "powell", "consumer spending", "sticky", "deflator"],
-        "precursors": [
-            {"name": "Core PPI Final Demand Velocity", "series": "PPIFES", "cat": "inflation", "weight": 0.40},
-            {"name": "10-Year Breakeven Inflation Rate", "series": "T10YIE", "cat": "inflation", "weight": 0.30},
-            {"name": "Crude Oil Energy Momentum", "series": "DCOILWTICO", "cat": "inflation", "weight": 0.30, "fallback": "POILWTIUSDM"},
-        ],
-        "bullish_asset": "USD (Bearish Gold)",
-        "bearish_asset": "Gold (Bearish USD)",
-    },
-    "US_GDP": {
-        "title": "Prelim GDP q/q (Annualized Growth)",
-        "currency": "USD",
-        "impact": "High",
-        "keywords": ["gdp", "economic growth", "recession", "soft landing", "consumer spending", "output"],
-        "precursors": [
-            {"name": "Industrial Production Momentum", "series": "INDPRO", "cat": "growth", "weight": 0.40},
-            {"name": "Retail Sales Consumption Growth", "series": "RSAFS", "cat": "growth", "weight": 0.35},
-            {"name": "Real Disposable Personal Income", "series": "DSPIC96", "cat": "growth", "weight": 0.25},
-        ],
-        "bullish_asset": "USD & Equities",
-        "bearish_asset": "Gold (Risk-On Macro Momentum)",
-    },
-    "US_DURABLE": {
-        "title": "Core Durable Goods Orders m/m",
-        "currency": "USD",
-        "impact": "High",
-        "keywords": ["durable goods", "factory orders", "capex", "business spending", "manufacturing"],
-        "precursors": [
-            {"name": "Total Manufacturing Output Index", "series": "INDPRO", "cat": "growth", "weight": 0.50},
-            {"name": "Real Personal Consumption Demand", "series": "PCEC96", "cat": "growth", "weight": 0.50},
-        ],
-        "bullish_asset": "USD (Expansionary Business Investment)",
-        "bearish_asset": "Gold (Safe Haven Outflow)",
-    },
-    "US_SPENDING": {
-        "title": "Personal Spending m/m",
-        "currency": "USD",
-        "impact": "Medium",
-        "keywords": ["personal spending", "consumer spending", "income", "consumption"],
-        "precursors": [
-            {"name": "Real Disposable Income Momentum", "series": "DSPIC96", "cat": "growth", "weight": 0.50},
-            {"name": "U.Mich Consumer Sentiment", "series": "UMCSENT", "cat": "growth", "weight": 0.50},
-        ],
-        "bullish_asset": "USD (Consumer Strength)",
-        "bearish_asset": "Gold (Risk-On Sentiment)",
-    },
-    "US_OIL_EIA": {
-        "title": "Crude Oil Inventories (EIA)",
-        "currency": "USD",
-        "impact": "High",
-        "keywords": ["crude oil", "eia", "inventories", "gasoline stockpiles", "wti", "brent", "oil build", "oil draw"],
-        "precursors": [
-            {"name": "WTI Spot Price Momentum", "series": "DCOILWTICO", "cat": "growth", "weight": 0.60, "fallback": "POILWTIUSDM"},
-            {"name": "Industrial Production Growth", "series": "INDPRO", "cat": "growth", "weight": 0.40},
-        ],
-        "bullish_asset": "Crude Oil & Petrocurrencies (Inventory Drawdown)",
-        "bearish_asset": "Crude Oil (Inventory Build / Oversupply)",
-    },
-}
-
-SUPPORTED_TIMEZONES = {
-    "🇮🇶 Kurdistan & Iraq (UTC+3)": {"offset": 3, "label": "KRD / UTC+3"},
-    "🇬🇧 London / UK (UTC+0 / GMT)": {"offset": 0, "label": "London / GMT"},
-    "🇪🇺 Frankfurt / Paris / Berlin (UTC+1 / CET)": {"offset": 1, "label": "Berlin / CET"},
-    "🇦🇪 Dubai / Gulf (UTC+4 / GST)": {"offset": 4, "label": "Dubai / GST"},
-    "🇺🇸 New York / US East (UTC-5 / EST)": {"offset": -5, "label": "New York / EST"},
-    "🇯🇵 Tokyo / Japan (UTC+9 / JST)": {"offset": 9, "label": "Tokyo / JST"},
-    "🌐 Universal UTC / GMT": {"offset": 0, "label": "UTC"},
-}
-
-def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD / UTC+3") -> list[dict]:
-    """Generates real live economic releases adapted dynamically to the user's local timezone."""
-    utc_now = datetime.utcnow()
-    user_now = utc_now + timedelta(hours=tz_offset)
-    events = []
-    
-    # Target release datetimes in canonical UTC
-    calendar_template = [
-        # Monday Releases
-        {"code": "NZD_RETAIL", "utc_year": 2026, "utc_month": 8, "utc_day": 23, "utc_hour": 22, "utc_min": 45, "forecast_str": "0.3%", "prev_str": "1.0%", "consensus_bias": "Core Consumption Deceleration"},
-        {"code": "NZD_RETAIL_HEADLINE", "utc_year": 2026, "utc_month": 8, "utc_day": 23, "utc_hour": 22, "utc_min": 45, "forecast_str": "0.1%", "prev_str": "0.9%", "consensus_bias": "Headline Spending Slowdown"},
-        {"code": "CAD_PROFITS", "utc_year": 2026, "utc_month": 8, "utc_day": 24, "utc_hour": 12, "utc_min": 30, "forecast_str": "—", "prev_str": "-2.0%", "consensus_bias": "Corporate Profitability Recovery"},
-        {"code": "USD_BESSENT", "utc_year": 2026, "utc_month": 8, "utc_day": 24, "utc_hour": 15, "utc_min": 0, "forecast_str": "Speech", "prev_str": "—", "consensus_bias": "US Fiscal & Tariff Rhetoric"},
-
-        # Wednesday Releases
-        {"code": "AUD_CPI", "utc_year": 2026, "utc_month": 8, "utc_day": 26, "utc_hour": 1, "utc_min": 30, "forecast_str": "3.3%", "prev_str": "3.8%", "consensus_bias": "Australia CPI Cooling Track"},
-        {"code": "US_DURABLE", "utc_year": 2026, "utc_month": 8, "utc_day": 26, "utc_hour": 12, "utc_min": 30, "forecast_str": "0.5%", "prev_str": "0.7%", "consensus_bias": "Positive Core Capex Orders"},
-        {"code": "US_OIL_EIA", "utc_year": 2026, "utc_month": 8, "utc_day": 26, "utc_hour": 14, "utc_min": 30, "forecast_str": "—", "prev_str": "4.4M", "consensus_bias": "Weekly Inventory Balance"},
-
-        # Thursday Releases
-        {"code": "US_GDP", "utc_year": 2026, "utc_month": 8, "utc_day": 27, "utc_hour": 12, "utc_min": 30, "forecast_str": "1.5%", "prev_str": "1.5%", "consensus_bias": "Moderate 1.5% GDP Growth Baseline"},
-
-        # Friday Releases
-        {"code": "US_PCE", "utc_year": 2026, "utc_month": 8, "utc_day": 28, "utc_hour": 12, "utc_min": 30, "forecast_str": "0.2%", "prev_str": "0.1%", "consensus_bias": "Core PCE Acceleration (+0.2% MoM)"},
-        {"code": "US_SPENDING", "utc_year": 2026, "utc_month": 8, "utc_day": 28, "utc_hour": 12, "utc_min": 30, "forecast_str": "0.1%", "prev_str": "0.3%", "consensus_bias": "Moderate Spending Velocity"},
-    ]
-
-    for item in calendar_template:
-        event_meta = CATALYST_PRECURSOR_MAP.get(item["code"], {})
-        
-        # Build canonical UTC datetime
-        event_utc = datetime(
-            item["utc_year"], item["utc_month"], item["utc_day"],
-            item["utc_hour"], item["utc_min"]
-        )
-        
-        # Roll forward if passed by more than 1 day
-        while event_utc < utc_now - timedelta(days=1):
-            event_utc += timedelta(days=28)
-            if event_utc.weekday() == 5:
-                event_utc += timedelta(days=2)
-            elif event_utc.weekday() == 6:
-                event_utc += timedelta(days=1)
-
-        # Convert to user local timezone
-        event_local = event_utc + timedelta(hours=tz_offset)
-
-        diff = event_local - user_now
-        total_seconds = diff.total_seconds()
-        days_away = (event_local.date() - user_now.date()).days
-        
-        if total_seconds < -43200:
-            countdown_label = "✅ Released"
-        elif total_seconds < 0:
-            countdown_label = "✅ RELEASED TODAY"
-        elif total_seconds < 3600:
-            mins = max(1, int(total_seconds // 60))
-            countdown_label = f"🔥 In {mins} Mins"
-        elif total_seconds < 86400:
-            hrs = int(total_seconds // 3600)
-            mins = int((total_seconds % 3600) // 60)
-            if event_local.date() == user_now.date():
-                countdown_label = f"🔥 TODAY (In {hrs}h {mins}m)"
-            else:
-                countdown_label = f"⚡ Tomorrow (In {hrs}h)"
-        elif days_away == 1:
-            countdown_label = "⚡ Tomorrow (In 1 Day)"
-        else:
-            countdown_label = f"⚡ In {days_away} Days"
-        
-        time_str_formatted = event_local.strftime("%H:%M")
-        if item["code"] == "USD_BESSENT":
-            time_str_formatted = "Tentative"
-
-        events.append({
-            "code": item["code"],
-            "title": event_meta.get("title", item["code"]),
-            "currency": event_meta.get("currency", "USD"),
-            "impact": event_meta.get("impact", "High"),
-            "datetime_obj": event_local,
-            "date_str": event_local.strftime("%A, %b %d"),
-            "time_str": f"{time_str_formatted} ({tz_label})",
-            "countdown": countdown_label,
-            "days_away": days_away,
-            "forecast_str": item["forecast_str"],
-            "prev_str": item["prev_str"],
-            "consensus_bias": item["consensus_bias"],
-            "meta": event_meta
-        })
-        
-    events.sort(key=lambda x: (x["datetime_obj"], x["days_away"]))
-    return events
-
-def compute_event_nowcast(event: dict, fred_key: str, all_news: list) -> dict:
-    """Synthesizes historical precursor FRED data + Correlated News Wires into an AI Nowcast."""
-    meta = event.get("meta", {})
-    precursors = meta.get("precursors", [])
-    keywords = meta.get("keywords", [])
-    
-    precursor_results = []
-    precursor_score_sum = 0.0
-    precursor_weight_sum = 0.0
-    
-    # 1. Historical Precursor Velocity (FRED)
-    for p in precursors:
-        series_id = p.get("series", "")
-        fallback_id = p.get("fallback")
-        df = fetch_fred(series_id, fred_key, limit=60)
-        if (df is None or df.empty) and fallback_id:
-            df = fetch_fred(fallback_id, fred_key, limit=60)
-            
-        if df is not None and not df.empty:
-            vals = df["value"].tolist()
-            mf = calc_mtf(vals, p["cat"])
-            score = mf["score"] if mf else 0.0
-            precursor_results.append({
-                "name": p["name"],
-                "latest": vals[-1],
-                "mom": mf.get("mom", 0.0) if mf else 0.0,
-                "score": score,
-                "weight": p.get("weight", 0.25)
-            })
-            precursor_score_sum += score * p.get("weight", 0.25)
-            precursor_weight_sum += p.get("weight", 0.25)
-
-    base_precursor_score = (precursor_score_sum / precursor_weight_sum) if precursor_weight_sum > 0 else 0.0
-    
-    # 2. Correlated News Wires
-    correlated_articles = []
-    news_sentiment_pts = 0.0
-    for art in all_news:
-        title = art.get("title", "").lower()
-        desc = art.get("description", "").lower()
-        combined_text = f"{title} {desc}"
-        if any(kw in combined_text for kw in keywords):
-            correlated_articles.append(art)
-            
-    cur = meta.get("currency", "USD")
-    if correlated_articles:
-        rule_res = analyze_news_rule_based(correlated_articles)
-        news_sentiment_pts = rule_res["scores"].get(cur, 0.0)
-    
-    # 3. Composite Nowcast: 60% Precursor Macro + 40% Correlated News
-    nowcast_composite = (0.60 * base_precursor_score) + (0.40 * (news_sentiment_pts / 0.50))
-    confidence_val = min(94, int(62 + abs(nowcast_composite) * 48))
-
-    if nowcast_composite > 0.10:
-        bias_label = "🔺 LIKELY HIGHER THAN FORECAST"
-        bias_color = "#00ffa3"
-        outcome_desc = "Precursor pipeline indicators (wholesale inflation & energy momentum) combined with wire sentiment signal high upside surprise probability against consensus."
-        currency_action_en = f"📈 {cur} Expected to Appreciate (Bullish Rally)"
-        currency_action_color = "#00ffa3"
-        if cur == "USD":
-            currency_action_desc_en = "US Dollar (USD) is poised to strengthen on reduced rate-cut urgency and expanding sovereign yield support."
-        else:
-            currency_action_desc_en = f"{cur} is expected to rally on macroeconomic growth resilience and supportive monetary yield differentials."
-        gold_implication = "📉 Bearish Drag on Gold (Surging yields & Hawkish USD pushback)"
-        usd_implication = "📈 Bullish Tailwind for USD (Yield advantage expansion)"
-        oil_implication = "📈 Bullish Support (Active energy demand pull)"
-    elif nowcast_composite < -0.10:
-        bias_label = "🔻 LIKELY LOWER THAN FORECAST"
-        bias_color = "#ff5e75"
-        outcome_desc = "Leading indicators (disinflation pipeline & labor cooling signals) point toward potential downside miss or softer print relative to consensus."
-        currency_action_en = f"📉 {cur} Expected to Weaken / Depreciate (Bearish Drag)"
-        currency_action_color = "#ff5e75"
-        if cur == "USD":
-            currency_action_desc_en = "US Dollar (USD) is vulnerable to selling pressure as cooling inflation opens the door for Fed interest rate cuts."
-        else:
-            currency_action_desc_en = f"{cur} is likely to face downside weakness due to macroeconomic deceleration and dovish central bank easing prospects."
-        gold_implication = "📈 Bullish Surge for Gold (Yields retreat & Rate cut optimism accelerates)"
-        usd_implication = "📉 Bearish Drag on USD (Dovish repricing across FX majors)"
-        oil_implication = "📉 Bearish Drag (Cooling macroeconomic demand signals)"
-    else:
-        bias_label = "⚖️ IN-LINE WITH CONSENSUS"
-        bias_color = "#ffd166"
-        outcome_desc = "Balanced precursor metrics and neutral wire tone suggest official print will land near consensus expectations with limited deviation."
-        currency_action_en = f"⚖️ {cur} Range-Bound Consolidation (Neutral)"
-        currency_action_color = "#ffd166"
-        currency_action_desc_en = f"{cur} is expected to maintain range-bound consolidation with limited volatility as data matches consensus expectations."
-        gold_implication = "⚖️ Neutral / Range-Bound (Awaiting secondary drivers)"
-        usd_implication = "⚖️ Balanced (Consolidation against major currency crosses)"
-        oil_implication = "⚖️ Range-Bound (Dominated by physical supply news)"
-        
-    return {
-        "precursor_results": precursor_results,
-        "base_precursor_score": base_precursor_score,
-        "correlated_articles": correlated_articles[:3],
-        "news_sentiment_pts": news_sentiment_pts,
-        "nowcast_composite": nowcast_composite,
-        "bias_label": bias_label,
-        "bias_color": bias_color,
-        "confidence": confidence_val,
-        "outcome_desc": outcome_desc,
-        "currency_action_en": currency_action_en,
-        "currency_action_color": currency_action_color,
-        "currency_action_desc_en": currency_action_desc_en,
-        "gold_implication": gold_implication,
-        "usd_implication": usd_implication,
-        "oil_implication": oil_implication
-    }
-
-def page_catalyst_forecaster(fred_key: str, channel_name: str) -> None:
-    """Renders the Institutional Predictive Macro Catalyst Forecaster & Nowcast Desk."""
-    if "selected_tz" not in st.session_state:
-        st.session_state["selected_tz"] = "🇮🇶 Kurdistan & Iraq (UTC+3)"
-
-    tz_col1, tz_col2 = st.columns([3, 1.2])
-    with tz_col1:
-        st.markdown("<div style='font-size:11px;font-weight:800;color:#8fa3b4;text-transform:uppercase;margin-bottom:2px;'>📅 Institutional Macroeconomic Catalyst Forecaster</div>", unsafe_allow_html=True)
-    with tz_col2:
-        selected_tz_name = st.selectbox(
-            "🌐 Timezone:",
-            list(SUPPORTED_TIMEZONES.keys()),
-            index=list(SUPPORTED_TIMEZONES.keys()).index(st.session_state["selected_tz"]),
-            key="forecaster_tz_select",
-            label_visibility="collapsed"
-        )
-        st.session_state["selected_tz"] = selected_tz_name
-
-    tz_info = SUPPORTED_TIMEZONES.get(st.session_state["selected_tz"], {"offset": 3, "label": "KRD / UTC+3"})
-
-    with st.spinner("Synthesizing upcoming economic calendar, precursor FRED pipelines & correlated news..."):
-        events = get_upcoming_catalyst_events(tz_info["offset"], tz_info["label"])
-        all_news = fetch_all_instant_news(channel_name)
-
-    # Top Header Banner
-    render_html("""
-    <div style="background:linear-gradient(135deg,rgba(0,245,255,0.08),rgba(157,78,221,0.06));border:1px solid rgba(0,245,255,0.3);border-radius:18px;padding:22px 26px;margin-bottom:20px;box-shadow:var(--shadow);">
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
-        <div>
-          <div style="font-size:18px;font-weight:900;color:#00f5ff;letter-spacing:1px;">🔮 PREDICTIVE MACRO CATALYST DESK &nbsp;<span style="font-size:11px;background:rgba(0,255,163,0.15);border:1px solid rgba(0,255,163,0.4);color:#00ffa3;padding:3px 10px;border-radius:10px;">NOWCAST v14.0</span></div>
-          <div style="font-size:12px;color:#8fa3b4;margin-top:4px;">Multi-Timeframe Precursor Correlation (FRED) + Real-Time Wire Sentiment Synthesis for High-Impact Upcoming Releases.</div>
-        </div>
-        <div style="text-align:right;">
-          <div style="font-size:11px;color:#8fa3b4;">PREDICTIVE HORIZON</div>
-          <div style="font-size:14px;font-weight:800;color:#ffd166;">Next 7–10 Days Rolling</div>
-        </div>
-      </div>
-    </div>
-    """)
-
-    # 3 Summary KPI Cards
-    k1, k2, k3 = st.columns(3)
-    with k1:
-        render_html(f"""
-        <div style="background:rgba(0,245,255,0.05);border:1px solid rgba(0,245,255,0.2);border-radius:14px;padding:14px;text-align:center;">
-          <div style="font-size:11px;font-weight:800;color:#8fa3b4;text-transform:uppercase;">TRACKED CATALYSTS</div>
-          <div style="font-size:24px;font-weight:900;color:#00f5ff;margin-top:2px;">{len(events)} Major Releases</div>
-        </div>
-        """)
-    with k2:
-        render_html("""
-        <div style="background:rgba(0,255,163,0.05);border:1px solid rgba(0,255,163,0.2);border-radius:14px;padding:14px;text-align:center;">
-          <div style="font-size:11px;font-weight:800;color:#8fa3b4;text-transform:uppercase;">AVG CONFIDENCE SCORE</div>
-          <div style="font-size:24px;font-weight:900;color:#00ffa3;margin-top:2px;">78.5% High Conviction</div>
-        </div>
-        """)
-    with k3:
-        render_html("""
-        <div style="background:rgba(255,209,102,0.05);border:1px solid rgba(255,209,102,0.2);border-radius:14px;padding:14px;text-align:center;">
-          <div style="font-size:11px;font-weight:800;color:#8fa3b4;text-transform:uppercase;">LEADING MACRO DRIVER</div>
-          <div style="font-size:24px;font-weight:900;color:#ffd166;margin-top:2px;">Energy &amp; Wholesale Pipeline</div>
-        </div>
-        """)
-
-    st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
-    render_html('<div class="sec-title">Upcoming High-Impact Catalyst Radar &amp; AI Nowcasts</div>')
-
-    # Render Event Cards
-    CURRENCY_FLAGS = {
-        "USD": "🇺🇸",
-        "EUR": "🇪🇺",
-        "GBP": "🇬🇧",
-        "CAD": "🇨🇦",
-        "JPY": "🇯🇵",
-        "AUD": "🇦🇺",
-        "NZD": "🇳🇿",
-        "CHF": "🇨🇭"
-    }
-
-    for idx, ev in enumerate(events):
-        nowcast = compute_event_nowcast(ev, fred_key, all_news)
-        
-        cur = ev.get("currency", "USD")
-        cur_flag = CURRENCY_FLAGS.get(cur, "🌐")
-        badge_bg = "rgba(0,255,163,0.12)" if nowcast["bias_color"] == "#00ffa3" else ("rgba(255,94,117,0.12)" if nowcast["bias_color"] == "#ff5e75" else "rgba(255,209,102,0.12)")
-        
-        # Main Event Card
-        render_html(f"""
-        <div style="background:linear-gradient(180deg,rgba(11,20,32,0.92),rgba(5,10,18,0.96));border:1px solid rgba(0,245,255,0.22);border-radius:16px;padding:20px 22px;margin-bottom:18px;box-shadow:var(--shadow);">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;margin-bottom:12px;">
-            <div>
-              <div style="display:flex;align-items:center;gap:8px;">
-                <span style="font-size:18px;">{cur_flag}</span>
-                <span style="font-size:11px;font-weight:900;color:#00f5ff;background:rgba(0,245,255,0.12);border:1px solid rgba(0,245,255,0.3);padding:2px 7px;border-radius:6px;">{cur}</span>
-                <span style="font-size:15px;font-weight:800;color:#fff;">{ev['title']}</span>
-                <span style="font-size:10px;background:rgba(255,94,117,0.18);border:1px solid rgba(255,94,117,0.4);color:#ff5e75;padding:2px 8px;border-radius:8px;font-weight:700;">{ev['impact']} Impact</span>
-              </div>
-              <div style="font-size:11.5px;color:#8fa3b4;margin-top:4px;">
-                📅 <b>{ev['date_str']}</b> &nbsp;•&nbsp; 🕒 <b>{ev['time_str']}</b>
-              </div>
-            </div>
-            <div style="text-align:right;">
-              <span style="font-size:11px;font-weight:800;background:rgba(0,245,255,0.12);border:1px solid rgba(0,245,255,0.3);color:#00f5ff;padding:4px 10px;border-radius:10px;">{ev['countdown']}</span>
-            </div>
-          </div>
-
-          <!-- Grid: Consensus vs AI Nowcast -->
-          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin-top:14px;">
-            <!-- Left: Market Consensus -->
-            <div style="background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:14px;">
-              <div style="font-size:10.5px;font-weight:800;color:#8fa3b4;text-transform:uppercase;margin-bottom:8px;">📊 MARKET CONSENSUS DATA</div>
-              <div style="display:flex;justify-content:space-between;margin-bottom:4px;font-size:12px;">
-                <span style="color:#8fa3b4;">Consensus Forecast:</span>
-                <span style="color:#ffd166;font-weight:800;">{ev['forecast_str']}</span>
-              </div>
-              <div style="display:flex;justify-content:space-between;margin-bottom:4px;font-size:12px;">
-                <span style="color:#8fa3b4;">Previous Release:</span>
-                <span style="color:#fff;font-weight:700;">{ev['prev_str']}</span>
-              </div>
-              <div style="font-size:11px;color:#8fa3b4;margin-top:6px;border-top:1px solid rgba(255,255,255,0.05);padding-top:6px;">
-                Baseline: <b style="color:#ecf7ff;">{ev['consensus_bias']}</b>
-              </div>
-            </div>
-
-            <!-- Right: AI Nowcast Prediction -->
-            <div style="background:{badge_bg};border:1px solid {nowcast['bias_color']}44;border-radius:12px;padding:14px;">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-                <span style="font-size:10.5px;font-weight:800;color:{nowcast['bias_color']};text-transform:uppercase;">🧠 AI NOWCAST PROJECTION</span>
-                <span style="font-size:10.5px;font-weight:800;color:#00f5ff;background:rgba(0,245,255,0.12);padding:2px 8px;border-radius:8px;">{nowcast['confidence']}% Confidence</span>
-              </div>
-              <div style="font-size:14px;font-weight:900;color:{nowcast['bias_color']};margin-bottom:6px;">
-                {nowcast['bias_label']}
-              </div>
-              <div style="font-size:11.5px;color:#ecf7ff;line-height:1.45;">
-                {nowcast['outcome_desc']}
-              </div>
-            </div>
-          </div>
-
-          <!-- Prominent Currency Direction Box (English) -->
-          <div style="margin-top:12px;padding:12px 14px;background:rgba(0,245,255,0.05);border:1px solid rgba(0,245,255,0.25);border-radius:10px;">
-            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:4px;">
-              <span style="font-size:11px;font-weight:900;color:#00f5ff;text-transform:uppercase;">🎯 DIRECT CURRENCY TRAJECTORY ({cur} OUTLOOK):</span>
-              <span style="font-size:12px;font-weight:900;color:{nowcast['currency_action_color']};">{nowcast['currency_action_en']}</span>
-            </div>
-            <div style="font-size:11.5px;color:#ecf7ff;line-height:1.45;">
-              {nowcast['currency_action_desc_en']}
-            </div>
-          </div>
-
-          <!-- Cross-Asset Impact (English) -->
-          <div style="margin-top:10px;padding:12px 14px;background:rgba(0,0,0,0.25);border:1px solid rgba(0,245,255,0.12);border-radius:10px;font-size:11.5px;">
-            <div style="font-size:10.5px;font-weight:800;color:#00f5ff;text-transform:uppercase;margin-bottom:6px;">🌐 CROSS-ASSET TACTICAL PROJECTION:</div>
-            <div style="color:#ecf7ff;margin-bottom:3px;">• <b>Gold (XAUUSD):</b> {nowcast['gold_implication']}</div>
-            <div style="color:#ecf7ff;margin-bottom:3px;">• <b>US Dollar (USD):</b> {nowcast['usd_implication']}</div>
-            <div style="color:#ecf7ff;">• <b>Crude Oil:</b> {nowcast['oil_implication']}</div>
-          </div>
-        </div>
-        """)
-
-        # Expandable Precursor Breakdown Drawer
-        with st.expander(f"📊 Macro Indicators & Correlated News: {ev['title']}", expanded=False):
-            p_cols = st.columns(len(nowcast["precursor_results"]) or 1)
-            for p_col, p in zip(p_cols, nowcast["precursor_results"]):
-                p_mom_color = "#00ffa3" if p["mom"] > 0 else "#ff5e75"
-                p_arr = "▲" if p["mom"] > 0 else "▼"
-                with p_col:
-                    render_html(f"""
-                    <div style="background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px;text-align:center;">
-                      <div style="font-size:10px;font-weight:700;color:#8fa3b4;line-height:1.3;height:26px;overflow:hidden;">{p['name']}</div>
-                      <div style="font-size:15px;font-weight:900;color:#fff;margin:4px 0;">{p['latest']:.2f}</div>
-                      <div style="font-size:10.5px;font-weight:800;color:{p_mom_color};">{p_arr} {p['mom']:+.2f} MoM</div>
-                    </div>
-                    """)
-
-            if nowcast["correlated_articles"]:
-                st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
-                render_html('<div style="font-size:11px;font-weight:800;color:#8fa3b4;margin-bottom:6px;">📡 CORRELATED BREAKING WIRES &amp; SPEECHES:</div>')
-                for a in nowcast["correlated_articles"]:
-                    render_html(f"""
-                    <div style="padding:8px 10px;background:rgba(0,245,255,0.03);border-left:3px solid #00f5ff;border-radius:4px;margin-bottom:6px;font-size:11px;color:#ecf7ff;">
-                      <b>{a.get('title', '')}</b> &nbsp;<span style="color:#8fa3b4;font-size:9.5px;">({a.get('publishedAt', '')})</span>
-                    </div>
-                    """)
-
-        st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
-
 def render_vip_gate() -> dict | None:
-    """Renders the luxury cyber-glass VIP authentication gate with 5-Day Persistent Device/IP Auto-Login."""
-    client_id, dev_type = get_client_device_info()
+    client_ip = get_client_device_identifier()
 
-    # 1. Active In-Memory Session
+    try:
+        if len(st.query_params) > 0:
+            st.query_params.clear()
+    except Exception:
+        pass
+
     auth_user = st.session_state.get("APEX_AUTH_USER")
     if auth_user and auth_user.get("is_authenticated"):
         return auth_user
 
-    # 2. Check 5-Day Persistent Session Cache via Device/IP Fingerprint
-    sessions = load_sessions_cache()
-    dev_session = sessions.get(client_id)
-    if dev_session:
-        try:
-            last_dt = datetime.strptime(dev_session.get("last_active", ""), "%Y-%m-%d %H:%M:%S")
-            # If active within 5 days (5 * 86400 seconds)
-            if (get_current_time() - last_dt).total_seconds() <= (5 * 86400):
-                # Refresh rolling 5-day timestamp
-                dev_session["last_active"] = get_current_time().strftime("%Y-%m-%d %H:%M:%S")
-                save_sessions_cache(sessions)
-                auto_user = {
+    if client_ip:
+        auth_db = load_authorized_ips()
+        ip_entry = auth_db.get(client_ip)
+        if ip_entry:
+            saved_key = ip_entry.get("key", "")
+            is_valid, user_name, expiry_info = verify_vip_key(saved_key, client_ip)
+            if is_valid:
+                st.session_state["APEX_AUTH_USER"] = {
                     "is_authenticated": True,
-                    "user_name": dev_session.get("user_name", "VIP Client"),
-                    "expiry_info": dev_session.get("expiry_info", "5-Day Persistent Device Session Active"),
-                    "is_admin": dev_session.get("is_admin", False),
-                    "key": dev_session.get("key", "")
+                    "user_name": user_name,
+                    "expiry_info": expiry_info,
+                    "is_admin": ip_entry.get("is_admin", False) or (user_name == "ADMINISTRATOR"),
+                    "key": saved_key
                 }
-                st.session_state["APEX_AUTH_USER"] = auto_user
-                return auto_user
-        except Exception:
-            pass
-
-    # 3. Fallback: Check Query Params if provided
-    saved_key = None
-    try:
-        if hasattr(st, "query_params"):
-            saved_key = st.query_params.get("auth") or st.query_params.get("key")
-    except Exception:
-        pass
-
-    if saved_key:
-        clean_saved = saved_key.strip().upper()
-        is_valid, user_name, expiry_info = verify_vip_key(clean_saved, client_id, dev_type)
-        if is_valid:
-            is_admin = (user_name == "ADMINISTRATOR")
-            sessions[client_id] = {
-                "key": clean_saved,
-                "device_id": client_id,
-                "dev_type": dev_type,
-                "last_active": get_current_time().strftime("%Y-%m-%d %H:%M:%S"),
-                "user_name": user_name,
-                "expiry_info": expiry_info,
-                "is_admin": is_admin
-            }
-            save_sessions_cache(sessions)
-            auto_user = {
-                "is_authenticated": True,
-                "user_name": user_name,
-                "expiry_info": expiry_info,
-                "is_admin": is_admin,
-                "key": clean_saved
-            }
-            st.session_state["APEX_AUTH_USER"] = auto_user
-            return auto_user
+                return st.session_state["APEX_AUTH_USER"]
 
     col1, col2, col3 = st.columns([1, 2.2, 1])
     with col2:
         st.markdown("<div style='height:40px;'></div>", unsafe_allow_html=True)
-        render_html(f"""
+        render_html("""
         <div style="background:linear-gradient(180deg,rgba(11,20,32,0.95),rgba(5,10,18,0.97));border:1px solid rgba(0,245,255,0.25);border-radius:22px;padding:34px 28px 24px;text-align:center;box-shadow:0 25px 80px rgba(0,0,0,0.7),0 0 35px rgba(0,245,255,0.12);backdrop-filter:blur(24px);">
           <div style="display:flex;justify-content:center;margin-bottom:14px;">
             <div style="display:flex;align-items:center;justify-content:center;width:56px;height:56px;background:rgba(0,245,255,0.08);border:1px solid rgba(0,245,255,0.35);border-radius:16px;box-shadow:0 0 25px rgba(0,245,255,0.3);">
@@ -2357,7 +1445,7 @@ def render_vip_gate() -> dict | None:
           <div style="font-size:9.5px;font-weight:800;letter-spacing:3px;color:#8fa3b4;margin-top:2px;text-transform:uppercase;">Institutional Intelligence Terminal</div>
           <div style="height:1px;background:linear-gradient(90deg,transparent,rgba(0,245,255,0.3),transparent);margin:18px 0 14px;"></div>
           <div style="font-size:13.5px;color:#ecf7ff;font-weight:700;margin-bottom:4px;">🔒 Restricted VIP Terminal Access</div>
-          <div style="font-size:11.5px;color:#8fa3b4;margin-bottom:16px;">Detected: <b>{dev_type}</b> • 5-Day Auto-Login Active. Enter VIP Key once.</div>
+          <div style="font-size:11.5px;color:#8fa3b4;margin-bottom:16px;">Single-Device Protection Active. Enter your authorized VIP License Key.</div>
         </div>
         """)
 
@@ -2373,31 +1461,18 @@ def render_vip_gate() -> dict | None:
             )
 
         if unlock_clicked:
-            clean_entered = entered_key.strip().upper()
-            is_valid, user_name, expiry_info = verify_vip_key(clean_entered, client_id, dev_type)
+            is_valid, user_name, expiry_info = verify_vip_key(entered_key, client_ip)
             if is_valid:
                 is_admin = (user_name == "ADMINISTRATOR")
-                
-                # Save 5-Day Persistent Session by Device/IP Fingerprint
-                sessions[client_id] = {
-                    "key": clean_entered,
-                    "device_id": client_id,
-                    "dev_type": dev_type,
-                    "last_active": get_current_time().strftime("%Y-%m-%d %H:%M:%S"),
-                    "user_name": user_name,
-                    "expiry_info": expiry_info,
-                    "is_admin": is_admin
-                }
-                save_sessions_cache(sessions)
-                
                 st.session_state["APEX_AUTH_USER"] = {
                     "is_authenticated": True,
                     "user_name": user_name,
                     "expiry_info": expiry_info,
                     "is_admin": is_admin,
-                    "key": clean_entered
+                    "key": entered_key
                 }
-                st.success(f"✅ Access Granted! Welcome, {user_name}. Device remembered for 5 days.")
+                save_authorized_ip(client_ip, user_name, entered_key, expiry_info, is_admin)
+                st.success(f"✅ Access Granted! Welcome, {user_name}.")
                 time.sleep(0.4)
                 st.rerun()
             else:
@@ -2409,7 +1484,7 @@ def render_admin_key_generator() -> None:
     render_html("""
     <div style="background:linear-gradient(135deg,rgba(0,245,255,0.06),rgba(0,255,163,0.03));border:1px solid rgba(0,245,255,0.3);border-radius:16px;padding:20px 24px;margin-bottom:20px;box-shadow:var(--shadow);">
       <div style="font-size:16px;font-weight:900;color:#00f5ff;letter-spacing:1px;margin-bottom:4px;">👑 MASTER ADMIN CONTROL DESK</div>
-      <div style="font-size:11.5px;color:#8fa3b4;">Manage your VIP client licenses, dual-device bindings (1 Mobile + 1 PC), assign Telegram IDs, and generate secure cryptographic keys.</div>
+      <div style="font-size:11.5px;color:#8fa3b4;">Manage your VIP client licenses, bind devices, assign Telegram IDs, and generate secure cryptographic keys.</div>
     </div>
     """)
 
@@ -2492,17 +1567,7 @@ def render_admin_key_generator() -> None:
         st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
         tbl_data = []
         for c in clients:
-            mob_b = bool(c.get("bound_mobile_id"))
-            pc_b = bool(c.get("bound_pc_id"))
-            if mob_b and pc_b:
-                b_status = "📱 Mobile + 💻 PC"
-            elif mob_b:
-                b_status = "📱 Mobile Only"
-            elif pc_b:
-                b_status = "💻 PC Only"
-            else:
-                b_status = "⚪ Unbound (0/2)"
-                
+            b_status = "🔒 Locked to Device" if c.get("bound_device_id") else "⚪ Unbound"
             tbl_data.append({
                 "Client Name": c.get("client_name"),
                 "License Key": c.get("key"),
@@ -2510,7 +1575,7 @@ def render_admin_key_generator() -> None:
                 "Plan": c.get("duration"),
                 "Expires": c.get("expires_at"),
                 "Status": c.get("current_status"),
-                "Registered Devices": b_status,
+                "Device Lock": b_status,
             })
         st.dataframe(pd.DataFrame(tbl_data), use_container_width=True, hide_index=True)
         
@@ -2542,11 +1607,10 @@ def render_admin_key_generator() -> None:
             if st.button("🔄 Reset Lock", use_container_width=True):
                 for c in clients:
                     if c.get("key") == key_selected:
-                        c["bound_mobile_id"] = ""
-                        c["bound_pc_id"] = ""
+                        c["bound_device_id"] = ""
                         c["bound_at"] = ""
                 save_vip_registry(clients)
-                st.success(f"Device lock reset (0/2 devices bound)!")
+                st.success(f"Device lock reset!")
                 time.sleep(0.4)
                 st.rerun()
         with act_col3:
