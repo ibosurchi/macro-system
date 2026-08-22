@@ -1718,52 +1718,66 @@ CATALYST_PRECURSOR_MAP = {
     },
 }
 
-def get_upcoming_catalyst_events() -> list[dict]:
-    """Generates real live economic releases with precise dynamic date countdowns."""
-    now = get_current_time()
+SUPPORTED_TIMEZONES = {
+    "🇮🇶 Kurdistan & Iraq (UTC+3)": {"offset": 3, "label": "KRD / UTC+3"},
+    "🇬🇧 London / UK (UTC+0 / GMT)": {"offset": 0, "label": "London / GMT"},
+    "🇪🇺 Frankfurt / Paris / Berlin (UTC+1 / CET)": {"offset": 1, "label": "Berlin / CET"},
+    "🇦🇪 Dubai / Gulf (UTC+4 / GST)": {"offset": 4, "label": "Dubai / GST"},
+    "🇺🇸 New York / US East (UTC-5 / EST)": {"offset": -5, "label": "New York / EST"},
+    "🇯🇵 Tokyo / Japan (UTC+9 / JST)": {"offset": 9, "label": "Tokyo / JST"},
+    "🌐 Universal UTC / GMT": {"offset": 0, "label": "UTC"},
+}
+
+def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD / UTC+3") -> list[dict]:
+    """Generates real live economic releases adapted dynamically to the user's local timezone."""
+    utc_now = datetime.utcnow()
+    user_now = utc_now + timedelta(hours=tz_offset)
     events = []
     
-    # Precise Calendar Schedule with exact target release datetimes
+    # Target release datetimes in canonical UTC
     calendar_template = [
         # Monday Releases
-        {"code": "NZD_RETAIL", "target_year": 2026, "target_month": 8, "target_day": 24, "target_hour": 1, "target_min": 45, "forecast_str": "0.3%", "prev_str": "1.0%", "consensus_bias": "Core Consumption Deceleration"},
-        {"code": "NZD_RETAIL_HEADLINE", "target_year": 2026, "target_month": 8, "target_day": 24, "target_hour": 1, "target_min": 45, "forecast_str": "0.1%", "prev_str": "0.9%", "consensus_bias": "Headline Spending Slowdown"},
-        {"code": "CAD_PROFITS", "target_year": 2026, "target_month": 8, "target_day": 24, "target_hour": 15, "target_min": 30, "forecast_str": "—", "prev_str": "-2.0%", "consensus_bias": "Corporate Profitability Recovery"},
-        {"code": "USD_BESSENT", "target_year": 2026, "target_month": 8, "target_day": 24, "target_hour": 18, "target_min": 0, "forecast_str": "Speech", "prev_str": "—", "consensus_bias": "US Fiscal & Tariff Rhetoric"},
+        {"code": "NZD_RETAIL", "utc_year": 2026, "utc_month": 8, "utc_day": 23, "utc_hour": 22, "utc_min": 45, "forecast_str": "0.3%", "prev_str": "1.0%", "consensus_bias": "Core Consumption Deceleration"},
+        {"code": "NZD_RETAIL_HEADLINE", "utc_year": 2026, "utc_month": 8, "utc_day": 23, "utc_hour": 22, "utc_min": 45, "forecast_str": "0.1%", "prev_str": "0.9%", "consensus_bias": "Headline Spending Slowdown"},
+        {"code": "CAD_PROFITS", "utc_year": 2026, "utc_month": 8, "utc_day": 24, "utc_hour": 12, "utc_min": 30, "forecast_str": "—", "prev_str": "-2.0%", "consensus_bias": "Corporate Profitability Recovery"},
+        {"code": "USD_BESSENT", "utc_year": 2026, "utc_month": 8, "utc_day": 24, "utc_hour": 15, "utc_min": 0, "forecast_str": "Speech", "prev_str": "—", "consensus_bias": "US Fiscal & Tariff Rhetoric"},
 
         # Wednesday Releases
-        {"code": "AUD_CPI", "target_year": 2026, "target_month": 8, "target_day": 26, "target_hour": 4, "target_min": 30, "forecast_str": "3.3%", "prev_str": "3.8%", "consensus_bias": "Australia CPI Cooling Track"},
-        {"code": "US_DURABLE", "target_year": 2026, "target_month": 8, "target_day": 26, "target_hour": 15, "target_min": 30, "forecast_str": "0.5%", "prev_str": "0.7%", "consensus_bias": "Positive Core Capex Orders"},
-        {"code": "US_OIL_EIA", "target_year": 2026, "target_month": 8, "target_day": 26, "target_hour": 17, "target_min": 30, "forecast_str": "—", "prev_str": "4.4M", "consensus_bias": "Weekly Inventory Balance"},
+        {"code": "AUD_CPI", "utc_year": 2026, "utc_month": 8, "utc_day": 26, "utc_hour": 1, "utc_min": 30, "forecast_str": "3.3%", "prev_str": "3.8%", "consensus_bias": "Australia CPI Cooling Track"},
+        {"code": "US_DURABLE", "utc_year": 2026, "utc_month": 8, "utc_day": 26, "utc_hour": 12, "utc_min": 30, "forecast_str": "0.5%", "prev_str": "0.7%", "consensus_bias": "Positive Core Capex Orders"},
+        {"code": "US_OIL_EIA", "utc_year": 2026, "utc_month": 8, "utc_day": 26, "utc_hour": 14, "utc_min": 30, "forecast_str": "—", "prev_str": "4.4M", "consensus_bias": "Weekly Inventory Balance"},
 
         # Thursday Releases
-        {"code": "US_GDP", "target_year": 2026, "target_month": 8, "target_day": 27, "target_hour": 15, "target_min": 30, "forecast_str": "1.5%", "prev_str": "1.5%", "consensus_bias": "Moderate 1.5% GDP Growth Baseline"},
+        {"code": "US_GDP", "utc_year": 2026, "utc_month": 8, "utc_day": 27, "utc_hour": 12, "utc_min": 30, "forecast_str": "1.5%", "prev_str": "1.5%", "consensus_bias": "Moderate 1.5% GDP Growth Baseline"},
 
         # Friday Releases
-        {"code": "US_PCE", "target_year": 2026, "target_month": 8, "target_day": 28, "target_hour": 15, "target_min": 30, "forecast_str": "0.2%", "prev_str": "0.1%", "consensus_bias": "Core PCE Acceleration (+0.2% MoM)"},
-        {"code": "US_SPENDING", "target_year": 2026, "target_month": 8, "target_day": 28, "target_hour": 15, "target_min": 30, "forecast_str": "0.1%", "prev_str": "0.3%", "consensus_bias": "Moderate Spending Velocity"},
+        {"code": "US_PCE", "utc_year": 2026, "utc_month": 8, "utc_day": 28, "utc_hour": 12, "utc_min": 30, "forecast_str": "0.2%", "prev_str": "0.1%", "consensus_bias": "Core PCE Acceleration (+0.2% MoM)"},
+        {"code": "US_SPENDING", "utc_year": 2026, "utc_month": 8, "utc_day": 28, "utc_hour": 12, "utc_min": 30, "forecast_str": "0.1%", "prev_str": "0.3%", "consensus_bias": "Moderate Spending Velocity"},
     ]
 
     for item in calendar_template:
         event_meta = CATALYST_PRECURSOR_MAP.get(item["code"], {})
         
-        # Build exact target datetime
-        event_dt = datetime(
-            item["target_year"], item["target_month"], item["target_day"],
-            item["target_hour"], item["target_min"]
+        # Build canonical UTC datetime
+        event_utc = datetime(
+            item["utc_year"], item["utc_month"], item["utc_day"],
+            item["utc_hour"], item["utc_min"]
         )
         
-        # If the target date has passed by more than 1 day, roll forward to next monthly cycle
-        while event_dt < now - timedelta(days=1):
-            event_dt += timedelta(days=28)
-            if event_dt.weekday() == 5:
-                event_dt += timedelta(days=2)
-            elif event_dt.weekday() == 6:
-                event_dt += timedelta(days=1)
+        # Roll forward if passed by more than 1 day
+        while event_utc < utc_now - timedelta(days=1):
+            event_utc += timedelta(days=28)
+            if event_utc.weekday() == 5:
+                event_utc += timedelta(days=2)
+            elif event_utc.weekday() == 6:
+                event_utc += timedelta(days=1)
 
-        diff = event_dt - now
+        # Convert to user local timezone
+        event_local = event_utc + timedelta(hours=tz_offset)
+
+        diff = event_local - user_now
         total_seconds = diff.total_seconds()
-        days_away = (event_dt.date() - now.date()).days
+        days_away = (event_local.date() - user_now.date()).days
         
         if total_seconds < -43200:
             countdown_label = "✅ Released"
@@ -1775,7 +1789,7 @@ def get_upcoming_catalyst_events() -> list[dict]:
         elif total_seconds < 86400:
             hrs = int(total_seconds // 3600)
             mins = int((total_seconds % 3600) // 60)
-            if event_dt.date() == now.date():
+            if event_local.date() == user_now.date():
                 countdown_label = f"🔥 TODAY (In {hrs}h {mins}m)"
             else:
                 countdown_label = f"⚡ Tomorrow (In {hrs}h)"
@@ -1784,7 +1798,7 @@ def get_upcoming_catalyst_events() -> list[dict]:
         else:
             countdown_label = f"⚡ In {days_away} Days"
         
-        time_str_formatted = event_dt.strftime("%H:%M")
+        time_str_formatted = event_local.strftime("%H:%M")
         if item["code"] == "USD_BESSENT":
             time_str_formatted = "Tentative"
 
@@ -1793,9 +1807,9 @@ def get_upcoming_catalyst_events() -> list[dict]:
             "title": event_meta.get("title", item["code"]),
             "currency": event_meta.get("currency", "USD"),
             "impact": event_meta.get("impact", "High"),
-            "datetime_obj": event_dt,
-            "date_str": event_dt.strftime("%A, %b %d"),
-            "time_str": f"{time_str_formatted} (KRD / UTC+3)",
+            "datetime_obj": event_local,
+            "date_str": event_local.strftime("%A, %b %d"),
+            "time_str": f"{time_str_formatted} ({tz_label})",
             "countdown": countdown_label,
             "days_away": days_away,
             "forecast_str": item["forecast_str"],
@@ -1917,8 +1931,26 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list) -> dict:
 
 def page_catalyst_forecaster(fred_key: str, channel_name: str) -> None:
     """Renders the Institutional Predictive Macro Catalyst Forecaster & Nowcast Desk."""
+    if "selected_tz" not in st.session_state:
+        st.session_state["selected_tz"] = "🇮🇶 Kurdistan & Iraq (UTC+3)"
+
+    tz_col1, tz_col2 = st.columns([3, 1.2])
+    with tz_col1:
+        st.markdown("<div style='font-size:11px;font-weight:800;color:#8fa3b4;text-transform:uppercase;margin-bottom:2px;'>📅 Institutional Macroeconomic Catalyst Forecaster</div>", unsafe_allow_html=True)
+    with tz_col2:
+        selected_tz_name = st.selectbox(
+            "🌐 Timezone:",
+            list(SUPPORTED_TIMEZONES.keys()),
+            index=list(SUPPORTED_TIMEZONES.keys()).index(st.session_state["selected_tz"]),
+            key="forecaster_tz_select",
+            label_visibility="collapsed"
+        )
+        st.session_state["selected_tz"] = selected_tz_name
+
+    tz_info = SUPPORTED_TIMEZONES.get(st.session_state["selected_tz"], {"offset": 3, "label": "KRD / UTC+3"})
+
     with st.spinner("Synthesizing upcoming economic calendar, precursor FRED pipelines & correlated news..."):
-        events = get_upcoming_catalyst_events()
+        events = get_upcoming_catalyst_events(tz_info["offset"], tz_info["label"])
         all_news = fetch_all_instant_news(channel_name)
 
     # Top Header Banner
