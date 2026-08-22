@@ -281,6 +281,7 @@ def send_telegram_alert(message: str):
 
 CURRENCY_SERIES = {
     "USD": {
+        "area": "US",
         "flag": "🇺🇸", "name": "US Dollar",
         "indicators": {
             "CPI":           {"series": "CPIAUCSL",  "cat": "inflation",  "w": 1.5, "impact": "high"},
@@ -298,6 +299,7 @@ CURRENCY_SERIES = {
         "key_indicators": ["Core CPI", "Core PCE", "NFP", "Interest Rate"],
     },
     "EUR": {
+        "area": "EU",
         "flag": "🇪🇺", "name": "Euro Area",
         "indicators": {
             "CPI":           {"series": "CP0000EZ19M086NEST",   "cat": "inflation",  "w": 1.8, "impact": "high"},
@@ -310,6 +312,7 @@ CURRENCY_SERIES = {
         "key_indicators": ["CPI", "Core CPI", "Unemployment", "Interest Rate"],
     },
     "GBP": {
+        "area": "GB",
         "flag": "🇬🇧", "name": "British Pound",
         "indicators": {
             "CPI":           {"series": "GBRCPIALLMINMEI",  "cat": "inflation",  "w": 1.8, "impact": "high"},
@@ -321,6 +324,7 @@ CURRENCY_SERIES = {
         "key_indicators": ["CPI", "Core CPI", "Unemployment", "Interest Rate"],
     },
     "CAD": {
+        "area": "CA",
         "flag": "🇨🇦", "name": "Canadian Dollar",
         "indicators": {
             "CPI":           {"series": "CANCPIALLMINMEI",  "cat": "inflation",  "w": 1.8, "impact": "high"},
@@ -332,6 +336,7 @@ CURRENCY_SERIES = {
         "key_indicators": ["CPI", "Employment", "Unemployment", "Interest Rate"],
     },
     "JPY": {
+        "area": "JP",
         "flag": "🇯🇵", "name": "Japanese Yen",
         "indicators": {
             "CPI":           {"series": "JPNCPIALLMINMEI",  "cat": "inflation",  "w": 1.8, "impact": "high"},
@@ -343,6 +348,7 @@ CURRENCY_SERIES = {
         "key_indicators": ["CPI", "Core CPI", "Production", "Interest Rate"],
     },
     "CHF": {
+        "area": "CH",
         "flag": "🇨🇭", "name": "Swiss Franc",
         "indicators": {
             "CPI":           {"series": "CHECPIALLMINMEI", "cat": "inflation",  "w": 1.8, "impact": "high"},
@@ -489,6 +495,66 @@ div[data-baseweb="input"], div[data-baseweb="input"] > div, input.stTextInput {
     border: 1px solid rgba(0,245,255,0.22) !important;
     border-radius: 11px !important;
     color: #ffffff !important;
+}
+
+/* ── CURRENCY AREA LABELS / TERMINAL SELECTOR ── */
+div[data-testid="stVerticalBlock"]:has(.currency-selector-marker) {
+    margin-top: 2px;
+    margin-bottom: 2px;
+}
+div[data-testid="stVerticalBlock"]:has(.currency-selector-marker) div[data-testid="stButton"] > button {
+    min-height: 50px !important;
+    height: 50px !important;
+    padding: 7px 10px !important;
+    border-radius: 12px !important;
+    border: 1px solid rgba(0,245,255,.18) !important;
+    background:
+        linear-gradient(180deg, rgba(7,38,43,.88), rgba(4,25,30,.92)) !important;
+    color: #dcecf2 !important;
+    font-size: 14px !important;
+    font-weight: 650 !important;
+    letter-spacing: .15px !important;
+    box-shadow:
+        inset 0 1px 0 rgba(255,255,255,.025),
+        0 8px 22px rgba(0,0,0,.18) !important;
+    transition: all .18s ease !important;
+}
+div[data-testid="stVerticalBlock"]:has(.currency-selector-marker) div[data-testid="stButton"] > button:hover {
+    transform: translateY(-1px) !important;
+    border-color: rgba(0,245,255,.48) !important;
+    background:
+        linear-gradient(180deg, rgba(8,53,59,.96), rgba(4,31,37,.96)) !important;
+    color: #ffffff !important;
+    box-shadow:
+        inset 0 0 0 1px rgba(0,245,255,.06),
+        0 10px 26px rgba(0,0,0,.28),
+        0 0 20px rgba(0,245,255,.08) !important;
+}
+div[data-testid="stVerticalBlock"]:has(.currency-selector-marker) div[data-testid="stButton"] > button[kind="primary"] {
+    border-color: rgba(0,245,255,.58) !important;
+    background:
+        linear-gradient(180deg, rgba(0,245,255,.16), rgba(0,255,163,.07)) !important;
+    color: #f3fdff !important;
+    box-shadow:
+        inset 0 0 0 1px rgba(0,245,255,.06),
+        0 0 22px rgba(0,245,255,.10) !important;
+}
+div[data-testid="stVerticalBlock"]:has(.currency-selector-marker) div[data-testid="stButton"] > button[kind="primary"]:hover {
+    border-color: rgba(0,245,255,.78) !important;
+    box-shadow:
+        inset 0 0 0 1px rgba(0,245,255,.08),
+        0 0 28px rgba(0,245,255,.16) !important;
+}
+div[data-testid="stVerticalBlock"]:has(.currency-selector-marker) div[data-testid="stButton"] > button p {
+    margin: 0 !important;
+    line-height: 1 !important;
+}
+@media (max-width: 900px) {
+    div[data-testid="stVerticalBlock"]:has(.currency-selector-marker) div[data-testid="stButton"] > button {
+        min-height: 46px !important;
+        height: 46px !important;
+        font-size: 12px !important;
+    }
 }
 
 .badge{display:inline-block;padding:5px 12px;border-radius:999px;font-size:10px;font-weight:850;letter-spacing:.5px;text-transform:uppercase;}
@@ -1314,22 +1380,28 @@ def page_dashboard(fred_key: str, channel_name: str, auth_user: dict | None = No
     if "selected_currency" not in st.session_state:
         st.session_state["selected_currency"] = "USD"
 
-    # Currency Tab Buttons Row (Side-by-side responsive buttons)
-    curr_keys = list(CURRENCY_SERIES.keys())
-    curr_cols = st.columns(len(curr_keys))
-    for col, c_code in zip(curr_cols, curr_keys):
-        c_meta = CURRENCY_SERIES[c_code]
-        c_label = f"{c_meta['flag']} {c_code}"
-        with col:
+    # Currency Area Labels — institutional selector row
+    # Native Streamlit buttons preserve session-state/rerun behavior.
+    with st.container():
+        render_html('<div class="currency-selector-marker" aria-hidden="true"></div>')
+        curr_keys = list(CURRENCY_SERIES.keys())
+        curr_cols = st.columns(len(curr_keys), gap="small")
+        for col, c_code in zip(curr_cols, curr_keys):
+            c_meta = CURRENCY_SERIES[c_code]
             is_active = (st.session_state["selected_currency"] == c_code)
-            if st.button(
-                c_label,
-                key=f"curr_btn_{c_code}",
-                use_container_width=True,
-                type="primary" if is_active else "secondary"
-            ):
-                st.session_state["selected_currency"] = c_code
-                st.rerun()
+            area_label = c_meta.get("area", c_code)
+            display_name = c_meta.get("name", c_code)
+            c_label = f"{area_label}  {c_code}"
+            with col:
+                if st.button(
+                    c_label,
+                    key=f"curr_btn_{c_code}",
+                    use_container_width=True,
+                    type="primary" if is_active else "secondary",
+                    help=f"{display_name} — select {c_code} macro desk"
+                ):
+                    st.session_state["selected_currency"] = c_code
+                    st.rerun()
 
     currency = st.session_state["selected_currency"]
     st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
