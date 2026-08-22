@@ -1378,48 +1378,39 @@ def page_dashboard(fred_key: str, channel_name: str, auth_user: dict | None = No
     if "selected_currency" not in st.session_state:
         st.session_state["selected_currency"] = "USD"
 
-    # Single Primary Currency Dropdown Selector (Full Width)
+    # Single Primary Currency Dropdown Selector (Full Width & Auto-Closing)
     curr_keys = ["USD", "EUR", "GBP", "CAD", "JPY", "CHF"]
     currency = st.session_state["selected_currency"]
     c_meta = CURRENCY_SERIES.get(currency, {"flag": "💵", "name": "US Dollar"})
-    btn_label = f"{c_meta['flag']}  {currency} — {c_meta['name']}  ▾"
+    
+    is_open = st.session_state.get("currency_menu_open", False)
+    btn_label = f"{c_meta['flag']}  {currency} — {c_meta['name']}  {'▲' if is_open else '▾'}"
 
-    has_popover = hasattr(st, "popover")
+    if st.button(btn_label, key="single_curr_btn", use_container_width=True, type="primary"):
+        st.session_state["currency_menu_open"] = not is_open
+        st.rerun()
 
-    if has_popover:
-        with st.popover(btn_label, use_container_width=True):
-            st.markdown("<div style='font-size:11px;font-weight:900;color:#00f5ff;text-transform:uppercase;margin-bottom:12px;letter-spacing:1.5px;border-bottom:1px solid rgba(0,245,255,0.2);padding-bottom:6px;'>Select Target Macro Currency</div>", unsafe_allow_html=True)
-            p_cols = st.columns(3)
-            for idx, opt_code in enumerate(curr_keys):
-                target_col = p_cols[idx % 3]
-                opt_meta = CURRENCY_SERIES.get(opt_code, {"flag": "💵", "name": opt_code})
-                opt_is_sel = (currency == opt_code)
-                btn_txt = f"{opt_meta['flag']}  {opt_code} — {opt_meta['name']}"
-                with target_col:
-                    if st.button(btn_txt, key=f"single_pop_{opt_code}", use_container_width=True, type="primary" if opt_is_sel else "secondary"):
-                        st.session_state["selected_currency"] = opt_code
-                        st.rerun()
-    else:
-        is_open = st.session_state.get("open_currency_dropdown", False)
-        if st.button(btn_label, key="single_curr_btn", use_container_width=True, type="primary"):
-            st.session_state["open_currency_dropdown"] = not is_open
-            st.rerun()
+    if is_open:
+        st.markdown("""
+        <div style="background:linear-gradient(180deg,rgba(11,20,32,0.98),rgba(6,12,18,0.98));border:1px solid rgba(0,245,255,0.35);border-radius:16px 16px 0 0;padding:12px 16px 6px;margin-top:6px;box-shadow:0 20px 60px rgba(0,0,0,0.8),0 0 30px rgba(0,245,255,0.16);backdrop-filter:blur(24px);">
+          <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(0,245,255,0.2);padding-bottom:6px;">
+            <div style="font-size:11px;font-weight:900;color:#00f5ff;text-transform:uppercase;letter-spacing:1.5px;">Select Target Macro Currency</div>
+            <div style="font-size:10px;color:#8fa3b4;">Click any currency to select &amp; auto-close</div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
         
-        if is_open:
-            with st.container():
-                st.markdown("<div style='background:rgba(8,16,25,0.98);border:1px solid rgba(0,245,255,0.3);border-radius:14px;padding:14px;margin-top:6px;box-shadow:0 12px 30px rgba(0,0,0,0.6);'>", unsafe_allow_html=True)
-                p_cols = st.columns(3)
-                for idx, opt_code in enumerate(curr_keys):
-                    target_col = p_cols[idx % 3]
-                    opt_meta = CURRENCY_SERIES.get(opt_code, {"flag": "💵", "name": opt_code})
-                    opt_is_sel = (currency == opt_code)
-                    btn_txt = f"{opt_meta['flag']}  {opt_code} — {opt_meta['name']}"
-                    with target_col:
-                        if st.button(btn_txt, key=f"single_fall_{opt_code}", use_container_width=True, type="primary" if opt_is_sel else "secondary"):
-                            st.session_state["selected_currency"] = opt_code
-                            st.session_state["open_currency_dropdown"] = False
-                            st.rerun()
-                st.markdown("</div>", unsafe_allow_html=True)
+        p_cols = st.columns(3)
+        for idx, opt_code in enumerate(curr_keys):
+            target_col = p_cols[idx % 3]
+            opt_meta = CURRENCY_SERIES.get(opt_code, {"flag": "💵", "name": opt_code})
+            opt_is_sel = (currency == opt_code)
+            btn_txt = f"{opt_meta['flag']}  {opt_code} — {opt_meta['name']}"
+            with target_col:
+                if st.button(btn_txt, key=f"curr_opt_{opt_code}", use_container_width=True, type="primary" if opt_is_sel else "secondary"):
+                    st.session_state["selected_currency"] = opt_code
+                    st.session_state["currency_menu_open"] = False
+                    st.rerun()
 
     currency = st.session_state["selected_currency"]
     st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
