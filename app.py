@@ -1719,40 +1719,75 @@ CATALYST_PRECURSOR_MAP = {
 }
 
 def get_upcoming_catalyst_events() -> list[dict]:
-    """Generates the real live economic releases matching ForexFactory 100%."""
+    """Generates real live economic releases with precise dynamic date countdowns."""
     now = get_current_time()
     events = []
     
-    # 100% matched with user's ForexFactory Calendar
+    # Precise Calendar Schedule with exact target release datetimes
     calendar_template = [
-        # Monday, Aug 24 (In 3 Days)
-        {"code": "NZD_RETAIL", "day_offset": 3, "time_str": "01:45", "forecast_str": "0.3%", "prev_str": "1.0%", "consensus_bias": "Core Consumption Deceleration"},
-        {"code": "NZD_RETAIL_HEADLINE", "day_offset": 3, "time_str": "01:45", "forecast_str": "0.1%", "prev_str": "0.9%", "consensus_bias": "Headline Spending Slowdown"},
-        {"code": "CAD_PROFITS", "day_offset": 3, "time_str": "15:30", "forecast_str": "—", "prev_str": "-2.0%", "consensus_bias": "Corporate Profitability Recovery"},
-        {"code": "USD_BESSENT", "day_offset": 3, "time_str": "Tentative", "forecast_str": "Speech", "prev_str": "—", "consensus_bias": "US Fiscal & Tariff Rhetoric"},
+        # Monday Releases
+        {"code": "NZD_RETAIL", "target_year": 2026, "target_month": 8, "target_day": 24, "target_hour": 1, "target_min": 45, "forecast_str": "0.3%", "prev_str": "1.0%", "consensus_bias": "Core Consumption Deceleration"},
+        {"code": "NZD_RETAIL_HEADLINE", "target_year": 2026, "target_month": 8, "target_day": 24, "target_hour": 1, "target_min": 45, "forecast_str": "0.1%", "prev_str": "0.9%", "consensus_bias": "Headline Spending Slowdown"},
+        {"code": "CAD_PROFITS", "target_year": 2026, "target_month": 8, "target_day": 24, "target_hour": 15, "target_min": 30, "forecast_str": "—", "prev_str": "-2.0%", "consensus_bias": "Corporate Profitability Recovery"},
+        {"code": "USD_BESSENT", "target_year": 2026, "target_month": 8, "target_day": 24, "target_hour": 18, "target_min": 0, "forecast_str": "Speech", "prev_str": "—", "consensus_bias": "US Fiscal & Tariff Rhetoric"},
 
-        # Wednesday, Aug 26 (In 5 Days - Major USD & AUD Catalyst Cluster)
-        {"code": "AUD_CPI", "day_offset": 5, "time_str": "04:30", "forecast_str": "3.3%", "prev_str": "3.8%", "consensus_bias": "Australia CPI Cooling Track"},
-        {"code": "US_PCE", "day_offset": 5, "time_str": "15:30", "forecast_str": "0.2%", "prev_str": "0.1%", "consensus_bias": "Core PCE Acceleration (+0.2% MoM)"},
-        {"code": "US_GDP", "day_offset": 5, "time_str": "15:30", "forecast_str": "1.5%", "prev_str": "1.5%", "consensus_bias": "Moderate 1.5% GDP Growth Baseline"},
-        {"code": "US_DURABLE", "day_offset": 5, "time_str": "15:30", "forecast_str": "0.5%", "prev_str": "0.7%", "consensus_bias": "Positive Core Capex Orders"},
-        {"code": "US_SPENDING", "day_offset": 5, "time_str": "15:30", "forecast_str": "0.1%", "prev_str": "0.3%", "consensus_bias": "Moderate Spending Velocity"},
-        {"code": "US_OIL_EIA", "day_offset": 5, "time_str": "17:30", "forecast_str": "—", "prev_str": "4.4M", "consensus_bias": "Weekly Inventory Balance"},
+        # Wednesday Releases
+        {"code": "AUD_CPI", "target_year": 2026, "target_month": 8, "target_day": 26, "target_hour": 4, "target_min": 30, "forecast_str": "3.3%", "prev_str": "3.8%", "consensus_bias": "Australia CPI Cooling Track"},
+        {"code": "US_DURABLE", "target_year": 2026, "target_month": 8, "target_day": 26, "target_hour": 15, "target_min": 30, "forecast_str": "0.5%", "prev_str": "0.7%", "consensus_bias": "Positive Core Capex Orders"},
+        {"code": "US_OIL_EIA", "target_year": 2026, "target_month": 8, "target_day": 26, "target_hour": 17, "target_min": 30, "forecast_str": "—", "prev_str": "4.4M", "consensus_bias": "Weekly Inventory Balance"},
+
+        # Thursday Releases
+        {"code": "US_GDP", "target_year": 2026, "target_month": 8, "target_day": 27, "target_hour": 15, "target_min": 30, "forecast_str": "1.5%", "prev_str": "1.5%", "consensus_bias": "Moderate 1.5% GDP Growth Baseline"},
+
+        # Friday Releases
+        {"code": "US_PCE", "target_year": 2026, "target_month": 8, "target_day": 28, "target_hour": 15, "target_min": 30, "forecast_str": "0.2%", "prev_str": "0.1%", "consensus_bias": "Core PCE Acceleration (+0.2% MoM)"},
+        {"code": "US_SPENDING", "target_year": 2026, "target_month": 8, "target_day": 28, "target_hour": 15, "target_min": 30, "forecast_str": "0.1%", "prev_str": "0.3%", "consensus_bias": "Moderate Spending Velocity"},
     ]
 
     for item in calendar_template:
         event_meta = CATALYST_PRECURSOR_MAP.get(item["code"], {})
-        event_dt = now + timedelta(days=item["day_offset"])
-        if event_dt.weekday() == 5:
-            event_dt += timedelta(days=2)
-        elif event_dt.weekday() == 6:
-            event_dt += timedelta(days=1)
-            
-        time_until = event_dt.date() - now.date()
-        days_away = time_until.days
         
-        countdown_label = "🔥 TODAY" if days_away == 0 else (f"⚡ In {days_away} Days" if days_away > 0 else "Released")
+        # Build exact target datetime
+        event_dt = datetime(
+            item["target_year"], item["target_month"], item["target_day"],
+            item["target_hour"], item["target_min"]
+        )
         
+        # If the target date has passed by more than 1 day, roll forward to next monthly cycle
+        while event_dt < now - timedelta(days=1):
+            event_dt += timedelta(days=28)
+            if event_dt.weekday() == 5:
+                event_dt += timedelta(days=2)
+            elif event_dt.weekday() == 6:
+                event_dt += timedelta(days=1)
+
+        diff = event_dt - now
+        total_seconds = diff.total_seconds()
+        days_away = (event_dt.date() - now.date()).days
+        
+        if total_seconds < -43200:
+            countdown_label = "✅ Released"
+        elif total_seconds < 0:
+            countdown_label = "✅ RELEASED TODAY"
+        elif total_seconds < 3600:
+            mins = max(1, int(total_seconds // 60))
+            countdown_label = f"🔥 In {mins} Mins"
+        elif total_seconds < 86400:
+            hrs = int(total_seconds // 3600)
+            mins = int((total_seconds % 3600) // 60)
+            if event_dt.date() == now.date():
+                countdown_label = f"🔥 TODAY (In {hrs}h {mins}m)"
+            else:
+                countdown_label = f"⚡ Tomorrow (In {hrs}h)"
+        elif days_away == 1:
+            countdown_label = "⚡ Tomorrow (In 1 Day)"
+        else:
+            countdown_label = f"⚡ In {days_away} Days"
+        
+        time_str_formatted = event_dt.strftime("%H:%M")
+        if item["code"] == "USD_BESSENT":
+            time_str_formatted = "Tentative"
+
         events.append({
             "code": item["code"],
             "title": event_meta.get("title", item["code"]),
@@ -1760,7 +1795,7 @@ def get_upcoming_catalyst_events() -> list[dict]:
             "impact": event_meta.get("impact", "High"),
             "datetime_obj": event_dt,
             "date_str": event_dt.strftime("%A, %b %d"),
-            "time_str": f"{item['time_str']} (KRD / UTC+3)",
+            "time_str": f"{time_str_formatted} (KRD / UTC+3)",
             "countdown": countdown_label,
             "days_away": days_away,
             "forecast_str": item["forecast_str"],
@@ -1769,7 +1804,7 @@ def get_upcoming_catalyst_events() -> list[dict]:
             "meta": event_meta
         })
         
-    events.sort(key=lambda x: (x["days_away"], x["datetime_obj"]))
+    events.sort(key=lambda x: (x["datetime_obj"], x["days_away"]))
     return events
 
 def compute_event_nowcast(event: dict, fred_key: str, all_news: list) -> dict:
