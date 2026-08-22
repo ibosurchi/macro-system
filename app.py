@@ -281,7 +281,8 @@ def send_telegram_alert(message: str):
 
 CURRENCY_SERIES = {
     "USD": {
-        "flag": "💵", "name": "US Dollar",
+        "area": "US",
+        "flag": "🇺🇸", "name": "US Dollar",
         "indicators": {
             "CPI":           {"series": "CPIAUCSL",  "cat": "inflation",  "w": 1.5, "impact": "high"},
             "Core CPI":      {"series": "CPILFESL",  "cat": "inflation",  "w": 2.0, "impact": "high"},
@@ -298,7 +299,8 @@ CURRENCY_SERIES = {
         "key_indicators": ["Core CPI", "Core PCE", "NFP", "Interest Rate"],
     },
     "EUR": {
-        "flag": "💶", "name": "Euro Area",
+        "area": "EU",
+        "flag": "🇪🇺", "name": "Euro Area",
         "indicators": {
             "CPI":           {"series": "CP0000EZ19M086NEST",   "cat": "inflation",  "w": 1.8, "impact": "high"},
             "Core CPI":      {"series": "00XEFDEZ19M086NEST",   "cat": "inflation",  "w": 2.0, "impact": "high"},
@@ -310,7 +312,8 @@ CURRENCY_SERIES = {
         "key_indicators": ["CPI", "Core CPI", "Unemployment", "Interest Rate"],
     },
     "GBP": {
-        "flag": "💷", "name": "British Pound",
+        "area": "GB",
+        "flag": "🇬🇧", "name": "British Pound",
         "indicators": {
             "CPI":           {"series": "GBRCPIALLMINMEI",  "cat": "inflation",  "w": 1.8, "impact": "high"},
             "Core CPI":      {"series": "GBRCPICORMINMEI",  "cat": "inflation",  "w": 2.0, "impact": "high"},
@@ -321,7 +324,8 @@ CURRENCY_SERIES = {
         "key_indicators": ["CPI", "Core CPI", "Unemployment", "Interest Rate"],
     },
     "CAD": {
-        "flag": "🍁", "name": "Canadian Dollar",
+        "area": "CA",
+        "flag": "🇨🇦", "name": "Canadian Dollar",
         "indicators": {
             "CPI":           {"series": "CANCPIALLMINMEI",  "cat": "inflation",  "w": 1.8, "impact": "high"},
             "Core CPI":      {"series": "CANCPICORMINMEI",  "cat": "inflation",  "w": 2.0, "impact": "high"},
@@ -332,7 +336,8 @@ CURRENCY_SERIES = {
         "key_indicators": ["CPI", "Employment", "Unemployment", "Interest Rate"],
     },
     "JPY": {
-        "flag": "💴", "name": "Japanese Yen",
+        "area": "JP",
+        "flag": "🇯🇵", "name": "Japanese Yen",
         "indicators": {
             "CPI":           {"series": "JPNCPIALLMINMEI",  "cat": "inflation",  "w": 1.8, "impact": "high"},
             "Core CPI":      {"series": "JPNCPICORMINMEI",  "cat": "inflation",  "w": 2.0, "impact": "high"},
@@ -343,7 +348,8 @@ CURRENCY_SERIES = {
         "key_indicators": ["CPI", "Core CPI", "Production", "Interest Rate"],
     },
     "CHF": {
-        "flag": "🏔️", "name": "Swiss Franc",
+        "area": "CH",
+        "flag": "🇨🇭", "name": "Swiss Franc",
         "indicators": {
             "CPI":           {"series": "CHECPIALLMINMEI", "cat": "inflation",  "w": 1.8, "impact": "high"},
             "Unemployment":  {"series": "LRHUTTTTCHQ156S", "cat": "labor_neg",  "w": 1.5, "impact": "high"},
@@ -427,10 +433,8 @@ header[data-testid='stHeader']{display:none!important;background:transparent!imp
 
 div[data-testid='stMetric']{background:linear-gradient(180deg,rgba(14,25,35,.82),rgba(7,14,21,.78))!important;border:1px solid rgba(0,245,255,.12)!important;border-radius:15px!important;padding:15px!important;box-shadow:var(--shadow)!important;}
 div[data-testid='stMetric'] label{color:#879aa8!important;font-size:10px!important;font-weight:750!important;}
-button[kind='primary'],.stButton>button[kind='primary']{border-radius:11px!important;border:1px solid rgba(0,245,255,.35)!important;background:linear-gradient(135deg,rgba(0,245,255,.14),rgba(0,255,163,.08))!important;color:#e9fbff!important;font-weight:800!important;box-shadow:0 0 18px rgba(0,245,255,.12)!important;}
-button[kind='primary']:hover,.stButton>button[kind='primary']:hover{border-color:rgba(0,245,255,.65)!important;box-shadow:0 0 28px rgba(0,245,255,.24)!important;}
-button[kind='secondary'],.stButton>button[kind='secondary'],button[data-testid='baseButton-secondary']{border-radius:11px!important;border:1px solid rgba(0,245,255,.18)!important;background:linear-gradient(180deg,rgba(14,24,36,.85),rgba(7,14,22,.90))!important;color:#b8c7d3!important;font-weight:750!important;}
-button[kind='secondary']:hover,.stButton>button[kind='secondary']:hover,button[data-testid='baseButton-secondary']:hover{border-color:rgba(0,245,255,.45)!important;color:#00f5ff!important;background:linear-gradient(90deg,rgba(0,245,255,.12),rgba(0,255,163,.06))!important;}
+button[kind='primary'],.stButton>button{border-radius:11px!important;border:1px solid rgba(0,245,255,.24)!important;background:linear-gradient(135deg,rgba(0,245,255,.10),rgba(0,255,163,.06))!important;color:#e9fbff!important;font-weight:800!important;box-shadow:0 0 18px rgba(0,245,255,.06)!important;}
+button[kind='primary']:hover,.stButton>button:hover{border-color:rgba(0,245,255,.45)!important;box-shadow:0 0 26px rgba(0,245,255,.12)!important;}
 
 /* ── CUSTOM DARK GLASSMORPHISM SELECTBOX & DROPDOWN STYLING ── */
 div[data-baseweb="select"], div[data-baseweb="select"] > div {
@@ -493,66 +497,64 @@ div[data-baseweb="input"], div[data-baseweb="input"] > div, input.stTextInput {
     color: #ffffff !important;
 }
 
-/* ── CUSTOM DARK GLASSMORPHISM POPOVER & FULL-WIDTH CURRENCY DROPDOWN STYLING ── */
-div[data-testid="stPopover"] {
-    width: 100% !important;
+/* ── CURRENCY AREA LABELS / TERMINAL SELECTOR ── */
+div[data-testid="stVerticalBlock"]:has(.currency-selector-marker) {
+    margin-top: 2px;
+    margin-bottom: 2px;
 }
-
-div[data-testid="stPopover"] > button {
-    width: 100% !important;
+div[data-testid="stVerticalBlock"]:has(.currency-selector-marker) div[data-testid="stButton"] > button {
+    min-height: 50px !important;
+    height: 50px !important;
+    padding: 7px 10px !important;
     border-radius: 12px !important;
-    border: 1px solid rgba(0, 245, 255, 0.28) !important;
-    background: linear-gradient(180deg, rgba(14, 24, 36, 0.92), rgba(7, 14, 22, 0.95)) !important;
-    color: #e9fbff !important;
-    font-weight: 850 !important;
-    font-size: 13px !important;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35), 0 0 16px rgba(0, 245, 255, 0.08) !important;
-    padding: 10px 16px !important;
-    display: flex !important;
-    justify-content: center !important;
-    align-items: center !important;
-    gap: 8px !important;
-    letter-spacing: 0.5px !important;
+    border: 1px solid rgba(0,245,255,.18) !important;
+    background:
+        linear-gradient(180deg, rgba(7,38,43,.88), rgba(4,25,30,.92)) !important;
+    color: #dcecf2 !important;
+    font-size: 14px !important;
+    font-weight: 650 !important;
+    letter-spacing: .15px !important;
+    box-shadow:
+        inset 0 1px 0 rgba(255,255,255,.025),
+        0 8px 22px rgba(0,0,0,.18) !important;
+    transition: all .18s ease !important;
 }
-
-div[data-testid="stPopover"] > button:hover {
-    border-color: rgba(0, 245, 255, 0.65) !important;
-    box-shadow: 0 6px 28px rgba(0, 0, 0, 0.45), 0 0 24px rgba(0, 245, 255, 0.20) !important;
+div[data-testid="stVerticalBlock"]:has(.currency-selector-marker) div[data-testid="stButton"] > button:hover {
+    transform: translateY(-1px) !important;
+    border-color: rgba(0,245,255,.48) !important;
+    background:
+        linear-gradient(180deg, rgba(8,53,59,.96), rgba(4,31,37,.96)) !important;
+    color: #ffffff !important;
+    box-shadow:
+        inset 0 0 0 1px rgba(0,245,255,.06),
+        0 10px 26px rgba(0,0,0,.28),
+        0 0 20px rgba(0,245,255,.08) !important;
 }
-
-div[data-testid="stPopoverBody"] {
-    background: linear-gradient(180deg, rgba(11, 20, 32, 0.98), rgba(6, 12, 18, 0.98)) !important;
-    border: 1px solid rgba(0, 245, 255, 0.35) !important;
-    border-radius: 16px !important;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8), 0 0 30px rgba(0, 245, 255, 0.16) !important;
-    backdrop-filter: blur(24px) !important;
-    padding: 16px 18px !important;
-    width: 100% !important;
-    min-width: min(900px, 94vw) !important;
-    max-width: 98vw !important;
-    z-index: 999999 !important;
+div[data-testid="stVerticalBlock"]:has(.currency-selector-marker) div[data-testid="stButton"] > button[kind="primary"] {
+    border-color: rgba(0,245,255,.58) !important;
+    background:
+        linear-gradient(180deg, rgba(0,245,255,.16), rgba(0,255,163,.07)) !important;
+    color: #f3fdff !important;
+    box-shadow:
+        inset 0 0 0 1px rgba(0,245,255,.06),
+        0 0 22px rgba(0,245,255,.10) !important;
 }
-
-div[data-testid="stPopoverBody"] button {
-    background: linear-gradient(180deg, rgba(14, 24, 36, 0.85), rgba(7, 14, 22, 0.90)) !important;
-    border: 1px solid rgba(0, 245, 255, 0.18) !important;
-    border-radius: 10px !important;
-    color: #edf7ff !important;
-    font-weight: 750 !important;
-    font-size: 12px !important;
-    text-align: center !important;
-    padding: 12px 14px !important;
-    margin-bottom: 6px !important;
-    transition: all 0.15s ease !important;
-    width: 100% !important;
+div[data-testid="stVerticalBlock"]:has(.currency-selector-marker) div[data-testid="stButton"] > button[kind="primary"]:hover {
+    border-color: rgba(0,245,255,.78) !important;
+    box-shadow:
+        inset 0 0 0 1px rgba(0,245,255,.08),
+        0 0 28px rgba(0,245,255,.16) !important;
 }
-
-div[data-testid="stPopoverBody"] button:hover {
-    background: linear-gradient(90deg, rgba(0, 245, 255, 0.18), rgba(0, 255, 163, 0.10)) !important;
-    border-color: rgba(0, 245, 255, 0.55) !important;
-    color: #00f5ff !important;
-    box-shadow: 0 0 20px rgba(0, 245, 255, 0.18) !important;
-    transform: translateY(-2px) !important;
+div[data-testid="stVerticalBlock"]:has(.currency-selector-marker) div[data-testid="stButton"] > button p {
+    margin: 0 !important;
+    line-height: 1 !important;
+}
+@media (max-width: 900px) {
+    div[data-testid="stVerticalBlock"]:has(.currency-selector-marker) div[data-testid="stButton"] > button {
+        min-height: 46px !important;
+        height: 46px !important;
+        font-size: 12px !important;
+    }
 }
 
 .badge{display:inline-block;padding:5px 12px;border-radius:999px;font-size:10px;font-weight:850;letter-spacing:.5px;text-transform:uppercase;}
@@ -1264,7 +1266,7 @@ def render_top_header(auth_user: dict | None = None) -> None:
   </div>
   <div class="top-tickers">
     {user_badge}
-    <div class="t-pill"><span>💵 USD Index</span><span class="t-up">▲ Active</span></div>
+    <div class="t-pill"><span>🇺🇸 USD Index</span><span class="t-up">▲ Active</span></div>
     <div class="t-pill"><span>🥇 Gold XAU</span><span class="t-up">▲ Active</span></div>
     <div class="t-pill"><span>🛢️ WTI Crude</span><span class="t-dn">▼ Energy</span></div>
     <div class="t-pill"><span>🤖 GPT-4o-mini</span><span class="t-up">⚡ Live AI</span></div>
@@ -1378,38 +1380,27 @@ def page_dashboard(fred_key: str, channel_name: str, auth_user: dict | None = No
     if "selected_currency" not in st.session_state:
         st.session_state["selected_currency"] = "USD"
 
-    # Single Primary Currency Dropdown Selector (Full Width & Auto-Closing)
-    curr_keys = ["USD", "EUR", "GBP", "CAD", "JPY", "CHF"]
-    currency = st.session_state["selected_currency"]
-    c_meta = CURRENCY_SERIES.get(currency, {"flag": "💵", "name": "US Dollar"})
-    
-    is_open = st.session_state.get("currency_menu_open", False)
-    btn_label = f"{c_meta['flag']}  {currency} — {c_meta['name']}  {'▲' if is_open else '▾'}"
-
-    if st.button(btn_label, key="single_curr_btn", use_container_width=True, type="primary"):
-        st.session_state["currency_menu_open"] = not is_open
-        st.rerun()
-
-    if is_open:
-        st.markdown("""
-        <div style="background:linear-gradient(180deg,rgba(11,20,32,0.98),rgba(6,12,18,0.98));border:1px solid rgba(0,245,255,0.35);border-radius:16px 16px 0 0;padding:12px 16px 6px;margin-top:6px;box-shadow:0 20px 60px rgba(0,0,0,0.8),0 0 30px rgba(0,245,255,0.16);backdrop-filter:blur(24px);">
-          <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(0,245,255,0.2);padding-bottom:6px;">
-            <div style="font-size:11px;font-weight:900;color:#00f5ff;text-transform:uppercase;letter-spacing:1.5px;">Select Target Macro Currency</div>
-            <div style="font-size:10px;color:#8fa3b4;">Click any currency to select &amp; auto-close</div>
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        p_cols = st.columns(3)
-        for idx, opt_code in enumerate(curr_keys):
-            target_col = p_cols[idx % 3]
-            opt_meta = CURRENCY_SERIES.get(opt_code, {"flag": "💵", "name": opt_code})
-            opt_is_sel = (currency == opt_code)
-            btn_txt = f"{opt_meta['flag']}  {opt_code} — {opt_meta['name']}"
-            with target_col:
-                if st.button(btn_txt, key=f"curr_opt_{opt_code}", use_container_width=True, type="primary" if opt_is_sel else "secondary"):
-                    st.session_state["selected_currency"] = opt_code
-                    st.session_state["currency_menu_open"] = False
+    # Currency Area Labels — institutional selector row
+    # Native Streamlit buttons preserve session-state/rerun behavior.
+    with st.container():
+        render_html('<div class="currency-selector-marker" aria-hidden="true"></div>')
+        curr_keys = list(CURRENCY_SERIES.keys())
+        curr_cols = st.columns(len(curr_keys), gap="small")
+        for col, c_code in zip(curr_cols, curr_keys):
+            c_meta = CURRENCY_SERIES[c_code]
+            is_active = (st.session_state["selected_currency"] == c_code)
+            area_label = c_meta.get("area", c_code)
+            display_name = c_meta.get("name", c_code)
+            c_label = f"{area_label}  {c_code}"
+            with col:
+                if st.button(
+                    c_label,
+                    key=f"curr_btn_{c_code}",
+                    use_container_width=True,
+                    type="primary" if is_active else "secondary",
+                    help=f"{display_name} — select {c_code} macro desk"
+                ):
+                    st.session_state["selected_currency"] = c_code
                     st.rerun()
 
     currency = st.session_state["selected_currency"]
@@ -1882,7 +1873,7 @@ CATALYST_PRECURSOR_MAP = {
 }
 
 SUPPORTED_TIMEZONES = {
-    "🏛️ Kurdistan & Iraq (UTC+3)": {"offset": 3, "label": "KRD / UTC+3"},
+    "🇮🇶 Kurdistan & Iraq (UTC+3)": {"offset": 3, "label": "KRD / UTC+3"},
     "🇬🇧 London / UK (UTC+0 / GMT)": {"offset": 0, "label": "London / GMT"},
     "🇪🇺 Frankfurt / Paris / Berlin (UTC+1 / CET)": {"offset": 1, "label": "Berlin / CET"},
     "🇦🇪 Dubai / Gulf (UTC+4 / GST)": {"offset": 4, "label": "Dubai / GST"},
@@ -2094,8 +2085,8 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list) -> dict:
 
 def page_catalyst_forecaster(fred_key: str, channel_name: str) -> None:
     """Renders the Institutional Predictive Macro Catalyst Forecaster & Nowcast Desk."""
-    if "selected_tz" not in st.session_state or st.session_state["selected_tz"] not in SUPPORTED_TIMEZONES:
-        st.session_state["selected_tz"] = "🏛️ Kurdistan & Iraq (UTC+3)"
+    if "selected_tz" not in st.session_state:
+        st.session_state["selected_tz"] = "🇮🇶 Kurdistan & Iraq (UTC+3)"
 
     tz_col1, tz_col2 = st.columns([3, 1.2])
     with tz_col1:
