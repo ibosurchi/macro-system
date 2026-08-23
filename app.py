@@ -401,15 +401,10 @@ header[data-testid='stHeader']{display:none!important;background:transparent!imp
 .m-card:hover{transform:translateY(-3px);border-color:rgba(0,245,255,.30);box-shadow:0 22px 54px rgba(0,0,0,.46),0 0 26px rgba(0,245,255,.10);}
 .mc-hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;}.mc-ico{width:34px;height:34px;border-radius:10px;background:rgba(0,245,255,.07);border:1px solid rgba(0,245,255,.20);display:flex;align-items:center;justify-content:center;font-size:15px;box-shadow:0 0 18px rgba(0,245,255,.06);}.mc-cat{font-size:9px;font-weight:800;color:#8ea3b2;padding:4px 8px;border-radius:999px;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.05);}.mc-nm{font-size:12px;font-weight:700;color:#9eb0bc;margin:5px 0 2px;}
 
-.dt-wrap{border-radius:16px;height:310px!important;max-height:310px!important;overflow-y:scroll!important;overflow-x:scroll!important;scrollbar-width:thin!important;scrollbar-color:#00f5ff rgba(8,16,24,.8)!important;border:1px solid rgba(0,245,255,.25);-webkit-overflow-scrolling:touch;}
-.dt-wrap::-webkit-scrollbar{width:6px!important;height:6px!important;display:block!important;}
-.dt-wrap::-webkit-scrollbar-track{background:rgba(8,16,24,.8)!important;border-radius:4px;}
-.dt-wrap::-webkit-scrollbar-thumb{background:linear-gradient(180deg,#00f5ff,#00ffa3)!important;border-radius:4px;border:1px solid rgba(0,245,255,.5)!important;box-shadow:0 0 8px rgba(0,245,255,.6)!important;}
-.dt-wrap::-webkit-scrollbar-thumb:hover{background:#00f5ff!important;}
-
-.dt-tbl{width:100%;min-width:580px;border-collapse:collapse;font-size:11.5px;}
-.dt-tbl thead th{position:sticky;top:0;z-index:5;background:rgba(14,24,36,.98)!important;backdrop-filter:blur(8px);color:#8799a8;padding:9px 12px;font-weight:800;font-size:10px;letter-spacing:.45px;border-bottom:1px solid rgba(0,245,255,.20);white-space:nowrap;}
-.dt-tbl tbody td{padding:7px 12px;color:#edf6fb;border-bottom:1px solid rgba(255,255,255,.035);white-space:nowrap;}
+.dt-wrap{border-radius:16px;background:linear-gradient(180deg,rgba(15,24,34,.78),rgba(8,15,23,.74));border:1px solid rgba(150,210,225,.11);overflow-x:auto;-webkit-overflow-scrolling:touch;}
+.dt-tbl{width:100%;border-collapse:collapse;font-size:11.5px;}
+.dt-tbl thead th{background:rgba(14,24,36,.98)!important;color:#8799a8;padding:8px 10px;font-weight:800;font-size:10px;letter-spacing:.45px;border-bottom:1px solid rgba(0,245,255,.18);}
+.dt-tbl tbody td{padding:6px 10px;color:#edf6fb;border-bottom:1px solid rgba(255,255,255,.035);}
 .dt-tbl tbody tr:hover{background:rgba(0,245,255,.04);}
 .td-nm{font-weight:700;color:#fff;}
 .td-val{font-weight:650;color:#fff;text-align:center;}
@@ -425,13 +420,9 @@ header[data-testid='stHeader']{display:none!important;background:transparent!imp
     padding: 14px 16px;
     box-shadow: var(--shadow), 0 0 20px rgba(0,245,255,.06);
 }
-.comp-box{padding:18px 20px;text-align:left;border:1px solid rgba(0,245,255,.22);height:310px!important;max-height:310px!important;overflow-y:scroll!important;scrollbar-width:thin!important;scrollbar-color:#00f5ff rgba(8,16,24,.8)!important;}
-.comp-box::-webkit-scrollbar{width:6px!important;display:block!important;}
-.comp-box::-webkit-scrollbar-track{background:rgba(8,16,24,.8)!important;border-radius:4px;}
-.comp-box::-webkit-scrollbar-thumb{background:linear-gradient(180deg,#00f5ff,#00ffa3)!important;border-radius:4px;border:1px solid rgba(0,245,255,.5)!important;box-shadow:0 0 8px rgba(0,245,255,.6)!important;}
-.comp-box:hover{border-color:rgba(0,245,255,.55);box-shadow:0 22px 54px rgba(0,0,0,.46),0 0 28px rgba(0,245,255,.14);}
+.comp-box{padding:16px 18px;text-align:left;border:1px solid rgba(0,245,255,.18);border-radius:16px;height:100%;transition:.25s ease;}
+.comp-box:hover{border-color:rgba(0,245,255,.45);box-shadow:0 22px 54px rgba(0,0,0,.46),0 0 28px rgba(0,245,255,.12);}
 .news-card{padding:13px 15px;margin-bottom:9px;border-radius:14px;transition:.2s ease;}
-.news-card:hover{transform:translateY(-2px);border-color:rgba(0,245,255,.25);box-shadow:0 12px 30px rgba(0,0,0,.32),0 0 18px rgba(0,245,255,.07);}
 .news-card:hover{transform:translateY(-2px);border-color:rgba(0,245,255,.25);box-shadow:0 12px 30px rgba(0,0,0,.32),0 0 18px rgba(0,245,255,.07);}
 
 div[data-testid='stMetric']{background:linear-gradient(180deg,rgba(14,25,35,.82),rgba(7,14,21,.78))!important;border:1px solid rgba(0,245,255,.12)!important;border-radius:15px!important;padding:15px!important;box-shadow:var(--shadow)!important;}
@@ -1474,11 +1465,11 @@ def page_dashboard(fred_key: str, channel_name: str, auth_user: dict | None = No
     t_col, d_col = st.columns([1, 1])
     
     with t_col:
-        render_html('<div class="sec-title">Multi-Timeframe Levels &nbsp; <span style="font-size:9px;color:#00f5ff;background:rgba(0,245,255,0.12);border:1px solid rgba(0,245,255,0.35);padding:2px 8px;border-radius:8px;font-weight:750;letter-spacing:0.5px;">⇄ SWIPE &amp; ⇅ SCROLL</span></div>')
+        render_html('<div class="sec-title">Multi-Timeframe Levels</div>')
         render_data_table(rows)
 
     with d_col:
-        render_html('<div class="sec-title">Macro + Sentiment Composite &nbsp; <span style="color:#00ffa3;font-size:9px;font-weight:800;background:rgba(0,255,163,0.12);border:1px solid rgba(0,255,163,0.35);padding:2px 8px;border-radius:8px;">⚡ ACTIVE &amp; ⇅ SCROLL</span></div>')
+        render_html('<div class="sec-title">Macro + Sentiment Composite &nbsp; <span style="color:#00ffa3;font-size:10px;font-weight:800;">⚡ Multi-Alert Active</span></div>')
         s = result["score"]
         m_s = result["macro_score"]
         n_p = result["news_points"]
@@ -1487,19 +1478,19 @@ def page_dashboard(fred_key: str, channel_name: str, auth_user: dict | None = No
         driver_items = []
         for d in result["drivers"][:3]:
             dur_tag = f'<span style="color:#00ffa3;font-weight:700;"> ({d.get("expected_duration", "Active")})</span>' if d.get("expected_duration") else ''
-            driver_items.append(f'<div style="font-size:11.5px;color:#ecf7ff;margin-top:5px;text-align:left;"><b>{d.get("icon","⚡")} {d.get("name","Event")}:</b>{dur_tag}<br><span style="color:#8fa3b4;font-size:10.5px;">{d.get("reason","")}</span></div>')
+            driver_items.append(f'<div style="font-size:11px;color:#ecf7ff;margin-top:4px;text-align:left;"><b>{d.get("icon","⚡")} {d.get("name","Event")}:</b>{dur_tag}<br><span style="color:#8fa3b4;font-size:10px;">{d.get("reason","")}</span></div>')
         drivers_html = "".join(driver_items)
 
-        ai_summary_html = f'<div style="margin-top:10px;padding:10px 12px;background:rgba(255,209,102,0.06);border:1px solid rgba(255,209,102,0.22);border-radius:10px;font-size:11.5px;color:#ecf7ff;text-align:left;line-height:1.5;"><b style="color:#ffd166;">Desk Summary:</b> {result["ai_summary"]}</div>' if result["ai_summary"] else ''
+        ai_summary_html = f'<div style="margin-top:8px;padding:8px 10px;background:rgba(255,209,102,0.06);border:1px solid rgba(255,209,102,0.22);border-radius:10px;font-size:11px;color:#ecf7ff;text-align:left;line-height:1.45;"><b style="color:#ffd166;">Desk Summary:</b> {result["ai_summary"]}</div>' if result["ai_summary"] else ''
 
         render_html(f"""
-        <div class="comp-box" style="height:100%;text-align:left;padding:18px 20px;">
-          <div style="font-size:11px;font-weight:800;color:#8fa3b4;text-transform:uppercase;margin-bottom:8px;">{CURRENCY_SERIES[currency]['flag']} {currency} OVERALL BIAS</div>
-          <div style="margin-bottom:12px;">{badge(s, lg=True)}</div>
+        <div class="comp-box">
+          <div style="font-size:11px;font-weight:800;color:#8fa3b4;text-transform:uppercase;margin-bottom:6px;">{CURRENCY_SERIES[currency]['flag']} {currency} OVERALL BIAS</div>
+          <div style="margin-bottom:8px;">{badge(s, lg=True)}</div>
           <div style="font-size:18px;font-weight:900;color:#fff;">Composite: <span style="color:#00f5ff;">{s:+.3f}</span></div>
-          <div style="font-size:11.5px;color:#8fa3b4;margin-top:4px;">Macro (50%): <b style="color:#fff;">{m_s:+.3f}</b> | News Sentiment (50%): <b style="color:{np_color};">{n_p:+.2f} pts</b></div>
+          <div style="font-size:11px;color:#8fa3b4;margin-top:3px;">Macro (50%): <b style="color:#fff;">{m_s:+.3f}</b> | News Sentiment (50%): <b style="color:{np_color};">{n_p:+.2f} pts</b></div>
           {ai_summary_html}
-          <div style="margin-top:10px;">{drivers_html}</div>
+          <div style="margin-top:8px;">{drivers_html}</div>
         </div>
         """)
 
