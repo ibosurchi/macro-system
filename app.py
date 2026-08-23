@@ -593,41 +593,6 @@ div[data-testid="stPopoverBody"] button:hover {
     transform: translateY(-2px) !important;
 }
 
-/* Compact Top Clock Timezone Button */
-div[data-testid="stButton"]:has(> button[key="btn_header_tz_clock"]) button, button[key="btn_header_tz_clock"] {
-    min-height: 28px !important;
-    height: 28px !important;
-    padding: 3px 10px !important;
-    font-size: 10px !important;
-    font-weight: 700 !important;
-    border-radius: 9px !important;
-    border: 1px solid rgba(0, 245, 255, 0.3) !important;
-    background: rgba(255, 255, 255, 0.025) !important;
-    color: #00f5ff !important;
-    margin-top: 5px !important;
-    white-space: nowrap !important;
-    line-height: 1.1 !important;
-}
-
-div[data-testid="stButton"]:has(> button[key="btn_header_tz_clock"]) button:hover, button[key="btn_header_tz_clock"]:hover {
-    border-color: rgba(0, 245, 255, 0.65) !important;
-    background: rgba(0, 245, 255, 0.12) !important;
-    color: #ffffff !important;
-    box-shadow: 0 0 16px rgba(0, 245, 255, 0.25) !important;
-}
-
-/* Compact Timezone Dropdown Grid Buttons */
-div[data-testid="stButton"]:has(> button[key*="tz_card_opt_"]) button {
-    min-height: 32px !important;
-    height: 32px !important;
-    padding: 4px 8px !important;
-    font-size: 10.5px !important;
-    font-weight: 700 !important;
-    border-radius: 8px !important;
-    margin-bottom: 4px !important;
-    white-space: nowrap !important;
-}
-
 .badge{display:inline-block;padding:5px 12px;border-radius:999px;font-size:10px;font-weight:850;letter-spacing:.5px;text-transform:uppercase;}
 .b-bull{background:rgba(0,255,163,.10);color:var(--green);border:1px solid rgba(0,255,163,.35);box-shadow:0 0 14px rgba(0,255,163,.15);}.b-bear{background:rgba(255,94,117,.10);color:#ff5e75;border:1px solid rgba(255,94,117,.35);box-shadow:0 0 14px rgba(255,94,117,.12);}.b-neut{background:rgba(148,163,184,.07);color:#c9d4dd;border:1px solid rgba(148,163,184,.20);}.badge-lg{font-size:12px;padding:8px 18px;border-radius:11px;}
 .pills{display:flex;gap:6px;flex-wrap:wrap;}.pill-g{background:rgba(0,255,163,.08);color:var(--green);border:1px solid rgba(0,255,163,.25);padding:4px 9px;border-radius:8px;font-weight:750;font-size:10px;}.pill-r{background:rgba(255,94,117,.08);color:#ff5e75;border:1px solid rgba(255,94,117,.24);padding:4px 9px;border-radius:8px;font-weight:750;font-size:10px;}
@@ -1316,13 +1281,7 @@ def dual_chart(df1: pd.DataFrame, df2: pd.DataFrame, lbl1: str, lbl2: str) -> go
     return fig
 
 def render_top_header(auth_user: dict | None = None) -> None:
-    if "selected_tz" not in st.session_state or st.session_state["selected_tz"] not in SUPPORTED_TIMEZONES:
-        st.session_state["selected_tz"] = "🏛️ Kurdistan & Iraq (UTC+3)"
-    if "tz_menu_open" not in st.session_state:
-        st.session_state["tz_menu_open"] = False
-
-    tz_meta = SUPPORTED_TIMEZONES[st.session_state["selected_tz"]]
-    now = get_current_time(tz_meta["offset"])
+    now = get_current_time()
     now_str = now.strftime("%H:%M")
     date_str = now.strftime("%b %d, %Y")
     
@@ -1334,75 +1293,55 @@ def render_top_header(auth_user: dict | None = None) -> None:
         crown = "👑 " if is_adm else "👤 "
         user_badge = f'<div class="t-pill" style="border-color:rgba(255,209,102,0.35);color:#ffd166;"><span>{crown}{u_name}</span> &nbsp;<span style="color:#00ffa3;font-size:9.5px;">({exp_txt})</span></div>'
 
-    tz_is_open = st.session_state.get("tz_menu_open", False)
-    btn_tz_txt = f"🕒 {now_str} | {tz_meta['label']} ▾"
-
-    # Top Header Row
-    top_c1, top_c2 = st.columns([1, 3.2])
-    with top_c1:
-        render_html("""
-        <div class="top-brand" style="padding:4px 0;">
-          <div style="display:flex;align-items:center;justify-content:center;width:38px;height:38px;background:rgba(0,245,255,0.06);border:1px solid rgba(0,245,255,0.25);border-radius:10px;box-shadow:0 0 16px rgba(0,245,255,0.2);">
-            <svg width="24" height="24" viewBox="0 0 360 365" fill="none" style="filter:drop-shadow(0 0 8px rgba(0,255,255,0.85));">
-              <defs>
-                <linearGradient id="aGrad" x1="0" y1="0" x2="1" y2="1">
-                  <stop stop-color="#00FFFF"/>
-                  <stop offset="1" stop-color="#00D7E8"/>
-                </linearGradient>
-              </defs>
-              <path d="M0 365L180 0L360 365H288L180 130L72 365Z" fill="url(#aGrad)"/>
-            </svg>
-          </div>
-          <div>
-            <div style="font-size:16px;font-weight:900;letter-spacing:1.8px;color:#00f5ff;text-shadow:0 0 16px rgba(0,245,255,0.5);line-height:1.1;">APEX<span style="color:#ffd166;">MACRO</span></div>
-            <div style="font-size:8.5px;font-weight:800;color:#64748b;letter-spacing:2px;">GLOBAL INTELLIGENCE DESK</div>
-          </div>
-        </div>
-        """)
-    with top_c2:
-        tk_col, tz_col = st.columns([3.3, 0.9])
-        with tk_col:
-            render_html(f"""
-            <div class="top-tickers" style="justify-content:flex-end;margin-top:5px;">
-              {user_badge}
-              <div class="t-pill"><span>💵 USD Index</span><span class="t-up">▲ Active</span></div>
-              <div class="t-pill"><span>🥇 Gold XAU</span><span class="t-up">▲ Active</span></div>
-              <div class="t-pill"><span>🛢️ WTI Crude</span><span class="t-dn">▼ Energy</span></div>
-              <div class="t-pill"><span>🤖 GPT-4o-mini</span><span class="t-up">⚡ Live AI</span></div>
-            </div>
-            """)
-        with tz_col:
-            if st.button(btn_tz_txt, key="btn_header_tz_clock", use_container_width=True, type="primary" if tz_is_open else "secondary"):
-                st.session_state["tz_menu_open"] = not tz_is_open
-                st.rerun()
-
-    # Compact Full-Width Glassmorphism Timezone Dropdown Grid
-    if tz_is_open:
-        with st.container():
-            render_html("""
-            <div style="background: linear-gradient(180deg, rgba(11, 20, 32, 0.98), rgba(6, 12, 18, 0.98));
-                        border: 1px solid rgba(0, 245, 255, 0.30);
-                        border-radius: 14px;
-                        padding: 10px 14px;
-                        margin: 4px 0 12px 0;
-                        box-shadow: 0 14px 40px rgba(0,0,0,0.7), 0 0 20px rgba(0,245,255,0.12);
-                        backdrop-filter: blur(20px);">
-              <div style="font-size: 9.5px; font-weight: 800; color: #79dff0; text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
-                <span>🌐 GLOBAL MARKET TIMEZONE &amp; LOCAL TRADING CLOCK</span>
-                <span style="color: #8fa3b4; font-size: 8.5px;">Click to adapt all desk clocks &amp; catalyst countdowns</span>
-              </div>
-            </div>
-            """)
-            tz_grid_cols = st.columns(4)
-            tz_items = list(SUPPORTED_TIMEZONES.items())
-            for idx, (tz_name, meta) in enumerate(tz_items):
-                is_active = (st.session_state["selected_tz"] == tz_name)
-                with tz_grid_cols[idx % 4]:
-                    btn_text = f"{tz_name}"
-                    if st.button(btn_text, key=f"tz_card_opt_{idx}", use_container_width=True, type="primary" if is_active else "secondary"):
-                        st.session_state["selected_tz"] = tz_name
-                        st.session_state["tz_menu_open"] = False
-                        st.rerun()
+    # Clean Unified Top Bar with Real-Time Auto-Updating Local Clock
+    render_html(f"""
+<div class="top-bar">
+  <div class="top-brand">
+    <div style="display:flex;align-items:center;justify-content:center;width:40px;height:40px;background:rgba(0,245,255,0.06);border:1px solid rgba(0,245,255,0.25);border-radius:10px;box-shadow:0 0 16px rgba(0,245,255,0.2);">
+      <svg width="26" height="26" viewBox="0 0 360 365" fill="none" style="filter:drop-shadow(0 0 8px rgba(0,255,255,0.85));">
+        <defs>
+          <linearGradient id="aGrad" x1="0" y1="0" x2="1" y2="1">
+            <stop stop-color="#00FFFF"/>
+            <stop offset="1" stop-color="#00D7E8"/>
+          </linearGradient>
+        </defs>
+        <path d="M0 365L180 0L360 365H288L180 130L72 365Z" fill="url(#aGrad)"/>
+      </svg>
+    </div>
+    <div>
+      <div style="font-size:17px;font-weight:900;letter-spacing:1.8px;color:#00f5ff;text-shadow:0 0 16px rgba(0,245,255,0.5);">APEX<span style="color:#ffd166;">MACRO</span></div>
+      <div style="font-size:9px;font-weight:800;color:#64748b;letter-spacing:2.5px;">GLOBAL INTELLIGENCE DESK</div>
+    </div>
+  </div>
+  <div class="top-tickers">
+    {user_badge}
+    <div class="t-pill"><span>💵 USD Index</span><span class="t-up">▲ Active</span></div>
+    <div class="t-pill"><span>🥇 Gold XAU</span><span class="t-up">▲ Active</span></div>
+    <div class="t-pill"><span>🛢️ WTI Crude</span><span class="t-dn">▼ Energy</span></div>
+    <div class="t-pill"><span>🤖 GPT-4o-mini</span><span class="t-up">⚡ Live AI</span></div>
+    <div class="t-pill" style="border-color:rgba(0,245,255,0.25);color:#00f5ff;"><span id="apex_user_clock">🕒 {now_str} | {date_str}</span></div>
+  </div>
+</div>
+<script>
+  function syncUserLocalTime() {{
+    try {{
+      const el = document.getElementById('apex_user_clock');
+      if (el) {{
+        const now = new Date();
+        const hrs = String(now.getHours()).padStart(2, '0');
+        const mins = String(now.getMinutes()).padStart(2, '0');
+        const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        const m = months[now.getMonth()];
+        const d = now.getDate();
+        const y = now.getFullYear();
+        el.innerHTML = '🕒 ' + hrs + ':' + mins + ' | ' + m + ' ' + d + ', ' + y;
+      }}
+    }} catch(e) {{}}
+  }}
+  syncUserLocalTime();
+  setInterval(syncUserLocalTime, 1000);
+</script>
+""")
 
 def render_data_table(rows: list) -> None:
     tbody = []
