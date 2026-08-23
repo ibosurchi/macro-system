@@ -593,6 +593,41 @@ div[data-testid="stPopoverBody"] button:hover {
     transform: translateY(-2px) !important;
 }
 
+/* Compact Top Clock Timezone Button */
+div[data-testid="stButton"]:has(> button[key="btn_header_tz_clock"]) button, button[key="btn_header_tz_clock"] {
+    min-height: 28px !important;
+    height: 28px !important;
+    padding: 3px 10px !important;
+    font-size: 10px !important;
+    font-weight: 700 !important;
+    border-radius: 9px !important;
+    border: 1px solid rgba(0, 245, 255, 0.3) !important;
+    background: rgba(255, 255, 255, 0.025) !important;
+    color: #00f5ff !important;
+    margin-top: 5px !important;
+    white-space: nowrap !important;
+    line-height: 1.1 !important;
+}
+
+div[data-testid="stButton"]:has(> button[key="btn_header_tz_clock"]) button:hover, button[key="btn_header_tz_clock"]:hover {
+    border-color: rgba(0, 245, 255, 0.65) !important;
+    background: rgba(0, 245, 255, 0.12) !important;
+    color: #ffffff !important;
+    box-shadow: 0 0 16px rgba(0, 245, 255, 0.25) !important;
+}
+
+/* Compact Timezone Dropdown Grid Buttons */
+div[data-testid="stButton"]:has(> button[key*="tz_card_opt_"]) button {
+    min-height: 32px !important;
+    height: 32px !important;
+    padding: 4px 8px !important;
+    font-size: 10.5px !important;
+    font-weight: 700 !important;
+    border-radius: 8px !important;
+    margin-bottom: 4px !important;
+    white-space: nowrap !important;
+}
+
 .badge{display:inline-block;padding:5px 12px;border-radius:999px;font-size:10px;font-weight:850;letter-spacing:.5px;text-transform:uppercase;}
 .b-bull{background:rgba(0,255,163,.10);color:var(--green);border:1px solid rgba(0,255,163,.35);box-shadow:0 0 14px rgba(0,255,163,.15);}.b-bear{background:rgba(255,94,117,.10);color:#ff5e75;border:1px solid rgba(255,94,117,.35);box-shadow:0 0 14px rgba(255,94,117,.12);}.b-neut{background:rgba(148,163,184,.07);color:#c9d4dd;border:1px solid rgba(148,163,184,.20);}.badge-lg{font-size:12px;padding:8px 18px;border-radius:11px;}
 .pills{display:flex;gap:6px;flex-wrap:wrap;}.pill-g{background:rgba(0,255,163,.08);color:var(--green);border:1px solid rgba(0,255,163,.25);padding:4px 9px;border-radius:8px;font-weight:750;font-size:10px;}.pill-r{background:rgba(255,94,117,.08);color:#ff5e75;border:1px solid rgba(255,94,117,.24);padding:4px 9px;border-radius:8px;font-weight:750;font-size:10px;}
@@ -1303,7 +1338,7 @@ def render_top_header(auth_user: dict | None = None) -> None:
     btn_tz_txt = f"🕒 {now_str} | {tz_meta['label']} ▾"
 
     # Top Header Row
-    top_c1, top_c2 = st.columns([1.1, 2.9])
+    top_c1, top_c2 = st.columns([1, 3.2])
     with top_c1:
         render_html("""
         <div class="top-brand" style="padding:4px 0;">
@@ -1325,7 +1360,7 @@ def render_top_header(auth_user: dict | None = None) -> None:
         </div>
         """)
     with top_c2:
-        tk_col, tz_col = st.columns([2.6, 1.4])
+        tk_col, tz_col = st.columns([3.3, 0.9])
         with tk_col:
             render_html(f"""
             <div class="top-tickers" style="justify-content:flex-end;margin-top:5px;">
@@ -1341,20 +1376,20 @@ def render_top_header(auth_user: dict | None = None) -> None:
                 st.session_state["tz_menu_open"] = not tz_is_open
                 st.rerun()
 
-    # Full-Width Glassmorphism Timezone Dropdown Grid (Exact same design as currency dropdown)
+    # Compact Full-Width Glassmorphism Timezone Dropdown Grid
     if tz_is_open:
         with st.container():
             render_html("""
             <div style="background: linear-gradient(180deg, rgba(11, 20, 32, 0.98), rgba(6, 12, 18, 0.98));
-                        border: 1px solid rgba(0, 245, 255, 0.35);
-                        border-radius: 16px;
-                        padding: 16px 18px;
-                        margin: 10px 0 18px 0;
-                        box-shadow: 0 20px 60px rgba(0,0,0,0.8), 0 0 30px rgba(0,245,255,0.16);
-                        backdrop-filter: blur(24px);">
-              <div style="font-size: 10px; font-weight: 800; color: #79dff0; text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
-                <span>🌐 SELECT GLOBAL MARKET TIMEZONE &amp; LOCAL TRADING CLOCK</span>
-                <span style="color: #8fa3b4; font-size: 9.5px;">Auto-converts all desk clocks &amp; catalyst countdowns</span>
+                        border: 1px solid rgba(0, 245, 255, 0.30);
+                        border-radius: 14px;
+                        padding: 10px 14px;
+                        margin: 4px 0 12px 0;
+                        box-shadow: 0 14px 40px rgba(0,0,0,0.7), 0 0 20px rgba(0,245,255,0.12);
+                        backdrop-filter: blur(20px);">
+              <div style="font-size: 9.5px; font-weight: 800; color: #79dff0; text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+                <span>🌐 GLOBAL MARKET TIMEZONE &amp; LOCAL TRADING CLOCK</span>
+                <span style="color: #8fa3b4; font-size: 8.5px;">Click to adapt all desk clocks &amp; catalyst countdowns</span>
               </div>
             </div>
             """)
@@ -1363,7 +1398,7 @@ def render_top_header(auth_user: dict | None = None) -> None:
             for idx, (tz_name, meta) in enumerate(tz_items):
                 is_active = (st.session_state["selected_tz"] == tz_name)
                 with tz_grid_cols[idx % 4]:
-                    btn_text = f"{tz_name}\n({meta.get('city', meta['label'])})"
+                    btn_text = f"{tz_name}"
                     if st.button(btn_text, key=f"tz_card_opt_{idx}", use_container_width=True, type="primary" if is_active else "secondary"):
                         st.session_state["selected_tz"] = tz_name
                         st.session_state["tz_menu_open"] = False
