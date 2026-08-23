@@ -27,9 +27,27 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-def get_current_time() -> datetime:
-    """Accurate Local Time (UTC+3 / Kurdistan & Baghdad timezone)."""
-    return datetime.utcnow() + timedelta(hours=3)
+SUPPORTED_TIMEZONES = {
+    "🏛️ Kurdistan & Iraq (UTC+3)": {"offset": 3, "label": "KRD (UTC+3)", "city": "Erbil / Baghdad"},
+    "🇬🇧 London / UK (UTC+0)": {"offset": 0, "label": "London (GMT)", "city": "London / UK"},
+    "🇪🇺 Frankfurt / Berlin (UTC+1)": {"offset": 1, "label": "Berlin (CET)", "city": "Frankfurt / Paris"},
+    "🇦🇪 Dubai / Gulf (UTC+4)": {"offset": 4, "label": "Dubai (GST)", "city": "Dubai / UAE"},
+    "🇺🇸 New York / US East (UTC-5)": {"offset": -5, "label": "New York (EST)", "city": "New York / Wall St"},
+    "🇯🇵 Tokyo / Japan (UTC+9)": {"offset": 9, "label": "Tokyo (JST)", "city": "Tokyo / Japan"},
+    "🌐 Universal UTC / GMT": {"offset": 0, "label": "UTC", "city": "Universal UTC"},
+}
+
+def get_current_time(tz_offset: int | None = None) -> datetime:
+    """Returns accurate local time adapted dynamically to user timezone."""
+    if tz_offset is None:
+        try:
+            if "selected_tz" in st.session_state and st.session_state["selected_tz"] in SUPPORTED_TIMEZONES:
+                tz_offset = SUPPORTED_TIMEZONES[st.session_state["selected_tz"]]["offset"]
+            else:
+                tz_offset = 3
+        except Exception:
+            tz_offset = 3
+    return datetime.utcnow() + timedelta(hours=tz_offset)
 
 # ============================================================
 # CONFIGURATIONS & STREAMLIT SECRETS INTEGRATION
@@ -1263,9 +1281,16 @@ def dual_chart(df1: pd.DataFrame, df2: pd.DataFrame, lbl1: str, lbl2: str) -> go
     return fig
 
 def render_top_header(auth_user: dict | None = None) -> None:
-    now = get_current_time()
+    if "selected_tz" not in st.session_state or st.session_state["selected_tz"] not in SUPPORTED_TIMEZONES:
+        st.session_state["selected_tz"] = "🏛️ Kurdistan & Iraq (UTC+3)"
+    if "tz_menu_open" not in st.session_state:
+        st.session_state["tz_menu_open"] = False
+
+    tz_meta = SUPPORTED_TIMEZONES[st.session_state["selected_tz"]]
+    now = get_current_time(tz_meta["offset"])
     now_str = now.strftime("%H:%M")
     date_str = now.strftime("%b %d, %Y")
+    
     user_badge = ""
     if auth_user:
         u_name = auth_user.get("user_name", "VIP")
@@ -1274,36 +1299,75 @@ def render_top_header(auth_user: dict | None = None) -> None:
         crown = "👑 " if is_adm else "👤 "
         user_badge = f'<div class="t-pill" style="border-color:rgba(255,209,102,0.35);color:#ffd166;"><span>{crown}{u_name}</span> &nbsp;<span style="color:#00ffa3;font-size:9.5px;">({exp_txt})</span></div>'
 
-    # ── ORIGINAL LOGO RESTORED ──
-    render_html(f"""
-<div class="top-bar">
-  <div class="top-brand">
-    <div style="display:flex;align-items:center;justify-content:center;width:40px;height:40px;background:rgba(0,245,255,0.06);border:1px solid rgba(0,245,255,0.25);border-radius:10px;box-shadow:0 0 16px rgba(0,245,255,0.2);">
-      <svg width="26" height="26" viewBox="0 0 360 365" fill="none" style="filter:drop-shadow(0 0 8px rgba(0,255,255,0.85));">
-        <defs>
-          <linearGradient id="aGrad" x1="0" y1="0" x2="1" y2="1">
-            <stop stop-color="#00FFFF"/>
-            <stop offset="1" stop-color="#00D7E8"/>
-          </linearGradient>
-        </defs>
-        <path d="M0 365L180 0L360 365H288L180 130L72 365Z" fill="url(#aGrad)"/>
-      </svg>
-    </div>
-    <div>
-      <div style="font-size:17px;font-weight:900;letter-spacing:1.8px;color:#00f5ff;text-shadow:0 0 16px rgba(0,245,255,0.5);">APEX<span style="color:#ffd166;">MACRO</span></div>
-      <div style="font-size:9px;font-weight:800;color:#64748b;letter-spacing:2.5px;">GLOBAL INTELLIGENCE DESK</div>
-    </div>
-  </div>
-  <div class="top-tickers">
-    {user_badge}
-    <div class="t-pill"><span>💵 USD Index</span><span class="t-up">▲ Active</span></div>
-    <div class="t-pill"><span>🥇 Gold XAU</span><span class="t-up">▲ Active</span></div>
-    <div class="t-pill"><span>🛢️ WTI Crude</span><span class="t-dn">▼ Energy</span></div>
-    <div class="t-pill"><span>🤖 GPT-4o-mini</span><span class="t-up">⚡ Live AI</span></div>
-    <div class="t-pill" style="border-color:rgba(0,245,255,0.25);color:#00f5ff;"><span>🕒 {now_str} | {date_str}</span></div>
-  </div>
-</div>
-""")
+    tz_is_open = st.session_state.get("tz_menu_open", False)
+    btn_tz_txt = f"🕒 {now_str} | {tz_meta['label']} ▾"
+
+    # Top Header Row
+    top_c1, top_c2 = st.columns([1.1, 2.9])
+    with top_c1:
+        render_html("""
+        <div class="top-brand" style="padding:4px 0;">
+          <div style="display:flex;align-items:center;justify-content:center;width:38px;height:38px;background:rgba(0,245,255,0.06);border:1px solid rgba(0,245,255,0.25);border-radius:10px;box-shadow:0 0 16px rgba(0,245,255,0.2);">
+            <svg width="24" height="24" viewBox="0 0 360 365" fill="none" style="filter:drop-shadow(0 0 8px rgba(0,255,255,0.85));">
+              <defs>
+                <linearGradient id="aGrad" x1="0" y1="0" x2="1" y2="1">
+                  <stop stop-color="#00FFFF"/>
+                  <stop offset="1" stop-color="#00D7E8"/>
+                </linearGradient>
+              </defs>
+              <path d="M0 365L180 0L360 365H288L180 130L72 365Z" fill="url(#aGrad)"/>
+            </svg>
+          </div>
+          <div>
+            <div style="font-size:16px;font-weight:900;letter-spacing:1.8px;color:#00f5ff;text-shadow:0 0 16px rgba(0,245,255,0.5);line-height:1.1;">APEX<span style="color:#ffd166;">MACRO</span></div>
+            <div style="font-size:8.5px;font-weight:800;color:#64748b;letter-spacing:2px;">GLOBAL INTELLIGENCE DESK</div>
+          </div>
+        </div>
+        """)
+    with top_c2:
+        tk_col, tz_col = st.columns([2.6, 1.4])
+        with tk_col:
+            render_html(f"""
+            <div class="top-tickers" style="justify-content:flex-end;margin-top:5px;">
+              {user_badge}
+              <div class="t-pill"><span>💵 USD Index</span><span class="t-up">▲ Active</span></div>
+              <div class="t-pill"><span>🥇 Gold XAU</span><span class="t-up">▲ Active</span></div>
+              <div class="t-pill"><span>🛢️ WTI Crude</span><span class="t-dn">▼ Energy</span></div>
+              <div class="t-pill"><span>🤖 GPT-4o-mini</span><span class="t-up">⚡ Live AI</span></div>
+            </div>
+            """)
+        with tz_col:
+            if st.button(btn_tz_txt, key="btn_header_tz_clock", use_container_width=True, type="primary" if tz_is_open else "secondary"):
+                st.session_state["tz_menu_open"] = not tz_is_open
+                st.rerun()
+
+    # Full-Width Glassmorphism Timezone Dropdown Grid (Exact same design as currency dropdown)
+    if tz_is_open:
+        with st.container():
+            render_html("""
+            <div style="background: linear-gradient(180deg, rgba(11, 20, 32, 0.98), rgba(6, 12, 18, 0.98));
+                        border: 1px solid rgba(0, 245, 255, 0.35);
+                        border-radius: 16px;
+                        padding: 16px 18px;
+                        margin: 10px 0 18px 0;
+                        box-shadow: 0 20px 60px rgba(0,0,0,0.8), 0 0 30px rgba(0,245,255,0.16);
+                        backdrop-filter: blur(24px);">
+              <div style="font-size: 10px; font-weight: 800; color: #79dff0; text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
+                <span>🌐 SELECT GLOBAL MARKET TIMEZONE &amp; LOCAL TRADING CLOCK</span>
+                <span style="color: #8fa3b4; font-size: 9.5px;">Auto-converts all desk clocks &amp; catalyst countdowns</span>
+              </div>
+            </div>
+            """)
+            tz_grid_cols = st.columns(4)
+            tz_items = list(SUPPORTED_TIMEZONES.items())
+            for idx, (tz_name, meta) in enumerate(tz_items):
+                is_active = (st.session_state["selected_tz"] == tz_name)
+                with tz_grid_cols[idx % 4]:
+                    btn_text = f"{tz_name}\n({meta.get('city', meta['label'])})"
+                    if st.button(btn_text, key=f"tz_card_opt_{idx}", use_container_width=True, type="primary" if is_active else "secondary"):
+                        st.session_state["selected_tz"] = tz_name
+                        st.session_state["tz_menu_open"] = False
+                        st.rerun()
 
 def render_data_table(rows: list) -> None:
     tbody = []
@@ -1913,17 +1977,7 @@ CATALYST_PRECURSOR_MAP = {
     },
 }
 
-SUPPORTED_TIMEZONES = {
-    "🏛️ Kurdistan & Iraq (UTC+3)": {"offset": 3, "label": "KRD / UTC+3"},
-    "🇬🇧 London / UK (UTC+0 / GMT)": {"offset": 0, "label": "London / GMT"},
-    "🇪🇺 Frankfurt / Paris / Berlin (UTC+1 / CET)": {"offset": 1, "label": "Berlin / CET"},
-    "🇦🇪 Dubai / Gulf (UTC+4 / GST)": {"offset": 4, "label": "Dubai / GST"},
-    "🇺🇸 New York / US East (UTC-5 / EST)": {"offset": -5, "label": "New York / EST"},
-    "🇯🇵 Tokyo / Japan (UTC+9 / JST)": {"offset": 9, "label": "Tokyo / JST"},
-    "🌐 Universal UTC / GMT": {"offset": 0, "label": "UTC"},
-}
-
-def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD / UTC+3") -> list[dict]:
+def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3)") -> list[dict]:
     """Generates real live economic releases adapted dynamically to the user's local timezone."""
     utc_now = datetime.utcnow()
     user_now = utc_now + timedelta(hours=tz_offset)
@@ -2129,20 +2183,7 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str) -> None:
     if "selected_tz" not in st.session_state or st.session_state["selected_tz"] not in SUPPORTED_TIMEZONES:
         st.session_state["selected_tz"] = "🏛️ Kurdistan & Iraq (UTC+3)"
 
-    tz_col1, tz_col2 = st.columns([3, 1.2])
-    with tz_col1:
-        st.markdown("<div style='font-size:11px;font-weight:800;color:#8fa3b4;text-transform:uppercase;margin-bottom:2px;'>📅 Institutional Macroeconomic Catalyst Forecaster</div>", unsafe_allow_html=True)
-    with tz_col2:
-        selected_tz_name = st.selectbox(
-            "🌐 Timezone:",
-            list(SUPPORTED_TIMEZONES.keys()),
-            index=list(SUPPORTED_TIMEZONES.keys()).index(st.session_state["selected_tz"]),
-            key="forecaster_tz_select",
-            label_visibility="collapsed"
-        )
-        st.session_state["selected_tz"] = selected_tz_name
-
-    tz_info = SUPPORTED_TIMEZONES.get(st.session_state["selected_tz"], {"offset": 3, "label": "KRD / UTC+3"})
+    tz_info = SUPPORTED_TIMEZONES.get(st.session_state["selected_tz"], {"offset": 3, "label": "KRD (UTC+3)"})
 
     with st.spinner("Synthesizing upcoming economic calendar, precursor FRED pipelines & correlated news..."):
         events = get_upcoming_catalyst_events(tz_info["offset"], tz_info["label"])
