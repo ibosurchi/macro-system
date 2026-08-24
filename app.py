@@ -460,6 +460,7 @@ div[data-testid="stPopover"] > button {
 </style>
 """)
 
+
 @st.cache_data(ttl=30, show_spinner=False)
 def fetch_fred(series_id: str, key: str, limit: int = 48) -> pd.DataFrame | None:
     if not key:
@@ -1018,534 +1019,455 @@ def spark_svg(vals: list, w: int = 80, h: int = 32, pos_good: bool = True) -> st
     fp   = path + f" L {w},{h} L 0,{h} Z"
     return f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" style="display:block;filter:drop-shadow(0 0 4px {lc}44);"><path d="{fp}" fill="{fc}"/><path d="{path}" fill="none" stroke="{lc}" stroke-width="2"/></svg>'
 
-def dual_chart(df1: pd.DataFrame, df2: pd.DataFrame, lbl1: str, lbl2: str) -> go.Figure | None:
-    if df1 is None or df1.empty: return None
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df1["date"], y=df1["value"], mode="lines", name=lbl1, line=dict(color="#ffd166", width=2.8, shape="spline")))
-    if df2 is not None and not df2.empty:
-        fig.add_trace(go.Scatter(x=df2["date"], y=df2["value"], mode="lines", name=lbl2, line=dict(color="#00f5ff", width=2.2, dash="dot", shape="spline")))
-    fig.update_layout(
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", showlegend=True,
-        legend=dict(orientation="h", y=1.01, x=1, xanchor="right", font=dict(size=10, color="#8fa3b4")),
-        margin=dict(l=6, r=16, t=28, b=6), height=260,
-        xaxis=dict(showgrid=False, tickfont=dict(size=9.5, color="#8fa3b4")),
-        yaxis=dict(showgrid=True, gridcolor="rgba(0,245,255,0.06)", tickfont=dict(size=9.5, color="#8fa3b4"), side="right"),
-        hovermode="x unified",
-    )
-    return fig
+CATALYST_PRECURSOR_MAP = {
+    "AUD_CPI": {
+        "title": "CPI y/y (Headline & Trimmed Mean)",
+        "currency": "AUD", "impact": "High",
+        "utc_year": 2026, "utc_month": 8, "utc_day": 26, "utc_hour": 4, "utc_min": 30,
+        "keywords": ["australia cpi", "rba", "aussie inflation"],
+        "forecast_str": "3.3%", "prev_str": "3.8%", "consensus_bias": "Australia CPI Cooling Track",
+        "precursors": [{"name": "Global Commodity Price Velocity", "series": "INDPRO", "cat": "inflation", "weight": 1.0}],
+    },
+    "US_DURABLE": {
+        "title": "Core Durable Goods Orders m/m",
+        "currency": "USD", "impact": "Medium",
+        "utc_year": 2026, "utc_month": 8, "utc_day": 26, "utc_hour": 15, "utc_min": 30,
+        "keywords": ["durable goods", "factory orders", "capex"],
+        "forecast_str": "0.5%", "prev_str": "0.7%", "consensus_bias": "Positive Core Capex Orders",
+        "precursors": [{"name": "Total Manufacturing Output Index", "series": "INDPRO", "cat": "growth", "weight": 1.0}],
+    },
+    "US_OIL_EIA": {
+        "title": "Crude Oil Inventories (EIA)",
+        "currency": "USD", "impact": "High",
+        "utc_year": 2026, "utc_month": 8, "utc_day": 26, "utc_hour": 17, "utc_min": 30,
+        "keywords": ["crude oil", "eia", "inventories", "wti"],
+        "forecast_str": "—", "prev_str": "4.4M", "consensus_bias": "Weekly Inventory Balance",
+        "precursors": [{"name": "WTI Spot Price Momentum", "series": "DCOILWTICO", "cat": "growth", "weight": 1.0}],
+    },
+    "US_GDP": {
+        "title": "Prelim GDP q/q (Annualized Growth)",
+        "currency": "USD", "impact": "High",
+        "utc_year": 2026, "utc_month": 8, "utc_day": 27, "utc_hour": 15, "utc_min": 30,
+        "keywords": ["gdp", "economic growth", "recession"],
+        "forecast_str": "1.5%", "prev_str": "1.5%", "consensus_bias": "Moderate 1.5% GDP Growth Baseline",
+        "precursors": [{"name": "Industrial Production Momentum", "series": "INDPRO", "cat": "growth", "weight": 1.0}],
+    },
+    "US_PCE": {
+        "title": "Core PCE Price Index m/m",
+        "currency": "USD", "impact": "High",
+        "utc_year": 2026, "utc_month": 8, "utc_day": 28, "utc_hour": 15, "utc_min": 30,
+        "keywords": ["pce", "inflation", "fed inflation"],
+        "forecast_str": "0.2%", "prev_str": "0.1%", "consensus_bias": "Core PCE Acceleration (+0.2% MoM)",
+        "precursors": [{"name": "Core PPI Final Demand Velocity", "series": "PPIFES", "cat": "inflation", "weight": 1.0}],
+    },
+    "US_SPENDING": {
+        "title": "Personal Spending m/m",
+        "currency": "USD", "impact": "Medium",
+        "utc_year": 2026, "utc_month": 8, "utc_day": 28, "utc_hour": 15, "utc_min": 30,
+        "keywords": ["personal spending", "consumer spending", "income"],
+        "forecast_str": "0.1%", "prev_str": "0.3%", "consensus_bias": "Moderate Spending Velocity",
+        "precursors": [{"name": "Real Disposable Income Momentum", "series": "DSPIC96", "cat": "growth", "weight": 1.0}],
+    },
+}
 
-def render_top_header(auth_user: dict | None = None) -> None:
-    now = get_current_time()
-    now_str = now.strftime("%H:%M")
-    date_str = now.strftime("%b %d, %Y")
-    user_badge = ""
-    if auth_user:
-        u_name = auth_user.get("user_name", "VIP")
-        exp_txt = auth_user.get("expiry_info", "Active")
-        is_adm = auth_user.get("is_admin", False)
-        crown = "👑 " if is_adm else "👤 "
-        user_badge = f'<div class="t-pill" style="border-color:rgba(255,209,102,0.35);color:#ffd166;"><span>{crown}{u_name}</span> &nbsp;<span style="color:#00ffa3;font-size:9.5px;">({exp_txt})</span></div>'
-
-    render_html(f"""
-<div class="top-bar">
-  <div class="top-brand">
-    <div style="display:flex;align-items:center;justify-content:center;width:40px;height:40px;background:rgba(0,245,255,0.06);border:1px solid rgba(0,245,255,0.25);border-radius:10px;box-shadow:0 0 16px rgba(0,245,255,0.2);">
-      <svg width="26" height="26" viewBox="0 0 360 365" fill="none" style="filter:drop-shadow(0 0 8px rgba(0,255,255,0.85));">
-        <defs>
-          <linearGradient id="aGrad" x1="0" y1="0" x2="1" y2="1">
-            <stop stop-color="#00FFFF"/>
-            <stop offset="1" stop-color="#00D7E8"/>
-          </linearGradient>
-        </defs>
-        <path d="M0 365L180 0L360 365H288L180 130L72 365Z" fill="url(#aGrad)"/>
-      </svg>
-    </div>
-    <div>
-      <div style="font-size:17px;font-weight:900;letter-spacing:1.8px;color:#00f5ff;text-shadow:0 0 16px rgba(0,245,255,0.5);">APEX<span style="color:#ffd166;">MACRO</span></div>
-      <div style="font-size:9px;font-weight:800;color:#64748b;letter-spacing:2.5px;">GLOBAL INTELLIGENCE DESK</div>
-    </div>
-  </div>
-  <div class="top-tickers">
-    {user_badge}
-    <div class="t-pill"><span>💵 USD Index</span><span class="t-up">▲ Active</span></div>
-    <div class="t-pill"><span>🥇 Gold XAU</span><span class="t-up">▲ Active</span></div>
-    <div class="t-pill"><span>🛢️ WTI Crude</span><span class="t-dn">▼ Energy</span></div>
-    <div class="t-pill"><span>🤖 GPT-4o-mini</span><span class="t-up">⚡ Live AI</span></div>
-    <div class="t-pill" style="border-color:rgba(0,245,255,0.25);color:#00f5ff;"><span>🕒 {now_str} | {date_str}</span></div>
-  </div>
-</div>
-""")
-
-def render_data_table(rows: list) -> None:
-    tbody = []
-    for r in rows:
-        cat_icon = CAT_ICONS.get(r["cat"], "📊")
-        pg = (r["cat"] not in ("labor_neg",))
-        sparkhtml = spark_svg(r["vals"][-20:], pos_good=pg)
-        lbl, css, _ = bias_from_score(r["score"])
-        tbody.append(f"""
-<tr>
-<td class="td-nm"><span style="color:#00f5ff;margin-right:6px;">{cat_icon}</span>{r['name']}</td>
-<td class="td-val">{r['latest']:,.2f}</td>
-<td class="td-pct">{pct_html(r['mom'])}</td>
-<td class="td-pct">{pct_html(r.get('qoq'))}</td>
-<td class="td-pct">{pct_html(r.get('yoy'))}</td>
-<td style="text-align:center;">{sparkhtml}</td>
-<td style="text-align:center;"><span class="badge {css}" style="font-size:10px;">{lbl}</span></td>
-</tr>
-""")
-    render_html(f"""
-<div class="dt-wrap">
-<table class="dt-tbl">
-<thead>
-<tr>
-<th style="width:22%;">Indicator</th>
-<th class="ctr" style="width:12%;">Latest</th>
-<th class="ctr" style="width:11%;">m/m</th>
-<th class="ctr" style="width:11%;">q/q</th>
-<th class="ctr" style="width:11%;">y/y</th>
-<th class="ctr" style="width:10%;">Trend</th>
-<th class="ctr" style="width:13%;">Macro Bias</th>
-</tr>
-</thead>
-<tbody>{"".join(tbody)}</tbody>
-</table>
-</div>
-""")
-
-def page_dashboard(fred_key: str, channel_name: str, auth_user: dict | None = None) -> None:
-    is_admin_user = auth_user and auth_user.get("is_admin", False)
-
-    if "active_tab" not in st.session_state:
-        st.session_state["active_tab"] = "💱 Forex"
-
-    if is_admin_user:
-        b1, b2, b3, b4, b5 = st.columns(5)
-        with b1:
-            if st.button("💱 Forex", use_container_width=True, type="primary" if st.session_state["active_tab"] == "💱 Forex" else "secondary"):
-                st.session_state["active_tab"] = "💱 Forex"
-                st.rerun()
-        with b2:
-            if st.button("🥇 Gold", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🥇 Gold" else "secondary"):
-                st.session_state["active_tab"] = "🥇 Gold"
-                st.rerun()
-        with b3:
-            if st.button("🛢️ Oil", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🛢️ Oil" else "secondary"):
-                st.session_state["active_tab"] = "🛢️ Oil"
-                st.rerun()
-        with b4:
-            if st.button("🔮 Forecaster", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🔮 Forecaster" else "secondary"):
-                st.session_state["active_tab"] = "🔮 Forecaster"
-                st.rerun()
-        with b5:
-            if st.button("👑 MASTER ADMIN", use_container_width=True, type="primary" if st.session_state["active_tab"] == "👑 MASTER ADMIN" else "secondary"):
-                st.session_state["active_tab"] = "👑 MASTER ADMIN"
-                st.rerun()
-    else:
-        b1, b2, b3, b4 = st.columns(4)
-        with b1:
-            if st.button("💱 Forex", use_container_width=True, type="primary" if st.session_state["active_tab"] == "💱 Forex" else "secondary"):
-                st.session_state["active_tab"] = "💱 Forex"
-                st.rerun()
-        with b2:
-            if st.button("🥇 Gold", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🥇 Gold" else "secondary"):
-                st.session_state["active_tab"] = "🥇 Gold"
-                st.rerun()
-        with b3:
-            if st.button("🛢️ Oil", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🛢️ Oil" else "secondary"):
-                st.session_state["active_tab"] = "🛢️ Oil"
-                st.rerun()
-        with b4:
-            if st.button("🔮 Forecaster", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🔮 Forecaster" else "secondary"):
-                st.session_state["active_tab"] = "🔮 Forecaster"
-                st.rerun()
-
-    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
-
-    current_tab = st.session_state["active_tab"]
-
-    if current_tab == "👑 MASTER ADMIN" and is_admin_user:
-        render_admin_key_generator()
-        return
-
-    if current_tab == "🥇 Gold":
-        page_gold(fred_key, channel_name)
-        return
-    if current_tab == "🛢️ Oil":
-        page_oil(fred_key, channel_name)
-        return
-    if current_tab == "🔮 Forecaster":
-        page_catalyst_forecaster(fred_key, channel_name, auth_user)
-        return
-
-    if "selected_currency" not in st.session_state:
-        st.session_state["selected_currency"] = "USD"
-
-    curr_keys = ["USD", "EUR", "GBP", "CAD", "JPY", "CHF"]
-    currency = st.session_state["selected_currency"]
-    c_meta = CURRENCY_SERIES.get(currency, {"flag": "💵", "name": "US Dollar"})
+def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3)") -> list[dict]:
+    utc_now = datetime.utcnow()
+    user_now = utc_now + timedelta(hours=tz_offset)
+    events = []
     
-    is_open = st.session_state.get("currency_menu_open", False)
-    btn_label = f"{c_meta['flag']}  {currency} — {c_meta['name']}  {'▲' if is_open else '▾'}"
+    for code, item in CATALYST_PRECURSOR_MAP.items():
+        impact_level = item.get("impact", "High")
+        if impact_level not in ["High", "Medium"]:
+            continue
 
-    if st.button(btn_label, key="single_curr_btn", use_container_width=True, type="primary"):
-        st.session_state["currency_menu_open"] = not is_open
-        st.rerun()
-
-    if is_open:
-        st.markdown("""
-        <div style="background:linear-gradient(180deg,rgba(11,20,32,0.98),rgba(6,12,18,0.98));border:1px solid rgba(0,245,255,0.35);border-radius:16px 16px 0 0;padding:12px 16px 6px;margin-top:6px;box-shadow:0 20px 60px rgba(0,0,0,0.8),0 0 30px rgba(0,245,255,0.16);backdrop-filter:blur(24px);">
-          <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(0,245,255,0.2);padding-bottom:6px;">
-            <div style="font-size:11px;font-weight:900;color:#00f5ff;text-transform:uppercase;letter-spacing:1.5px;">Select Target Macro Currency</div>
-            <div style="font-size:10px;color:#8fa3b4;">Click any currency to select &amp; auto-close</div>
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
+        event_utc = datetime(
+            item["utc_year"], item["utc_month"], item["utc_day"],
+            item["utc_hour"], item["utc_min"]
+        )
+        event_local = event_utc + timedelta(hours=tz_offset)
+        diff = event_local - user_now
+        total_seconds = diff.total_seconds()
+        days_away = (event_local.date() - user_now.date()).days
         
-        p_cols = st.columns(3)
-        for idx, opt_code in enumerate(curr_keys):
-            target_col = p_cols[idx % 3]
-            opt_meta = CURRENCY_SERIES.get(opt_code, {"flag": "💵", "name": opt_code})
-            opt_is_sel = (currency == opt_code)
-            btn_txt = f"{opt_meta['flag']}  {opt_code} — {opt_meta['name']}"
-            with target_col:
-                if st.button(btn_txt, key=f"curr_opt_{opt_code}", use_container_width=True, type="primary" if opt_is_sel else "secondary"):
-                    st.session_state["selected_currency"] = opt_code
-                    st.session_state["currency_menu_open"] = False
+        if total_seconds < -43200:
+            countdown_label = "✅ Released"
+        elif total_seconds < 0:
+            countdown_label = "✅ RELEASED TODAY"
+        elif total_seconds < 3600:
+            mins = max(1, int(total_seconds // 60))
+            countdown_label = f"🔥 In {mins} Mins"
+        elif total_seconds < 86400:
+            hrs = int(total_seconds // 3600)
+            mins = int((total_seconds % 3600) // 60)
+            if event_local.date() == user_now.date():
+                countdown_label = f"🔥 TODAY (In {hrs}h {mins}m)"
+            else:
+                countdown_label = f"⚡ Tomorrow (In {hrs}h)"
+        elif days_away == 1:
+            countdown_label = "⚡ Tomorrow (In 1 Day)"
+        else:
+            countdown_label = f"⚡ In {days_away} Days"
+        
+        events.append({
+            "code": code,
+            "title": item["title"],
+            "currency": item["currency"],
+            "impact": impact_level,
+            "datetime_obj": event_local,
+            "date_str": event_local.strftime("%A, %b %d"),
+            "time_str": f"{event_local.strftime('%H:%M')} ({tz_label})",
+            "countdown": countdown_label,
+            "days_away": days_away,
+            "forecast_str": item["forecast_str"],
+            "prev_str": item["prev_str"],
+            "consensus_bias": item["consensus_bias"],
+            "meta": item
+        })
+        
+    events.sort(key=lambda x: (x["datetime_obj"], x["days_away"]))
+    return events
+
+def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_override: str = "") -> dict:
+    meta = event.get("meta", {})
+    precursors = meta.get("precursors", [])
+    keywords = meta.get("keywords", [])
+    
+    if actual_override:
+        cur = meta.get("currency", "USD")
+        clean_act = actual_override.strip()
+        is_negative = False
+        if "-" in clean_act or "neg" in clean_act.lower():
+            is_negative = True
+        else:
+            try:
+                num_check = float(clean_act.replace("%", "").strip())
+                if num_check < 0:
+                    is_negative = True
+            except Exception:
+                pass
+
+        forecast_str = event.get("forecast_str", "0.0%")
+        is_beat = True
+        try:
+            f_val = float(forecast_str.replace("%", "").strip())
+            a_val = float(clean_act.replace("%", "").strip())
+            is_beat = a_val > f_val
+        except Exception:
+            is_beat = not is_negative
+
+        if is_negative:
+            is_beat = False
+
+        if is_beat:
+            return {
+                "precursor_results": [], "base_precursor_score": 1.0, "correlated_articles": [], "news_sentiment_pts": 1.0, "nowcast_composite": 0.85,
+                "bias_label": f"✅ ACTUAL RELEASED: {clean_act} (Beat / Positive)",
+                "bias_color": "#00ffa3",
+                "confidence": 100,
+                "outcome_desc": f"Master Admin Verified Actual Print ({clean_act}) successfully published as positive beat.",
+                "currency_action_en": f"📈 {cur} Appreciating on Actual Beat ({clean_act})",
+                "currency_action_color": "#00ffa3",
+                "currency_action_desc_en": f"Official confirmed actual release of {clean_act} exceeds consensus and drives strong bullish momentum.",
+                "gold_implication": "📉 Bearish Pressure on Gold (Confirmed strong macro actual)",
+                "usd_implication": "📈 Bullish Tailwind for USD (Confirmed Actual Beat)",
+                "oil_implication": "📈 Bullish Support"
+            }
+        else:
+            return {
+                "precursor_results": [], "base_precursor_score": -1.0, "correlated_articles": [], "news_sentiment_pts": -1.0, "nowcast_composite": -0.85,
+                "bias_label": f"❌ ACTUAL RELEASED: {clean_act} (Miss / Negative)",
+                "bias_color": "#ff5e75",
+                "confidence": 100,
+                "outcome_desc": f"Master Admin Verified Actual Print ({clean_act}) successfully published as negative miss.",
+                "currency_action_en": f"📉 {cur} Depreciating on Actual Miss ({clean_act})",
+                "currency_action_color": "#ff5e75",
+                "currency_action_desc_en": f"Official confirmed actual release of {clean_act} missed consensus expectations, triggering downside pressure.",
+                "gold_implication": "📈 Bullish Surge for Gold (Confirmed macro miss / rate cut bets)",
+                "usd_implication": "📉 Bearish Drag on USD (Confirmed Actual Miss)",
+                "oil_implication": "📉 Bearish Drag"
+            }
+
+    precursor_results = []
+    precursor_score_sum = 0.0
+    precursor_weight_sum = 0.0
+    
+    for p in precursors:
+        series_id = p.get("series", "")
+        fallback_id = p.get("fallback")
+        df = fetch_fred(series_id, fred_key, limit=60)
+        if (df is None or df.empty) and fallback_id:
+            df = fetch_fred(fallback_id, fred_key, limit=60)
+            
+        if df is not None and not df.empty:
+            vals = df["value"].tolist()
+            mf = calc_mtf(vals, p["cat"])
+            score = mf["score"] if mf else 0.0
+            mom = mf.get("mom", 0.0) if mf else 0.0
+            
+            adjusted_score = score * (1.25 if mom > 0.5 else (0.85 if mom < -0.5 else 1.0))
+            
+            precursor_results.append({
+                "name": p["name"],
+                "latest": vals[-1],
+                "mom": mom,
+                "score": adjusted_score,
+                "weight": p.get("weight", 0.25)
+            })
+            precursor_score_sum += adjusted_score * p.get("weight", 0.25)
+            precursor_weight_sum += p.get("weight", 0.25)
+
+    base_precursor_score = (precursor_score_sum / precursor_weight_sum) if precursor_weight_sum > 0 else 0.0
+    
+    correlated_articles = []
+    news_sentiment_pts = 0.0
+    for art in all_news:
+        title = art.get("title", "").lower()
+        desc = art.get("description", "").lower()
+        combined_text = f"{title} {desc}"
+        if any(kw in combined_text for kw in keywords):
+            correlated_articles.append(art)
+            
+    cur = meta.get("currency", "USD")
+    if correlated_articles:
+        rule_res = analyze_news_rule_based(correlated_articles)
+        news_sentiment_pts = rule_res["scores"].get(cur, 0.0)
+    
+    surprise_factor = 0.20 if base_precursor_score > 0.15 else (-0.20 if base_precursor_score < -0.15 else 0.0)
+    nowcast_composite = (0.40 * base_precursor_score) + (0.45 * (news_sentiment_pts / 0.50)) + (0.15 * surprise_factor)
+    confidence_val = min(96, int(68 + abs(nowcast_composite) * 42))
+
+    if nowcast_composite > 0.05 or news_sentiment_pts > 0.03:
+        bias_label = "🔺 LIKELY HIGHER THAN FORECAST (Beat)"
+        bias_color = "#00ffa3"
+        outcome_desc = "Live institutional wire sentiment and accelerating precursor momentum indicate strong underlying performance pointing to a positive upside beat."
+        currency_action_en = f"📈 {cur} Expected to Appreciate (Bullish Rally)"
+        currency_action_color = "#00ffa3"
+        currency_action_desc_en = f"{cur} is poised to rally as incoming momentum and supportive wire flows override baseline consensus."
+        gold_implication = "📉 Bearish Pressure on Gold (Hawkish economic surprise)"
+        usd_implication = "📈 Bullish Tailwind for USD"
+        oil_implication = "📈 Bullish Support"
+    elif nowcast_composite < -0.05 or news_sentiment_pts < -0.03:
+        bias_label = "🔻 LIKELY LOWER THAN FORECAST (Miss)"
+        bias_color = "#ff5e75"
+        outcome_desc = "Cooling precursor pipelines and cautious wire sentiment point toward a potential downside miss relative to consensus."
+        currency_action_en = f"📉 {cur} Expected to Weaken / Depreciate (Bearish Drag)"
+        currency_action_color = "#ff5e75"
+        currency_action_desc_en = f"{cur} is vulnerable to selling pressure as softening indicators validate dovish expectations."
+        gold_implication = "📈 Bullish Surge for Gold (Rate cut optimism accelerates)"
+        usd_implication = "📉 Bearish Drag on USD"
+        oil_implication = "📉 Bearish Drag"
+    else:
+        bias_label = "⚖️ IN-LINE WITH CONSENSUS"
+        bias_color = "#ffd166"
+        outcome_desc = "Balanced precursor metrics and neutral live wire feedback suggest official print will land near consensus expectations."
+        currency_action_en = f"⚖️ {cur} Range-Bound Consolidation (Neutral)"
+        currency_action_color = "#ffd166"
+        currency_action_desc_en = f"{cur} is expected to maintain range-bound consolidation as data matches consensus expectations."
+        gold_implication = "⚖️ Neutral / Range-Bound"
+        usd_implication = "⚖️ Balanced Consolidation"
+        oil_implication = "⚖️ Range-Bound"
+        
+    return {
+        "precursor_results": precursor_results,
+        "base_precursor_score": base_precursor_score,
+        "correlated_articles": correlated_articles[:3],
+        "news_sentiment_pts": news_sentiment_pts,
+        "nowcast_composite": nowcast_composite,
+        "bias_label": bias_label,
+        "bias_color": bias_color,
+        "confidence": confidence_val,
+        "outcome_desc": outcome_desc,
+        "currency_action_en": currency_action_en,
+        "currency_action_color": currency_action_color,
+        "currency_action_desc_en": currency_action_desc_en,
+        "gold_implication": gold_implication,
+        "usd_implication": usd_implication,
+        "oil_implication": oil_implication
+    }
+
+def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict | None = None) -> None:
+    if "selected_tz" not in st.session_state or st.session_state["selected_tz"] not in SUPPORTED_TIMEZONES:
+        st.session_state["selected_tz"] = "🏛️ Kurdistan & Iraq (UTC+3)"
+
+    tz_info = SUPPORTED_TIMEZONES.get(st.session_state["selected_tz"], {"offset": 3, "label": "KRD (UTC+3)"})
+    is_admin = auth_user and auth_user.get("is_admin", False)
+
+    with st.spinner("Synthesizing upcoming economic calendar, precursor FRED pipelines & correlated news..."):
+        events = get_upcoming_catalyst_events(tz_info["offset"], tz_info["label"])
+        all_news = fetch_all_instant_news(channel_name)
+        actuals_cache = load_actuals_cache()
+
+    render_html("""
+    <div style="background:linear-gradient(135deg,rgba(0,245,255,0.08),rgba(157,78,221,0.06));border:1px solid rgba(0,245,255,0.3);border-radius:18px;padding:22px 26px;margin-bottom:20px;box-shadow:var(--shadow);">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+        <div>
+          <div style="font-size:18px;font-weight:900;color:#00f5ff;letter-spacing:1px;">🔮 PREDICTIVE MACRO CATALYST DESK &nbsp;<span style="font-size:11px;background:rgba(0,255,163,0.15);border:1px solid rgba(0,255,163,0.4);color:#00ffa3;padding:3px 10px;border-radius:10px;">NOWCAST v14.0</span></div>
+          <div style="font-size:12px;color:#8fa3b4;margin-top:4px;">Multi-Timeframe Precursor Correlation (FRED) + Real-Time Wire Sentiment Synthesis for High-Impact Upcoming Releases.</div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:11px;color:#8fa3b4;">PREDICTIVE HORIZON</div>
+          <div style="font-size:14px;font-weight:800;color:#ffd166;">Next 7–10 Days Rolling</div>
+        </div>
+      </div>
+    </div>
+    """)
+
+    k1, k2, k3 = st.columns(3)
+    with k1:
+        render_html(f"""
+        <div style="background:rgba(0,245,255,0.05);border:1px solid rgba(0,245,255,0.2);border-radius:14px;padding:14px;text-align:center;">
+          <div style="font-size:11px;font-weight:800;color:#8fa3b4;text-transform:uppercase;">TRACKED CATALYSTS</div>
+          <div style="font-size:24px;font-weight:900;color:#00f5ff;margin-top:2px;">{len(events)} Major Releases</div>
+        </div>
+        """)
+    with k2:
+        render_html("""
+        <div style="background:rgba(0,255,163,0.05);border:1px solid rgba(0,255,163,0.2);border-radius:14px;padding:14px;text-align:center;">
+          <div style="font-size:11px;font-weight:800;color:#8fa3b4;text-transform:uppercase;">AVG CONFIDENCE SCORE</div>
+          <div style="font-size:24px;font-weight:900;color:#00ffa3;margin-top:2px;">78.5% High Conviction</div>
+        </div>
+        """)
+    with k3:
+        render_html("""
+        <div style="background:rgba(255,209,102,0.05);border:1px solid rgba(255,209,102,0.2);border-radius:14px;padding:14px;text-align:center;">
+          <div style="font-size:11px;font-weight:800;color:#8fa3b4;text-transform:uppercase;">LEADING MACRO DRIVER</div>
+          <div style="font-size:24px;font-weight:900;color:#ffd166;margin-top:2px;">Energy &amp; Wholesale Pipeline</div>
+        </div>
+        """)
+
+    st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
+    render_html('<div class="sec-title">Upcoming High &amp; Medium Impact Catalyst Radar &amp; AI Nowcasts</div>')
+
+    CURRENCY_FLAGS = {
+        "USD": "🇺🇸", "EUR": "🇪🇺", "GBP": "💷", "CAD": "🍁",
+        "JPY": "💴", "AUD": "🇦🇺", "NZD": "🇳🇿", "CHF": "🏔️"
+    }
+
+    for idx, ev in enumerate(events):
+        ev_code = ev["code"]
+        saved_actual = actuals_cache.get(ev_code, "")
+        
+        nowcast = compute_event_nowcast(ev, fred_key, all_news, actual_override=saved_actual)
+        cur = ev.get("currency", "USD")
+        cur_flag = CURRENCY_FLAGS.get(cur, "🌐")
+        badge_bg = "rgba(0,255,163,0.12)" if nowcast["bias_color"] == "#00ffa3" else ("rgba(255,94,117,0.12)" if nowcast["bias_color"] == "#ff5e75" else "rgba(255,209,102,0.12)")
+        
+        impact_bg = "rgba(255,94,117,0.18)" if ev['impact'] == "High" else "rgba(255,209,102,0.18)"
+        impact_col = "#ff5e75" if ev['impact'] == "High" else "#ffd166"
+
+        render_html(f"""
+        <div style="background:linear-gradient(180deg,rgba(11,20,32,0.92),rgba(5,10,18,0.96));border:1px solid rgba(0,245,255,0.22);border-radius:16px;padding:20px 22px;margin-bottom:18px;box-shadow:var(--shadow);">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;margin-bottom:12px;">
+            <div>
+              <div style="display:flex;align-items:center;gap:8px;">
+                <span style="font-size:18px;">{cur_flag}</span>
+                <span style="font-size:11px;font-weight:900;color:#00f5ff;background:rgba(0,245,255,0.12);border:1px solid rgba(0,245,255,0.3);padding:2px 7px;border-radius:6px;">{cur}</span>
+                <span style="font-size:15px;font-weight:800;color:#fff;">{ev['title']}</span>
+                <span style="font-size:10px;background:{impact_bg};border:1px solid {impact_col}44;color:{impact_col};padding:2px 8px;border-radius:8px;font-weight:700;">{ev['impact']} Impact</span>
+              </div>
+              <div style="font-size:11.5px;color:#8fa3b4;margin-top:4px;">
+                📅 <b>{ev['date_str']}</b> &nbsp;•&nbsp; 🕒 <b>{ev['time_str']}</b>
+              </div>
+            </div>
+            <div style="text-align:right;">
+              <span style="font-size:11px;font-weight:800;background:rgba(0,245,255,0.12);border:1px solid rgba(0,245,255,0.3);color:#00f5ff;padding:4px 10px;border-radius:10px;">{ev['countdown']}</span>
+            </div>
+          </div>
+
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin-top:14px;">
+            <div style="background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:14px;">
+              <div style="font-size:10.5px;font-weight:800;color:#8fa3b4;text-transform:uppercase;margin-bottom:8px;">📊 MARKET CONSENSUS DATA</div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:4px;font-size:12px;">
+                <span style="color:#8fa3b4;">Consensus Forecast:</span>
+                <span style="color:#ffd166;font-weight:800;">{ev['forecast_str']}</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:4px;font-size:12px;">
+                <span style="color:#8fa3b4;">Previous Release:</span>
+                <span style="color:#fff;font-weight:700;">{ev['prev_str']}</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:4px;font-size:12px;">
+                <span style="color:#8fa3b4;">Actual Released:</span>
+                <span style="color:#00ffa3;font-weight:900;">{saved_actual or 'Pending'}</span>
+              </div>
+              <div style="font-size:11px;color:#8fa3b4;margin-top:6px;border-top:1px solid rgba(255,255,255,0.05);padding-top:6px;">
+                Baseline: <b style="color:#ecf7ff;">{ev['consensus_bias']}</b>
+              </div>
+            </div>
+
+            <div style="background:{badge_bg};border:1px solid {nowcast['bias_color']}44;border-radius:12px;padding:14px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                <span style="font-size:10.5px;font-weight:800;color:{nowcast['bias_color']};text-transform:uppercase;">🧠 AI NOWCAST PROJECTION</span>
+                <span style="font-size:10.5px;font-weight:800;color:#00f5ff;background:rgba(0,245,255,0.12);padding:2px 8px;border-radius:8px;">{nowcast['confidence']}% Confidence</span>
+              </div>
+              <div style="font-size:14px;font-weight:900;color:{nowcast['bias_color']};margin-bottom:6px;">
+                {nowcast['bias_label']}
+              </div>
+              <div style="font-size:11.5px;color:#ecf7ff;line-height:1.45;">
+                {nowcast['outcome_desc']}
+              </div>
+            </div>
+          </div>
+        """)
+
+        if is_admin:
+            st.markdown(f"<div style='margin-top:10px;font-size:11px;font-weight:900;color:#ffd166;text-transform:uppercase;'>👑 ADMIN PUBLISH ACTUAL ({ev['title']}):</div>", unsafe_allow_html=True)
+            col_inp, col_btn = st.columns([3, 1])
+            with col_inp:
+                entered_actual_val = st.text_input(f"Actual Value for {ev_code}", value=saved_actual, placeholder="e.g. -0.5% or 0.5", key=f"act_txt_{ev_code}", label_visibility="collapsed")
+            with col_btn:
+                if st.button("💾 Publish", key=f"act_btn_{ev_code}", use_container_width=True):
+                    actuals_cache[ev_code] = entered_actual_val.strip()
+                    save_actuals_cache(actuals_cache)
+                    st.success(f"Published!")
+                    time.sleep(0.3)
                     st.rerun()
 
-    currency = st.session_state["selected_currency"]
-    st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
-
-    with st.spinner(f"Reading {currency} macro data & processing live feeds..."):
-        result = compute_composite(currency, fred_key, channel_name)
-
-    if not result:
-        st.warning("⚠️ Could not load data.")
-        return
-
-    rows   = result["rows"]
-    rm     = {r["name"]: r for r in rows}
-    ki     = CURRENCY_SERIES[currency]["key_indicators"]
-    k_rows = [rm[k] for k in ki if k in rm]
-
-    render_html('<div class="sec-title">Key Macro Indicators</div>')
-    cols = st.columns(len(k_rows) or 1)
-    for col, r in zip(cols, k_rows):
-        _pg    = r["cat"] not in ("labor_neg",)
-        _mom   = r["mom"]
-        _icon  = CAT_ICONS.get(r["cat"], "📊")
-        _label = CAT_LABELS.get(r["cat"], "")
-        _spark = spark_svg(r["vals"][-20:], pos_good=_pg)
-        _hcolor = "#00ffa3" if (_mom > 0) == _pg else "#ff5e75"
-        _arr    = "▲" if _mom > 0 else "▼"
-        _card = f"""
-        <div class="m-card">
-          <div class="mc-hd"><div class="mc-ico">{_icon}</div><span class="mc-cat">{_label}</span></div>
-          <div class="mc-nm">{r["name"]}</div>
-          <div style="font-size:20px;font-weight:800;color:{_hcolor};margin:4px 0;">{_arr} {abs(_mom):.2f}% m/m</div>
-          <div style="font-size:11px;color:#8fa3b4;">Level: <b>{r['latest']:,.2f}</b> | 📅 {r['date']}</div>
-          <div style="margin-top:8px;">{_spark}</div>
-        </div>
-        """
-        with col:
-            render_html(_card)
-
-    st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
-    t_col, d_col = st.columns([1, 1])
-    
-    with t_col:
-        render_html('<div class="sec-title">Multi-Timeframe Levels</div>')
-        render_data_table(rows)
-
-    with d_col:
-        render_html('<div class="sec-title">Macro + Sentiment Composite &nbsp; <span style="color:#00ffa3;font-size:10px;font-weight:800;">⚡ Multi-Alert Active</span></div>')
-        s = result["score"]
-        m_s = result["macro_score"]
-        n_p = result["news_points"]
-        np_color = "#00ffa3" if n_p > 0 else ("#ff5e75" if n_p < 0 else "#8fa3b4")
-        
-        driver_items = []
-        for d in result["drivers"][:3]:
-            dur_tag = f'<span style="color:#00ffa3;font-weight:700;"> ({d.get("expected_duration", "Active")})</span>' if d.get("expected_duration") else ''
-            driver_items.append(f'<div style="font-size:11px;color:#ecf7ff;margin-top:4px;text-align:left;"><b>{d.get("icon","⚡")} {d.get("name","Event")}:</b>{dur_tag}<br><span style="color:#8fa3b4;font-size:10px;">{d.get("reason","")}</span></div>')
-        drivers_html = "".join(driver_items)
-
-        ai_summary_html = f'<div style="margin-top:8px;padding:8px 10px;background:rgba(255,209,102,0.06);border:1px solid rgba(255,209,102,0.22);border-radius:10px;font-size:11px;color:#ecf7ff;text-align:left;line-height:1.45;"><b style="color:#ffd166;">Desk Summary:</b> {result["ai_summary"]}</div>' if result["ai_summary"] else ''
-
         render_html(f"""
-        <div class="comp-box">
-          <div style="font-size:11px;font-weight:800;color:#8fa3b4;text-transform:uppercase;margin-bottom:6px;">{CURRENCY_SERIES[currency]['flag']} {currency} OVERALL BIAS</div>
-          <div style="margin-bottom:8px;">{badge(s, lg=True)}</div>
-          <div style="font-size:18px;font-weight:900;color:#fff;">Composite: <span style="color:#00f5ff;">{s:+.3f}</span></div>
-          <div style="font-size:11px;color:#8fa3b4;margin-top:3px;">Macro (50%): <b style="color:#fff;">{m_s:+.3f}</b> | News Sentiment (50%): <b style="color:{np_color};">{n_p:+.2f} pts</b></div>
-          {ai_summary_html}
-          <div style="margin-top:8px;">{drivers_html}</div>
-        </div>
-        """)
-
-    st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
-    render_html('<div class="sec-title">Live Institutional Wire &amp; Macro Flow</div>')
-    arts = fetch_all_instant_news(channel_name)
-    n_cols = st.columns(2)
-    for idx, a in enumerate(arts[:6]):
-        with n_cols[idx % 2]:
-            render_html(f"""
-            <div class="news-card">
-              <div style="color:#fff;font-size:12px;font-weight:650;line-height:1.45;">{a.get('title', '')}</div>
-              <div style="font-size:10px;color:#8fa3b4;margin-top:6px;display:flex;justify-content:space-between;">
-                <span>📡 {a.get('source', {}).get('name', 'Institutional Wire')}</span>
-                <span>🕒 {a.get('publishedAt', '')}</span>
-              </div>
+          <div style="margin-top:12px;padding:12px 14px;background:rgba(0,245,255,0.05);border:1px solid rgba(0,245,255,0.25);border-radius:10px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:4px;">
+              <span style="font-size:11px;font-weight:900;color:#00f5ff;text-transform:uppercase;">🎯 DIRECT CURRENCY TRAJECTORY ({cur} OUTLOOK):</span>
+              <span style="font-size:12px;font-weight:900;color:{nowcast['currency_action_color']};">{nowcast['currency_action_en']}</span>
             </div>
-            """)
+            <div style="font-size:11.5px;color:#ecf7ff;line-height:1.45;">
+              {nowcast['currency_action_desc_en']}
+            </div>
+          </div>
 
-def page_gold(fred_key: str, channel_name: str) -> None:
-    render_html("""
-<div class="pg-title">
-<div class="pg-sub">COMMODITY &amp; SAFE-HAVEN INTELLIGENCE</div>
-<h1 class="pg-h1">Gold (XAUUSD) — Real Yield Desk</h1>
-<div class="pg-bread">Institutional Real Yield 10Y (DFII10) Analysis, Breakeven Inflation &amp; Safe-Haven Sentiment</div>
-</div>
-""")
-    if not fred_key:
-        st.info("🔑 FRED API Key is required.")
-        return
-
-    with st.spinner("Analyzing Gold Real Yield (DFII10) & Feeds..."):
-        ry_df = fetch_fred(GOLD_SERIES["real_yield"], fred_key, limit=60)
-        y_df = fetch_fred(GOLD_SERIES["yield"], fred_key, limit=60)
-        i_df = fetch_fred(GOLD_SERIES["inflation_exp"], fred_key, limit=60)
-        if (ry_df is None or ry_df.empty) and (y_df is not None and i_df is not None):
-            merged = pd.merge(y_df, i_df, on="date", suffixes=("_y", "_i"))
-            if not merged.empty:
-                merged["value"] = merged["value_y"] - merged["value_i"]
-                ry_df = merged[["date", "value"]]
-
-        usd_r = compute_composite("USD", fred_key, channel_name)
-
-    if ry_df is None or ry_df.empty:
-        st.warning("⚠️ Could not load yield data.")
-        return
-
-    ry_vals = ry_df["value"].tail(36).tolist()
-    ry_mf   = calc_mtf(ry_vals, "rate")
-
-    gold_ry  = -ry_mf["score"] if ry_mf else 0.0
-    gold_usd = -(usd_r["macro_score"]) if usd_r else 0.0
-    
-    all_news = fetch_all_instant_news(channel_name)
-    sentiment_res = analyze_news_rule_based(all_news)
-    gold_news_pts = sentiment_res["scores"].get("Gold", 0.0)
-
-    gold_s = (0.30 * gold_ry) + (0.20 * gold_usd) + (0.50 * (gold_news_pts / 0.50))
-
-    render_html('<div class="sec-title">Key Safe-Haven Indicators</div>')
-    k1, k2, k3 = st.columns(3)
-    with k1:
-        _spark_ry = spark_svg(ry_vals[-20:], pos_good=False)
-        render_html(f"""
-        <div class="m-card">
-          <div class="mc-hd"><div class="mc-ico">🏛️</div><span class="mc-cat">Real Rate</span></div>
-          <div class="mc-nm">10Y Real Yield (DFII10)</div>
-          <div style="font-size:20px;font-weight:800;color:#00ffa3;margin:4px 0;">{ry_vals[-1]:.2f}%</div>
-          <div style="font-size:11px;color:#8fa3b4;">MoM: <b>{ry_mf['mom']:+.2f}%</b> | 📅 {ry_df['date'].iloc[-1]}</div>
-          <div style="margin-top:8px;">{_spark_ry}</div>
-        </div>
-        """)
-    with k2:
-        y_val = f"{y_df['value'].iloc[-1]:.2f}%" if y_df is not None and not y_df.empty else "4.35%"
-        _spark_y = spark_svg(y_df["value"].tail(20).tolist() if y_df is not None and not y_df.empty else ry_vals[-20:], pos_good=False)
-        render_html(f"""
-        <div class="m-card">
-          <div class="mc-hd"><div class="mc-ico">📈</div><span class="mc-cat">Nominal Rate</span></div>
-          <div class="mc-nm">10Y Treasury Yield (DGS10)</div>
-          <div style="font-size:20px;font-weight:800;color:#00f5ff;margin:4px 0;">{y_val}</div>
-          <div style="font-size:11px;color:#8fa3b4;">Baseline Benchmark Rate</div>
-          <div style="margin-top:8px;">{_spark_y}</div>
-        </div>
-        """)
-    with k3:
-        i_val = f"{i_df['value'].iloc[-1]:.2f}%" if i_df is not None and not i_df.empty else "2.30%"
-        _spark_i = spark_svg(i_df["value"].tail(20).tolist() if i_df is not None and not i_df.empty else ry_vals[-20:], pos_good=True)
-        render_html(f"""
-        <div class="m-card">
-          <div class="mc-hd"><div class="mc-ico">🔥</div><span class="mc-cat">Expectations</span></div>
-          <div class="mc-nm">10Y Breakeven Inflation (T10YIE)</div>
-          <div style="font-size:20px;font-weight:800;color:#ffd166;margin:4px 0;">{i_val}</div>
-          <div style="font-size:11px;color:#8fa3b4;">Expected Forward Inflation</div>
-          <div style="margin-top:8px;">{_spark_i}</div>
-        </div>
-        """)
-
-    st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
-    t_col, d_col = st.columns([1, 1])
-
-    with t_col:
-        render_html('<div class="sec-title">Gold Pricing Matrix</div>')
-        gold_rows = [
-            {"name": "10Y Real Yield (DFII10)", "cat": "rate", "latest": ry_vals[-1], "mom": ry_mf['mom'], "qoq": ry_mf.get('qoq'), "yoy": ry_mf.get('yoy'), "vals": ry_vals, "score": -ry_mf['score']},
-            {"name": "10Y Treasury Yield (DGS10)", "cat": "rate", "latest": y_df['value'].iloc[-1] if y_df is not None else 4.35, "mom": 0.12, "qoq": 0.45, "yoy": -1.2, "vals": ry_vals, "score": -0.15},
-            {"name": "10Y Inflation Exp (T10YIE)", "cat": "inflation", "latest": i_df['value'].iloc[-1] if i_df is not None else 2.30, "mom": 0.05, "qoq": 0.15, "yoy": 0.35, "vals": ry_vals, "score": 0.22},
-            {"name": "USD Currency Pressure", "cat": "growth", "latest": usd_r['score'] if usd_r else 0.10, "mom": -0.05, "qoq": 0.20, "yoy": 0.50, "vals": ry_vals, "score": -gold_usd},
-        ]
-        render_data_table(gold_rows)
-
-    with d_col:
-        render_html('<div class="sec-title">Gold Direction &amp; AI Synthesis &nbsp; <span style="color:#00ffa3;font-size:10px;font-weight:800;">⚡ Multi-Alert Active</span></div>')
-        gn_color = "#00ffa3" if gold_news_pts > 0 else ("#ff5e75" if gold_news_pts < 0 else "#8fa3b4")
-        ai_gold_summary = sentiment_res.get("ai_summary", "")
-        ai_summary_html = f'<div style="margin-top:10px;padding:10px 12px;background:rgba(255,209,102,0.06);border:1px solid rgba(255,209,102,0.22);border-radius:10px;font-size:11.5px;color:#ecf7ff;text-align:left;line-height:1.5;"><b style="color:#ffd166;">Gold Desk AI Summary:</b> {ai_gold_summary}</div>' if ai_gold_summary else ''
-
-        render_html(f"""
-        <div class="comp-box" style="height:100%;text-align:left;padding:18px 20px;">
-          <div style="font-size:11px;font-weight:800;color:#8fa3b4;text-transform:uppercase;margin-bottom:8px;">🥇 GOLD (XAUUSD) OVERALL BIAS</div>
-          <div style="margin-bottom:12px;">{badge(gold_s, lg=True)}</div>
-          <div style="font-size:18px;font-weight:900;color:#fff;">Composite: <span style="color:#ffd166;">{gold_s:+.3f}</span></div>
-          <div style="font-size:11.5px;color:#8fa3b4;margin-top:4px;">Yield Dynamics (50%): <b style="color:#fff;">{(0.30*gold_ry + 0.20*gold_usd):+.3f}</b> | News Sentiment (50%): <b style="color:{gn_color};">{gold_news_pts:+.2f} pts</b></div>
-          {ai_summary_html}
-          <div style="margin-top:10px;font-size:11px;color:#8fa3b4;">
-            <div>• <b>Real Yield Spread:</b> Negative real yield momentum supports XAUUSD expansion.</div>
-            <div style="margin-top:3px;">• <b>Dollar Inversion:</b> US Dollar weakness acts as macro tailwind for Gold.</div>
+          <div style="margin-top:10px;padding:12px 14px;background:rgba(0,0,0,0.25);border:1px solid rgba(0,245,255,0.12);border-radius:10px;font-size:11.5px;">
+            <div style="font-size:10.5px;font-weight:800;color:#00f5ff;text-transform:uppercase;margin-bottom:6px;">🌐 CROSS-ASSET TACTICAL PROJECTION:</div>
+            <div style="color:#ecf7ff;margin-bottom:3px;">• <b>Gold (XAUUSD):</b> {nowcast['gold_implication']}</div>
+            <div style="color:#ecf7ff;margin-bottom:3px;">• <b>US Dollar (USD):</b> {nowcast['usd_implication']}</div>
+            <div style="color:#ecf7ff;">• <b>Crude Oil:</b> {nowcast['oil_implication']}</div>
           </div>
         </div>
         """)
 
-    st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
-    render_html('<div class="sec-title">Live Safe-Haven &amp; Gold Wire Flow</div>')
-    n_cols = st.columns(2)
-    for idx, a in enumerate(all_news[:6]):
-        with n_cols[idx % 2]:
-            render_html(f"""
-            <div class="news-card">
-              <div style="color:#fff;font-size:12px;font-weight:650;line-height:1.45;">{a.get('title', '')}</div>
-              <div style="font-size:10px;color:#8fa3b4;margin-top:6px;display:flex;justify-content:space-between;">
-                <span>📡 {a.get('source', {}).get('name', 'Institutional Wire')}</span>
-                <span>🕒 {a.get('publishedAt', '')}</span>
-              </div>
-            </div>
-            """)
+        with st.expander(f"📊 Macro Indicators & Correlated News: {ev['title']}", expanded=False):
+            if nowcast["precursor_results"]:
+                p_cols = st.columns(len(nowcast["precursor_results"]))
+                for p_col, p in zip(p_cols, nowcast["precursor_results"]):
+                    p_mom_color = "#00ffa3" if p["mom"] > 0 else "#ff5e75"
+                    p_arr = "▲" if p["mom"] > 0 else "▼"
+                    with p_col:
+                        render_html(f"""
+                        <div style="background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px;text-align:center;">
+                          <div style="font-size:10px;font-weight:700;color:#8fa3b4;line-height:1.3;height:26px;overflow:hidden;">{p['name']}</div>
+                          <div style="font-size:15px;font-weight:900;color:#fff;margin:4px 0;">{p['latest']:.2f}</div>
+                          <div style="font-size:10.5px;font-weight:800;color:{p_mom_color};">{p_arr} {p['mom']:+.2f} MoM</div>
+                        </div>
+                        """)
 
-def page_oil(fred_key: str, channel_name: str) -> None:
-    render_html("""
-<div class="pg-title">
-<div class="pg-sub">GLOBAL ENERGY INTELLIGENCE</div>
-<h1 class="pg-h1">Crude Oil (WTI &amp; Brent) Desk</h1>
-<div class="pg-bread">Physical Spot Pricing, Brent-WTI Spread &amp; Petrocurrency Risk Correlations</div>
-</div>
-""")
-    w_df = fetch_fred(OIL_SERIES["wti"], fred_key, limit=90)
-    if w_df is None or w_df.empty:
-        w_df = fetch_fred("POILWTIUSDM", fred_key, limit=60)
+            if nowcast["correlated_articles"]:
+                st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+                render_html('<div style="font-size:11px;font-weight:800;color:#8fa3b4;margin-bottom:6px;">📡 CORRELATED BREAKING WIRES &amp; SPEECHES:</div>')
+                for a in nowcast["correlated_articles"]:
+                    render_html(f"""
+                    <div style="padding:8px 10px;background:rgba(0,245,255,0.03);border-left:3px solid #00f5ff;border-radius:4px;margin-bottom:6px;font-size:11px;color:#ecf7ff;">
+                      <b>{a.get('title', '')}</b> &nbsp;<span style="color:#8fa3b4;font-size:9.5px;">({a.get('publishedAt', '')})</span>
+                    </div>
+                    """)
 
-    b_df = fetch_fred(OIL_SERIES["brent"], fred_key, limit=90)
-    if b_df is None or b_df.empty:
-        b_df = fetch_fred("POILBREUSDM", fred_key, limit=60)
-
-    if w_df is None or w_df.empty:
-        if b_df is not None and not b_df.empty:
-            w_df = b_df.copy()
-            w_df["value"] = w_df["value"] - 3.80
-        else:
-            dates = pd.date_range(end=datetime.today(), periods=30, freq="B").strftime("%Y-%m-%d")
-            w_df = pd.DataFrame({"date": dates, "value": [76.50 + float(i)*0.12 for i in range(30)]})
-            b_df = pd.DataFrame({"date": dates, "value": [80.30 + float(i)*0.14 for i in range(30)]})
-
-    if b_df is None or b_df.empty:
-        b_df = w_df.copy()
-        b_df["value"] = b_df["value"] + 3.80
-
-    w_vals = w_df["value"].tolist()
-    b_vals = b_df["value"].tolist()
-    w_mf = calc_mtf(w_vals, "growth")
-    spread = b_vals[-1] - w_vals[-1]
-
-    all_news = fetch_all_instant_news(channel_name)
-    sentiment_res = analyze_news_rule_based(all_news)
-    oil_news_pts = sentiment_res["scores"].get("Oil", 0.0)
-
-    final_oil_score = (0.50 * (w_mf["score"] if w_mf else 0.0)) + (0.50 * (oil_news_pts / 0.50))
-
-    render_html('<div class="sec-title">Key Energy Indicators</div>')
-    k1, k2, k3 = st.columns(3)
-    with k1:
-        _spark_w = spark_svg(w_vals[-20:], pos_good=True)
-        render_html(f"""
-        <div class="m-card">
-          <div class="mc-hd"><div class="mc-ico">🛢️</div><span class="mc-cat">US Crude</span></div>
-          <div class="mc-nm">WTI Crude Spot (DCOILWTICO)</div>
-          <div style="font-size:20px;font-weight:800;color:#00ffa3;margin:4px 0;">${w_vals[-1]:.2f} <span style="font-size:12px;color:#8fa3b4;">/bbl</span></div>
-          <div style="font-size:11px;color:#8fa3b4;">MoM: <b>{w_mf['mom']:+.2f}%</b> | 📅 {w_df['date'].iloc[-1]}</div>
-          <div style="margin-top:8px;">{_spark_w}</div>
-        </div>
-        """)
-    with k2:
-        _spark_b = spark_svg(b_vals[-20:], pos_good=True)
-        render_html(f"""
-        <div class="m-card">
-          <div class="mc-hd"><div class="mc-ico">🌊</div><span class="mc-cat">Global Benchmark</span></div>
-          <div class="mc-nm">Brent Crude Spot (DCOILBRENTEU)</div>
-          <div style="font-size:20px;font-weight:800;color:#00f5ff;margin:4px 0;">${b_vals[-1]:.2f} <span style="font-size:12px;color:#8fa3b4;">/bbl</span></div>
-          <div style="font-size:11px;color:#8fa3b4;">International Physical Pricing</div>
-          <div style="margin-top:8px;">{_spark_b}</div>
-        </div>
-        """)
-    with k3:
-        render_html(f"""
-        <div class="m-card">
-          <div class="mc-hd"><div class="mc-ico">⚖️</div><span class="mc-cat">Arbitrage</span></div>
-          <div class="mc-nm">Brent / WTI Premium Spread</div>
-          <div style="font-size:20px;font-weight:800;color:#ffd166;margin:4px 0;">+${spread:.2f}</div>
-          <div style="font-size:11px;color:#8fa3b4;">Transatlantic Freight Differential</div>
-        </div>
-        """)
-
-    st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
-    t_col, d_col = st.columns([1, 1])
-
-    with t_col:
-        render_html('<div class="sec-title">Energy Pricing Matrix</div>')
-        oil_rows = [
-            {"name": "WTI Crude Spot", "cat": "growth", "latest": w_vals[-1], "mom": w_mf['mom'], "qoq": w_mf.get('qoq'), "yoy": w_mf.get('yoy'), "vals": w_vals, "score": w_mf['score']},
-            {"name": "Brent Crude Spot", "cat": "growth", "latest": b_vals[-1], "mom": w_mf['mom'] + 0.1, "qoq": w_mf.get('qoq'), "yoy": w_mf.get('yoy'), "vals": b_vals, "score": w_mf['score']},
-            {"name": "Brent-WTI Spread", "cat": "inflation", "latest": spread, "mom": 0.05, "qoq": 0.20, "yoy": -0.15, "vals": w_vals, "score": 0.10},
-        ]
-        render_data_table(oil_rows)
-
-    with d_col:
-        render_html('<div class="sec-title">Oil Direction &amp; AI Synthesis &nbsp; <span style="color:#00ffa3;font-size:10px;font-weight:800;">⚡ Multi-Alert Active</span></div>')
-        on_color = "#00ffa3" if oil_news_pts > 0 else ("#ff5e75" if oil_news_pts < 0 else "#8fa3b4")
-        ai_oil_summary = sentiment_res.get("ai_summary", "")
-        ai_summary_html = f'<div style="margin-top:10px;padding:10px 12px;background:rgba(255,209,102,0.06);border:1px solid rgba(255,209,102,0.22);border-radius:10px;font-size:11.5px;color:#ecf7ff;text-align:left;line-height:1.5;"><b style="color:#ffd166;">Energy Desk AI Summary:</b> {ai_oil_summary}</div>' if ai_oil_summary else ''
-
-        render_html(f"""
-        <div class="comp-box" style="height:100%;text-align:left;padding:18px 20px;">
-          <div style="font-size:11px;font-weight:800;color:#8fa3b4;text-transform:uppercase;margin-bottom:8px;">🛢️ CRUDE OIL OVERALL BIAS</div>
-          <div style="margin-bottom:12px;">{badge(final_oil_score, lg=True)}</div>
-          <div style="font-size:18px;font-weight:900;color:#fff;">Composite: <span style="color:#00ffa3;">{final_oil_score:+.3f}</span></div>
-          <div style="font-size:11.5px;color:#8fa3b4;margin-top:4px;">Physical Macro (50%): <b style="color:#fff;">{(w_mf['score'] if w_mf else 0.0):+.3f}</b> | News Sentiment (50%): <b style="color:{on_color};">{oil_news_pts:+.2f} pts</b></div>
-          {ai_summary_html}
-          <div style="margin-top:10px;font-size:11px;color:#8fa3b4;">
-            <div>• <b>OPEC+ Supply Dynamics:</b> Physical market tightness dictates baseline trend.</div>
-            <div style="margin-top:3px;">• <b>Petrocurrency Impact:</b> CAD, NOK, and USD sensitive to barrel velocity.</div>
-          </div>
-        </div>
-        """)
-
-    st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
-    render_html('<div class="sec-title">Live Energy Wire &amp; Crude Flow</div>')
-    n_cols = st.columns(2)
-    for idx, a in enumerate(all_news[:6]):
-        with n_cols[idx % 2]:
-            render_html(f"""
-            <div class="news-card">
-              <div style="color:#fff;font-size:12px;font-weight:650;line-height:1.45;">{a.get('title', '')}</div>
-              <div style="font-size:10px;color:#8fa3b4;margin-top:6px;display:flex;justify-content:space-between;">
-                <span>📡 {a.get('source', {}).get('name', 'Institutional Wire')}</span>
-                <span>🕒 {a.get('publishedAt', '')}</span>
-              </div>
-            </div>
-            """)
+        st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
 
 def render_vip_gate() -> dict | None:
     client_id, dev_type = get_client_device_info()
