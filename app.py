@@ -479,6 +479,27 @@ div[data-testid="stPopover"] > button {
 .app-foot{display:flex;justify-content:space-between;align-items:center;padding:16px 10px;margin-top:30px;border-top:1px solid rgba(0,245,255,.08);font-size:10.5px;color:#5f7382;}.live-dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 10px rgba(0,255,163,.8);display:inline-block;margin-right:5px;}
 
 @media (max-width:1050px){.top-bar{flex-direction:column;align-items:stretch;gap:10px}.top-tickers{justify-content:flex-start}.main .block-container{padding-left:14px!important;padding-right:14px!important}.pg-h1{font-size:28px;}}
+
+
+/* ===== Forecaster v15 visual system — presentation only ===== */
+.fc-hero{background:linear-gradient(135deg,rgba(0,245,255,.075),rgba(173,123,255,.055));border:1px solid rgba(0,245,255,.20);border-radius:20px;padding:20px 22px;margin-bottom:16px;box-shadow:var(--shadow);position:relative;overflow:hidden}
+.fc-hero:after{content:'';position:absolute;width:260px;height:260px;border-radius:50%;right:-110px;top:-150px;background:rgba(0,245,255,.07);filter:blur(14px);pointer-events:none}
+.fc-hero-row{display:flex;justify-content:space-between;gap:18px;align-items:center;position:relative;z-index:1}
+.fc-eyebrow{font-size:9px;font-weight:900;letter-spacing:2px;color:#79dff0;text-transform:uppercase;margin-bottom:5px}
+.fc-title{font-size:22px;font-weight:900;color:#fff;letter-spacing:-.25px}
+.fc-sub{font-size:11.5px;color:#8fa3b4;line-height:1.55;margin-top:5px;max-width:760px}
+.fc-live{display:inline-flex;align-items:center;gap:6px;margin-top:10px;font-size:9.5px;font-weight:850;color:#00ffa3;background:rgba(0,255,163,.07);border:1px solid rgba(0,255,163,.22);padding:5px 9px;border-radius:999px}
+.fc-horizon{text-align:right;min-width:150px}.fc-horizon-lbl{font-size:9px;color:#718795;font-weight:850;letter-spacing:1px}.fc-horizon-val{font-size:13px;color:#ffd166;font-weight:900;margin-top:3px}
+.fc-event{background:linear-gradient(180deg,rgba(12,21,31,.92),rgba(6,12,19,.94));border:1px solid rgba(150,210,225,.12);border-radius:18px;margin:0 0 14px;box-shadow:0 12px 35px rgba(0,0,0,.28);overflow:hidden}
+.fc-event-top{padding:15px 17px;border-bottom:1px solid rgba(255,255,255,.055);display:flex;justify-content:space-between;gap:12px;align-items:center}
+.fc-event-id{display:flex;align-items:center;gap:9px;min-width:0}.fc-flag{font-size:20px}.fc-cur{font-size:9px;font-weight:900;color:#00f5ff;background:rgba(0,245,255,.08);border:1px solid rgba(0,245,255,.20);padding:3px 7px;border-radius:6px}.fc-event-name{font-size:14px;font-weight:850;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:650px}
+.fc-impact{font-size:9px;font-weight:850;padding:3px 7px;border-radius:999px}.fc-high{color:#ff788a;background:rgba(255,94,117,.08);border:1px solid rgba(255,94,117,.22)}.fc-medium{color:#ffd166;background:rgba(255,209,102,.07);border:1px solid rgba(255,209,102,.20)}
+.fc-time{font-size:10.5px;color:#8fa3b4;margin-top:5px}.fc-count{font-size:10px;font-weight:850;color:#00f5ff;background:rgba(0,245,255,.07);border:1px solid rgba(0,245,255,.20);padding:6px 9px;border-radius:8px;white-space:nowrap}
+.fc-body{padding:15px 17px 17px}.fc-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin-bottom:11px}.fc-metric{padding:10px 11px;background:rgba(255,255,255,.018);border:1px solid rgba(255,255,255,.06);border-radius:10px}.fc-metric-l{font-size:8.5px;font-weight:850;color:#718795;text-transform:uppercase;letter-spacing:.75px}.fc-metric-v{font-size:15px;font-weight:900;color:#fff;margin-top:3px}.fc-metric-note{font-size:9px;color:#687b88;margin-top:2px}
+.fc-nowcast{border-radius:12px;padding:13px 14px;display:grid;grid-template-columns:minmax(0,1.65fr) minmax(190px,.65fr);gap:14px;align-items:center}.fc-now-lbl{font-size:9px;font-weight:900;text-transform:uppercase;letter-spacing:.9px}.fc-now-title{font-size:15px;font-weight:900;margin:4px 0 5px}.fc-now-desc{font-size:10.8px;color:#d8e4eb;line-height:1.5}.fc-score{text-align:right}.fc-score-num{font-size:22px;font-weight:950}.fc-score-cap{font-size:8.5px;color:#718795;text-transform:uppercase;font-weight:850;letter-spacing:.8px}
+.fc-outlook{display:grid;grid-template-columns:1.45fr repeat(3,.72fr);gap:8px;margin-top:10px}.fc-outlook-main,.fc-asset{background:rgba(0,0,0,.18);border:1px solid rgba(255,255,255,.055);border-radius:10px;padding:10px}.fc-outlook-main{border-color:rgba(0,245,255,.13)}.fc-small-lbl{font-size:8.5px;color:#718795;text-transform:uppercase;font-weight:850;letter-spacing:.7px}.fc-main-action{font-size:11.5px;font-weight:900;margin-top:4px}.fc-main-desc{font-size:9.8px;color:#92a5b1;line-height:1.4;margin-top:3px}.fc-asset{font-size:10px;color:#dce7ed;line-height:1.35}.fc-asset b{display:block;color:#fff;margin-bottom:3px}
+.fc-ai{margin-top:10px;background:rgba(8,15,23,.72);border:1px solid rgba(173,123,255,.16);border-radius:12px;padding:12px}.fc-ai-head{display:flex;justify-content:space-between;gap:8px;align-items:center}.fc-ai-title{font-size:9px;font-weight:900;color:#ad7bff;letter-spacing:1px;text-transform:uppercase}.fc-ai-conf{font-size:9px;font-weight:850;color:#00ffa3}.fc-ai-assess{font-size:12px;font-weight:850;color:#fff;margin-top:6px}.fc-ai-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:8px}.fc-ai-box{background:rgba(255,255,255,.018);border:1px solid rgba(255,255,255,.055);border-radius:8px;padding:8px;font-size:9.8px;color:#dce7ed;line-height:1.4}.fc-ai-box b{font-size:8.5px;letter-spacing:.6px}.fc-ai-foot{font-size:9.5px;color:#8397a4;margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.05)}
+@media(max-width:760px){.fc-hero-row,.fc-event-top{align-items:flex-start;flex-direction:column}.fc-horizon{text-align:left}.fc-event-name{white-space:normal;max-width:none}.fc-metrics{grid-template-columns:1fr 1fr}.fc-nowcast{grid-template-columns:1fr}.fc-score{text-align:left}.fc-outlook{grid-template-columns:1fr 1fr}.fc-outlook-main{grid-column:1/-1}.fc-ai-grid{grid-template-columns:1fr}.fc-body{padding:12px}.fc-event-top{padding:12px}.fc-title{font-size:19px}}
 </style>
 """)
 
@@ -2062,61 +2083,45 @@ EVENT-RELEVANT LIVE NEWS
 
 
 def render_causal_macro_ai_panel(analysis: dict) -> None:
-    """Render the structured causal AI report without changing existing Forecaster cards."""
+    # Compact visual layer for the existing causal AI output. No model logic is changed.
     if analysis.get("status") != "ok":
         if analysis.get("status") == "skipped":
             return
         render_html(
-            f'<div style="margin-top:12px;padding:12px;border:1px solid rgba(255,94,117,.35);'
-            f'border-radius:10px;background:rgba(255,94,117,.06);color:#ff8a9b;font-size:11px;">'
+            f'<div class="fc-ai" style="border-color:rgba(255,94,117,.22);color:#ff8a9b;">'
             f'🧠 Causal Macro Intelligence unavailable: {analysis.get("raw","Unknown error")}</div>'
         )
         return
 
     def items(key):
         vals = analysis.get(key) or []
-        return "".join(f"<div style='margin:3px 0;'>• {str(v)}</div>" for v in vals) or "<div>• None identified.</div>"
+        return "".join(f"<div style='margin:2px 0;'>• {str(v)}</div>" for v in vals) or "<div>• None identified.</div>"
 
     confidence = int(analysis.get("confidence", 0) or 0)
     render_html(f"""
-    <div style="margin-top:14px;background:linear-gradient(135deg,rgba(0,245,255,.055),rgba(157,78,221,.055));
-         border:1px solid rgba(0,245,255,.30);border-radius:14px;padding:16px 18px;">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
-        <div style="font-size:12px;font-weight:900;color:#00f5ff;letter-spacing:.7px;">🧠 CAUSAL MACRO INTELLIGENCE ENGINE</div>
-        <div style="font-size:11px;font-weight:900;color:#00ffa3;background:rgba(0,255,163,.10);
-             border:1px solid rgba(0,255,163,.28);padding:4px 9px;border-radius:8px;">{confidence}% AI CONFIDENCE</div>
+    <div class="fc-ai">
+      <div class="fc-ai-head">
+        <div class="fc-ai-title">🧠 Causal Macro Intelligence</div>
+        <div class="fc-ai-conf">{confidence}% AI confidence</div>
       </div>
-      <div style="margin-top:10px;font-size:14px;font-weight:900;color:#fff;">{analysis.get("event_assessment","—")}</div>
-      <div style="margin-top:8px;color:#ecf7ff;font-size:11.5px;line-height:1.5;">
-        <b style="color:#00f5ff;">NOWCAST:</b> {analysis.get("nowcast","Insufficient Evidence")}
-        &nbsp; | &nbsp; <b style="color:#ffd166;">CONFIDENCE BASIS:</b> {analysis.get("confidence_reason","—")}
+      <div class="fc-ai-assess">{analysis.get("event_assessment","—")}</div>
+      <div style="font-size:9.8px;color:#8fa3b4;margin-top:4px;line-height:1.45;">
+        <b style="color:#00f5ff;">Nowcast:</b> {analysis.get("nowcast","Insufficient Evidence")}
+        &nbsp;•&nbsp; <b style="color:#ffd166;">Basis:</b> {analysis.get("confidence_reason","—")}
       </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:12px;">
-        <div style="background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.07);border-radius:10px;padding:11px;">
-          <b style="color:#00f5ff;font-size:10.5px;">🧠 CAUSAL CHAIN</b>
-          <div style="margin-top:6px;font-size:11px;color:#ecf7ff;">{items("causal_chain")}</div>
-        </div>
-        <div style="background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.07);border-radius:10px;padding:11px;">
-          <b style="color:#00ffa3;font-size:10.5px;">📊 SUPPORTING EVIDENCE</b>
-          <div style="margin-top:6px;font-size:11px;color:#ecf7ff;">{items("supporting_evidence")}</div>
-        </div>
-        <div style="background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.07);border-radius:10px;padding:11px;">
-          <b style="color:#ff5e75;font-size:10.5px;">⚠️ CONTRADICTIONS</b>
-          <div style="margin-top:6px;font-size:11px;color:#ecf7ff;">{items("contradictions")}</div>
-        </div>
+      <div class="fc-ai-grid">
+        <div class="fc-ai-box"><b style="color:#00f5ff;">CAUSAL CHAIN</b><div style="margin-top:4px;">{items("causal_chain")}</div></div>
+        <div class="fc-ai-box"><b style="color:#00ffa3;">SUPPORTING EVIDENCE</b><div style="margin-top:4px;">{items("supporting_evidence")}</div></div>
+        <div class="fc-ai-box"><b style="color:#ff788a;">CONTRADICTIONS</b><div style="margin-top:4px;">{items("contradictions")}</div></div>
       </div>
-      <div style="margin-top:10px;padding:10px 11px;background:rgba(0,0,0,.22);border-radius:9px;font-size:11px;color:#ecf7ff;">
-        <b style="color:#00f5ff;">CROSS-SOURCE:</b> {analysis.get("cross_source_confirmation","—")}
-        &nbsp; • &nbsp; <b style="color:#00f5ff;">SOURCES USED:</b> {analysis.get("source_count",0)}
+      <div class="fc-ai-foot">
+        Cross-source: <b style="color:#cbd8df;">{analysis.get("cross_source_confirmation","—")}</b>
+        &nbsp;•&nbsp; Sources: <b style="color:#cbd8df;">{analysis.get("source_count",0)}</b>
+        &nbsp;•&nbsp; Invalidation: <b style="color:#ffd166;">{analysis.get("invalidation","—")}</b>
       </div>
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:9px;font-size:11px;">
-        <div>💵 <b>USD</b><br>{analysis.get("usd","Neutral")}</div>
-        <div>🥇 <b>GOLD</b><br>{analysis.get("gold","Neutral")}</div>
-        <div>🛢️ <b>OIL</b><br>{analysis.get("oil","Neutral")}</div>
-      </div>
-      <div style="margin-top:9px;font-size:11px;color:#ffd166;"><b>⚠️ INVALIDATION:</b> {analysis.get("invalidation","—")}</div>
     </div>
     """)
+
 
 def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict | None = None) -> None:
     if "selected_tz" not in st.session_state or st.session_state["selected_tz"] not in SUPPORTED_TIMEZONES:
@@ -2130,180 +2135,150 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
         all_news = fetch_all_instant_news(channel_name)
         actuals_cache = load_actuals_cache()
 
-    render_html("""
-    <div style="background:linear-gradient(135deg,rgba(0,245,255,0.08),rgba(157,78,221,0.06));border:1px solid rgba(0,245,255,0.3);border-radius:18px;padding:22px 26px;margin-bottom:20px;box-shadow:var(--shadow);">
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+    render_html(f"""
+    <div class="fc-hero">
+      <div class="fc-hero-row">
         <div>
-          <div style="font-size:18px;font-weight:900;color:#00f5ff;letter-spacing:1px;">🔮 PREDICTIVE MACRO CATALYST DESK &nbsp;<span style="font-size:11px;background:rgba(0,255,163,0.15);border:1px solid rgba(0,255,163,0.4);color:#00ffa3;padding:3px 10px;border-radius:10px;">NOWCAST v14.0</span></div>
-          <div style="font-size:12px;color:#8fa3b4;margin-top:4px;">Multi-Timeframe Precursor Correlation (FRED) + Real-Time Wire Sentiment Synthesis for High-Impact Upcoming Releases.</div>
+          <div class="fc-eyebrow">ApexMacro / Predictive Intelligence</div>
+          <div class="fc-title">🔮 Macro Catalyst Forecaster</div>
+          <div class="fc-sub">Upcoming macro releases ranked with the existing FRED precursor model, live wire sentiment and causal AI layer.</div>
+          <div class="fc-live"><span class="live-dot"></span> NOWCAST ENGINE ACTIVE &nbsp;•&nbsp; {tz_info['label']}</div>
         </div>
-        <div style="text-align:right;">
-          <div style="font-size:11px;color:#8fa3b4;">PREDICTIVE HORIZON</div>
-          <div style="font-size:14px;font-weight:800;color:#ffd166;">Next 7–10 Days Rolling</div>
+        <div class="fc-horizon">
+          <div class="fc-horizon-lbl">PREDICTIVE HORIZON</div>
+          <div class="fc-horizon-val">Next 7–10 Days</div>
         </div>
       </div>
     </div>
     """)
 
+    high_count = sum(1 for e in events if e.get("impact") == "High")
+    medium_count = sum(1 for e in events if e.get("impact") == "Medium")
     k1, k2, k3 = st.columns(3)
     with k1:
-        render_html(f"""
-        <div style="background:rgba(0,245,255,0.05);border:1px solid rgba(0,245,255,0.2);border-radius:14px;padding:14px;text-align:center;">
-          <div style="font-size:11px;font-weight:800;color:#8fa3b4;text-transform:uppercase;">TRACKED CATALYSTS</div>
-          <div style="font-size:24px;font-weight:900;color:#00f5ff;margin-top:2px;">{len(events)} Major Releases</div>
-        </div>
-        """)
+        render_html(f'<div class="fc-metric"><div class="fc-metric-l">Tracked catalysts</div><div class="fc-metric-v" style="color:#00f5ff;">{len(events)}</div><div class="fc-metric-note">Current calendar window</div></div>')
     with k2:
-        render_html("""
-        <div style="background:rgba(0,255,163,0.05);border:1px solid rgba(0,255,163,0.2);border-radius:14px;padding:14px;text-align:center;">
-          <div style="font-size:11px;font-weight:800;color:#8fa3b4;text-transform:uppercase;">AVG CONFIDENCE SCORE</div>
-          <div style="font-size:24px;font-weight:900;color:#00ffa3;margin-top:2px;">78.5% High Conviction</div>
-        </div>
-        """)
+        render_html(f'<div class="fc-metric"><div class="fc-metric-l">High impact</div><div class="fc-metric-v" style="color:#ff788a;">{high_count}</div><div class="fc-metric-note">Priority causal-AI events</div></div>')
     with k3:
-        render_html("""
-        <div style="background:rgba(255,209,102,0.05);border:1px solid rgba(255,209,102,0.2);border-radius:14px;padding:14px;text-align:center;">
-          <div style="font-size:11px;font-weight:800;color:#8fa3b4;text-transform:uppercase;">LEADING MACRO DRIVER</div>
-          <div style="font-size:24px;font-weight:900;color:#ffd166;margin-top:2px;">Energy &amp; Wholesale Pipeline</div>
-        </div>
-        """)
+        render_html(f'<div class="fc-metric"><div class="fc-metric-l">Medium impact</div><div class="fc-metric-v" style="color:#ffd166;">{medium_count}</div><div class="fc-metric-note">Secondary catalysts</div></div>')
 
-    st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
-    render_html('<div class="sec-title">Upcoming High &amp; Medium Impact Catalyst Radar &amp; AI Nowcasts</div>')
+    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+    render_html('<div class="sec-title">Catalyst Radar</div>')
 
     CURRENCY_FLAGS = {
         "USD": "🇺🇸", "EUR": "🇪🇺", "GBP": "💷", "CAD": "🍁",
         "JPY": "💴", "AUD": "🇦🇺", "NZD": "🇳🇿", "CHF": "🏔️"
     }
 
+    if not events:
+        st.info("No High or Medium impact Forex Factory catalysts are available in the current calendar window.")
+        return
+
     for idx, ev in enumerate(events):
         ev_code = ev["code"]
         saved_actual = actuals_cache.get(ev_code, "")
-        
         nowcast = compute_event_nowcast(ev, fred_key, all_news, actual_override=saved_actual)
         causal_ai = get_causal_macro_ai_analysis(ev, nowcast, all_news) if ev.get("impact") == "High" else {"status": "skipped"}
         cur = ev.get("currency", "USD")
         cur_flag = CURRENCY_FLAGS.get(cur, "🌐")
-        badge_bg = "rgba(0,255,163,0.12)" if nowcast["bias_color"] == "#00ffa3" else ("rgba(255,94,117,0.12)" if nowcast["bias_color"] == "#ff5e75" else "rgba(255,209,102,0.12)")
-        
-        impact_bg = "rgba(255,94,117,0.18)" if ev['impact'] == "High" else "rgba(255,209,102,0.18)"
-        impact_col = "#ff5e75" if ev['impact'] == "High" else "#ffd166"
+        impact_class = "fc-high" if ev.get("impact") == "High" else "fc-medium"
+        bias_bg = "rgba(0,255,163,.055)" if nowcast["bias_color"] == "#00ffa3" else ("rgba(255,94,117,.055)" if nowcast["bias_color"] == "#ff5e75" else "rgba(255,209,102,.05)")
+        actual_value = saved_actual or "Pending"
+        actual_color = "#00ffa3" if saved_actual else "#718795"
 
         render_html(f"""
-        <div style="background:linear-gradient(180deg,rgba(11,20,32,0.92),rgba(5,10,18,0.96));border:1px solid rgba(0,245,255,0.22);border-radius:16px;padding:20px 22px;margin-bottom:18px;box-shadow:var(--shadow);">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;margin-bottom:12px;">
+        <div class="fc-event">
+          <div class="fc-event-top">
             <div>
-              <div style="display:flex;align-items:center;gap:8px;">
-                <span style="font-size:18px;">{cur_flag}</span>
-                <span style="font-size:11px;font-weight:900;color:#00f5ff;background:rgba(0,245,255,0.12);border:1px solid rgba(0,245,255,0.3);padding:2px 7px;border-radius:6px;">{cur}</span>
-                <span style="font-size:15px;font-weight:800;color:#fff;">{ev['title']}</span>
-                <span style="font-size:10px;background:{impact_bg};border:1px solid {impact_col}44;color:{impact_col};padding:2px 8px;border-radius:8px;font-weight:700;">{ev['impact']} Impact</span>
+              <div class="fc-event-id">
+                <span class="fc-flag">{cur_flag}</span>
+                <span class="fc-cur">{cur}</span>
+                <span class="fc-event-name">{ev['title']}</span>
+                <span class="fc-impact {impact_class}">{ev['impact']}</span>
               </div>
-              <div style="font-size:11.5px;color:#8fa3b4;margin-top:4px;">
-                📅 <b>{ev['date_str']}</b> &nbsp;•&nbsp; 🕒 <b>{ev['time_str']}</b>
+              <div class="fc-time">📅 {ev['date_str']} &nbsp;•&nbsp; 🕒 {ev['time_str']}</div>
+            </div>
+            <div class="fc-count">{ev['countdown']}</div>
+          </div>
+          <div class="fc-body">
+            <div class="fc-metrics">
+              <div class="fc-metric"><div class="fc-metric-l">Forecast</div><div class="fc-metric-v" style="color:#ffd166;">{ev['forecast_str']}</div><div class="fc-metric-note">Market consensus</div></div>
+              <div class="fc-metric"><div class="fc-metric-l">Previous</div><div class="fc-metric-v">{ev['prev_str']}</div><div class="fc-metric-note">Last official release</div></div>
+              <div class="fc-metric"><div class="fc-metric-l">Actual</div><div class="fc-metric-v" style="color:{actual_color};">{actual_value}</div><div class="fc-metric-note">Published print</div></div>
+            </div>
+            <div class="fc-nowcast" style="background:{bias_bg};border:1px solid {nowcast['bias_color']}33;">
+              <div>
+                <div class="fc-now-lbl" style="color:{nowcast['bias_color']};">ApexMacro Nowcast</div>
+                <div class="fc-now-title" style="color:{nowcast['bias_color']};">{nowcast['bias_label']}</div>
+                <div class="fc-now-desc">{nowcast['outcome_desc']}</div>
+              </div>
+              <div class="fc-score">
+                <div class="fc-score-num" style="color:{nowcast['bias_color']};">{nowcast['confidence']}%</div>
+                <div class="fc-score-cap">Model confidence</div>
+                <div style="font-size:9px;color:#718795;margin-top:4px;">Baseline: {ev['consensus_bias']}</div>
               </div>
             </div>
-            <div style="text-align:right;">
-              <span style="font-size:11px;font-weight:800;background:rgba(0,245,255,0.12);border:1px solid rgba(0,245,255,0.3);color:#00f5ff;padding:4px 10px;border-radius:10px;">{ev['countdown']}</span>
+            <div class="fc-outlook">
+              <div class="fc-outlook-main">
+                <div class="fc-small-lbl">Direct {cur} trajectory</div>
+                <div class="fc-main-action" style="color:{nowcast['currency_action_color']};">{nowcast['currency_action_en']}</div>
+                <div class="fc-main-desc">{nowcast['currency_action_desc_en']}</div>
+              </div>
+              <div class="fc-asset"><b>🥇 Gold</b>{nowcast['gold_implication']}</div>
+              <div class="fc-asset"><b>💵 USD</b>{nowcast['usd_implication']}</div>
+              <div class="fc-asset"><b>🛢️ Oil</b>{nowcast['oil_implication']}</div>
             </div>
           </div>
-
-          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin-top:14px;">
-            <div style="background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:14px;">
-              <div style="font-size:10.5px;font-weight:800;color:#8fa3b4;text-transform:uppercase;margin-bottom:8px;">📊 MARKET CONSENSUS DATA</div>
-              <div style="display:flex;justify-content:space-between;margin-bottom:4px;font-size:12px;">
-                <span style="color:#8fa3b4;">Consensus Forecast:</span>
-                <span style="color:#ffd166;font-weight:800;">{ev['forecast_str']}</span>
-              </div>
-              <div style="display:flex;justify-content:space-between;margin-bottom:4px;font-size:12px;">
-                <span style="color:#8fa3b4;">Previous Release:</span>
-                <span style="color:#fff;font-weight:700;">{ev['prev_str']}</span>
-              </div>
-              <div style="display:flex;justify-content:space-between;margin-bottom:4px;font-size:12px;">
-                <span style="color:#8fa3b4;">Actual Released:</span>
-                <span style="color:#00ffa3;font-weight:900;">{saved_actual or 'Pending'}</span>
-              </div>
-              <div style="font-size:11px;color:#8fa3b4;margin-top:6px;border-top:1px solid rgba(255,255,255,0.05);padding-top:6px;">
-                Baseline: <b style="color:#ecf7ff;">{ev['consensus_bias']}</b>
-              </div>
-            </div>
-
-            <div style="background:{badge_bg};border:1px solid {nowcast['bias_color']}44;border-radius:12px;padding:14px;">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-                <span style="font-size:10.5px;font-weight:800;color:{nowcast['bias_color']};text-transform:uppercase;">🧠 AI NOWCAST PROJECTION</span>
-                <span style="font-size:10.5px;font-weight:800;color:#00f5ff;background:rgba(0,245,255,0.12);padding:2px 8px;border-radius:8px;">{nowcast['confidence']}% Confidence</span>
-              </div>
-              <div style="font-size:14px;font-weight:900;color:{nowcast['bias_color']};margin-bottom:6px;">
-                {nowcast['bias_label']}
-              </div>
-              <div style="font-size:11.5px;color:#ecf7ff;line-height:1.45;">
-                {nowcast['outcome_desc']}
-              </div>
-            </div>
-          </div>
+        </div>
         """)
 
         render_causal_macro_ai_panel(causal_ai)
 
         if is_admin:
-            st.markdown(f"<div style='margin-top:10px;font-size:11px;font-weight:900;color:#ffd166;text-transform:uppercase;'>👑 ADMIN PUBLISH ACTUAL ({ev['title']}):</div>", unsafe_allow_html=True)
-            col_inp, col_btn = st.columns([3, 1])
-            with col_inp:
-                entered_actual_val = st.text_input(f"Actual Value for {ev_code}", value=saved_actual, placeholder="e.g. -0.5% or 0.5", key=f"act_txt_{ev_code}", label_visibility="collapsed")
-            with col_btn:
-                if st.button("💾 Publish", key=f"act_btn_{ev_code}", use_container_width=True):
-                    actuals_cache[ev_code] = entered_actual_val.strip()
-                    save_actuals_cache(actuals_cache)
-                    st.success(f"Published!")
-                    time.sleep(0.3)
-                    st.rerun()
+            with st.expander(f"👑 Admin — Publish Actual · {ev['title']}", expanded=False):
+                col_inp, col_btn = st.columns([3, 1])
+                with col_inp:
+                    entered_actual_val = st.text_input(
+                        f"Actual Value for {ev_code}", value=saved_actual,
+                        placeholder="e.g. -0.5% or 0.5", key=f"act_txt_{ev_code}", label_visibility="collapsed"
+                    )
+                with col_btn:
+                    if st.button("💾 Publish", key=f"act_btn_{ev_code}", use_container_width=True):
+                        actuals_cache[ev_code] = entered_actual_val.strip()
+                        save_actuals_cache(actuals_cache)
+                        st.success("Published!")
+                        time.sleep(0.3)
+                        st.rerun()
 
-        render_html(f"""
-          <div style="margin-top:12px;padding:12px 14px;background:rgba(0,245,255,0.05);border:1px solid rgba(0,245,255,0.25);border-radius:10px;">
-            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:4px;">
-              <span style="font-size:11px;font-weight:900;color:#00f5ff;text-transform:uppercase;">🎯 DIRECT CURRENCY TRAJECTORY ({cur} OUTLOOK):</span>
-              <span style="font-size:12px;font-weight:900;color:{nowcast['currency_action_color']};">{nowcast['currency_action_en']}</span>
-            </div>
-            <div style="font-size:11.5px;color:#ecf7ff;line-height:1.45;">
-              {nowcast['currency_action_desc_en']}
-            </div>
-          </div>
-
-          <div style="margin-top:10px;padding:12px 14px;background:rgba(0,0,0,0.25);border:1px solid rgba(0,245,255,0.12);border-radius:10px;font-size:11.5px;">
-            <div style="font-size:10.5px;font-weight:800;color:#00f5ff;text-transform:uppercase;margin-bottom:6px;">🌐 CROSS-ASSET TACTICAL PROJECTION:</div>
-            <div style="color:#ecf7ff;margin-bottom:3px;">• <b>Gold (XAUUSD):</b> {nowcast['gold_implication']}</div>
-            <div style="color:#ecf7ff;margin-bottom:3px;">• <b>US Dollar (USD):</b> {nowcast['usd_implication']}</div>
-            <div style="color:#ecf7ff;">• <b>Crude Oil:</b> {nowcast['oil_implication']}</div>
-          </div>
-        </div>
-        """)
-
-        with st.expander(f"📊 Macro Indicators & Correlated News: {ev['title']}", expanded=False):
+        with st.expander(f"📊 Evidence & Precursors · {ev['title']}", expanded=False):
             if nowcast["precursor_results"]:
-                p_cols = st.columns(len(nowcast["precursor_results"]))
-                for p_col, p in zip(p_cols, nowcast["precursor_results"]):
-                    p_mom_color = "#00ffa3" if p["mom"] > 0 else "#ff5e75"
-                    p_arr = "▲" if p["mom"] > 0 else "▼"
+                p_cols = st.columns(min(len(nowcast["precursor_results"]), 3))
+                for p_idx, p_item in enumerate(nowcast["precursor_results"]):
+                    p_col = p_cols[p_idx % len(p_cols)]
+                    p_mom_color = "#00ffa3" if p_item["mom"] > 0 else ("#ff5e75" if p_item["mom"] < 0 else "#8fa3b4")
+                    p_arr = "▲" if p_item["mom"] > 0 else ("▼" if p_item["mom"] < 0 else "•")
                     with p_col:
                         render_html(f"""
-                        <div style="background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px;text-align:center;">
-                          <div style="font-size:10px;font-weight:700;color:#8fa3b4;line-height:1.3;height:26px;overflow:hidden;">{p['name']}</div>
-                          <div style="font-size:15px;font-weight:900;color:#fff;margin:4px 0;">{p['latest']:.2f}</div>
-                          <div style="font-size:10.5px;font-weight:800;color:{p_mom_color};">{p_arr} {p['mom']:+.2f} MoM</div>
+                        <div class="fc-metric" style="margin-bottom:8px;">
+                          <div class="fc-metric-l">{p_item['name']}</div>
+                          <div class="fc-metric-v">{p_item['latest']:.2f}</div>
+                          <div class="fc-metric-note" style="color:{p_mom_color};font-weight:800;">{p_arr} {p_item['mom']:+.2f} MoM</div>
                         </div>
                         """)
+            else:
+                st.caption("No mapped FRED precursor series are available for this catalyst.")
 
             if nowcast["correlated_articles"]:
-                st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
-                render_html('<div style="font-size:11px;font-weight:800;color:#8fa3b4;margin-bottom:6px;">📡 CORRELATED BREAKING WIRES &amp; SPEECHES:</div>')
+                st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
+                render_html('<div class="fc-small-lbl" style="margin-bottom:7px;">Correlated breaking wires & speeches</div>')
                 for a in nowcast["correlated_articles"]:
                     render_html(f"""
-                    <div style="padding:8px 10px;background:rgba(0,245,255,0.03);border-left:3px solid #00f5ff;border-radius:4px;margin-bottom:6px;font-size:11px;color:#ecf7ff;">
-                      <b>{a.get('title', '')}</b> &nbsp;<span style="color:#8fa3b4;font-size:9.5px;">({a.get('publishedAt', '')})</span>
+                    <div style="padding:8px 10px;background:rgba(0,245,255,.025);border-left:2px solid rgba(0,245,255,.55);border-radius:5px;margin-bottom:6px;font-size:10.5px;color:#dce7ed;line-height:1.45;">
+                      <b>{a.get('title', '')}</b><div style="color:#718795;font-size:9px;margin-top:2px;">{a.get('publishedAt', '')}</div>
                     </div>
                     """)
 
-        st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+        st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
 
 def render_vip_gate() -> dict | None:
     client_id, dev_type = get_client_device_info()
