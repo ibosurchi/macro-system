@@ -701,6 +701,8 @@ def _get_daemon_controller():
         "running": False,
         "last_hour": get_current_time().strftime("%Y-%m-%d %H"),
         "seen_weekend_news": set(),
+        "last_morning_digest_date": "",
+        "sent_reminders": set(),
     }
 
 def start_background_alert_daemon(fred_key: str, channel_name: str) -> None:
@@ -714,7 +716,62 @@ def start_background_alert_daemon(fred_key: str, channel_name: str) -> None:
             try:
                 now = get_current_time()
                 current_hour = now.strftime("%Y-%m-%d %H")
+                today_str = now.strftime("%Y-%m-%d")
                 is_weekend = (now.weekday() in (5, 6))
+
+                # 1. MORNING DIGEST FOR TODAY'S HIGH IMPACT CATALYSTS
+                if ctrl["last_morning_digest_date"] != today_str and not is_weekend:
+                    try:
+                        upcoming_events = get_upcoming_catalyst_events(3, "KRD (UTC+3)")
+                        today_high_events = [
+                            ev for ev in upcoming_events
+                            if ev.get("days_away") == 0 and str(ev.get("impact", "")).strip().lower() == "high"
+                        ]
+                        if today_high_events:
+                            msg_lines = [
+                                "🌅 *APEX MACRO — TODAY'S HIGH-IMPACT NEWS*",
+                                "━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                                f"📅 *Date:* `{today_str}`",
+                                f"⚡ *Total High-Impact Releases Today:* `{len(today_high_events)}`\n"
+                            ]
+                            for ev in today_high_events:
+                                msg_lines.append(f"• *{ev['currency']}* | {ev['title']} ({ev['time_str']})")
+                            
+                            msg_lines.extend([
+                                "",
+                                "🔍 *AI Nowcasts & Institutional Analysis are now live on the website.*",
+                                "━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                                "⚡ *ApexMacro Institutional Terminal v14.0*"
+                            ])
+                            send_telegram_alert("\n".join(msg_lines))
+                        ctrl["last_morning_digest_date"] = today_str
+                    except Exception:
+                        pass
+
+                # 2. 1-HOUR BEFORE REMINDER FOR HIGH IMPACT EVENTS
+                try:
+                    all_events = get_upcoming_catalyst_events(3, "KRD (UTC+3)")
+                    for ev in all_events:
+                        if str(ev.get("impact", "")).strip().lower() == "high":
+                            ev_code = ev.get("code")
+                            ev_dt = ev.get("datetime_obj")
+                            if ev_code and ev_dt and ev_code not in ctrl["sent_reminders"]:
+                                diff_secs = (ev_dt - now).total_seconds()
+                                if 3300 <= diff_secs <= 3900:
+                                    rem_msg = (
+                                        "⏰ *APEX MACRO — 1 HOUR EVENT ALERT*\n"
+                                        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                        f"🚨 *Event:* `{ev['title']}`\n"
+                                        f"🏳️ *Currency:* `{ev['currency']}`\n"
+                                        f"🕒 *Time:* `{ev['time_str']}`\n\n"
+                                        "🎯 *Action:* High-impact catalyst approaching in 1 hour. Visit our website now to review AI Nowcasts & Precursor Analysis!\n"
+                                        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                        "⚡ *ApexMacro Institutional Terminal v14.0*"
+                                    )
+                                    send_telegram_alert(rem_msg)
+                                    ctrl["sent_reminders"].add(ev_code)
+                except Exception:
+                    pass
 
                 if is_weekend:
                     try:
@@ -1940,184 +1997,6 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_ove
         "oil_implication": oil_implication
     }
 
-
-@st.cache_data(ttl=300, show_spinner=False)
-def get_causal_macro_ai_analysis(event: dict, nowcast: dict, articles: list, api_key: str = DEFAULT_OPENROUTER_KEY) -> dict:
-    """Event-specific causal AI layer. Keeps the existing quantitative nowcast intact."""
-    if not api_key:
-        return {"status": "unavailable", "raw": "AI API key is unavailable."}
-
-    impact = str(event.get("impact", "")).title()
-    if impact != "High":
-        return {"status": "skipped", "raw": "Causal AI is enabled for High Impact events only."}
-
-    meta = event.get("meta", {}) or {}
-    title = event.get("title", "Unknown event")
-    currency = meta.get("currency") or event.get("currency", "USD")
-    forecast = event.get("forecast_str", "—")
-    previous = event.get("prev_str", "—")
-
-    precursor_lines = []
-    for p in (nowcast.get("precursor_results") or []):
-        precursor_lines.append(
-            f"- {p.get('name','Unknown')}: latest={p.get('latest','—')}, "
-            f"MoM={p.get('mom','—')}%, signal_score={p.get('score','—')}"
-        )
-    precursor_text = "\n".join(precursor_lines) or "No mapped FRED precursor series are currently available."
-
-    relevant = []
-    event_keywords = [str(k).lower() for k in (meta.get("keywords") or [])]
-    for a in (articles or []):
-        blob = f"{a.get('title','')} {a.get('description','')}".lower()
-        if not event_keywords or any(k in blob for k in event_keywords):
-            relevant.append(a)
-    relevant = relevant[:10]
-
-    news_lines = []
-    for a in relevant:
-        source = a.get("source", {})
-        source_name = source.get("name", "Institutional Wire") if isinstance(source, dict) else str(source)
-        news_lines.append(
-            f"- [{source_name}] {a.get('publishedAt','')}: {a.get('title','')} — {a.get('description','')}"
-        )
-    news_text = "\n".join(news_lines) or "No event-specific live news evidence is currently available."
-
-    system_prompt = """You are an institutional-grade macro-econometric strategist.
-Analyze one upcoming HIGH-impact economic catalyst using ONLY the supplied evidence.
-
-Rules:
-1. Never invent economic data, consensus, dates, news, historical releases, or relationships.
-2. Clearly separate FACTS from INFERENCES.
-3. Build an event-specific causal chain. Do not force Labour→PPI→CPI logic onto speeches or unrelated events.
-4. For inflation events consider relevant upstream costs/wages/demand; for labour events consider claims/JOLTS/PMI employment when supplied; for growth events consider consumption/production/PMI when supplied; for central-bank/speech events focus on policy/rates/inflation/growth language in supplied news.
-5. Identify supporting evidence and contradictory evidence.
-6. Assess cross-source confirmation only from sources actually supplied.
-7. Give a Beat/Miss/In-line nowcast only when the event has a measurable consensus. For speeches or non-numeric events, use Bullish/Bearish/Neutral policy-impact bias instead.
-8. Confidence must reflect evidence quality and contradictions; do not manufacture precision.
-9. Do not provide investment advice. Keep the report concise and institutional.
-
-Return ONLY valid JSON with these keys:
-event_assessment, causal_chain, facts, supporting_evidence, contradictions,
-nowcast, confidence, confidence_reason, cross_source_confirmation,
-usd, gold, oil, invalidation, source_count.
-Each of causal_chain, facts, supporting_evidence, contradictions must be an array of short strings.
-confidence must be an integer 0-100.
-"""
-
-    user_prompt = f"""EVENT
-Title: {title}
-Currency: {currency}
-Impact: {impact}
-Time: {event.get('date_str','')} {event.get('time_str','')}
-Forecast/Consensus: {forecast}
-Previous: {previous}
-
-EXISTING QUANTITATIVE NOWCAST (use as evidence, not as a replacement)
-Bias: {nowcast.get('bias_label','')}
-Confidence: {nowcast.get('confidence','')}%
-Composite: {nowcast.get('nowcast_composite','')}
-Precursor score: {nowcast.get('base_precursor_score','')}
-News sentiment points: {nowcast.get('news_sentiment_pts','')}
-
-FRED / MACRO PRECURSORS
-{precursor_text}
-
-EVENT-RELEVANT LIVE NEWS
-{news_text}
-"""
-
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "HTTP-Referer": "https://apexmacro.com",
-        "X-Title": "ApexMacro Causal Macro Intelligence",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": "openai/gpt-4o-mini",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "temperature": 0.15,
-        "response_format": {"type": "json_object"},
-    }
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=25)
-        response.raise_for_status()
-        data = response.json()
-        raw = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-        try:
-            parsed = json.loads(raw)
-        except Exception:
-            parsed = {"event_assessment": "Unstructured AI response", "facts": [raw], "causal_chain": [],
-                      "supporting_evidence": [], "contradictions": [], "nowcast": "Insufficient Evidence",
-                      "confidence": 0, "confidence_reason": "AI did not return valid JSON.",
-                      "cross_source_confirmation": "Unavailable", "usd": "Neutral", "gold": "Neutral",
-                      "oil": "Neutral", "invalidation": "Insufficient Evidence", "source_count": len(relevant)}
-        parsed["status"] = "ok"
-        return parsed
-    except Exception as exc:
-        return {"status": "error", "raw": f"AI causal analysis error: {exc}"}
-
-
-def render_causal_macro_ai_panel(analysis: dict) -> None:
-    """Render the structured causal AI report without changing existing Forecaster cards."""
-    if analysis.get("status") != "ok":
-        if analysis.get("status") == "skipped":
-            return
-        render_html(
-            f'<div style="margin-top:12px;padding:12px;border:1px solid rgba(255,94,117,.35);'
-            f'border-radius:10px;background:rgba(255,94,117,.06);color:#ff8a9b;font-size:11px;">'
-            f'🧠 Causal Macro Intelligence unavailable: {analysis.get("raw","Unknown error")}</div>'
-        )
-        return
-
-    def items(key):
-        vals = analysis.get(key) or []
-        return "".join(f"<div style='margin:3px 0;'>• {str(v)}</div>" for v in vals) or "<div>• None identified.</div>"
-
-    confidence = int(analysis.get("confidence", 0) or 0)
-    render_html(f"""
-    <div style="margin-top:14px;background:linear-gradient(135deg,rgba(0,245,255,.055),rgba(157,78,221,.055));
-         border:1px solid rgba(0,245,255,.30);border-radius:14px;padding:16px 18px;">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
-        <div style="font-size:12px;font-weight:900;color:#00f5ff;letter-spacing:.7px;">🧠 CAUSAL MACRO INTELLIGENCE ENGINE</div>
-        <div style="font-size:11px;font-weight:900;color:#00ffa3;background:rgba(0,255,163,.10);
-             border:1px solid rgba(0,255,163,.28);padding:4px 9px;border-radius:8px;">{confidence}% AI CONFIDENCE</div>
-      </div>
-      <div style="margin-top:10px;font-size:14px;font-weight:900;color:#fff;">{analysis.get("event_assessment","—")}</div>
-      <div style="margin-top:8px;color:#ecf7ff;font-size:11.5px;line-height:1.5;">
-        <b style="color:#00f5ff;">NOWCAST:</b> {analysis.get("nowcast","Insufficient Evidence")}
-        &nbsp; | &nbsp; <b style="color:#ffd166;">CONFIDENCE BASIS:</b> {analysis.get("confidence_reason","—")}
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:12px;">
-        <div style="background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.07);border-radius:10px;padding:11px;">
-          <b style="color:#00f5ff;font-size:10.5px;">🧠 CAUSAL CHAIN</b>
-          <div style="margin-top:6px;font-size:11px;color:#ecf7ff;">{items("causal_chain")}</div>
-        </div>
-        <div style="background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.07);border-radius:10px;padding:11px;">
-          <b style="color:#00ffa3;font-size:10.5px;">📊 SUPPORTING EVIDENCE</b>
-          <div style="margin-top:6px;font-size:11px;color:#ecf7ff;">{items("supporting_evidence")}</div>
-        </div>
-        <div style="background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.07);border-radius:10px;padding:11px;">
-          <b style="color:#ff5e75;font-size:10.5px;">⚠️ CONTRADICTIONS</b>
-          <div style="margin-top:6px;font-size:11px;color:#ecf7ff;">{items("contradictions")}</div>
-        </div>
-      </div>
-      <div style="margin-top:10px;padding:10px 11px;background:rgba(0,0,0,.22);border-radius:9px;font-size:11px;color:#ecf7ff;">
-        <b style="color:#00f5ff;">CROSS-SOURCE:</b> {analysis.get("cross_source_confirmation","—")}
-        &nbsp; • &nbsp; <b style="color:#00f5ff;">SOURCES USED:</b> {analysis.get("source_count",0)}
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:9px;font-size:11px;">
-        <div>💵 <b>USD</b><br>{analysis.get("usd","Neutral")}</div>
-        <div>🥇 <b>GOLD</b><br>{analysis.get("gold","Neutral")}</div>
-        <div>🛢️ <b>OIL</b><br>{analysis.get("oil","Neutral")}</div>
-      </div>
-      <div style="margin-top:9px;font-size:11px;color:#ffd166;"><b>⚠️ INVALIDATION:</b> {analysis.get("invalidation","—")}</div>
-    </div>
-    """)
-
 def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict | None = None) -> None:
     if "selected_tz" not in st.session_state or st.session_state["selected_tz"] not in SUPPORTED_TIMEZONES:
         st.session_state["selected_tz"] = "🏛️ Kurdistan & Iraq (UTC+3)"
@@ -2181,7 +2060,6 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
         saved_actual = actuals_cache.get(ev_code, "")
         
         nowcast = compute_event_nowcast(ev, fred_key, all_news, actual_override=saved_actual)
-        causal_ai = get_causal_macro_ai_analysis(ev, nowcast, all_news) if ev.get("impact") == "High" else {"status": "skipped"}
         cur = ev.get("currency", "USD")
         cur_flag = CURRENCY_FLAGS.get(cur, "🌐")
         badge_bg = "rgba(0,255,163,0.12)" if nowcast["bias_color"] == "#00ffa3" else ("rgba(255,94,117,0.12)" if nowcast["bias_color"] == "#ff5e75" else "rgba(255,209,102,0.12)")
@@ -2242,8 +2120,6 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
             </div>
           </div>
         """)
-
-        render_causal_macro_ai_panel(causal_ai)
 
         if is_admin:
             st.markdown(f"<div style='margin-top:10px;font-size:11px;font-weight:900;color:#ffd166;text-transform:uppercase;'>👑 ADMIN PUBLISH ACTUAL ({ev['title']}):</div>", unsafe_allow_html=True)
@@ -2313,6 +2189,16 @@ def render_vip_gate() -> dict | None:
             st.query_params.clear()
     except Exception:
         pass
+
+    # Check if Admin triggered Guest View Preview Mode
+    if st.session_state.get("PREVIEW_AS_GUEST"):
+        return {
+            "is_authenticated": True,
+            "user_name": "Guest Preview",
+            "expiry_info": "Admin Preview Mode",
+            "is_admin": False,
+            "key": "GUEST_PREVIEW"
+        }
 
     auth_user = st.session_state.get("APEX_AUTH_USER")
     if auth_user and auth_user.get("is_authenticated"):
@@ -2412,6 +2298,15 @@ def render_admin_key_generator() -> None:
       <div style="font-size:11.5px;color:#8fa3b4;">Manage your VIP client licenses, dual-device bindings (1 Mobile + 1 PC), assign Telegram IDs, and generate secure cryptographic keys.</div>
     </div>
     """)
+
+    # --- GUEST VIEW PREVIEW BUTTON FOR ADMIN ---
+    col_prev1, col_prev2 = st.columns([2, 2])
+    with col_prev1:
+        if st.button("👀 Switch to Guest View (Preview Mode)", type="secondary", use_container_width=True):
+            st.session_state["PREVIEW_AS_GUEST"] = True
+            st.rerun()
+    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+    # -------------------------------------------
 
     g1, g2, g3 = st.columns([2, 2, 1.5])
     with g1:
@@ -2581,6 +2476,19 @@ def main() -> None:
     auth_user = render_vip_gate()
     if not auth_user:
         return
+
+    # --- ADMIN RETURN TO ADMIN BAR ---
+    if st.session_state.get("PREVIEW_AS_GUEST"):
+        st.markdown("""
+        <div style="background:rgba(255,209,102,0.15);border:1px solid rgba(255,209,102,0.4);border-radius:12px;padding:8px 14px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;">
+          <span style="color:#ffd166;font-size:12px;font-weight:800;">👁️ You are currently viewing the terminal in Guest Preview Mode.</span>
+        </div>
+        """, unsafe_allow_html=True)
+        if st.button("👑 Exit Guest View & Return to Admin", type="primary"):
+            st.session_state["PREVIEW_AS_GUEST"] = False
+            st.rerun()
+        st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
+    # ---------------------------------
 
     render_top_header(auth_user)
 
