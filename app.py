@@ -1549,127 +1549,79 @@ def page_oil(fred_key: str, channel_name: str) -> None:
             """)
 
 CATALYST_PRECURSOR_MAP = {
-    "NZD_RETAIL": {
-        "title": "Core Retail Sales q/q",
-        "currency": "NZD",
-        "impact": "High",
-        "keywords": ["new zealand", "rbnz", "retail sales", "consumer spending", "dairy prices", "kiwi"],
-        "precursors": [
-            {"name": "Global Commodity Demand Velocity", "series": "INDPRO", "cat": "growth", "weight": 0.50},
-            {"name": "Consumer Sentiment Momentum", "series": "UMCSENT", "cat": "growth", "weight": 0.50},
-        ],
-        "bullish_asset": "NZD/USD",
-        "bearish_asset": "NZD/USD",
-    },
-    "NZD_RETAIL_HEADLINE": {
-        "title": "Retail Sales q/q",
-        "currency": "NZD",
-        "impact": "Medium",
-        "keywords": ["retail sales", "new zealand", "rbnz", "consumption", "household demand"],
-        "precursors": [
-            {"name": "Real Disposable Income Momentum", "series": "DSPIC96", "cat": "growth", "weight": 0.50},
-            {"name": "Consumer Sentiment Index", "series": "UMCSENT", "cat": "growth", "weight": 0.50},
-        ],
-        "bullish_asset": "NZD/USD",
-        "bearish_asset": "NZD/USD",
-    },
-    "CAD_PROFITS": {
-        "title": "Corporate Profits q/q",
-        "currency": "CAD",
-        "impact": "Medium",
-        "keywords": ["corporate profits", "canada economy", "boc", "bank of canada", "crude oil canada", "wti"],
-        "precursors": [
-            {"name": "WTI Crude Oil Price Velocity", "series": "DCOILWTICO", "cat": "growth", "weight": 0.60, "fallback": "POILWTIUSDM"},
-            {"name": "Industrial Production Momentum", "series": "INDPRO", "cat": "growth", "weight": 0.40},
-        ],
-        "bullish_asset": "CAD (USD/CAD Downside)",
-        "bearish_asset": "USD/CAD",
-    },
-    "USD_BESSENT": {
-        "title": "Treasury Sec Bessent Speaks",
-        "currency": "USD",
-        "impact": "Medium",
-        "keywords": ["bessent", "treasury", "us debt", "fiscal policy", "tariffs", "yields", "dollar strength", "bonds"],
-        "precursors": [
-            {"name": "10-Year US Real Yield", "series": "DFII10", "cat": "rate", "weight": 0.50},
-            {"name": "10-Year Breakeven Inflation Rate", "series": "T10YIE", "cat": "inflation", "weight": 0.50},
-        ],
-        "bullish_asset": "USD",
-        "bearish_asset": "Gold",
-    },
     "AUD_CPI": {
         "title": "CPI y/y (Headline & Trimmed Mean)",
         "currency": "AUD",
         "impact": "High",
+        "utc_year": 2026, "utc_month": 8, "utc_day": 26, "utc_hour": 1, "utc_min": 30,
         "keywords": ["australia cpi", "rba", "aussie inflation", "trimmed mean", "australia rates"],
+        "forecast_str": "3.3%", "prev_str": "3.8%", "consensus_bias": "Australia CPI Cooling Track",
         "precursors": [
             {"name": "Global Commodity Price Velocity", "series": "INDPRO", "cat": "inflation", "weight": 0.50},
             {"name": "10-Year Breakeven Inflation", "series": "T10YIE", "cat": "inflation", "weight": 0.50},
         ],
-        "bullish_asset": "AUD/USD",
-        "bearish_asset": "AUD/USD",
-    },
-    "US_PCE": {
-        "title": "Core PCE Price Index m/m",
-        "currency": "USD",
-        "impact": "High",
-        "keywords": ["pce", "inflation", "fed inflation", "powell", "consumer spending", "sticky", "deflator"],
-        "precursors": [
-            {"name": "Core PPI Final Demand Velocity", "series": "PPIFES", "cat": "inflation", "weight": 0.40},
-            {"name": "10-Year Breakeven Inflation Rate", "series": "T10YIE", "cat": "inflation", "weight": 0.30},
-            {"name": "Crude Oil Energy Momentum", "series": "DCOILWTICO", "cat": "inflation", "weight": 0.30, "fallback": "POILWTIUSDM"},
-        ],
-        "bullish_asset": "USD",
-        "bearish_asset": "Gold",
-    },
-    "US_GDP": {
-        "title": "Prelim GDP q/q (Annualized Growth)",
-        "currency": "USD",
-        "impact": "High",
-        "keywords": ["gdp", "economic growth", "recession", "soft landing", "consumer spending", "output"],
-        "precursors": [
-            {"name": "Industrial Production Momentum", "series": "INDPRO", "cat": "growth", "weight": 0.40},
-            {"name": "Retail Sales Consumption Growth", "series": "RSAFS", "cat": "growth", "weight": 0.35},
-            {"name": "Real Disposable Personal Income", "series": "DSPIC96", "cat": "growth", "weight": 0.25},
-        ],
-        "bullish_asset": "USD & Equities",
-        "bearish_asset": "Gold",
     },
     "US_DURABLE": {
         "title": "Core Durable Goods Orders m/m",
         "currency": "USD",
-        "impact": "High",
+        "impact": "Medium",
+        "utc_year": 2026, "utc_month": 8, "utc_day": 26, "utc_hour": 12, "utc_min": 30,
         "keywords": ["durable goods", "factory orders", "capex", "business spending", "manufacturing"],
+        "forecast_str": "0.5%", "prev_str": "0.7%", "consensus_bias": "Positive Core Capex Orders",
         "precursors": [
             {"name": "Total Manufacturing Output Index", "series": "INDPRO", "cat": "growth", "weight": 0.50},
             {"name": "Real Personal Consumption Demand", "series": "PCEC96", "cat": "growth", "weight": 0.50},
         ],
-        "bullish_asset": "USD",
-        "bearish_asset": "Gold",
-    },
-    "US_SPENDING": {
-        "title": "Personal Spending m/m",
-        "currency": "USD",
-        "impact": "Medium",
-        "keywords": ["personal spending", "consumer spending", "income", "consumption"],
-        "precursors": [
-            {"name": "Real Disposable Income Momentum", "series": "DSPIC96", "cat": "growth", "weight": 0.50},
-            {"name": "U.Mich Consumer Sentiment", "series": "UMCSENT", "cat": "growth", "weight": 0.50},
-        ],
-        "bullish_asset": "USD",
-        "bearish_asset": "Gold",
     },
     "US_OIL_EIA": {
         "title": "Crude Oil Inventories (EIA)",
         "currency": "USD",
         "impact": "High",
+        "utc_year": 2026, "utc_month": 8, "utc_day": 26, "utc_hour": 14, "utc_min": 30,
         "keywords": ["crude oil", "eia", "inventories", "gasoline stockpiles", "wti", "brent"],
+        "forecast_str": "—", "prev_str": "4.4M", "consensus_bias": "Weekly Inventory Balance",
         "precursors": [
             {"name": "WTI Spot Price Momentum", "series": "DCOILWTICO", "cat": "growth", "weight": 0.60, "fallback": "POILWTIUSDM"},
             {"name": "Industrial Production Growth", "series": "INDPRO", "cat": "growth", "weight": 0.40},
         ],
-        "bullish_asset": "Crude Oil & Petrocurrencies",
-        "bearish_asset": "Crude Oil",
+    },
+    "US_GDP": {
+        "title": "Prelim GDP q/q (Annualized Growth)",
+        "currency": "USD",
+        "impact": "High",
+        "utc_year": 2026, "utc_month": 8, "utc_day": 27, "utc_hour": 12, "utc_min": 30,
+        "keywords": ["gdp", "economic growth", "recession", "soft landing", "consumer spending", "output"],
+        "forecast_str": "1.5%", "prev_str": "1.5%", "consensus_bias": "Moderate 1.5% GDP Growth Baseline",
+        "precursors": [
+            {"name": "Industrial Production Momentum", "series": "INDPRO", "cat": "growth", "weight": 0.40},
+            {"name": "Retail Sales Consumption Growth", "series": "RSAFS", "cat": "growth", "weight": 0.35},
+            {"name": "Real Disposable Personal Income", "series": "DSPIC96", "cat": "growth", "weight": 0.25},
+        ],
+    },
+    "US_PCE": {
+        "title": "Core PCE Price Index m/m",
+        "currency": "USD",
+        "impact": "High",
+        "utc_year": 2026, "utc_month": 8, "utc_day": 28, "utc_hour": 12, "utc_min": 30,
+        "keywords": ["pce", "inflation", "fed inflation", "powell", "consumer spending", "sticky", "deflator"],
+        "forecast_str": "0.2%", "prev_str": "0.1%", "consensus_bias": "Core PCE Acceleration (+0.2% MoM)",
+        "precursors": [
+            {"name": "Core PPI Final Demand Velocity", "series": "PPIFES", "cat": "inflation", "weight": 0.40},
+            {"name": "10-Year Breakeven Inflation Rate", "series": "T10YIE", "cat": "inflation", "weight": 0.30},
+            {"name": "Crude Oil Energy Momentum", "series": "DCOILWTICO", "cat": "inflation", "weight": 0.30, "fallback": "POILWTIUSDM"},
+        ],
+    },
+    "US_SPENDING": {
+        "title": "Personal Spending m/m",
+        "currency": "USD",
+        "impact": "Medium",
+        "utc_year": 2026, "utc_month": 8, "utc_day": 28, "utc_hour": 12, "utc_min": 30,
+        "keywords": ["personal spending", "consumer spending", "income", "consumption"],
+        "forecast_str": "0.1%", "prev_str": "0.3%", "consensus_bias": "Moderate Spending Velocity",
+        "precursors": [
+            {"name": "Real Disposable Income Momentum", "series": "DSPIC96", "cat": "growth", "weight": 0.50},
+            {"name": "U.Mich Consumer Sentiment", "series": "UMCSENT", "cat": "growth", "weight": 0.50},
+        ],
     },
 }
 
@@ -1678,24 +1630,8 @@ def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3
     user_now = utc_now + timedelta(hours=tz_offset)
     events = []
     
-    calendar_template = [
-        {"code": "NZD_RETAIL", "utc_year": 2026, "utc_month": 8, "utc_day": 23, "utc_hour": 22, "utc_min": 45, "forecast_str": "0.3%", "prev_str": "1.0%", "consensus_bias": "Core Consumption Deceleration"},
-        {"code": "NZD_RETAIL_HEADLINE", "utc_year": 2026, "utc_month": 8, "utc_day": 23, "utc_hour": 22, "utc_min": 45, "forecast_str": "0.1%", "prev_str": "0.9%", "consensus_bias": "Headline Spending Slowdown"},
-        {"code": "CAD_PROFITS", "utc_year": 2026, "utc_month": 8, "utc_day": 24, "utc_hour": 12, "utc_min": 30, "forecast_str": "—", "prev_str": "-2.0%", "consensus_bias": "Corporate Profitability Recovery"},
-        {"code": "USD_BESSENT", "utc_year": 2026, "utc_month": 8, "utc_day": 24, "utc_hour": 15, "utc_min": 0, "forecast_str": "Speech", "prev_str": "—", "consensus_bias": "US Fiscal & Tariff Rhetoric"},
-        {"code": "AUD_CPI", "utc_year": 2026, "utc_month": 8, "utc_day": 26, "utc_hour": 1, "utc_min": 30, "forecast_str": "3.3%", "prev_str": "3.8%", "consensus_bias": "Australia CPI Cooling Track"},
-        {"code": "US_DURABLE", "utc_year": 2026, "utc_month": 8, "utc_day": 26, "utc_hour": 12, "utc_min": 30, "forecast_str": "0.5%", "prev_str": "0.7%", "consensus_bias": "Positive Core Capex Orders"},
-        {"code": "US_OIL_EIA", "utc_year": 2026, "utc_month": 8, "utc_day": 26, "utc_hour": 14, "utc_min": 30, "forecast_str": "—", "prev_str": "4.4M", "consensus_bias": "Weekly Inventory Balance"},
-        {"code": "US_GDP", "utc_year": 2026, "utc_month": 8, "utc_day": 27, "utc_hour": 12, "utc_min": 30, "forecast_str": "1.5%", "prev_str": "1.5%", "consensus_bias": "Moderate 1.5% GDP Growth Baseline"},
-        {"code": "US_PCE", "utc_year": 2026, "utc_month": 8, "utc_day": 28, "utc_hour": 12, "utc_min": 30, "forecast_str": "0.2%", "prev_str": "0.1%", "consensus_bias": "Core PCE Acceleration (+0.2% MoM)"},
-        {"code": "US_SPENDING", "utc_year": 2026, "utc_month": 8, "utc_day": 28, "utc_hour": 12, "utc_min": 30, "forecast_str": "0.1%", "prev_str": "0.3%", "consensus_bias": "Moderate Spending Velocity"},
-    ]
-
-    for item in calendar_template:
-        event_meta = CATALYST_PRECURSOR_MAP.get(item["code"], {})
-        impact_level = event_meta.get("impact", "High")
-        
-        # Filter: Keep ONLY High and Medium impact events
+    for code, item in CATALYST_PRECURSOR_MAP.items():
+        impact_level = item.get("impact", "High")
         if impact_level not in ["High", "Medium"]:
             continue
 
@@ -1703,6 +1639,7 @@ def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3
             item["utc_year"], item["utc_month"], item["utc_day"],
             item["utc_hour"], item["utc_min"]
         )
+        
         while event_utc < utc_now - timedelta(days=1):
             event_utc += timedelta(days=28)
             if event_utc.weekday() == 5:
@@ -1734,24 +1671,20 @@ def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3
         else:
             countdown_label = f"⚡ In {days_away} Days"
         
-        time_str_formatted = event_local.strftime("%H:%M")
-        if item["code"] == "USD_BESSENT":
-            time_str_formatted = "Tentative"
-
         events.append({
-            "code": item["code"],
-            "title": event_meta.get("title", item["code"]),
-            "currency": event_meta.get("currency", "USD"),
+            "code": code,
+            "title": item["title"],
+            "currency": item["currency"],
             "impact": impact_level,
             "datetime_obj": event_local,
             "date_str": event_local.strftime("%A, %b %d"),
-            "time_str": f"{time_str_formatted} ({tz_label})",
+            "time_str": f"{event_local.strftime('%H:%M')} ({tz_label})",
             "countdown": countdown_label,
             "days_away": days_away,
             "forecast_str": item["forecast_str"],
             "prev_str": item["prev_str"],
             "consensus_bias": item["consensus_bias"],
-            "meta": event_meta
+            "meta": item
         })
         
     events.sort(key=lambda x: (x["datetime_obj"], x["days_away"]))
@@ -1765,14 +1698,11 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_ove
     if actual_override:
         cur = meta.get("currency", "USD")
         clean_act = actual_override.strip()
-        
-        # Rigorous negative number check
         is_negative = False
         if "-" in clean_act or "neg" in clean_act.lower():
             is_negative = True
         else:
             try:
-                # Remove % and evaluate numerical value
                 num_check = float(clean_act.replace("%", "").strip())
                 if num_check < 0:
                     is_negative = True
@@ -1788,7 +1718,6 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_ove
         except Exception:
             is_beat = not is_negative
 
-        # If it's explicitly negative, force miss/negative outcome unless actual is higher than forecast
         if is_negative:
             is_beat = False
 
