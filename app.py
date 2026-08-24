@@ -522,7 +522,13 @@ def fetch_fred(series_id: str, key: str, limit: int = 48) -> pd.DataFrame | None
     except Exception:
         return None
 
-GLOBAL_ALERT_STATE: dict[str, str] = {}
+GLOBAL_ALERT_STATE: dict[str, dict] = {}
+
+# Smart shift-alert controls.
+# Normal threshold noise must persist before alerting, but large/reversal moves bypass the wait.
+SHIFT_CONFIRM_SECONDS = 15 * 60
+MAJOR_SHIFT_SCORE_DELTA = 0.25
+
 
 @st.cache_data(ttl=30, show_spinner=False)
 def _calc_currency_score_only(currency: str, fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> float | None:
@@ -648,70 +654,212 @@ def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHAN
     ]
     return "\n".join(lines)
 
+def _bias_direction(label: str) -> int:
+    """Map the existing bias labels to -1 / 0 / +1 without changing scoring logic."""
+    if "Bullish" in str(label):
+        return 1
+    if "Bearish" in str(label):
+        return -1
+    return 0
+
+
+def _is_strong_bias(label: str) -> bool:
+    return "Strong Bullish" in str(label) or "Strong Bearish" in str(label)
+
+
+def _evaluate_smart_shift(
+    asset_key: str,
+    display_name: str,
+    icon: str,
+    current_bias: str,
+    current_score: float,
+    news_points: float | None = None,
+) -> dict | None:
+    """
+    Noise filter only. The market scoring model is untouched.
+
+    - First observation seeds state and sends no alert.
+    - Small boundary changes must stay in the new bias for 15 minutes.
+    - Bullish<->Bearish reversals, moves into a Strong regime, or score jumps
+      >= MAJOR_SHIFT_SCORE_DELTA bypass confirmation and alert immediately.
+    """
+    now_ts = time.time()
+    state = GLOBAL_ALERT_STATE.get(asset_key)
+
+    if not isinstance(state, dict):
+        GLOBAL_ALERT_STATE[asset_key] = {
+            "confirmed_bias": current_bias,
+            "confirmed_score": float(current_score),
+            "pending_bias": None,
+            "pending_since": None,
+            "pending_score": None,
+        }
+        return None
+
+    confirmed_bias = str(state.get("confirmed_bias", current_bias))
+    confirmed_score = float(state.get("confirmed_score", current_score))
+
+    if current_bias == confirmed_bias:
+        state["confirmed_score"] = float(current_score)
+        state["pending_bias"] = None
+        state["pending_since"] = None
+        state["pending_score"] = None
+        return None
+
+    prev_dir = _bias_direction(confirmed_bias)
+    curr_dir = _bias_direction(current_bias)
+    score_delta = abs(float(current_score) - confirmed_score)
+
+    direction_reversal = prev_dir != 0 and curr_dir != 0 and prev_dir != curr_dir
+    entered_strong_regime = _is_strong_bias(current_bias) and current_bias != confirmed_bias
+    large_score_move = score_delta >= MAJOR_SHIFT_SCORE_DELTA
+    is_major = direction_reversal or entered_strong_regime or large_score_move
+
+    reason = ""
+    if direction_reversal:
+        reason = "Direction reversal"
+    elif entered_strong_regime:
+        reason = "Strong regime shift"
+    elif large_score_move:
+        reason = f"Large score repricing ({score_delta:.3f})"
+
+    if is_major:
+        event = {
+            "asset_key": asset_key,
+            "display_name": display_name,
+            "icon": icon,
+            "previous_bias": confirmed_bias,
+            "new_bias": current_bias,
+            "score": float(current_score),
+            "news_points": news_points,
+            "reason": reason,
+            "immediate": True,
+        }
+        state["confirmed_bias"] = current_bias
+        state["confirmed_score"] = float(current_score)
+        state["pending_bias"] = None
+        state["pending_since"] = None
+        state["pending_score"] = None
+        return event
+
+    if state.get("pending_bias") != current_bias:
+        state["pending_bias"] = current_bias
+        state["pending_since"] = now_ts
+        state["pending_score"] = float(current_score)
+        return None
+
+    pending_since = float(state.get("pending_since") or now_ts)
+    state["pending_score"] = float(current_score)
+
+    if (now_ts - pending_since) < SHIFT_CONFIRM_SECONDS:
+        return None
+
+    event = {
+        "asset_key": asset_key,
+        "display_name": display_name,
+        "icon": icon,
+        "previous_bias": confirmed_bias,
+        "new_bias": current_bias,
+        "score": float(current_score),
+        "news_points": news_points,
+        "reason": "15-minute confirmed shift",
+        "immediate": False,
+    }
+    state["confirmed_bias"] = current_bias
+    state["confirmed_score"] = float(current_score)
+    state["pending_bias"] = None
+    state["pending_since"] = None
+    state["pending_score"] = None
+    return event
+
+
+def _build_shift_alert(events: list[dict]) -> str:
+    """Combine simultaneous meaningful asset shifts into one Telegram message."""
+    if len(events) >= 2:
+        lines = [
+            "🔄 *APEX MACRO — MULTI-ASSET SHIFT*",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "📊 *Meaningful regime changes detected:*",
+            "",
+        ]
+        for ev in events:
+            lines.extend([
+                f"{ev['icon']} *{ev['display_name']}*",
+                f"▪️ `{ev['previous_bias']}` → `{ev['new_bias']}`",
+                f"▪️ Composite: `{ev['score']:+.3f}`",
+            ])
+            if ev.get("news_points") is not None:
+                lines.append(f"▪️ News Sentiment: `{float(ev['news_points']):+.2f} pts`")
+            lines.append(f"▪️ Filter: `{ev['reason']}`")
+            lines.append("")
+        lines.extend([
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "⚡ *ApexMacro Institutional Terminal v14.0*",
+        ])
+        return "\n".join(lines)
+
+    ev = events[0]
+    lines = [
+        "🔄 *APEX MACRO — SHIFT ALERT*",
+        "━━━━━━━━━━━━━━━━━━━",
+        f"{ev['icon']} *Asset:* `{ev['display_name']}`",
+        "📊 *Status:* `Direction Changed`",
+        "",
+        f"▪️ *Previous Bias:* `{ev['previous_bias']}`",
+        f"▪️ *New Bias:*      `{ev['new_bias']}`",
+        "",
+        f"📈 *Composite Score:* `{ev['score']:+.3f}`",
+    ]
+    if ev.get("news_points") is not None:
+        lines.append(f"📡 *News Sentiment:* `{float(ev['news_points']):+.2f} pts`")
+    lines.extend([
+        f"🛡️ *Smart Filter:* `{ev['reason']}`",
+        "━━━━━━━━━━━━━━━━━━━",
+        "⚡ *ApexMacro Institutional Terminal v14.0*",
+    ])
+    return "\n".join(lines)
+
+
 def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
     if not fred_key:
         return
+
     try:
+        triggered_events: list[dict] = []
+
         gold_s, _, gold_news_pts = _calc_gold_score_only(fred_key, channel_name)
         if gold_s is not None:
-            current_gold_bias, _, _ = bias_from_score(gold_s)
-            last_gold_bias = GLOBAL_ALERT_STATE.get("Gold")
-            if last_gold_bias is not None and current_gold_bias != last_gold_bias:
-                alert_msg = (
-                    "🔄 *APEX MACRO — SHIFT ALERT*\n"
-                    "━━━━━━━━━━━━━━━━━━━\n"
-                    "🥇 *Asset:* `Gold (XAUUSD)`\n"
-                    f"📊 *Status:* `Direction Changed`\n\n"
-                    f"▪️ *Previous Bias:*  `{last_gold_bias}`\n"
-                    f"▪️ *New Bias:*       `{current_gold_bias}`\n\n"
-                    f"📈 *Composite Score:*  `{gold_s:+.3f}`\n"
-                    f"📡 *News Sentiment:*   `{gold_news_pts:+.2f} pts`\n"
-                    "━━━━━━━━━━━━━━━━━━━\n"
-                    "⚡ *ApexMacro Institutional Terminal v14.0*"
-                )
-                send_telegram_alert(alert_msg)
-            GLOBAL_ALERT_STATE["Gold"] = current_gold_bias
+            gold_bias, _, _ = bias_from_score(gold_s)
+            ev = _evaluate_smart_shift(
+                "Gold", "Gold (XAUUSD)", "🥇", gold_bias, gold_s, gold_news_pts
+            )
+            if ev:
+                triggered_events.append(ev)
 
         oil_s, oil_news_pts = _calc_oil_score_only(fred_key, channel_name)
         if oil_s is not None:
-            current_oil_bias, _, _ = bias_from_score(oil_s)
-            last_oil_bias = GLOBAL_ALERT_STATE.get("Oil")
-            if last_oil_bias is not None and current_oil_bias != last_oil_bias:
-                alert_msg = (
-                    "🔄 *APEX MACRO — SHIFT ALERT*\n"
-                    "━━━━━━━━━━━━━━━━━━━\n"
-                    "🛢️ *Asset:* `Crude Oil (WTI/Brent)`\n"
-                    f"📊 *Status:* `Direction Changed`\n\n"
-                    f"▪️ *Previous Bias:*  `{last_oil_bias}`\n"
-                    f"▪️ *New Bias:*       `{current_oil_bias}`\n\n"
-                    f"📈 *Composite Score:*  `{oil_s:+.3f}`\n"
-                    f"📡 *News Sentiment:*   `{oil_news_pts:+.2f} pts`\n"
-                    "━━━━━━━━━━━━━━━━━━━\n"
-                    "⚡ *ApexMacro Institutional Terminal v14.0*"
-                )
-                send_telegram_alert(alert_msg)
-            GLOBAL_ALERT_STATE["Oil"] = current_oil_bias
+            oil_bias, _, _ = bias_from_score(oil_s)
+            ev = _evaluate_smart_shift(
+                "Oil", "Crude Oil (WTI/Brent)", "🛢️", oil_bias, oil_s, oil_news_pts
+            )
+            if ev:
+                triggered_events.append(ev)
 
         usd_s = _calc_currency_score_only("USD", fred_key, channel_name)
         if usd_s is not None:
-            curr_bias, _, _ = bias_from_score(usd_s)
-            last_bias = GLOBAL_ALERT_STATE.get("USD")
-            if last_bias is not None and curr_bias != last_bias:
-                alert_msg = (
-                    "🔄 *APEX MACRO — SHIFT ALERT*\n"
-                    "━━━━━━━━━━━━━━━━━━━\n"
-                    "🇺🇸 *Asset:* `US Dollar (USD)`\n"
-                    f"📊 *Status:* `Direction Changed`\n\n"
-                    f"▪️ *Previous Bias:*  `{last_bias}`\n"
-                    f"▪️ *New Bias:*       `{curr_bias}`\n\n"
-                    f"📈 *Composite Score:*  `{usd_s:+.3f}`\n"
-                    "━━━━━━━━━━━━━━━━━━━\n"
-                    "⚡ *ApexMacro Institutional Terminal v14.0*"
-                )
-                send_telegram_alert(alert_msg)
-            GLOBAL_ALERT_STATE["USD"] = curr_bias
+            usd_bias, _, _ = bias_from_score(usd_s)
+            ev = _evaluate_smart_shift(
+                "USD", "US Dollar (USD)", "🇺🇸", usd_bias, usd_s, None
+            )
+            if ev:
+                triggered_events.append(ev)
+
+        if triggered_events:
+            send_telegram_alert(_build_shift_alert(triggered_events))
+
     except Exception:
         pass
+
 
 @st.cache_resource
 def _get_daemon_controller():
