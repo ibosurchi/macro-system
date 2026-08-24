@@ -76,6 +76,23 @@ APEX_MASTER_KEY = get_secret("APEX_MASTER_KEY", "APEX-MASTER-2026")
 APEX_SECRET_SALT = "APEX_MACRO_SECRET_2026_SALT"
 REGISTRY_FILE = os.path.join(os.path.dirname(__file__), "vip_registry.json")
 SESSIONS_FILE = os.path.join(os.path.dirname(__file__), "vip_sessions.json")
+ACTUALS_FILE = os.path.join(os.path.dirname(__file__), "actual_releases.json")
+
+def load_actuals_cache() -> dict:
+    if os.path.exists(ACTUALS_FILE):
+        try:
+            with open(ACTUALS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_actuals_cache(data: dict) -> None:
+    try:
+        with open(ACTUALS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
 
 def load_sessions_cache() -> dict:
     if os.path.exists(SESSIONS_FILE):
@@ -1159,7 +1176,7 @@ def page_dashboard(fred_key: str, channel_name: str, auth_user: dict | None = No
         page_oil(fred_key, channel_name)
         return
     if current_tab == "🔮 Forecaster":
-        page_catalyst_forecaster(fred_key, channel_name)
+        page_catalyst_forecaster(fred_key, channel_name, auth_user)
         return
 
     if "selected_currency" not in st.session_state:
@@ -1734,12 +1751,33 @@ def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3
     events.sort(key=lambda x: (x["datetime_obj"], x["days_away"]))
     return events
 
-def compute_event_nowcast(event: dict, fred_key: str, all_news: list) -> dict:
-    """Enhanced Macro Nowcast Engine with High-Sensitivity Live Wire Weighting & Surprise Momentum."""
+def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_override: str = "") -> dict:
+    """Enhanced Macro Nowcast Engine with Master Admin Actual Override Integration."""
     meta = event.get("meta", {})
     precursors = meta.get("precursors", [])
     keywords = meta.get("keywords", [])
     
+    # ── IF MASTER ADMIN ENTERED ACTUAL DATA, OVERRIDE PREDICTION ──
+    if actual_override:
+        cur = meta.get("currency", "USD")
+        return {
+            "precursor_results": [],
+            "base_precursor_score": 1.0,
+            "correlated_articles": [],
+            "news_sentiment_pts": 1.0,
+            "nowcast_composite": 0.85,
+            "bias_label": f"✅ ACTUAL RELEASED: {actual_override} (Beat / Positive)",
+            "bias_color": "#00ffa3",
+            "confidence": 100,
+            "outcome_desc": f"Master Admin Verified Actual Print ({actual_override}) successfully overridden and published to terminal.",
+            "currency_action_en": f"📈 {cur} Appreciating on Actual Beat ({actual_override})",
+            "currency_action_color": "#00ffa3",
+            "currency_action_desc_en": f"Official confirmed actual release of {actual_override} exceeds consensus and drives strong bullish momentum.",
+            "gold_implication": "📉 Bearish Pressure on Gold (Confirmed strong macro actual)",
+            "usd_implication": "📈 Bullish Tailwind for USD (Confirmed Actual Beat)",
+            "oil_implication": "📈 Bullish Support"
+        }
+
     precursor_results = []
     precursor_score_sum = 0.0
     precursor_weight_sum = 0.0
@@ -1786,8 +1824,6 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list) -> dict:
         news_sentiment_pts = rule_res["scores"].get(cur, 0.0)
     
     surprise_factor = 0.20 if base_precursor_score > 0.15 else (-0.20 if base_precursor_score < -0.15 else 0.0)
-    
-    # Enhanced Composite: 40% Precursor Macro + 45% Live News Sentiment + 15% Surprise Factor
     nowcast_composite = (0.40 * base_precursor_score) + (0.45 * (news_sentiment_pts / 0.50)) + (0.15 * surprise_factor)
     confidence_val = min(96, int(68 + abs(nowcast_composite) * 42))
 
@@ -1840,15 +1876,17 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list) -> dict:
         "oil_implication": oil_implication
     }
 
-def page_catalyst_forecaster(fred_key: str, channel_name: str) -> None:
+def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict | None = None) -> None:
     if "selected_tz" not in st.session_state or st.session_state["selected_tz"] not in SUPPORTED_TIMEZONES:
         st.session_state["selected_tz"] = "🏛️ Kurdistan & Iraq (UTC+3)"
 
     tz_info = SUPPORTED_TIMEZONES.get(st.session_state["selected_tz"], {"offset": 3, "label": "KRD (UTC+3)"})
+    is_admin = auth_user and auth_user.get("is_admin", False)
 
     with st.spinner("Synthesizing upcoming economic calendar, precursor FRED pipelines & correlated news..."):
         events = get_upcoming_catalyst_events(tz_info["offset"], tz_info["label"])
         all_news = fetch_all_instant_news(channel_name)
+        actuals_cache = load_actuals_cache()
 
     render_html("""
     <div style="background:linear-gradient(135deg,rgba(0,245,255,0.08),rgba(157,78,221,0.06));border:1px solid rgba(0,245,255,0.3);border-radius:18px;padding:22px 26px;margin-bottom:20px;box-shadow:var(--shadow);">
@@ -1897,7 +1935,10 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str) -> None:
     }
 
     for idx, ev in enumerate(events):
-        nowcast = compute_event_nowcast(ev, fred_key, all_news)
+        ev_code = ev["code"]
+        saved_actual = actuals_cache.get(ev_code, "")
+        
+        nowcast = compute_event_nowcast(ev, fred_key, all_news, actual_override=saved_actual)
         cur = ev.get("currency", "USD")
         cur_flag = CURRENCY_FLAGS.get(cur, "🌐")
         badge_bg = "rgba(0,255,163,0.12)" if nowcast["bias_color"] == "#00ffa3" else ("rgba(255,94,117,0.12)" if nowcast["bias_color"] == "#ff5e75" else "rgba(255,209,102,0.12)")
@@ -1932,6 +1973,10 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str) -> None:
                 <span style="color:#8fa3b4;">Previous Release:</span>
                 <span style="color:#fff;font-weight:700;">{ev['prev_str']}</span>
               </div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:4px;font-size:12px;">
+                <span style="color:#8fa3b4;">Actual Released:</span>
+                <span style="color:#00ffa3;font-weight:900;">{saved_actual or 'Pending'}</span>
+              </div>
               <div style="font-size:11px;color:#8fa3b4;margin-top:6px;border-top:1px solid rgba(255,255,255,0.05);padding-top:6px;">
                 Baseline: <b style="color:#ecf7ff;">{ev['consensus_bias']}</b>
               </div>
@@ -1950,6 +1995,16 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str) -> None:
               </div>
             </div>
           </div>
+
+          <!-- 👑 MASTER ADMIN ACTUAL INPUT PANEL -->
+          {f'''
+          <div style="margin-top:12px;padding:12px 14px;background:rgba(255,209,102,0.06);border:1px solid rgba(255,209,102,0.3);border-radius:10px;">
+            <div style="font-size:11px;font-weight:900;color:#ffd166;text-transform:uppercase;margin-bottom:6px;">👑 MASTER ADMIN OVERRIDE PANEL (Publish Actual Data):</div>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <input type="text" id="actual_input_{ev_code}" value="{saved_actual}" placeholder="e.g. 0.7%" style="flex:1;background:rgba(11,20,30,0.92);border:1px solid rgba(255,209,102,0.3);border-radius:8px;padding:6px 10px;color:#fff;font-size:12px;">
+            </div>
+          </div>
+          ''' if is_admin else ''}
 
           <div style="margin-top:12px;padding:12px 14px;background:rgba(0,245,255,0.05);border:1px solid rgba(0,245,255,0.25);border-radius:10px;">
             <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:4px;">
@@ -1970,19 +2025,33 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str) -> None:
         </div>
         """)
 
+        # Admin Input Streamlit Component for Streamless Publishing
+        if is_admin:
+            col_inp, col_btn = st.columns([3, 1])
+            with col_inp:
+                entered_actual_val = st.text_input(f"Publish Actual for {ev['title']}:", value=saved_actual, placeholder="e.g. 0.7%", key=f"act_txt_{ev_code}", label_visibility="collapsed")
+            with col_btn:
+                if st.button("💾 Publish Actual", key=f"act_btn_{ev_code}", use_container_width=True):
+                    actuals_cache[ev_code] = entered_actual_val.strip()
+                    save_actuals_cache(actuals_cache)
+                    st.success(f"Published Actual: {entered_actual_val}")
+                    time.sleep(0.3)
+                    st.rerun()
+
         with st.expander(f"📊 Macro Indicators & Correlated News: {ev['title']}", expanded=False):
-            p_cols = st.columns(len(nowcast["precursor_results"]) or 1)
-            for p_col, p in zip(p_cols, nowcast["precursor_results"]):
-                p_mom_color = "#00ffa3" if p["mom"] > 0 else "#ff5e75"
-                p_arr = "▲" if p["mom"] > 0 else "▼"
-                with p_col:
-                    render_html(f"""
-                    <div style="background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px;text-align:center;">
-                      <div style="font-size:10px;font-weight:700;color:#8fa3b4;line-height:1.3;height:26px;overflow:hidden;">{p['name']}</div>
-                      <div style="font-size:15px;font-weight:900;color:#fff;margin:4px 0;">{p['latest']:.2f}</div>
-                      <div style="font-size:10.5px;font-weight:800;color:{p_mom_color};">{p_arr} {p['mom']:+.2f} MoM</div>
-                    </div>
-                    """)
+            if nowcast["precursor_results"]:
+                p_cols = st.columns(len(nowcast["precursor_results"]))
+                for p_col, p in zip(p_cols, nowcast["precursor_results"]):
+                    p_mom_color = "#00ffa3" if p["mom"] > 0 else "#ff5e75"
+                    p_arr = "▲" if p["mom"] > 0 else "▼"
+                    with p_col:
+                        render_html(f"""
+                        <div style="background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px;text-align:center;">
+                          <div style="font-size:10px;font-weight:700;color:#8fa3b4;line-height:1.3;height:26px;overflow:hidden;">{p['name']}</div>
+                          <div style="font-size:15px;font-weight:900;color:#fff;margin:4px 0;">{p['latest']:.2f}</div>
+                          <div style="font-size:10.5px;font-weight:800;color:{p_mom_color};">{p_arr} {p['mom']:+.2f} MoM</div>
+                        </div>
+                        """)
 
             if nowcast["correlated_articles"]:
                 st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
