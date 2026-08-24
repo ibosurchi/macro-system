@@ -460,6 +460,7 @@ div[data-testid="stPopover"] > button {
 </style>
 """)
 
+
 @st.cache_data(ttl=30, show_spinner=False)
 def fetch_fred(series_id: str, key: str, limit: int = 48) -> pd.DataFrame | None:
     if not key:
@@ -1552,7 +1553,7 @@ CATALYST_PRECURSOR_MAP = {
         "title": "CPI y/y (Headline & Trimmed Mean)",
         "currency": "AUD",
         "impact": "High",
-        "utc_year": 2026, "utc_month": 8, "utc_day": 26, "utc_hour": 4, "utc_min": 30, # Wed Aug 26, 4:30 AM
+        "utc_year": 2026, "utc_month": 8, "utc_day": 26, "utc_hour": 4, "utc_min": 30,
         "keywords": ["australia cpi", "rba", "aussie inflation", "trimmed mean", "australia rates"],
         "forecast_str": "3.3%", "prev_str": "3.8%", "consensus_bias": "Australia CPI Cooling Track",
         "precursors": [
@@ -1564,7 +1565,7 @@ CATALYST_PRECURSOR_MAP = {
         "title": "Core Durable Goods Orders m/m",
         "currency": "USD",
         "impact": "Medium",
-        "utc_year": 2026, "utc_month": 8, "utc_day": 26, "utc_hour": 15, "utc_min": 30, # Wed Aug 26, 3:30 PM (15:30)
+        "utc_year": 2026, "utc_month": 8, "utc_day": 26, "utc_hour": 15, "utc_min": 30,
         "keywords": ["durable goods", "factory orders", "capex", "business spending", "manufacturing"],
         "forecast_str": "0.5%", "prev_str": "0.7%", "consensus_bias": "Positive Core Capex Orders",
         "precursors": [
@@ -1576,7 +1577,7 @@ CATALYST_PRECURSOR_MAP = {
         "title": "Crude Oil Inventories (EIA)",
         "currency": "USD",
         "impact": "High",
-        "utc_year": 2026, "utc_month": 8, "utc_day": 26, "utc_hour": 17, "utc_min": 30, # Wed Aug 26, 5:30 PM (17:30)
+        "utc_year": 2026, "utc_month": 8, "utc_day": 26, "utc_hour": 17, "utc_min": 30,
         "keywords": ["crude oil", "eia", "inventories", "gasoline stockpiles", "wti", "brent"],
         "forecast_str": "—", "prev_str": "4.4M", "consensus_bias": "Weekly Inventory Balance",
         "precursors": [
@@ -1588,7 +1589,7 @@ CATALYST_PRECURSOR_MAP = {
         "title": "Prelim GDP q/q (Annualized Growth)",
         "currency": "USD",
         "impact": "High",
-        "utc_year": 2026, "utc_month": 8, "utc_day": 27, "utc_hour": 15, "utc_min": 30, # Thu Aug 27, 3:30 PM (15:30) - Assuming same time as previous GDP entry, adjust if needed
+        "utc_year": 2026, "utc_month": 8, "utc_day": 27, "utc_hour": 15, "utc_min": 30,
         "keywords": ["gdp", "economic growth", "recession", "soft landing", "consumer spending", "output"],
         "forecast_str": "1.5%", "prev_str": "1.5%", "consensus_bias": "Moderate 1.5% GDP Growth Baseline",
         "precursors": [
@@ -1601,7 +1602,7 @@ CATALYST_PRECURSOR_MAP = {
         "title": "Core PCE Price Index m/m",
         "currency": "USD",
         "impact": "High",
-        "utc_year": 2026, "utc_month": 8, "utc_day": 28, "utc_hour": 15, "utc_min": 30, # Fri Aug 28, 3:30 PM (15:30)
+        "utc_year": 2026, "utc_month": 8, "utc_day": 28, "utc_hour": 15, "utc_min": 30,
         "keywords": ["pce", "inflation", "fed inflation", "powell", "consumer spending", "sticky", "deflator"],
         "forecast_str": "0.2%", "prev_str": "0.1%", "consensus_bias": "Core PCE Acceleration (+0.2% MoM)",
         "precursors": [
@@ -1614,7 +1615,7 @@ CATALYST_PRECURSOR_MAP = {
         "title": "Personal Spending m/m",
         "currency": "USD",
         "impact": "Medium",
-        "utc_year": 2026, "utc_month": 8, "utc_day": 28, "utc_hour": 15, "utc_min": 30, # Fri Aug 28, 3:30 PM (15:30) - Adjusted to match image if possible, though not explicitly in last set
+        "utc_year": 2026, "utc_month": 8, "utc_day": 28, "utc_hour": 15, "utc_min": 30,
         "keywords": ["personal spending", "consumer spending", "income", "consumption"],
         "forecast_str": "0.1%", "prev_str": "0.3%", "consensus_bias": "Moderate Spending Velocity",
         "precursors": [
@@ -1631,12 +1632,9 @@ def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3
     
     for code, item in CATALYST_PRECURSOR_MAP.items():
         impact_level = item.get("impact", "High")
-        
-        # Filter: Keep ONLY High and Medium impact events
         if impact_level not in ["High", "Medium"]:
             continue
 
-        # Use the exact date/time from the map
         event_utc = datetime(
             item["utc_year"], item["utc_month"], item["utc_day"],
             item["utc_hour"], item["utc_min"]
