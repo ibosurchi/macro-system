@@ -444,7 +444,7 @@ div[data-testid="stPopover"] > button {
 """)
 
 
-@st.cache_data(ttl=7200, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def fetch_fred(series_id: str, key: str, limit: int = 48) -> pd.DataFrame | None:
     if not key:
         return None
@@ -467,7 +467,7 @@ def fetch_fred(series_id: str, key: str, limit: int = 48) -> pd.DataFrame | None
 
 GLOBAL_ALERT_STATE: dict[str, str] = {}
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def _calc_currency_score_only(currency: str, fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> float | None:
     cfg = CURRENCY_SERIES[currency]
     weighted, tw = [], 0.0
@@ -491,7 +491,7 @@ def _calc_currency_score_only(currency: str, fred_key: str, channel_name: str = 
     final_score = (0.50 * macro_score) + (0.50 * (news_points / 0.50))
     return final_score
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def _calc_gold_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> tuple[float | None, str, float]:
     ry_val_str = "N/A"
     gold_news_pts = 0.0
@@ -535,7 +535,7 @@ def _calc_gold_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CH
     gold_s = (0.30 * gold_ry) + (0.20 * gold_usd) + (0.50 * (gold_news_pts / 0.50))
     return gold_s, ry_val_str, gold_news_pts
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def _calc_oil_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> tuple[float | None, float]:
     w_df = fetch_fred(OIL_SERIES["wti"], fred_key, limit=90)
     if w_df is None or w_df.empty:
@@ -610,7 +610,7 @@ def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
                     f"📈 *Composite Score:*  `{gold_s:+.3f}`\n"
                     f"📡 *News Sentiment:*   `{gold_news_pts:+.2f} pts`\n"
                     "━━━━━━━━━━━━━━━━━━━\n"
-                    "⚡ *ApexMacro Terminal v14.0*"
+                    "⚡ *ApexMacro Institutional Terminal v14.0*"
                 )
                 send_telegram_alert(alert_msg)
             GLOBAL_ALERT_STATE["Gold"] = current_gold_bias
@@ -630,7 +630,7 @@ def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
                     f"📈 *Composite Score:*  `{oil_s:+.3f}`\n"
                     f"📡 *News Sentiment:*   `{oil_news_pts:+.2f} pts`\n"
                     "━━━━━━━━━━━━━━━━━━━\n"
-                    "⚡ *ApexMacro Terminal v14.0*"
+                    "⚡ *ApexMacro Institutional Terminal v14.0*"
                 )
                 send_telegram_alert(alert_msg)
             GLOBAL_ALERT_STATE["Oil"] = current_oil_bias
@@ -649,7 +649,7 @@ def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
                     f"▪️ *New Bias:*       `{curr_bias}`\n\n"
                     f"📈 *Composite Score:*  `{usd_s:+.3f}`\n"
                     "━━━━━━━━━━━━━━━━━━━\n"
-                    "⚡ *ApexMacro Terminal v14.0*"
+                    "⚡ *ApexMacro Institutional Terminal v14.0*"
                 )
                 send_telegram_alert(alert_msg)
             GLOBAL_ALERT_STATE["USD"] = curr_bias
@@ -750,7 +750,7 @@ def deduplicate_news_articles(articles: list) -> list:
             unique_articles.append(art)
     return unique_articles
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def fetch_telegram_channel_news(channel_username: str) -> list:
     clean_username = channel_username.replace("@", "").replace("https://t.me/", "").strip()
     url = f"https://t.me/s/{clean_username}"
@@ -775,7 +775,7 @@ def fetch_telegram_channel_news(channel_username: str) -> list:
         pass
     return list(reversed(articles))
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def fetch_all_instant_news(channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> list:
     all_raw = []
     tg_channels = [channel_name, "financialjuice", "forexlive", "firstsquawk"]
@@ -818,7 +818,7 @@ def fetch_all_instant_news(channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> list
         ]
     return deduped
 
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def get_openrouter_analysis(news_text: str, api_key: str = DEFAULT_OPENROUTER_KEY) -> str:
     if not news_text or not api_key:
         return "AI analysis unavailable."
@@ -856,7 +856,7 @@ def get_openrouter_analysis(news_text: str, api_key: str = DEFAULT_OPENROUTER_KE
     except Exception as e:
         return f"AI Error: {str(e)}"
 
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def analyze_news_rule_based(articles: list) -> dict:
     scores = {
         "USD": 0.0, "EUR": 0.0, "GBP": 0.0, "CAD": 0.0,
@@ -929,7 +929,7 @@ def calc_mtf(vals: list, cat: str) -> dict | None:
         "z": round(z, 2), "score": float(score), "reverse": reverse,
     }
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def compute_composite(currency: str, fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> dict | None:
     cfg = CURRENCY_SERIES[currency]
     rows, weighted = [], []
@@ -1735,7 +1735,7 @@ def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3
     return events
 
 def compute_event_nowcast(event: dict, fred_key: str, all_news: list) -> dict:
-    """Advanced Macro Nowcast Engine integrating Precursor Velocity, Surprise Factor & Cross-Indicator Feedback."""
+    """Enhanced Macro Nowcast Engine with High-Sensitivity Live Wire Weighting & Surprise Momentum."""
     meta = event.get("meta", {})
     precursors = meta.get("precursors", [])
     keywords = meta.get("keywords", [])
@@ -1757,7 +1757,6 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list) -> dict:
             score = mf["score"] if mf else 0.0
             mom = mf.get("mom", 0.0) if mf else 0.0
             
-            # Cross-Indicator Dynamic Feedback Adjustment
             adjusted_score = score * (1.25 if mom > 0.5 else (0.85 if mom < -0.5 else 1.0))
             
             precursor_results.append({
@@ -1786,46 +1785,42 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list) -> dict:
         rule_res = analyze_news_rule_based(correlated_articles)
         news_sentiment_pts = rule_res["scores"].get(cur, 0.0)
     
-    surprise_factor = 0.15 if base_precursor_score > 0.2 else (-0.15 if base_precursor_score < -0.2 else 0.0)
-    nowcast_composite = (0.50 * base_precursor_score) + (0.35 * (news_sentiment_pts / 0.50)) + (0.15 * surprise_factor)
-    confidence_val = min(96, int(65 + abs(nowcast_composite) * 45))
+    surprise_factor = 0.20 if base_precursor_score > 0.15 else (-0.20 if base_precursor_score < -0.15 else 0.0)
+    
+    # Enhanced Composite: 40% Precursor Macro + 45% Live News Sentiment + 15% Surprise Factor
+    nowcast_composite = (0.40 * base_precursor_score) + (0.45 * (news_sentiment_pts / 0.50)) + (0.15 * surprise_factor)
+    confidence_val = min(96, int(68 + abs(nowcast_composite) * 42))
 
-    if nowcast_composite > 0.10:
+    if nowcast_composite > 0.05 or news_sentiment_pts > 0.03:
         bias_label = "🔺 LIKELY HIGHER THAN FORECAST (Beat)"
         bias_color = "#00ffa3"
-        outcome_desc = "Advanced precursor pipeline analysis and cross-indicator momentum indicate underlying economic strength pointing to an upside surprise against consensus."
+        outcome_desc = "Live institutional wire sentiment and accelerating precursor momentum indicate strong underlying performance pointing to a positive upside beat."
         currency_action_en = f"📈 {cur} Expected to Appreciate (Bullish Rally)"
         currency_action_color = "#00ffa3"
-        if cur == "USD":
-            currency_action_desc_en = "US Dollar (USD) is poised to strengthen as robust economic metrics reduce aggressive easing expectations."
-        else:
-            currency_action_desc_en = f"{cur} is expected to rally on positive macro performance and supporting yield differentials."
-        gold_implication = "📉 Bearish Drag on Gold (Surging yields & Hawkish macro repricing)"
-        usd_implication = "📈 Bullish Tailwind for USD (Yield advantage expansion)"
-        oil_implication = "📈 Bullish Support (Active energy demand pull)"
-    elif nowcast_composite < -0.10:
+        currency_action_desc_en = f"{cur} is poised to rally as incoming momentum and supportive wire flows override baseline consensus."
+        gold_implication = "📉 Bearish Pressure on Gold (Hawkish economic surprise)"
+        usd_implication = "📈 Bullish Tailwind for USD"
+        oil_implication = "📈 Bullish Support"
+    elif nowcast_composite < -0.05 or news_sentiment_pts < -0.03:
         bias_label = "🔻 LIKELY LOWER THAN FORECAST (Miss)"
         bias_color = "#ff5e75"
-        outcome_desc = "Precursor deceleration and lagging indicator weakness suggest economic contraction pointing toward a downside miss relative to consensus."
+        outcome_desc = "Cooling precursor pipelines and cautious wire sentiment point toward a potential downside miss relative to consensus."
         currency_action_en = f"📉 {cur} Expected to Weaken / Depreciate (Bearish Drag)"
         currency_action_color = "#ff5e75"
-        if cur == "USD":
-            currency_action_desc_en = "US Dollar (USD) is vulnerable to selling pressure as softening indicators accelerate rate-cut bets."
-        else:
-            currency_action_desc_en = f"{cur} is likely to face downside weakness due to domestic deceleration and dovish central bank outlooks."
-        gold_implication = "📈 Bullish Surge for Gold (Yields retreat & Rate cut optimism accelerates)"
-        usd_implication = "📉 Bearish Drag on USD (Dovish repricing across FX majors)"
-        oil_implication = "📉 Bearish Drag (Cooling macroeconomic demand signals)"
+        currency_action_desc_en = f"{cur} is vulnerable to selling pressure as softening indicators validate dovish expectations."
+        gold_implication = "📈 Bullish Surge for Gold (Rate cut optimism accelerates)"
+        usd_implication = "📉 Bearish Drag on USD"
+        oil_implication = "📉 Bearish Drag"
     else:
         bias_label = "⚖️ IN-LINE WITH CONSENSUS"
         bias_color = "#ffd166"
-        outcome_desc = "Balanced precursor metrics and neutral cross-indicator feedback suggest official print will land near consensus expectations with limited deviation."
+        outcome_desc = "Balanced precursor metrics and neutral live wire feedback suggest official print will land near consensus expectations."
         currency_action_en = f"⚖️ {cur} Range-Bound Consolidation (Neutral)"
         currency_action_color = "#ffd166"
-        currency_action_desc_en = f"{cur} is expected to maintain range-bound consolidation with limited volatility as data matches consensus expectations."
-        gold_implication = "⚖️ Neutral / Range-Bound (Awaiting secondary drivers)"
-        usd_implication = "⚖️ Balanced (Consolidation against major currency crosses)"
-        oil_implication = "⚖️ Range-Bound (Dominated by physical supply news)"
+        currency_action_desc_en = f"{cur} is expected to maintain range-bound consolidation as data matches consensus expectations."
+        gold_implication = "⚖️ Neutral / Range-Bound"
+        usd_implication = "⚖️ Balanced Consolidation"
+        oil_implication = "⚖️ Range-Bound"
         
     return {
         "precursor_results": precursor_results,
