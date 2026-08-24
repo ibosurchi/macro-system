@@ -461,7 +461,6 @@ div[data-testid="stPopover"] > button {
 </style>
 """)
 
-
 @st.cache_data(ttl=30, show_spinner=False)
 def fetch_fred(series_id: str, key: str, limit: int = 48) -> pd.DataFrame | None:
     if not key:
@@ -1117,7 +1116,6 @@ def render_data_table(rows: list) -> None:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_fmp_economic_calendar(api_key: str = DEFAULT_FMP_KEY) -> list[dict]:
-    """Fetches live economic calendar data from Financial Modeling Prep (FMP) API."""
     if not api_key:
         return []
     today_str = datetime.utcnow().strftime("%Y-%m-%d")
