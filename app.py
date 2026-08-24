@@ -10,7 +10,7 @@ import pandas as pd
 import numpy as np
 import requests
 import plotly.graph_objects as go
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 import calendar as cal_lib
 import re
 import feedparser
@@ -69,6 +69,28 @@ DEFAULT_OPENROUTER_KEY = get_secret(
     "sk-or-v1-" + "37e5829ab661beb5" + "6cdbbe813ad42ed0" + "1e147211efaafb3b" + "6b8effbb0adb6dea"
 )
 REQUEST_TIMEOUT = 8
+
+FOREX_FACTORY_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_forex_factory_calendar() -> list[dict]:
+    """Fetch the Forex Factory weekly calendar and keep only High/Medium events."""
+    try:
+        response = requests.get(
+            FOREX_FACTORY_CALENDAR_URL,
+            headers={"User-Agent": "Mozilla/5.0 ApexMacro/14.0"},
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, list):
+            return []
+        return [
+            item for item in data
+            if str(item.get("impact", "")).strip().lower() in {"high", "medium"}
+        ]
+    except Exception:
+        return []
 
 TELEGRAM_BOT_TOKEN = get_secret("TELEGRAM_BOT_TOKEN", "8922903944:AAFP10pFW_mqXOOD5mm3lkXY6oMy8THcTZU")
 
@@ -1625,33 +1647,81 @@ CATALYST_PRECURSOR_MAP = {
     },
 }
 
+def _normalize_catalyst_title(text: str) -> str:
+    text = str(text or "").lower()
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return " ".join(text.split())
+
+
+def _find_legacy_catalyst_meta(currency: str, title: str) -> dict:
+    """Preserve existing precursor intelligence for matching known catalysts."""
+    ff_title = _normalize_catalyst_title(title)
+    best_meta = {}
+    best_len = 0
+
+    for item in CATALYST_PRECURSOR_MAP.values():
+        if str(item.get("currency", "")).upper() != str(currency).upper():
+            continue
+        legacy_title = _normalize_catalyst_title(item.get("title", ""))
+        if not legacy_title:
+            continue
+        if ff_title == legacy_title:
+            return item.copy()
+        if ff_title in legacy_title or legacy_title in ff_title:
+            if len(legacy_title) > best_len:
+                best_meta = item.copy()
+                best_len = len(legacy_title)
+    return best_meta
+
+
+def _build_ff_event_code(currency: str, title: str, event_utc: datetime) -> str:
+    """Stable ID used by the existing Actual Override mechanism."""
+    clean_currency = re.sub(r"[^A-Z]", "", str(currency).upper()) or "ALL"
+    clean_title = re.sub(r"[^A-Z0-9]+", "_", str(title).upper()).strip("_")
+    date_key = event_utc.strftime("%Y%m%d%H%M")
+    return f"FF_{clean_currency}_{date_key}_{clean_title[:55]}"
+
+
 def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3)") -> list[dict]:
+    """
+    Forex Factory is the sole calendar source. Only High and Medium
+    impact events are allowed into the Catalyst Forecaster.
+    Existing precursor/Nowcast logic is preserved where a title matches
+    the legacy catalyst map.
+    """
     utc_now = datetime.utcnow()
     user_now = utc_now + timedelta(hours=tz_offset)
     events = []
-    
-    for code, item in CATALYST_PRECURSOR_MAP.items():
-        impact_level = item.get("impact", "High")
-        if impact_level not in ["High", "Medium"]:
+
+    ff_events = fetch_forex_factory_calendar()
+    if not ff_events:
+        return []
+
+    for ff in ff_events:
+        impact_level = str(ff.get("impact", "")).strip().title()
+        if impact_level not in {"High", "Medium"}:
             continue
 
-        event_utc = datetime(
-            item["utc_year"], item["utc_month"], item["utc_day"],
-            item["utc_hour"], item["utc_min"]
-        )
-        
-        while event_utc < utc_now - timedelta(days=1):
-            event_utc += timedelta(days=28)
-            if event_utc.weekday() == 5:
-                event_utc += timedelta(days=2)
-            elif event_utc.weekday() == 6:
-                event_utc += timedelta(days=1)
+        title = str(ff.get("title", "")).strip()
+        currency = str(ff.get("country", "")).strip().upper()
+        date_raw = str(ff.get("date", "")).strip()
+        if not title or not date_raw:
+            continue
+
+        try:
+            parsed_dt = datetime.fromisoformat(date_raw.replace("Z", "+00:00"))
+            if parsed_dt.tzinfo is not None:
+                event_utc = parsed_dt.astimezone(timezone.utc).replace(tzinfo=None)
+            else:
+                event_utc = parsed_dt
+        except Exception:
+            continue
 
         event_local = event_utc + timedelta(hours=tz_offset)
         diff = event_local - user_now
         total_seconds = diff.total_seconds()
         days_away = (event_local.date() - user_now.date()).days
-        
+
         if total_seconds < -43200:
             countdown_label = "✅ Released"
         elif total_seconds < 0:
@@ -1670,23 +1740,45 @@ def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3
             countdown_label = "⚡ Tomorrow (In 1 Day)"
         else:
             countdown_label = f"⚡ In {days_away} Days"
-        
+
+        legacy_meta = _find_legacy_catalyst_meta(currency, title)
+        keywords = legacy_meta.get("keywords") or [
+            w for w in re.findall(r"[a-zA-Z]{3,}", title.lower())
+        ]
+
+        meta = {
+            "title": title,
+            "currency": currency,
+            "impact": impact_level,
+            "keywords": keywords,
+            "precursors": legacy_meta.get("precursors", []),
+            "forecast_str": str(ff.get("forecast", "")).strip() or "—",
+            "prev_str": str(ff.get("previous", "")).strip() or "—",
+            "consensus_bias": legacy_meta.get(
+                "consensus_bias", f"Forex Factory consensus for {title}"
+            ),
+            "source": "Forex Factory",
+            "source_url": FOREX_FACTORY_CALENDAR_URL,
+            "ff_date_raw": date_raw,
+        }
+
+        event_code = _build_ff_event_code(currency, title, event_utc)
         events.append({
-            "code": code,
-            "title": item["title"],
-            "currency": item["currency"],
+            "code": event_code,
+            "title": title,
+            "currency": currency,
             "impact": impact_level,
             "datetime_obj": event_local,
             "date_str": event_local.strftime("%A, %b %d"),
             "time_str": f"{event_local.strftime('%H:%M')} ({tz_label})",
             "countdown": countdown_label,
             "days_away": days_away,
-            "forecast_str": item["forecast_str"],
-            "prev_str": item["prev_str"],
-            "consensus_bias": item["consensus_bias"],
-            "meta": item
+            "forecast_str": meta["forecast_str"],
+            "prev_str": meta["prev_str"],
+            "consensus_bias": meta["consensus_bias"],
+            "meta": meta,
         })
-        
+
     events.sort(key=lambda x: (x["datetime_obj"], x["days_away"]))
     return events
 
