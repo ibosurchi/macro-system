@@ -1564,7 +1564,7 @@ CATALYST_PRECURSOR_MAP = {
     "NZD_RETAIL_HEADLINE": {
         "title": "Retail Sales q/q",
         "currency": "NZD",
-        "impact": "High",
+        "impact": "Medium",
         "keywords": ["retail sales", "new zealand", "rbnz", "consumption", "household demand"],
         "precursors": [
             {"name": "Real Disposable Income Momentum", "series": "DSPIC96", "cat": "growth", "weight": 0.50},
@@ -1693,6 +1693,12 @@ def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3
 
     for item in calendar_template:
         event_meta = CATALYST_PRECURSOR_MAP.get(item["code"], {})
+        impact_level = event_meta.get("impact", "High")
+        
+        # Filter: Keep ONLY High and Medium impact events
+        if impact_level not in ["High", "Medium"]:
+            continue
+
         event_utc = datetime(
             item["utc_year"], item["utc_month"], item["utc_day"],
             item["utc_hour"], item["utc_min"]
@@ -1736,7 +1742,7 @@ def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3
             "code": item["code"],
             "title": event_meta.get("title", item["code"]),
             "currency": event_meta.get("currency", "USD"),
-            "impact": event_meta.get("impact", "High"),
+            "impact": impact_level,
             "datetime_obj": event_local,
             "date_str": event_local.strftime("%A, %b %d"),
             "time_str": f"{time_str_formatted} ({tz_label})",
@@ -1759,10 +1765,18 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_ove
     if actual_override:
         cur = meta.get("currency", "USD")
         clean_act = actual_override.strip()
-        is_negative = "-" in clean_act or "neg" in clean_act.lower() or (clean_act.replace(".", "", 1).isdigit() and float(clean_act.replace("%", "")) < 0)
+        is_negative = "-" in clean_act or "neg" in clean_act.lower()
         
-        # Determine comparison vs consensus
+        if not is_negative:
+            try:
+                num_val = float(clean_act.replace("%", "").strip())
+                if num_val < 0:
+                    is_negative = True
+            except Exception:
+                pass
+
         forecast_str = event.get("forecast_str", "0.0%")
+        is_beat = True
         try:
             f_val = float(forecast_str.replace("%", "").strip())
             a_val = float(clean_act.replace("%", "").strip())
@@ -1948,7 +1962,7 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
         """)
 
     st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
-    render_html('<div class="sec-title">Upcoming High-Impact Catalyst Radar &amp; AI Nowcasts</div>')
+    render_html('<div class="sec-title">Upcoming High &amp; Medium Impact Catalyst Radar &amp; AI Nowcasts</div>')
 
     CURRENCY_FLAGS = {
         "USD": "🇺🇸", "EUR": "🇪🇺", "GBP": "💷", "CAD": "🍁",
@@ -1964,6 +1978,10 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
         cur_flag = CURRENCY_FLAGS.get(cur, "🌐")
         badge_bg = "rgba(0,255,163,0.12)" if nowcast["bias_color"] == "#00ffa3" else ("rgba(255,94,117,0.12)" if nowcast["bias_color"] == "#ff5e75" else "rgba(255,209,102,0.12)")
         
+        # Color coding for Impact Badge
+        impact_bg = "rgba(255,94,117,0.18)" if ev['impact'] == "High" else "rgba(255,209,102,0.18)"
+        impact_col = "#ff5e75" if ev['impact'] == "High" else "#ffd166"
+
         render_html(f"""
         <div style="background:linear-gradient(180deg,rgba(11,20,32,0.92),rgba(5,10,18,0.96));border:1px solid rgba(0,245,255,0.22);border-radius:16px;padding:20px 22px;margin-bottom:18px;box-shadow:var(--shadow);">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;margin-bottom:12px;">
@@ -1972,7 +1990,7 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
                 <span style="font-size:18px;">{cur_flag}</span>
                 <span style="font-size:11px;font-weight:900;color:#00f5ff;background:rgba(0,245,255,0.12);border:1px solid rgba(0,245,255,0.3);padding:2px 7px;border-radius:6px;">{cur}</span>
                 <span style="font-size:15px;font-weight:800;color:#fff;">{ev['title']}</span>
-                <span style="font-size:10px;background:rgba(255,94,117,0.18);border:1px solid rgba(255,94,117,0.4);color:#ff5e75;padding:2px 8px;border-radius:8px;font-weight:700;">{ev['impact']} Impact</span>
+                <span style="font-size:10px;background:{impact_bg};border:1px solid {impact_col}44;color:{impact_col};padding:2px 8px;border-radius:8px;font-weight:700;">{ev['impact']} Impact</span>
               </div>
               <div style="font-size:11.5px;color:#8fa3b4;margin-top:4px;">
                 📅 <b>{ev['date_str']}</b> &nbsp;•&nbsp; 🕒 <b>{ev['time_str']}</b>
