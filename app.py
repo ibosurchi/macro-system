@@ -461,7 +461,6 @@ div[data-testid="stPopover"] > button {
 </style>
 """)
 
-
 @st.cache_data(ttl=30, show_spinner=False)
 def fetch_fred(series_id: str, key: str, limit: int = 48) -> pd.DataFrame | None:
     if not key:
@@ -1548,6 +1547,270 @@ def page_oil(fred_key: str, channel_name: str) -> None:
               </div>
             </div>
             """)
+
+def render_vip_gate() -> dict | None:
+    client_id, dev_type = get_client_device_info()
+
+    try:
+        if len(st.query_params) > 0:
+            st.query_params.clear()
+    except Exception:
+        pass
+
+    auth_user = st.session_state.get("APEX_AUTH_USER")
+    if auth_user and auth_user.get("is_authenticated"):
+        return auth_user
+
+    sessions = load_sessions_cache()
+    dev_session = sessions.get(client_id)
+    if dev_session:
+        try:
+            last_dt = datetime.strptime(dev_session.get("last_active", ""), "%Y-%m-%d %H:%M:%S")
+            if (get_current_time() - last_dt).total_seconds() <= (5 * 86400):
+                dev_session["last_active"] = get_current_time().strftime("%Y-%m-%d %H:%M:%S")
+                save_sessions_cache(sessions)
+                auto_user = {
+                    "is_authenticated": True,
+                    "user_name": dev_session.get("user_name", "VIP Client"),
+                    "expiry_info": dev_session.get("expiry_info", "5-Day Persistent Device Session Active"),
+                    "is_admin": dev_session.get("is_admin", False),
+                    "key": dev_session.get("key", "")
+                }
+                st.session_state["APEX_AUTH_USER"] = auto_user
+                return auto_user
+        except Exception:
+            pass
+
+    col1, col2, col3 = st.columns([1, 2.2, 1])
+    with col2:
+        st.markdown("<div style='height:40px;'></div>", unsafe_allow_html=True)
+        render_html(f"""
+        <div style="background:linear-gradient(180deg,rgba(11,20,32,0.95),rgba(5,10,18,0.97));border:1px solid rgba(0,245,255,0.25);border-radius:22px;padding:34px 28px 24px;text-align:center;box-shadow:0 25px 80px rgba(0,0,0,0.7),0 0 35px rgba(0,245,255,0.12);backdrop-filter:blur(24px);">
+          <div style="display:flex;justify-content:center;margin-bottom:14px;">
+            <div style="display:flex;align-items:center;justify-content:center;width:56px;height:56px;background:rgba(0,245,255,0.08);border:1px solid rgba(0,245,255,0.35);border-radius:16px;box-shadow:0 0 25px rgba(0,245,255,0.3);">
+              <svg width="34" height="34" viewBox="0 0 360 365" fill="none" style="filter:drop-shadow(0 0 10px rgba(0,255,255,0.85));">
+                <defs>
+                  <linearGradient id="gGrad" x1="0" y1="0" x2="1" y2="1">
+                    <stop stop-color="#00FFFF"/>
+                    <stop offset="1" stop-color="#00D7E8"/>
+                  </linearGradient>
+                </defs>
+                <path d="M0 365L180 0L360 365H288L180 130L72 365Z" fill="url(#gGrad)"/>
+              </svg>
+            </div>
+          </div>
+          <div style="font-size:24px;font-weight:900;letter-spacing:2.5px;color:#00f5ff;text-shadow:0 0 20px rgba(0,245,255,0.5);">APEX<span style="color:#ffd166;">MACRO</span></div>
+          <div style="font-size:9.5px;font-weight:800;letter-spacing:3px;color:#8fa3b4;margin-top:2px;text-transform:uppercase;">Institutional Intelligence Terminal</div>
+          <div style="height:1px;background:linear-gradient(90deg,transparent,rgba(0,245,255,0.3),transparent);margin:18px 0 14px;"></div>
+          <div style="font-size:13.5px;color:#ecf7ff;font-weight:700;margin-bottom:4px;">🔒 Restricted VIP Terminal Access</div>
+          <div style="font-size:11.5px;color:#8fa3b4;margin-bottom:16px;">Detected: <b>{dev_type}</b> • 5-Day Auto-Login Active. Enter VIP Key once.</div>
+        </div>
+        """)
+
+        entered_key = st.text_input("VIP License Key", type="password", placeholder="Enter VIP Key (e.g. APEX-XXXX-XXXX)", label_visibility="collapsed")
+
+        b1, b2 = st.columns([1.2, 1])
+        with b1:
+            unlock_clicked = st.button("⚡ Unlock Terminal", type="primary", use_container_width=True)
+        with b2:
+            st.markdown(
+                '<a href="https://t.me/ibosurchii" target="_blank" style="text-decoration:none;"><button style="width:100%;padding:10px 12px;background:rgba(255,209,102,0.10);border:1px solid rgba(255,209,102,0.35);border-radius:11px;color:#ffd166;font-weight:750;font-size:12px;cursor:pointer;">💬 Get VIP License</button></a>',
+                unsafe_allow_html=True
+            )
+
+        if unlock_clicked:
+            clean_entered = entered_key.strip().upper()
+            is_valid, user_name, expiry_info = verify_vip_key(clean_entered, client_id, dev_type)
+            if is_valid:
+                is_admin = (user_name == "ADMINISTRATOR")
+                sessions[client_id] = {
+                    "key": clean_entered,
+                    "device_id": client_id,
+                    "dev_type": dev_type,
+                    "last_active": get_current_time().strftime("%Y-%m-%d %H:%M:%S"),
+                    "user_name": user_name,
+                    "expiry_info": expiry_info,
+                    "is_admin": is_admin
+                }
+                save_sessions_cache(sessions)
+                st.session_state["APEX_AUTH_USER"] = {
+                    "is_authenticated": True,
+                    "user_name": user_name,
+                    "expiry_info": expiry_info,
+                    "is_admin": is_admin,
+                    "key": clean_entered
+                }
+                st.success(f"✅ Access Granted! Welcome, {user_name}.")
+                time.sleep(0.4)
+                st.rerun()
+            else:
+                st.error(f"❌ {expiry_info}")
+
+        return None
+
+def render_admin_key_generator() -> None:
+    render_html("""
+    <div style="background:linear-gradient(135deg,rgba(0,245,255,0.06),rgba(0,255,163,0.03));border:1px solid rgba(0,245,255,0.3);border-radius:16px;padding:20px 24px;margin-bottom:20px;box-shadow:var(--shadow);">
+      <div style="font-size:16px;font-weight:900;color:#00f5ff;letter-spacing:1px;margin-bottom:4px;">👑 MASTER ADMIN CONTROL DESK</div>
+      <div style="font-size:11.5px;color:#8fa3b4;">Manage your VIP client licenses, dual-device bindings (1 Mobile + 1 PC), assign Telegram IDs, and generate secure cryptographic keys.</div>
+    </div>
+    """)
+
+    g1, g2, g3 = st.columns([2, 2, 1.5])
+    with g1:
+        c_name = st.text_input("Client Name:", placeholder="e.g. KARDO", key="adm_client_name")
+        c_tg_id = st.text_input("Telegram ID:", placeholder="e.g. 643290893", key="adm_client_tg_id")
+    with g2:
+        duration_opt = st.selectbox(
+            "Duration:",
+            [
+                ("30 Days (1 Month)", 30),
+                ("7 Days (Free Trial)", 7),
+                ("90 Days (Quarterly)", 90),
+                ("365 Days (1 Year)", 365),
+                ("Lifetime VIP Access", 9999),
+            ],
+            format_func=lambda x: x[0],
+            key="adm_duration_sel"
+        )
+    with g3:
+        st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+        gen_btn = st.button("⚡ Generate & Save", type="primary", use_container_width=True)
+
+    if gen_btn:
+        name_val = c_name.strip() or "CLIENT"
+        tg_id_val = c_tg_id.strip()
+        days_val = duration_opt[1]
+        generated_key = generate_vip_key(name_val, days_val)
+        exp_text = "Lifetime" if days_val >= 9999 else (get_current_time() + timedelta(days=days_val)).strftime("%Y-%m-%d")
+        register_new_client_key(name_val, generated_key, duration_opt[0], exp_text, tg_id_val)
+        st.success(f"🎉 Generated & Registered License Key for **{name_val}** (Telegram ID: {tg_id_val or 'None'}):")
+        st.code(generated_key, language="text")
+        st.info("📋 Key has been saved to your VIP Client Registry below.")
+
+    st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
+    render_html('<div class="sec-title">VIP Client Registry &amp; Subscription Database</div>')
+    
+    clients = load_vip_registry()
+    today_str = get_current_time().strftime("%Y-%m-%d")
+    
+    total_c = len(clients)
+    active_c = 0
+    for c in clients:
+        if c.get("status") != "Revoked":
+            if c.get("expires_at") == "Lifetime" or c.get("expires_at", "") >= today_str:
+                c["current_status"] = "🟢 Active"
+                active_c += 1
+            else:
+                c["current_status"] = "🔴 Expired"
+        else:
+            c["current_status"] = "⛔ Revoked"
+
+    expired_c = total_c - active_c
+
+    kpi1, kpi2, kpi3 = st.columns(3)
+    with kpi1:
+        render_html(f"""
+        <div style="background:rgba(0,245,255,0.05);border:1px solid rgba(0,245,255,0.2);border-radius:12px;padding:12px;text-align:center;">
+          <div style="font-size:11px;color:#8fa3b4;">TOTAL CLIENTS</div>
+          <div style="font-size:22px;font-weight:900;color:#00f5ff;">{total_c}</div>
+        </div>
+        """)
+    with kpi2:
+        render_html(f"""
+        <div style="background:rgba(0,255,163,0.05);border:1px solid rgba(0,255,163,0.2);border-radius:12px;padding:12px;text-align:center;">
+          <div style="font-size:11px;color:#8fa3b4;">ACTIVE LICENSES</div>
+          <div style="font-size:22px;font-weight:900;color:#00ffa3;">{active_c}</div>
+        </div>
+        """)
+    with kpi3:
+        render_html(f"""
+        <div style="background:rgba(255,94,117,0.05);border:1px solid rgba(255,94,117,0.2);border-radius:12px;padding:12px;text-align:center;">
+          <div style="font-size:11px;color:#8fa3b4;">EXPIRED / REVOKED</div>
+          <div style="font-size:22px;font-weight:900;color:#ff5e75;">{expired_c}</div>
+        </div>
+        """)
+
+    if clients:
+        st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+        tbl_data = []
+        for c in clients:
+            mob_b = bool(c.get("bound_mobile_id"))
+            pc_b = bool(c.get("bound_pc_id"))
+            if mob_b and pc_b:
+                b_status = "📱 Mobile + 💻 PC"
+            elif mob_b:
+                b_status = "📱 Mobile Only"
+            elif pc_b:
+                b_status = "💻 PC Only"
+            else:
+                b_status = "⚪ Unbound (0/2)"
+                
+            tbl_data.append({
+                "Client Name": c.get("client_name"),
+                "License Key": c.get("key"),
+                "Telegram ID": c.get("telegram_id", "—"),
+                "Plan": c.get("duration"),
+                "Expires": c.get("expires_at"),
+                "Status": c.get("current_status"),
+                "Registered Devices": b_status,
+            })
+        st.dataframe(pd.DataFrame(tbl_data), use_container_width=True, hide_index=True)
+        
+        st.markdown("---")
+        render_html('<div style="font-size:11px;font-weight:800;color:#79dff0;margin-bottom:6px;">⚙️ EDIT CLIENT TELEGRAM ID</div>')
+        edit_col1, edit_col2, edit_col3 = st.columns([2, 2, 1.5])
+        with edit_col1:
+            key_to_edit = st.selectbox("Select Key to Update:", [c.get("key") for c in clients], key="sel_key_edit")
+        with edit_col2:
+            new_tg_input = st.text_input("New Telegram ID:", placeholder="e.g. 7153364048", key="new_tg_val")
+        with edit_col3:
+            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+            if st.button("💾 Save Telegram ID", use_container_width=True):
+                for c in clients:
+                    if c.get("key") == key_to_edit:
+                        c["telegram_id"] = new_tg_input.strip()
+                save_vip_registry(clients)
+                st.success(f"Telegram ID updated successfully!")
+                time.sleep(0.4)
+                st.rerun()
+
+        st.markdown("---")
+        act_col1, act_col2, act_col3, act_col4 = st.columns([2.2, 1.3, 1.3, 1.2])
+        with act_col1:
+            key_selected = st.selectbox("Select Client Key:", [c.get("key") for c in clients], key="sel_key_action")
+        with act_col2:
+            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+            if st.button("🔄 Reset Lock", use_container_width=True):
+                for c in clients:
+                    if c.get("key") == key_selected:
+                        c["bound_mobile_id"] = ""
+                        c["bound_pc_id"] = ""
+                        c["bound_at"] = ""
+                save_vip_registry(clients)
+                st.success(f"Device lock reset (0/2 devices bound)!")
+                time.sleep(0.4)
+                st.rerun()
+        with act_col3:
+            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+            if st.button("⛔ Revoke", type="secondary", use_container_width=True):
+                for c in clients:
+                    if c.get("key") == key_selected:
+                        c["status"] = "Revoked"
+                save_vip_registry(clients)
+                st.warning(f"Key revoked!")
+                time.sleep(0.4)
+                st.rerun()
+        with act_col4:
+            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+            if st.button("🗑️ Delete", type="secondary", use_container_width=True):
+                updated_clients = [c for c in clients if c.get("key") != key_selected]
+                save_vip_registry(updated_clients)
+                st.success(f"Client deleted successfully!")
+                time.sleep(0.4)
+                st.rerun()
+    else:
+        st.info("No VIP clients registered yet. Generate a key above to start building your client base!")
 
 def main() -> None:
     inject_css()
