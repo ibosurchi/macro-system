@@ -525,7 +525,97 @@ def fetch_fred(series_id: str, key: str, limit: int = 48) -> pd.DataFrame | None
     except Exception:
         return None
 
-GLOBAL_ALERT_STATE: dict[str, str] = {}
+
+# ============================================================
+# SMART TELEGRAM ALERT ENGINE — Broad Regime Monitoring
+# ============================================================
+
+# Per-asset alert state, each entry:
+# { "confirmed_regime": str, "confirmed_score": float,
+#   "pending_regime": str|None, "pending_since": float|None }
+GLOBAL_ALERT_STATE: dict[str, dict] = {}
+
+def _broad_regime(bias_label: str) -> str:
+    """Map detailed bias label → Bullish | Neutral | Bearish for Telegram alerts."""
+    l = bias_label.lower()
+    if "bullish" in l:
+        return "Bullish"
+    if "bearish" in l:
+        return "Bearish"
+    return "Neutral"
+
+def _init_asset_state(asset_key: str, regime: str, score: float) -> None:
+    """Silently initialize state for an asset (no alert on first observation)."""
+    if asset_key not in GLOBAL_ALERT_STATE:
+        GLOBAL_ALERT_STATE[asset_key] = {
+            "confirmed_regime": regime,
+            "confirmed_score": score,
+            "pending_regime": None,
+            "pending_since": None,
+        }
+
+def _check_regime_shift(
+    asset_key: str,
+    new_detailed_label: str,
+    new_score: float,
+    now_ts: float,
+    CONFIRMATION_SECS: float = 900.0,  # 15 minutes
+) -> str | None:
+    """
+    Returns a Telegram action string if a confirmed broad-regime change occurred,
+    otherwise returns None.  Handles:
+      - Immediate alert for direct Bullish <-> Bearish major reversal
+      - 15-min confirmation for Neutral transitions
+      - No alert for Moderate→Strong within same direction
+    """
+    state = GLOBAL_ALERT_STATE.get(asset_key)
+    if state is None:
+        return None  # not yet initialized
+
+    new_regime = _broad_regime(new_detailed_label)
+    confirmed = state["confirmed_regime"]
+
+    if new_regime == confirmed:
+        # Same broad regime → cancel any pending transition and stay silent
+        state["pending_regime"] = None
+        state["pending_since"] = None
+        return None
+
+    # A potential regime change detected
+    # Is this a direct major reversal? (Bullish ↔ Bearish, skip Neutral)
+    is_major_reversal = (confirmed in ("Bullish", "Bearish") and
+                         new_regime in ("Bullish", "Bearish") and
+                         confirmed != new_regime)
+
+    if is_major_reversal:
+        # Immediate — bypass 15-min confirmation
+        old_regime = confirmed
+        state["confirmed_regime"] = new_regime
+        state["confirmed_score"] = new_score
+        state["pending_regime"] = None
+        state["pending_since"] = None
+        return f"{old_regime}→{new_regime}|IMMEDIATE"
+
+    # Neutral transition → require 15-min confirmation
+    if state.get("pending_regime") == new_regime:
+        # Already tracking this pending transition
+        elapsed = now_ts - (state["pending_since"] or now_ts)
+        if elapsed >= CONFIRMATION_SECS:
+            # Confirmed!
+            old_regime = confirmed
+            state["confirmed_regime"] = new_regime
+            state["confirmed_score"] = new_score
+            state["pending_regime"] = None
+            state["pending_since"] = None
+            return f"{old_regime}→{new_regime}|CONFIRMED"
+        # Still waiting, no alert yet
+        return None
+    else:
+        # Start tracking a new pending transition
+        state["pending_regime"] = new_regime
+        state["pending_since"] = now_ts
+        return None
+
 
 @st.cache_data(ttl=30, show_spinner=False)
 def _calc_currency_score_only(currency: str, fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> float | None:
@@ -613,15 +703,63 @@ def _calc_oil_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHA
     final_oil_score = (0.50 * (w_mf["score"] if w_mf else 0.0)) + (0.50 * (oil_news_pts / 0.50))
     return final_oil_score, oil_news_pts
 
+@st.cache_data(ttl=30, show_spinner=False)
+def _calc_ndx_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> tuple[float | None, float]:
+    """Nasdaq-100 composite: 40% NDX price momentum, 20% inverse real yield, 15% inverse USD, 25% NDX news sentiment."""
+    try:
+        ndx_df = fetch_fred("NASDAQ100", fred_key, limit=90)
+        if ndx_df is None or ndx_df.empty:
+            ndx_df = fetch_fred("NASDAQCOM", fred_key, limit=90)
+
+        ndx_momentum = 0.0
+        if ndx_df is not None and not ndx_df.empty:
+            ndx_vals = ndx_df["value"].tolist()
+            ndx_mf = calc_mtf(ndx_vals, "growth")
+            ndx_momentum = ndx_mf["score"] if ndx_mf else 0.0
+
+        # Real yield (inverse) — falling real yields are bullish for NDX
+        ry_df = fetch_fred(GOLD_SERIES["real_yield"], fred_key, limit=60)
+        inv_ry = 0.0
+        if ry_df is not None and not ry_df.empty:
+            ry_vals = ry_df["value"].tail(36).tolist()
+            ry_mf = calc_mtf(ry_vals, "rate")
+            inv_ry = -ry_mf["score"] if ry_mf else 0.0  # inverse
+
+        # USD macro pressure (inverse) — stronger USD = headwind for NDX
+        cfg = CURRENCY_SERIES["USD"]
+        w_list, tw = [], 0.0
+        for name, meta in cfg["indicators"].items():
+            df = fetch_fred(meta["series"], fred_key)
+            if df is None or df.empty:
+                continue
+            mf = calc_mtf(df["value"].tolist(), meta["cat"])
+            if mf is None:
+                continue
+            w_list.append(mf["score"] * meta["w"])
+            tw += meta["w"]
+        usd_macro = sum(w_list) / tw if tw else 0.0
+        inv_usd = -usd_macro  # inverse
+
+        # News sentiment for NDX
+        all_news = fetch_all_instant_news(channel_name)
+        sentiment_res = analyze_news_rule_based(all_news)
+        ndx_news_pts = sentiment_res["scores"].get("Nasdaq", 0.0)
+
+        final_ndx = (0.40 * ndx_momentum) + (0.20 * inv_ry) + (0.15 * inv_usd) + (0.25 * (ndx_news_pts / 0.50))
+        return final_ndx, ndx_news_pts
+    except Exception:
+        return None, 0.0
+
+
+# Asset registry for smart monitoring
+_ASSET_MONITOR_CONFIG = [
+    # (asset_key, display_name, icon, score_fn_args)
+    # score functions are called per-asset in check_global_market_shifts
+]
+
+
 def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> str:
     now = get_current_time()
-    usd_s = _calc_currency_score_only("USD", fred_key, channel_name) or 0.0
-    eur_s = _calc_currency_score_only("EUR", fred_key, channel_name) or 0.0
-    gbp_s = _calc_currency_score_only("GBP", fred_key, channel_name) or 0.0
-    gold_s, ry_val_str, _ = _calc_gold_score_only(fred_key, channel_name)
-    gold_s = gold_s or 0.0
-    oil_s, _ = _calc_oil_score_only(fred_key, channel_name)
-    oil_s = oil_s or 0.0
 
     def _emoji(s: float) -> str:
         if s > 0.15:  return "📈 Bullish"
@@ -629,92 +767,208 @@ def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHAN
         return "⚖️ Neutral"
 
     lines = [
-        f"Last Hour …",
-        f"━━━━━━━━━━━━━━━━━━━",
-        f"🇺🇸 Asset: US Dollar Index (USD)",
-        f"📊 STILL: {_emoji(usd_s)}",
-        f"",
-        f"🥇 XAU/USD:",
-        f"Still: {_emoji(gold_s)}",
-        f"",
-        f"🇪🇺 EUR:",
-        f"Still: {_emoji(eur_s)}",
-        f"",
-        f"🇬🇧 GBP:",
-        f"Still: {_emoji(gbp_s)}",
-        f"",
-        f"🛢️ Oil:",
-        f"Still: {_emoji(oil_s)}",
-        f"",
-        f"▫️ Real Yield 10Y: {ry_val_str}",
-        f"📅 {now.strftime('%Y-%m-%d')} | ApexMacro Desk",
+        "📊 *APEX MACRO — HOURLY INSTITUTIONAL BRIEF*",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━",
+        "",
+        "🌐 *Forex Macro Bias*",
     ]
+
+    # All forex currencies dynamically
+    for cur in CURRENCY_SERIES.keys():
+        try:
+            s = _calc_currency_score_only(cur, fred_key, channel_name) or 0.0
+            meta = CURRENCY_SERIES[cur]
+            lines.append(f"  {meta['flag']} {cur}: {_emoji(s)}")
+        except Exception:
+            pass
+
+    lines.append("")
+    lines.append("🏅 *Commodities & Equity*")
+
+    try:
+        gold_s, ry_val_str, _ = _calc_gold_score_only(fred_key, channel_name)
+        gold_s = gold_s or 0.0
+        lines.append(f"  🥇 Gold (XAUUSD): {_emoji(gold_s)}")
+    except Exception:
+        ry_val_str = "N/A"
+
+    try:
+        oil_s, _ = _calc_oil_score_only(fred_key, channel_name)
+        oil_s = oil_s or 0.0
+        lines.append(f"  🛢️ Oil (WTI): {_emoji(oil_s)}")
+    except Exception:
+        pass
+
+    try:
+        ndx_s, _ = _calc_ndx_score_only(fred_key, channel_name)
+        if ndx_s is not None:
+            lines.append(f"  📊 Nasdaq-100 (NDX): {_emoji(ndx_s)}")
+    except Exception:
+        pass
+
+    lines.append("")
+    lines.append(f"▫️ Real Yield 10Y: {ry_val_str}")
+    lines.append(f"📅 {now.strftime('%Y-%m-%d %H:%M')} | ApexMacro Institutional Desk")
+
     return "\n".join(lines)
 
+
+def _build_single_asset_alert_msg(
+    display_name: str, icon: str,
+    old_regime: str, new_regime: str,
+    score: float, news_pts: float | None,
+    reason: str
+) -> str:
+    news_line = f"\n📡 *News Sentiment:* `{news_pts:+.2f} pts`" if news_pts is not None else ""
+    return (
+        "🔄 *APEX MACRO — SHIFT ALERT*\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        f"{icon} *Asset:* `{display_name}`\n"
+        f"📊 *Status:* `Broad Regime Changed`\n\n"
+        f"▪️ *Previous Bias:*  `{old_regime}`\n"
+        f"▪️ *New Bias:*       `{new_regime}`\n\n"
+        f"📈 *Composite Score:*  `{score:+.3f}`"
+        f"{news_line}\n"
+        f"🕐 *Reason:* {reason}\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "⚡ *ApexMacro Institutional Terminal v15.0*"
+    )
+
+
+def _build_multi_asset_alert_msg(asset_shifts: list[dict]) -> str:
+    lines = [
+        "🔄 *APEX MACRO — MULTI-ASSET SHIFT*",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+    for s in asset_shifts:
+        lines.append(f"\n{s['icon']} *{s['display_name']}*")
+        lines.append(f"  Previous: `{s['old_regime']}` → New: `{s['new_regime']}`")
+        lines.append(f"  Composite: `{s['score']:+.3f}`")
+        if s.get("news_pts") is not None:
+            lines.append(f"  News Sentiment: `{s['news_pts']:+.2f} pts`")
+    lines.append("\n━━━━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("⚡ *ApexMacro Institutional Terminal v15.0*")
+    return "\n".join(lines)
+
+
 def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
+    """Smart broad-regime shift monitoring for all supported assets."""
     if not fred_key:
         return
     try:
-        gold_s, _, gold_news_pts = _calc_gold_score_only(fred_key, channel_name)
-        if gold_s is not None:
-            current_gold_bias, _, _ = bias_from_score(gold_s)
-            last_gold_bias = GLOBAL_ALERT_STATE.get("Gold")
-            if last_gold_bias is not None and current_gold_bias != last_gold_bias:
-                alert_msg = (
-                    "🔄 *APEX MACRO — SHIFT ALERT*\n"
-                    "━━━━━━━━━━━━━━━━━━━\n"
-                    "🥇 *Asset:* `Gold (XAUUSD)`\n"
-                    f"📊 *Status:* `Direction Changed`\n\n"
-                    f"▪️ *Previous Bias:*  `{last_gold_bias}`\n"
-                    f"▪️ *New Bias:*       `{current_gold_bias}`\n\n"
-                    f"📈 *Composite Score:*  `{gold_s:+.3f}`\n"
-                    f"📡 *News Sentiment:*   `{gold_news_pts:+.2f} pts`\n"
-                    "━━━━━━━━━━━━━━━━━━━\n"
-                    "⚡ *ApexMacro Institutional Terminal v14.0*"
-                )
-                send_telegram_alert(alert_msg)
-            GLOBAL_ALERT_STATE["Gold"] = current_gold_bias
+        now_ts = time.time()
+        confirmed_shifts: list[dict] = []
 
-        oil_s, oil_news_pts = _calc_oil_score_only(fred_key, channel_name)
-        if oil_s is not None:
-            current_oil_bias, _, _ = bias_from_score(oil_s)
-            last_oil_bias = GLOBAL_ALERT_STATE.get("Oil")
-            if last_oil_bias is not None and current_oil_bias != last_oil_bias:
-                alert_msg = (
-                    "🔄 *APEX MACRO — SHIFT ALERT*\n"
-                    "━━━━━━━━━━━━━━━━━━━\n"
-                    "🛢️ *Asset:* `Crude Oil (WTI/Brent)`\n"
-                    f"📊 *Status:* `Direction Changed`\n\n"
-                    f"▪️ *Previous Bias:*  `{last_oil_bias}`\n"
-                    f"▪️ *New Bias:*       `{current_oil_bias}`\n\n"
-                    f"📈 *Composite Score:*  `{oil_s:+.3f}`\n"
-                    f"📡 *News Sentiment:*   `{oil_news_pts:+.2f} pts`\n"
-                    "━━━━━━━━━━━━━━━━━━━\n"
-                    "⚡ *ApexMacro Institutional Terminal v14.0*"
-                )
-                send_telegram_alert(alert_msg)
-            GLOBAL_ALERT_STATE["Oil"] = current_oil_bias
+        # ── Forex currencies (all from CURRENCY_SERIES) ──
+        forex_info = {
+            "USD": ("US Dollar (USD)", "🇺🇸"),
+            "EUR": ("Euro (EUR)", "🇪🇺"),
+            "GBP": ("British Pound (GBP)", "💷"),
+            "CAD": ("Canadian Dollar (CAD)", "🍁"),
+            "JPY": ("Japanese Yen (JPY)", "💴"),
+            "CHF": ("Swiss Franc (CHF)", "🏔️"),
+        }
+        for cur, (disp_name, icon) in forex_info.items():
+            if cur not in CURRENCY_SERIES:
+                continue
+            try:
+                score = _calc_currency_score_only(cur, fred_key, channel_name)
+                if score is None:
+                    continue
+                lbl, _, _ = bias_from_score(score)
+                broad = _broad_regime(lbl)
+                _init_asset_state(cur, broad, score)
+                result = _check_regime_shift(cur, lbl, score, now_ts)
+                if result:
+                    parts = result.split("|")
+                    old_r, new_r = parts[0].split("→")
+                    reason = "15-min broad-regime confirmation" if "CONFIRMED" in parts[1] else "Major reversal (immediate)"
+                    confirmed_shifts.append({
+                        "key": cur, "display_name": disp_name, "icon": icon,
+                        "old_regime": old_r, "new_regime": new_r,
+                        "score": score, "news_pts": None, "reason": reason,
+                    })
+            except Exception:
+                pass
 
-        usd_s = _calc_currency_score_only("USD", fred_key, channel_name)
-        if usd_s is not None:
-            curr_bias, _, _ = bias_from_score(usd_s)
-            last_bias = GLOBAL_ALERT_STATE.get("USD")
-            if last_bias is not None and curr_bias != last_bias:
-                alert_msg = (
-                    "🔄 *APEX MACRO — SHIFT ALERT*\n"
-                    "━━━━━━━━━━━━━━━━━━━\n"
-                    "🇺🇸 *Asset:* `US Dollar (USD)`\n"
-                    f"📊 *Status:* `Direction Changed`\n\n"
-                    f"▪️ *Previous Bias:*  `{last_bias}`\n"
-                    f"▪️ *New Bias:*       `{curr_bias}`\n\n"
-                    f"📈 *Composite Score:*  `{usd_s:+.3f}`\n"
-                    "━━━━━━━━━━━━━━━━━━━\n"
-                    "⚡ *ApexMacro Institutional Terminal v14.0*"
-                )
-                send_telegram_alert(alert_msg)
-            GLOBAL_ALERT_STATE["USD"] = curr_bias
+        # ── Gold ──
+        try:
+            gold_s, _, gold_news_pts = _calc_gold_score_only(fred_key, channel_name)
+            if gold_s is not None:
+                lbl, _, _ = bias_from_score(gold_s)
+                broad = _broad_regime(lbl)
+                _init_asset_state("Gold", broad, gold_s)
+                result = _check_regime_shift("Gold", lbl, gold_s, now_ts)
+                if result:
+                    parts = result.split("|")
+                    old_r, new_r = parts[0].split("→")
+                    reason = "15-min broad-regime confirmation" if "CONFIRMED" in parts[1] else "Major reversal (immediate)"
+                    confirmed_shifts.append({
+                        "key": "Gold", "display_name": "Gold (XAUUSD)", "icon": "🥇",
+                        "old_regime": old_r, "new_regime": new_r,
+                        "score": gold_s, "news_pts": gold_news_pts, "reason": reason,
+                    })
+        except Exception:
+            pass
+
+        # ── Oil ──
+        try:
+            oil_s, oil_news_pts = _calc_oil_score_only(fred_key, channel_name)
+            if oil_s is not None:
+                lbl, _, _ = bias_from_score(oil_s)
+                broad = _broad_regime(lbl)
+                _init_asset_state("Oil", broad, oil_s)
+                result = _check_regime_shift("Oil", lbl, oil_s, now_ts)
+                if result:
+                    parts = result.split("|")
+                    old_r, new_r = parts[0].split("→")
+                    reason = "15-min broad-regime confirmation" if "CONFIRMED" in parts[1] else "Major reversal (immediate)"
+                    confirmed_shifts.append({
+                        "key": "Oil", "display_name": "Crude Oil (WTI)", "icon": "🛢️",
+                        "old_regime": old_r, "new_regime": new_r,
+                        "score": oil_s, "news_pts": oil_news_pts, "reason": reason,
+                    })
+        except Exception:
+            pass
+
+        # ── Nasdaq-100 ──
+        try:
+            ndx_s, ndx_news_pts = _calc_ndx_score_only(fred_key, channel_name)
+            if ndx_s is not None:
+                lbl, _, _ = bias_from_score(ndx_s)
+                broad = _broad_regime(lbl)
+                _init_asset_state("NDX", broad, ndx_s)
+                result = _check_regime_shift("NDX", lbl, ndx_s, now_ts)
+                if result:
+                    parts = result.split("|")
+                    old_r, new_r = parts[0].split("→")
+                    reason = "15-min broad-regime confirmation" if "CONFIRMED" in parts[1] else "Major reversal (immediate)"
+                    confirmed_shifts.append({
+                        "key": "NDX", "display_name": "Nasdaq-100 (NDX)", "icon": "📊",
+                        "old_regime": old_r, "new_regime": new_r,
+                        "score": ndx_s, "news_pts": ndx_news_pts, "reason": reason,
+                    })
+        except Exception:
+            pass
+
+        # ── Send alerts ──
+        if len(confirmed_shifts) == 0:
+            return
+        elif len(confirmed_shifts) == 1:
+            s = confirmed_shifts[0]
+            msg = _build_single_asset_alert_msg(
+                s["display_name"], s["icon"],
+                s["old_regime"], s["new_regime"],
+                s["score"], s.get("news_pts"), s["reason"]
+            )
+            send_telegram_alert(msg)
+        else:
+            msg = _build_multi_asset_alert_msg(confirmed_shifts)
+            send_telegram_alert(msg)
+
     except Exception:
         pass
+
 
 @st.cache_resource
 def _get_daemon_controller():
@@ -756,10 +1010,10 @@ def start_background_alert_daemon(fred_key: str, channel_name: str) -> None:
                                         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                                         "⚠️ *Market Status:* `Weekend Session (Global Markets Closed)`\n"
                                         f"📡 *Breaking Wire:* \"{title}\"\n\n"
-                                        "🎯 *Monday Open Implication:* Heightened gap risk and safe-haven volatility (Gold / Oil / USD).\n"
+                                        "🎯 *Monday Open Implication:* Heightened gap risk and safe-haven volatility (Gold / Oil / USD / NDX).\n"
                                         f"🕒 *Time:* `{now.strftime('%Y-%m-%d %H:%M')} (KRD / UTC+3)`\n"
                                         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                        "⚡ *ApexMacro Institutional Terminal v14.0*"
+                                        "⚡ *ApexMacro Institutional Terminal v15.0*"
                                     )
                                     send_telegram_alert(alert_msg)
                                     break
@@ -781,6 +1035,7 @@ def start_background_alert_daemon(fred_key: str, channel_name: str) -> None:
 
     t = threading.Thread(target=_daemon_loop, daemon=True, name="ApexMacroAlertDaemon")
     t.start()
+
 
 def is_duplicate_news(title1: str, title2: str, threshold: float = 0.55) -> bool:
     stop_words = {"the", "a", "an", "in", "on", "of", "to", "for", "and", "is", "at", "by", "from", "as", "with", "news", "breaking", "update", "alert", "says", "report", "live"}
@@ -921,7 +1176,7 @@ def analyze_news_rule_based(articles: list) -> dict:
     scores = {
         "USD": 0.0, "EUR": 0.0, "GBP": 0.0, "CAD": 0.0,
         "JPY": 0.0, "AUD": 0.0, "NZD": 0.0, "CHF": 0.0,
-        "Gold": 0.0, "Oil": 0.0
+        "Gold": 0.0, "Oil": 0.0, "Nasdaq": 0.0
     }
     drivers = [
         {"name": "Macro Data Momentum", "icon": "📊", "expected_duration": "Active Session", "reason": "Evaluated via multi-timeframe FRED indicators."},
@@ -950,6 +1205,17 @@ def analyze_news_rule_based(articles: list) -> dict:
             scores[k] = max(min(-sentiment_delta + 0.05, 0.5), -0.5)
         elif k in ["Oil"]:
             scores[k] = max(min(sentiment_delta + 0.08, 0.5), -0.5)
+        elif k == "Nasdaq":
+            ndx_keywords_bull = ["tech rally", "nasdaq", "s&p", "equity", "stocks rally", "risk on", "growth stocks", "ai stocks"]
+            ndx_keywords_bear = ["rate hike", "recession", "yield spike", "tech selloff", "stagflation", "risk off"]
+            ndx_delta = sentiment_delta
+            for art in articles:
+                text2 = (art.get("title", "") + " " + art.get("description", "")).lower()
+                if any(kw in text2 for kw in ndx_keywords_bull):
+                    ndx_delta += 0.06
+                if any(kw in text2 for kw in ndx_keywords_bear):
+                    ndx_delta -= 0.06
+            scores[k] = max(min(ndx_delta, 0.5), -0.5)
         else:
             scores[k] = max(min(sentiment_delta, 0.5), -0.5)
 
@@ -1114,6 +1380,7 @@ def render_top_header(auth_user: dict | None = None) -> None:
     <div class="t-pill"><span>💵 USD Index</span><span class="t-up">▲ Active</span></div>
     <div class="t-pill"><span>🥇 Gold XAU</span><span class="t-up">▲ Active</span></div>
     <div class="t-pill"><span>🛢️ WTI Crude</span><span class="t-dn">▼ Energy</span></div>
+    <div class="t-pill"><span>📊 NDX</span><span class="t-up">▲ Active</span></div>
     <div class="t-pill"><span>🤖 GPT-4o-mini</span><span class="t-up">⚡ Live AI</span></div>
     <div class="t-pill" style="border-color:rgba(0,245,255,0.25);color:#00f5ff;"><span>🕒 {now_str} | {date_str}</span></div>
   </div>
@@ -1164,6 +1431,32 @@ def page_dashboard(fred_key: str, channel_name: str, auth_user: dict | None = No
         st.session_state["active_tab"] = "💱 Forex"
 
     if is_admin_user:
+        b1, b2, b3, b4, b5, b6 = st.columns(6)
+        with b1:
+            if st.button("💱 Forex", use_container_width=True, type="primary" if st.session_state["active_tab"] == "💱 Forex" else "secondary"):
+                st.session_state["active_tab"] = "💱 Forex"
+                st.rerun()
+        with b2:
+            if st.button("🥇 Gold", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🥇 Gold" else "secondary"):
+                st.session_state["active_tab"] = "🥇 Gold"
+                st.rerun()
+        with b3:
+            if st.button("🛢️ Oil", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🛢️ Oil" else "secondary"):
+                st.session_state["active_tab"] = "🛢️ Oil"
+                st.rerun()
+        with b4:
+            if st.button("📊 NDX", use_container_width=True, type="primary" if st.session_state["active_tab"] == "📊 NDX" else "secondary"):
+                st.session_state["active_tab"] = "📊 NDX"
+                st.rerun()
+        with b5:
+            if st.button("🔮 Forecaster", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🔮 Forecaster" else "secondary"):
+                st.session_state["active_tab"] = "🔮 Forecaster"
+                st.rerun()
+        with b6:
+            if st.button("👑 MASTER ADMIN", use_container_width=True, type="primary" if st.session_state["active_tab"] == "👑 MASTER ADMIN" else "secondary"):
+                st.session_state["active_tab"] = "👑 MASTER ADMIN"
+                st.rerun()
+    else:
         b1, b2, b3, b4, b5 = st.columns(5)
         with b1:
             if st.button("💱 Forex", use_container_width=True, type="primary" if st.session_state["active_tab"] == "💱 Forex" else "secondary"):
@@ -1178,28 +1471,10 @@ def page_dashboard(fred_key: str, channel_name: str, auth_user: dict | None = No
                 st.session_state["active_tab"] = "🛢️ Oil"
                 st.rerun()
         with b4:
-            if st.button("🔮 Forecaster", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🔮 Forecaster" else "secondary"):
-                st.session_state["active_tab"] = "🔮 Forecaster"
+            if st.button("📊 NDX", use_container_width=True, type="primary" if st.session_state["active_tab"] == "📊 NDX" else "secondary"):
+                st.session_state["active_tab"] = "📊 NDX"
                 st.rerun()
         with b5:
-            if st.button("👑 MASTER ADMIN", use_container_width=True, type="primary" if st.session_state["active_tab"] == "👑 MASTER ADMIN" else "secondary"):
-                st.session_state["active_tab"] = "👑 MASTER ADMIN"
-                st.rerun()
-    else:
-        b1, b2, b3, b4 = st.columns(4)
-        with b1:
-            if st.button("💱 Forex", use_container_width=True, type="primary" if st.session_state["active_tab"] == "💱 Forex" else "secondary"):
-                st.session_state["active_tab"] = "💱 Forex"
-                st.rerun()
-        with b2:
-            if st.button("🥇 Gold", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🥇 Gold" else "secondary"):
-                st.session_state["active_tab"] = "🥇 Gold"
-                st.rerun()
-        with b3:
-            if st.button("🛢️ Oil", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🛢️ Oil" else "secondary"):
-                st.session_state["active_tab"] = "🛢️ Oil"
-                st.rerun()
-        with b4:
             if st.button("🔮 Forecaster", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🔮 Forecaster" else "secondary"):
                 st.session_state["active_tab"] = "🔮 Forecaster"
                 st.rerun()
@@ -1218,9 +1493,13 @@ def page_dashboard(fred_key: str, channel_name: str, auth_user: dict | None = No
     if current_tab == "🛢️ Oil":
         page_oil(fred_key, channel_name)
         return
+    if current_tab == "📊 NDX":
+        page_nasdaq(fred_key, channel_name)
+        return
     if current_tab == "🔮 Forecaster":
         page_catalyst_forecaster(fred_key, channel_name, auth_user)
         return
+
 
     if "selected_currency" not in st.session_state:
         st.session_state["selected_currency"] = "USD"
@@ -1591,7 +1870,157 @@ def page_oil(fred_key: str, channel_name: str) -> None:
             </div>
             """)
 
+def page_nasdaq(fred_key: str, channel_name: str) -> None:
+    render_html("""
+<div class="pg-title">
+<div class="pg-sub">GLOBAL EQUITY & GROWTH INTELLIGENCE</div>
+<h1 class="pg-h1">Nasdaq-100 (NDX) — Macro Composite Desk</h1>
+<div class="pg-bread">Institutional Tech-Equity Model: NDX Price Momentum, Real Yield Dynamics & USD Pressure</div>
+</div>
+""")
+    if not fred_key:
+        st.info("🔑 FRED API Key is required.")
+        return
+
+    with st.spinner("Analyzing Nasdaq-100 macro composite (NDX, DFII10, USD Model)..."):
+        ndx_df = fetch_fred("NASDAQ100", fred_key, limit=90)
+        if ndx_df is None or ndx_df.empty:
+            ndx_df = fetch_fred("NASDAQCOM", fred_key, limit=90)
+
+        ry_df = fetch_fred(GOLD_SERIES["real_yield"], fred_key, limit=60)
+        y_df  = fetch_fred(GOLD_SERIES["yield"], fred_key, limit=60)
+        usd_r = compute_composite("USD", fred_key, channel_name)
+        all_news = fetch_all_instant_news(channel_name)
+        sentiment_res = analyze_news_rule_based(all_news)
+        ndx_news_pts = sentiment_res["scores"].get("Nasdaq", 0.0)
+
+    ndx_momentum, ndx_mf, ndx_vals = 0.0, None, []
+    if ndx_df is not None and not ndx_df.empty:
+        ndx_vals = ndx_df["value"].tolist()
+        ndx_mf = calc_mtf(ndx_vals, "growth")
+        ndx_momentum = ndx_mf["score"] if ndx_mf else 0.0
+
+    inv_ry = 0.0
+    ry_vals = []
+    if ry_df is not None and not ry_df.empty:
+        ry_vals = ry_df["value"].tail(36).tolist()
+        ry_mf = calc_mtf(ry_vals, "rate")
+        inv_ry = -ry_mf["score"] if ry_mf else 0.0
+
+    inv_usd = -(usd_r["macro_score"]) if usd_r else 0.0
+    ndx_s = (0.40 * ndx_momentum) + (0.20 * inv_ry) + (0.15 * inv_usd) + (0.25 * (ndx_news_pts / 0.50))
+
+    render_html('<div class="sec-title">Key Nasdaq-100 Indicators</div>')
+    k1, k2, k3 = st.columns(3)
+    with k1:
+        _spark_ndx = spark_svg(ndx_vals[-20:], pos_good=True) if ndx_vals else ""
+        ndx_latest = f"{ndx_vals[-1]:,.0f}" if ndx_vals else "N/A"
+        ndx_mom_str = f"{ndx_mf['mom']:+.2f}%" if ndx_mf else "N/A"
+        render_html(f"""
+        <div class="m-card">
+          <div class="mc-hd"><div class="mc-ico">📊</div><span class="mc-cat">Equity Index</span></div>
+          <div class="mc-nm">Nasdaq-100 Index (NDX)</div>
+          <div style="font-size:20px;font-weight:800;color:#ad7bff;margin:4px 0;">{ndx_latest}</div>
+          <div style="font-size:11px;color:#8fa3b4;">MoM: <b>{ndx_mom_str}</b> | 📅 {ndx_df['date'].iloc[-1] if ndx_df is not None and not ndx_df.empty else 'N/A'}</div>
+          <div style="margin-top:8px;">{_spark_ndx}</div>
+        </div>
+        """)
+    with k2:
+        ry_latest = f"{ry_vals[-1]:.2f}%" if ry_vals else "N/A"
+        _spark_ry = spark_svg(ry_vals[-20:], pos_good=False) if ry_vals else ""
+        render_html(f"""
+        <div class="m-card">
+          <div class="mc-hd"><div class="mc-ico">🏛️</div><span class="mc-cat">Real Rate</span></div>
+          <div class="mc-nm">10Y Real Yield (DFII10)</div>
+          <div style="font-size:20px;font-weight:800;color:#00f5ff;margin:4px 0;">{ry_latest}</div>
+          <div style="font-size:11px;color:#8fa3b4;">Inverse correlation with NDX — falling yields = bullish tech</div>
+          <div style="margin-top:8px;">{_spark_ry}</div>
+        </div>
+        """)
+    with k3:
+        y_latest = f"{y_df['value'].iloc[-1]:.2f}%" if y_df is not None and not y_df.empty else "N/A"
+        _spark_y = spark_svg(y_df["value"].tail(20).tolist() if y_df is not None and not y_df.empty else ry_vals[-20:], pos_good=False)
+        render_html(f"""
+        <div class="m-card">
+          <div class="mc-hd"><div class="mc-ico">📈</div><span class="mc-cat">Nominal Rate</span></div>
+          <div class="mc-nm">10Y Treasury Yield (DGS10)</div>
+          <div style="font-size:20px;font-weight:800;color:#ffd166;margin:4px 0;">{y_latest}</div>
+          <div style="font-size:11px;color:#8fa3b4;">High nominal rates pressure NDX growth multiples</div>
+          <div style="margin-top:8px;">{_spark_y}</div>
+        </div>
+        """)
+
+    st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
+    t_col, d_col = st.columns([1, 1])
+
+    with t_col:
+        render_html('<div class="sec-title">Nasdaq-100 Pricing Matrix</div>')
+        ndx_rows = [
+            {"name": "NDX Price Momentum", "cat": "growth",
+             "latest": ndx_vals[-1] if ndx_vals else 0.0,
+             "mom": ndx_mf["mom"] if ndx_mf else 0.0,
+             "qoq": ndx_mf.get("qoq") if ndx_mf else None,
+             "yoy": ndx_mf.get("yoy") if ndx_mf else None,
+             "vals": ndx_vals[-30:] if ndx_vals else [],
+             "score": ndx_momentum},
+            {"name": "10Y Real Yield (Inverse)", "cat": "rate",
+             "latest": ry_vals[-1] if ry_vals else 0.0,
+             "mom": -ry_vals[-1] + (ry_vals[-2] if len(ry_vals) >= 2 else ry_vals[-1]) if ry_vals else 0.0,
+             "qoq": None, "yoy": None,
+             "vals": ry_vals[-20:] if ry_vals else [],
+             "score": inv_ry},
+            {"name": "USD Macro Pressure (Inverse)", "cat": "growth",
+             "latest": usd_r["score"] if usd_r else 0.0,
+             "mom": -0.05, "qoq": 0.10, "yoy": 0.20,
+             "vals": ry_vals[-20:] if ry_vals else [],
+             "score": inv_usd},
+            {"name": "NDX News Sentiment", "cat": "growth",
+             "latest": ndx_news_pts,
+             "mom": ndx_news_pts * 10, "qoq": None, "yoy": None,
+             "vals": [ndx_news_pts] * 20,
+             "score": ndx_news_pts / 0.50 if ndx_news_pts else 0.0},
+        ]
+        render_data_table(ndx_rows)
+
+    with d_col:
+        render_html('<div class="sec-title">NDX Direction &amp; AI Synthesis &nbsp; <span style="color:#ad7bff;font-size:10px;font-weight:800;">⚡ Multi-Alert Active</span></div>')
+        nn_color = "#00ffa3" if ndx_news_pts > 0 else ("#ff5e75" if ndx_news_pts < 0 else "#8fa3b4")
+        ai_ndx_summary = sentiment_res.get("ai_summary", "")
+        ai_summary_html = f'<div style="margin-top:10px;padding:10px 12px;background:rgba(173,123,255,0.06);border:1px solid rgba(173,123,255,0.22);border-radius:10px;font-size:11.5px;color:#ecf7ff;text-align:left;line-height:1.5;"><b style="color:#ad7bff;">NDX Macro AI Summary:</b> {ai_ndx_summary}</div>' if ai_ndx_summary else ''
+
+        render_html(f"""
+        <div class="comp-box" style="height:100%;text-align:left;padding:18px 20px;">
+          <div style="font-size:11px;font-weight:800;color:#8fa3b4;text-transform:uppercase;margin-bottom:8px;">📊 NASDAQ-100 (NDX) OVERALL BIAS</div>
+          <div style="margin-bottom:12px;">{badge(ndx_s, lg=True)}</div>
+          <div style="font-size:18px;font-weight:900;color:#fff;">Composite: <span style="color:#ad7bff;">{ndx_s:+.3f}</span></div>
+          <div style="font-size:11.5px;color:#8fa3b4;margin-top:4px;">NDX Momentum (40%): <b style="color:#fff;">{ndx_momentum:+.3f}</b> | Yield &amp; USD (35%): <b style="color:#00f5ff;">{(0.20*inv_ry + 0.15*inv_usd):+.3f}</b></div>
+          <div style="font-size:11.5px;color:#8fa3b4;margin-top:2px;">News Sentiment (25%): <b style="color:{nn_color};">{ndx_news_pts:+.2f} pts</b></div>
+          {ai_summary_html}
+          <div style="margin-top:10px;font-size:11px;color:#8fa3b4;">
+            <div>• <b>Real Yield Driver:</b> Falling real yields historically expand tech growth multiples.</div>
+            <div style="margin-top:3px;">• <b>USD Headwind:</b> Strong USD compresses NDX earnings from global revenue.</div>
+            <div style="margin-top:3px;">• <b>Rate Sensitivity:</b> NDX duration is highest among major indices — rate direction is primary factor.</div>
+          </div>
+        </div>
+        """)
+
+    st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
+    render_html('<div class="sec-title">Live Tech &amp; Equity Wire Flow</div>')
+    n_cols = st.columns(2)
+    for idx, a in enumerate(all_news[:6]):
+        with n_cols[idx % 2]:
+            render_html(f"""
+            <div class="news-card">
+              <div style="color:#fff;font-size:12px;font-weight:650;line-height:1.45;">{a.get('title', '')}</div>
+              <div style="font-size:10px;color:#8fa3b4;margin-top:6px;display:flex;justify-content:space-between;">
+                <span>📡 {a.get('source', {}).get('name', 'Institutional Wire')}</span>
+                <span>🕒 {a.get('publishedAt', '')}</span>
+              </div>
+            </div>
+            """)
+
 CATALYST_PRECURSOR_MAP = {
+
     "AUD_CPI": {
         "title": "CPI y/y (Headline & Trimmed Mean)",
         "currency": "AUD",
@@ -1846,7 +2275,8 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_ove
                 "currency_action_desc_en": f"Official confirmed actual release of {clean_act} exceeds consensus and drives strong bullish momentum.",
                 "gold_implication": "📉 Bearish Pressure on Gold (Confirmed strong macro actual)",
                 "usd_implication": "📈 Bullish Tailwind for USD (Confirmed Actual Beat)",
-                "oil_implication": "📈 Bullish Support"
+                "oil_implication": "📈 Bullish Support",
+                "nasdaq_implication": "📉 Bearish Pressure on NDX (Strong data raises rate hike bets)",
             }
         else:
             return {
@@ -1860,7 +2290,8 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_ove
                 "currency_action_desc_en": f"Official confirmed actual release of {clean_act} missed consensus expectations, triggering downside pressure.",
                 "gold_implication": "📈 Bullish Surge for Gold (Confirmed macro miss / rate cut bets)",
                 "usd_implication": "📉 Bearish Drag on USD (Confirmed Actual Miss)",
-                "oil_implication": "📉 Bearish Drag"
+                "oil_implication": "📉 Bearish Drag",
+                "nasdaq_implication": "📈 Bullish Support for NDX (Dovish data / rate cut bets support growth stocks)",
             }
 
     precursor_results = []
@@ -1922,6 +2353,7 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_ove
         gold_implication = "📉 Bearish Pressure on Gold (Hawkish economic surprise)"
         usd_implication = "📈 Bullish Tailwind for USD"
         oil_implication = "📈 Bullish Support"
+        nasdaq_implication = "📉 Bearish Pressure on NDX (Hawkish data raises rate expectations)"
     elif nowcast_composite < -0.05 or news_sentiment_pts < -0.03:
         bias_label = "🔻 LIKELY LOWER THAN FORECAST (Miss)"
         bias_color = "#ff5e75"
@@ -1932,6 +2364,7 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_ove
         gold_implication = "📈 Bullish Surge for Gold (Rate cut optimism accelerates)"
         usd_implication = "📉 Bearish Drag on USD"
         oil_implication = "📉 Bearish Drag"
+        nasdaq_implication = "📈 Bullish Support for NDX (Dovish data lowers rate expectations)"
     else:
         bias_label = "⚖️ IN-LINE WITH CONSENSUS"
         bias_color = "#ffd166"
@@ -1942,7 +2375,8 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_ove
         gold_implication = "⚖️ Neutral / Range-Bound"
         usd_implication = "⚖️ Balanced Consolidation"
         oil_implication = "⚖️ Range-Bound"
-        
+        nasdaq_implication = "⚖️ Neutral — watch real yield & Fed guidance"
+
     return {
         "precursor_results": precursor_results,
         "base_precursor_score": base_precursor_score,
@@ -1958,7 +2392,8 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_ove
         "currency_action_desc_en": currency_action_desc_en,
         "gold_implication": gold_implication,
         "usd_implication": usd_implication,
-        "oil_implication": oil_implication
+        "oil_implication": oil_implication,
+        "nasdaq_implication": nasdaq_implication,
     }
 
 
@@ -2020,7 +2455,7 @@ Rules:
 Return ONLY valid JSON with these keys:
 event_assessment, causal_chain, facts, supporting_evidence, contradictions,
 nowcast, confidence, confidence_reason, cross_source_confirmation,
-usd, gold, oil, invalidation, source_count.
+usd, gold, oil, nasdaq, invalidation, source_count.
 Each of causal_chain, facts, supporting_evidence, contradictions must be an array of short strings.
 confidence must be an integer 0-100.
 """
@@ -2075,7 +2510,7 @@ EVENT-RELEVANT LIVE NEWS
                       "supporting_evidence": [], "contradictions": [], "nowcast": "Insufficient Evidence",
                       "confidence": 0, "confidence_reason": "AI did not return valid JSON.",
                       "cross_source_confirmation": "Unavailable", "usd": "Neutral", "gold": "Neutral",
-                      "oil": "Neutral", "invalidation": "Insufficient Evidence", "source_count": len(relevant)}
+                      "oil": "Neutral", "nasdaq": "Neutral", "invalidation": "Insufficient Evidence", "source_count": len(relevant)}
         parsed["status"] = "ok"
         return parsed
     except Exception as exc:
@@ -2118,6 +2553,7 @@ def render_causal_macro_ai_panel(analysis: dict) -> None:
         Cross-source: <b style="color:#cbd8df;">{analysis.get("cross_source_confirmation","—")}</b>
         &nbsp;•&nbsp; Sources: <b style="color:#cbd8df;">{analysis.get("source_count",0)}</b>
         &nbsp;•&nbsp; Invalidation: <b style="color:#ffd166;">{analysis.get("invalidation","—")}</b>
+        &nbsp;•&nbsp; 📊 NDX: <b style="color:#ad7bff;">{analysis.get("nasdaq","—")}</b>
       </div>
     </div>
     """)
@@ -2218,7 +2654,7 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
                 <div style="font-size:9px;color:#718795;margin-top:4px;">Baseline: {ev['consensus_bias']}</div>
               </div>
             </div>
-            <div class="fc-outlook">
+            <div class="fc-outlook" style="grid-template-columns:1.45fr repeat(4,.65fr);">
               <div class="fc-outlook-main">
                 <div class="fc-small-lbl">Direct {cur} trajectory</div>
                 <div class="fc-main-action" style="color:{nowcast['currency_action_color']};">{nowcast['currency_action_en']}</div>
@@ -2227,6 +2663,7 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
               <div class="fc-asset"><b>🥇 Gold</b>{nowcast['gold_implication']}</div>
               <div class="fc-asset"><b>💵 USD</b>{nowcast['usd_implication']}</div>
               <div class="fc-asset"><b>🛢️ Oil</b>{nowcast['oil_implication']}</div>
+              <div class="fc-asset"><b>📊 NDX</b>{nowcast.get('nasdaq_implication', '⚖️ Correlated — watch real yield direction')}</div>
             </div>
           </div>
         </div>
