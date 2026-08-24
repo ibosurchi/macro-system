@@ -1765,12 +1765,16 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_ove
     if actual_override:
         cur = meta.get("currency", "USD")
         clean_act = actual_override.strip()
-        is_negative = "-" in clean_act or "neg" in clean_act.lower()
         
-        if not is_negative:
+        # Rigorous negative number check
+        is_negative = False
+        if "-" in clean_act or "neg" in clean_act.lower():
+            is_negative = True
+        else:
             try:
-                num_val = float(clean_act.replace("%", "").strip())
-                if num_val < 0:
+                # Remove % and evaluate numerical value
+                num_check = float(clean_act.replace("%", "").strip())
+                if num_check < 0:
                     is_negative = True
             except Exception:
                 pass
@@ -1783,6 +1787,10 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_ove
             is_beat = a_val > f_val
         except Exception:
             is_beat = not is_negative
+
+        # If it's explicitly negative, force miss/negative outcome unless actual is higher than forecast
+        if is_negative:
+            is_beat = False
 
         if is_beat:
             return {
@@ -1978,7 +1986,6 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
         cur_flag = CURRENCY_FLAGS.get(cur, "🌐")
         badge_bg = "rgba(0,255,163,0.12)" if nowcast["bias_color"] == "#00ffa3" else ("rgba(255,94,117,0.12)" if nowcast["bias_color"] == "#ff5e75" else "rgba(255,209,102,0.12)")
         
-        # Color coding for Impact Badge
         impact_bg = "rgba(255,94,117,0.18)" if ev['impact'] == "High" else "rgba(255,209,102,0.18)"
         impact_col = "#ff5e75" if ev['impact'] == "High" else "#ffd166"
 
