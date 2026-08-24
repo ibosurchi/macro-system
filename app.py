@@ -701,6 +701,8 @@ def _get_daemon_controller():
         "running": False,
         "last_hour": get_current_time().strftime("%Y-%m-%d %H"),
         "seen_weekend_news": set(),
+        "last_morning_digest_date": "",
+        "sent_reminders": set(),
     }
 
 def start_background_alert_daemon(fred_key: str, channel_name: str) -> None:
@@ -714,7 +716,62 @@ def start_background_alert_daemon(fred_key: str, channel_name: str) -> None:
             try:
                 now = get_current_time()
                 current_hour = now.strftime("%Y-%m-%d %H")
+                today_str = now.strftime("%Y-%m-%d")
                 is_weekend = (now.weekday() in (5, 6))
+
+                # 1. MORNING DIGEST FOR TODAY'S HIGH IMPACT CATALYSTS
+                if ctrl["last_morning_digest_date"] != today_str and not is_weekend:
+                    try:
+                        upcoming_events = get_upcoming_catalyst_events(3, "KRD (UTC+3)")
+                        today_high_events = [
+                            ev for ev in upcoming_events
+                            if ev.get("days_away") == 0 and str(ev.get("impact", "")).strip().lower() == "high"
+                        ]
+                        if today_high_events:
+                            msg_lines = [
+                                "🌅 *APEX MACRO — TODAY'S HIGH-IMPACT NEWS*",
+                                "━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                                f"📅 *Date:* `{today_str}`",
+                                f"⚡ *Total High-Impact Releases Today:* `{len(today_high_events)}`\n"
+                            ]
+                            for ev in today_high_events:
+                                msg_lines.append(f"• *{ev['currency']}* | {ev['title']} ({ev['time_str']})")
+                            
+                            msg_lines.extend([
+                                "",
+                                "🔍 *AI Nowcasts & Institutional Analysis are now live on the website.*",
+                                "━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                                "⚡ *ApexMacro Institutional Terminal v14.0*"
+                            ])
+                            send_telegram_alert("\n".join(msg_lines))
+                        ctrl["last_morning_digest_date"] = today_str
+                    except Exception:
+                        pass
+
+                # 2. 1-HOUR BEFORE REMINDER FOR HIGH IMPACT EVENTS
+                try:
+                    all_events = get_upcoming_catalyst_events(3, "KRD (UTC+3)")
+                    for ev in all_events:
+                        if str(ev.get("impact", "")).strip().lower() == "high":
+                            ev_code = ev.get("code")
+                            ev_dt = ev.get("datetime_obj")
+                            if ev_code and ev_dt and ev_code not in ctrl["sent_reminders"]:
+                                diff_secs = (ev_dt - now).total_seconds()
+                                if 3300 <= diff_secs <= 3900:
+                                    rem_msg = (
+                                        "⏰ *APEX MACRO — 1 HOUR EVENT ALERT*\n"
+                                        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                        f"🚨 *Event:* `{ev['title']}`\n"
+                                        f"🏳️ *Currency:* `{ev['currency']}`\n"
+                                        f"🕒 *Time:* `{ev['time_str']}`\n\n"
+                                        "🎯 *Action:* High-impact catalyst approaching in 1 hour. Visit our website now to review AI Nowcasts & Precursor Analysis!\n"
+                                        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                        "⚡ *ApexMacro Institutional Terminal v14.0*"
+                                    )
+                                    send_telegram_alert(rem_msg)
+                                    ctrl["sent_reminders"].add(ev_code)
+                except Exception:
+                    pass
 
                 if is_weekend:
                     try:
@@ -2133,6 +2190,16 @@ def render_vip_gate() -> dict | None:
     except Exception:
         pass
 
+    # Check if Admin triggered Guest View Preview Mode
+    if st.session_state.get("PREVIEW_AS_GUEST"):
+        return {
+            "is_authenticated": True,
+            "user_name": "Guest Preview",
+            "expiry_info": "Admin Preview Mode",
+            "is_admin": False,
+            "key": "GUEST_PREVIEW"
+        }
+
     auth_user = st.session_state.get("APEX_AUTH_USER")
     if auth_user and auth_user.get("is_authenticated"):
         return auth_user
@@ -2231,6 +2298,15 @@ def render_admin_key_generator() -> None:
       <div style="font-size:11.5px;color:#8fa3b4;">Manage your VIP client licenses, dual-device bindings (1 Mobile + 1 PC), assign Telegram IDs, and generate secure cryptographic keys.</div>
     </div>
     """)
+
+    # --- ADDED GUEST VIEW PREVIEW BUTTON FOR ADMIN ---
+    col_prev1, col_prev2 = st.columns([2, 2])
+    with col_prev1:
+        if st.button("👀 Switch to Guest View (Preview Mode)", type="secondary", use_container_width=True):
+            st.session_state["PREVIEW_AS_GUEST"] = True
+            st.rerun()
+    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+    # ------------------------------------------------
 
     g1, g2, g3 = st.columns([2, 2, 1.5])
     with g1:
@@ -2400,6 +2476,19 @@ def main() -> None:
     auth_user = render_vip_gate()
     if not auth_user:
         return
+
+    # --- ADMIN RETURN TO ADMIN BAR ---
+    if st.session_state.get("PREVIEW_AS_GUEST"):
+        st.markdown("""
+        <div style="background:rgba(255,209,102,0.15);border:1px solid rgba(255,209,102,0.4);border-radius:12px;padding:8px 14px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;">
+          <span style="color:#ffd166;font-size:12px;font-weight:800;">👁️ You are currently viewing the terminal in Guest Preview Mode.</span>
+        </div>
+        """, unsafe_allow_html=True)
+        if st.button("👑 Exit Guest View & Return to Admin", type="primary"):
+            st.session_state["PREVIEW_AS_GUEST"] = False
+            st.rerun()
+        st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
+    # ---------------------------------
 
     render_top_header(auth_user)
 
