@@ -62,12 +62,9 @@ def get_secret(key_name: str, default_val: str = "") -> str:
         pass
     return default_val
 
-DEFAULT_FRED_KEY = get_secret("FRED_API_KEY", "8e153c7f6941848ffe00388ae93c1d73")
+DEFAULT_FRED_KEY = get_secret("FRED_API_KEY", "")
 DEFAULT_TELEGRAM_CHANNEL = get_secret("TELEGRAM_CHANNEL", "Forex_LiveStream")
-DEFAULT_OPENROUTER_KEY = get_secret(
-    "OPENROUTER_API_KEY",
-    "sk-or-v1-" + "37e5829ab661beb5" + "6cdbbe813ad42ed0" + "1e147211efaafb3b" + "6b8effbb0adb6dea"
-)
+DEFAULT_OPENROUTER_KEY = get_secret("OPENROUTER_API_KEY", "")
 REQUEST_TIMEOUT = 8
 
 FOREX_FACTORY_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
@@ -92,9 +89,9 @@ def fetch_forex_factory_calendar() -> list[dict]:
     except Exception:
         return []
 
-TELEGRAM_BOT_TOKEN = get_secret("TELEGRAM_BOT_TOKEN", "8922903944:AAFP10pFW_mqXOOD5mm3lkXY6oMy8THcTZU")
+TELEGRAM_BOT_TOKEN = get_secret("TELEGRAM_BOT_TOKEN", "")
 
-APEX_MASTER_KEY = get_secret("APEX_MASTER_KEY", "APEX-MASTER-2026")
+APEX_MASTER_KEY = get_secret("APEX_MASTER_KEY", "")
 APEX_SECRET_SALT = "APEX_MACRO_SECRET_2026_SALT"
 REGISTRY_FILE = os.path.join(os.path.dirname(__file__), "vip_registry.json")
 SESSIONS_FILE = os.path.join(os.path.dirname(__file__), "vip_sessions.json")
@@ -207,7 +204,7 @@ def verify_vip_key(key: str, client_id: str = "", dev_type: str = "💻 PC/Lapto
         return False, "", "Please enter a key"
     clean_k = key.strip().upper()
     
-    if clean_k == APEX_MASTER_KEY.upper() or clean_k == "APEX-MASTER-2026":
+    if APEX_MASTER_KEY and clean_k == APEX_MASTER_KEY.upper():
         return True, "ADMINISTRATOR", "Master Admin Lifetime Access"
     
     clients = load_vip_registry()
@@ -269,7 +266,7 @@ def verify_vip_key(key: str, client_id: str = "", dev_type: str = "💻 PC/Lapto
     return False, "", "Invalid or unrecognized License Key"
 
 def send_telegram_alert(message: str):
-    token = TELEGRAM_BOT_TOKEN or DEFAULT_TELEGRAM_BOT_TOKEN
+    token = TELEGRAM_BOT_TOKEN
     if not token or not message:
         return []
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -2130,40 +2127,21 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     tz_info = SUPPORTED_TIMEZONES.get(st.session_state["selected_tz"], {"offset": 3, "label": "KRD (UTC+3)"})
     is_admin = auth_user and auth_user.get("is_admin", False)
 
-    with st.spinner("Synthesizing upcoming economic calendar, precursor FRED pipelines & correlated news..."):
+    with st.spinner("Loading upcoming macro catalysts..."):
         events = get_upcoming_catalyst_events(tz_info["offset"], tz_info["label"])
         all_news = fetch_all_instant_news(channel_name)
         actuals_cache = load_actuals_cache()
 
     render_html(f"""
-    <div class="fc-hero">
-      <div class="fc-hero-row">
-        <div>
-          <div class="fc-eyebrow">ApexMacro / Predictive Intelligence</div>
-          <div class="fc-title">🔮 Macro Catalyst Forecaster</div>
-          <div class="fc-sub">Upcoming macro releases ranked with the existing FRED precursor model, live wire sentiment and causal AI layer.</div>
-          <div class="fc-live"><span class="live-dot"></span> NOWCAST ENGINE ACTIVE &nbsp;•&nbsp; {tz_info['label']}</div>
-        </div>
-        <div class="fc-horizon">
-          <div class="fc-horizon-lbl">PREDICTIVE HORIZON</div>
-          <div class="fc-horizon-val">Next 7–10 Days</div>
-        </div>
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap;margin:2px 0 14px;">
+      <div>
+        <div class="fc-eyebrow">ApexMacro / Catalyst Radar</div>
+        <div style="font-size:22px;font-weight:900;color:#fff;letter-spacing:-.4px;">🔮 Forecaster</div>
+        <div style="font-size:11px;color:#718795;margin-top:3px;">Click any event to open the full institutional analysis.</div>
       </div>
+      <div style="font-size:10px;color:#8fa3b4;padding:6px 9px;border:1px solid rgba(255,255,255,.08);border-radius:8px;background:rgba(255,255,255,.025);">{tz_info['label']}</div>
     </div>
     """)
-
-    high_count = sum(1 for e in events if e.get("impact") == "High")
-    medium_count = sum(1 for e in events if e.get("impact") == "Medium")
-    k1, k2, k3 = st.columns(3)
-    with k1:
-        render_html(f'<div class="fc-metric"><div class="fc-metric-l">Tracked catalysts</div><div class="fc-metric-v" style="color:#00f5ff;">{len(events)}</div><div class="fc-metric-note">Current calendar window</div></div>')
-    with k2:
-        render_html(f'<div class="fc-metric"><div class="fc-metric-l">High impact</div><div class="fc-metric-v" style="color:#ff788a;">{high_count}</div><div class="fc-metric-note">Priority causal-AI events</div></div>')
-    with k3:
-        render_html(f'<div class="fc-metric"><div class="fc-metric-l">Medium impact</div><div class="fc-metric-v" style="color:#ffd166;">{medium_count}</div><div class="fc-metric-note">Secondary catalysts</div></div>')
-
-    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
-    render_html('<div class="sec-title">Catalyst Radar</div>')
 
     CURRENCY_FLAGS = {
         "USD": "🇺🇸", "EUR": "🇪🇺", "GBP": "💷", "CAD": "🍁",
@@ -2174,39 +2152,70 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
         st.info("No High or Medium impact Forex Factory catalysts are available in the current calendar window.")
         return
 
+    # Clean accordion styling: only the event headline is visible until opened.
+    st.markdown("""
+    <style>
+    div[data-testid="stExpander"]{
+        border:1px solid rgba(150,210,225,.12)!important;
+        border-radius:14px!important;
+        background:linear-gradient(180deg,rgba(12,21,31,.90),rgba(7,13,20,.94))!important;
+        box-shadow:0 8px 24px rgba(0,0,0,.20)!important;
+        overflow:hidden!important;
+        margin-bottom:9px!important;
+    }
+    div[data-testid="stExpander"] details summary{
+        padding:11px 14px!important;
+        min-height:52px!important;
+    }
+    div[data-testid="stExpander"] details summary:hover{
+        background:rgba(0,245,255,.035)!important;
+    }
+    div[data-testid="stExpander"] details summary p{
+        font-size:12.5px!important;
+        font-weight:800!important;
+        color:#edf7fb!important;
+        letter-spacing:.05px!important;
+    }
+    div[data-testid="stExpander"] details[open] summary{
+        border-bottom:1px solid rgba(255,255,255,.055)!important;
+        background:rgba(0,245,255,.025)!important;
+    }
+    div[data-testid="stExpander"] [data-testid="stExpanderDetails"]{
+        padding:12px 14px 14px!important;
+    }
+    @media(max-width:760px){
+        div[data-testid="stExpander"] details summary p{font-size:11.5px!important;line-height:1.45!important;}
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
     for idx, ev in enumerate(events):
         ev_code = ev["code"]
         saved_actual = actuals_cache.get(ev_code, "")
-        nowcast = compute_event_nowcast(ev, fred_key, all_news, actual_override=saved_actual)
-        causal_ai = get_causal_macro_ai_analysis(ev, nowcast, all_news) if ev.get("impact") == "High" else {"status": "skipped"}
         cur = ev.get("currency", "USD")
         cur_flag = CURRENCY_FLAGS.get(cur, "🌐")
-        impact_class = "fc-high" if ev.get("impact") == "High" else "fc-medium"
-        bias_bg = "rgba(0,255,163,.055)" if nowcast["bias_color"] == "#00ffa3" else ("rgba(255,94,117,.055)" if nowcast["bias_color"] == "#ff5e75" else "rgba(255,209,102,.05)")
-        actual_value = saved_actual or "Pending"
-        actual_color = "#00ffa3" if saved_actual else "#718795"
+        impact_icon = "🔴" if ev.get("impact") == "High" else "🟠"
 
-        render_html(f"""
-        <div class="fc-event">
-          <div class="fc-event-top">
-            <div>
-              <div class="fc-event-id">
-                <span class="fc-flag">{cur_flag}</span>
-                <span class="fc-cur">{cur}</span>
-                <span class="fc-event-name">{ev['title']}</span>
-                <span class="fc-impact {impact_class}">{ev['impact']}</span>
-              </div>
-              <div class="fc-time">📅 {ev['date_str']} &nbsp;•&nbsp; 🕒 {ev['time_str']}</div>
-            </div>
-            <div class="fc-count">{ev['countdown']}</div>
-          </div>
-          <div class="fc-body">
-            <div class="fc-metrics">
+        menu_title = (
+            f"{cur_flag} {cur}  •  {ev['title']}   |   "
+            f"{impact_icon} {ev['impact']}   •   {ev['date_str']}  {ev['time_str']}   •   {ev['countdown']}"
+        )
+
+        with st.expander(menu_title, expanded=False):
+            nowcast = compute_event_nowcast(ev, fred_key, all_news, actual_override=saved_actual)
+            causal_ai = get_causal_macro_ai_analysis(ev, nowcast, all_news) if ev.get("impact") == "High" else {"status": "skipped"}
+            bias_bg = "rgba(0,255,163,.055)" if nowcast["bias_color"] == "#00ffa3" else ("rgba(255,94,117,.055)" if nowcast["bias_color"] == "#ff5e75" else "rgba(255,209,102,.05)")
+            actual_value = saved_actual or "Pending"
+            actual_color = "#00ffa3" if saved_actual else "#718795"
+
+            render_html(f"""
+            <div class="fc-metrics" style="margin-bottom:10px;">
               <div class="fc-metric"><div class="fc-metric-l">Forecast</div><div class="fc-metric-v" style="color:#ffd166;">{ev['forecast_str']}</div><div class="fc-metric-note">Market consensus</div></div>
-              <div class="fc-metric"><div class="fc-metric-l">Previous</div><div class="fc-metric-v">{ev['prev_str']}</div><div class="fc-metric-note">Last official release</div></div>
-              <div class="fc-metric"><div class="fc-metric-l">Actual</div><div class="fc-metric-v" style="color:{actual_color};">{actual_value}</div><div class="fc-metric-note">Published print</div></div>
+              <div class="fc-metric"><div class="fc-metric-l">Previous</div><div class="fc-metric-v">{ev['prev_str']}</div><div class="fc-metric-note">Last release</div></div>
+              <div class="fc-metric"><div class="fc-metric-l">Actual</div><div class="fc-metric-v" style="color:{actual_color};">{actual_value}</div><div class="fc-metric-note">Official print</div></div>
             </div>
-            <div class="fc-nowcast" style="background:{bias_bg};border:1px solid {nowcast['bias_color']}33;">
+
+            <div class="fc-nowcast" style="background:{bias_bg};border:1px solid {nowcast['bias_color']}33;margin-bottom:10px;">
               <div>
                 <div class="fc-now-lbl" style="color:{nowcast['bias_color']};">ApexMacro Nowcast</div>
                 <div class="fc-now-title" style="color:{nowcast['bias_color']};">{nowcast['bias_label']}</div>
@@ -2215,9 +2224,9 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
               <div class="fc-score">
                 <div class="fc-score-num" style="color:{nowcast['bias_color']};">{nowcast['confidence']}%</div>
                 <div class="fc-score-cap">Model confidence</div>
-                <div style="font-size:9px;color:#718795;margin-top:4px;">Baseline: {ev['consensus_bias']}</div>
               </div>
             </div>
+
             <div class="fc-outlook">
               <div class="fc-outlook-main">
                 <div class="fc-small-lbl">Direct {cur} trajectory</div>
@@ -2228,57 +2237,55 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
               <div class="fc-asset"><b>💵 USD</b>{nowcast['usd_implication']}</div>
               <div class="fc-asset"><b>🛢️ Oil</b>{nowcast['oil_implication']}</div>
             </div>
-          </div>
-        </div>
-        """)
+            """)
 
-        render_causal_macro_ai_panel(causal_ai)
+            render_causal_macro_ai_panel(causal_ai)
 
-        if is_admin:
-            with st.expander(f"👑 Admin — Publish Actual · {ev['title']}", expanded=False):
-                col_inp, col_btn = st.columns([3, 1])
-                with col_inp:
-                    entered_actual_val = st.text_input(
-                        f"Actual Value for {ev_code}", value=saved_actual,
-                        placeholder="e.g. -0.5% or 0.5", key=f"act_txt_{ev_code}", label_visibility="collapsed"
-                    )
-                with col_btn:
-                    if st.button("💾 Publish", key=f"act_btn_{ev_code}", use_container_width=True):
-                        actuals_cache[ev_code] = entered_actual_val.strip()
-                        save_actuals_cache(actuals_cache)
-                        st.success("Published!")
-                        time.sleep(0.3)
-                        st.rerun()
+            if is_admin:
+                st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+                with st.expander("👑 Admin — Publish Actual", expanded=False):
+                    col_inp, col_btn = st.columns([3, 1])
+                    with col_inp:
+                        entered_actual_val = st.text_input(
+                            f"Actual Value for {ev_code}", value=saved_actual,
+                            placeholder="e.g. -0.5% or 0.5", key=f"act_txt_{ev_code}", label_visibility="collapsed"
+                        )
+                    with col_btn:
+                        if st.button("💾 Publish", key=f"act_btn_{ev_code}", use_container_width=True):
+                            actuals_cache[ev_code] = entered_actual_val.strip()
+                            save_actuals_cache(actuals_cache)
+                            st.success("Published!")
+                            time.sleep(0.3)
+                            st.rerun()
 
-        with st.expander(f"📊 Evidence & Precursors · {ev['title']}", expanded=False):
-            if nowcast["precursor_results"]:
-                p_cols = st.columns(min(len(nowcast["precursor_results"]), 3))
-                for p_idx, p_item in enumerate(nowcast["precursor_results"]):
-                    p_col = p_cols[p_idx % len(p_cols)]
-                    p_mom_color = "#00ffa3" if p_item["mom"] > 0 else ("#ff5e75" if p_item["mom"] < 0 else "#8fa3b4")
-                    p_arr = "▲" if p_item["mom"] > 0 else ("▼" if p_item["mom"] < 0 else "•")
-                    with p_col:
+            with st.expander("📊 Evidence & Precursors", expanded=False):
+                if nowcast["precursor_results"]:
+                    p_cols = st.columns(min(len(nowcast["precursor_results"]), 3))
+                    for p_idx, p_item in enumerate(nowcast["precursor_results"]):
+                        p_col = p_cols[p_idx % len(p_cols)]
+                        p_mom_color = "#00ffa3" if p_item["mom"] > 0 else ("#ff5e75" if p_item["mom"] < 0 else "#8fa3b4")
+                        p_arr = "▲" if p_item["mom"] > 0 else ("▼" if p_item["mom"] < 0 else "•")
+                        with p_col:
+                            render_html(f"""
+                            <div class="fc-metric" style="margin-bottom:8px;">
+                              <div class="fc-metric-l">{p_item['name']}</div>
+                              <div class="fc-metric-v">{p_item['latest']:.2f}</div>
+                              <div class="fc-metric-note" style="color:{p_mom_color};font-weight:800;">{p_arr} {p_item['mom']:+.2f} MoM</div>
+                            </div>
+                            """)
+                else:
+                    st.caption("No mapped FRED precursor series are available for this catalyst.")
+
+                if nowcast["correlated_articles"]:
+                    st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
+                    render_html('<div class="fc-small-lbl" style="margin-bottom:7px;">Correlated breaking wires & speeches</div>')
+                    for a in nowcast["correlated_articles"]:
                         render_html(f"""
-                        <div class="fc-metric" style="margin-bottom:8px;">
-                          <div class="fc-metric-l">{p_item['name']}</div>
-                          <div class="fc-metric-v">{p_item['latest']:.2f}</div>
-                          <div class="fc-metric-note" style="color:{p_mom_color};font-weight:800;">{p_arr} {p_item['mom']:+.2f} MoM</div>
+                        <div style="padding:8px 10px;background:rgba(0,245,255,.025);border-left:2px solid rgba(0,245,255,.55);border-radius:5px;margin-bottom:6px;font-size:10.5px;color:#dce7ed;line-height:1.45;">
+                          <b>{a.get('title', '')}</b><div style="color:#718795;font-size:9px;margin-top:2px;">{a.get('publishedAt', '')}</div>
                         </div>
                         """)
-            else:
-                st.caption("No mapped FRED precursor series are available for this catalyst.")
 
-            if nowcast["correlated_articles"]:
-                st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
-                render_html('<div class="fc-small-lbl" style="margin-bottom:7px;">Correlated breaking wires & speeches</div>')
-                for a in nowcast["correlated_articles"]:
-                    render_html(f"""
-                    <div style="padding:8px 10px;background:rgba(0,245,255,.025);border-left:2px solid rgba(0,245,255,.55);border-radius:5px;margin-bottom:6px;font-size:10.5px;color:#dce7ed;line-height:1.45;">
-                      <b>{a.get('title', '')}</b><div style="color:#718795;font-size:9px;margin-top:2px;">{a.get('publishedAt', '')}</div>
-                    </div>
-                    """)
-
-        st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
 
 def render_vip_gate() -> dict | None:
     client_id, dev_type = get_client_device_info()
