@@ -1752,12 +1752,10 @@ def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3
     return events
 
 def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_override: str = "") -> dict:
-    """Enhanced Macro Nowcast Engine with Master Admin Actual Override Integration."""
     meta = event.get("meta", {})
     precursors = meta.get("precursors", [])
     keywords = meta.get("keywords", [])
     
-    # ── IF MASTER ADMIN ENTERED ACTUAL DATA, OVERRIDE PREDICTION ──
     if actual_override:
         cur = meta.get("currency", "USD")
         return {
@@ -1995,17 +1993,27 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
               </div>
             </div>
           </div>
+        """)
 
-          <!-- 👑 MASTER ADMIN ACTUAL INPUT PANEL -->
-          {f'''
-          <div style="margin-top:12px;padding:12px 14px;background:rgba(255,209,102,0.06);border:1px solid rgba(255,209,102,0.3);border-radius:10px;">
-            <div style="font-size:11px;font-weight:900;color:#ffd166;text-transform:uppercase;margin-bottom:6px;">👑 MASTER ADMIN OVERRIDE PANEL (Publish Actual Data):</div>
-            <div style="display:flex;gap:8px;align-items:center;">
-              <input type="text" id="actual_input_{ev_code}" value="{saved_actual}" placeholder="e.g. 0.7%" style="flex:1;background:rgba(11,20,30,0.92);border:1px solid rgba(255,209,102,0.3);border-radius:8px;padding:6px 10px;color:#fff;font-size:12px;">
+        # Clean Streamlit Native Admin Input for Publishing Actuals (Fixes Mobile Keyboard Bug)
+        if is_admin:
+            render_html(f"""
+            <div style="margin-top:12px;padding:10px 14px;background:rgba(255,209,102,0.06);border:1px solid rgba(255,209,102,0.3);border-radius:10px;">
+              <div style="font-size:11px;font-weight:900;color:#ffd166;text-transform:uppercase;margin-bottom:4px;">👑 MASTER ADMIN OVERRIDE (Publish Actual Data):</div>
             </div>
-          </div>
-          ''' if is_admin else ''}
+            """)
+            col_inp, col_btn = st.columns([3, 1])
+            with col_inp:
+                entered_actual_val = st.text_input(f"Actual Value for {ev['title']}:", value=saved_actual, placeholder="e.g. 0.7%", key=f"act_txt_{ev_code}", label_visibility="collapsed")
+            with col_btn:
+                if st.button("💾 Publish", key=f"act_btn_{ev_code}", use_container_width=True):
+                    actuals_cache[ev_code] = entered_actual_val.strip()
+                    save_actuals_cache(actuals_cache)
+                    st.success(f"Published: {entered_actual_val}")
+                    time.sleep(0.3)
+                    st.rerun()
 
+        render_html(f"""
           <div style="margin-top:12px;padding:12px 14px;background:rgba(0,245,255,0.05);border:1px solid rgba(0,245,255,0.25);border-radius:10px;">
             <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:4px;">
               <span style="font-size:11px;font-weight:900;color:#00f5ff;text-transform:uppercase;">🎯 DIRECT CURRENCY TRAJECTORY ({cur} OUTLOOK):</span>
@@ -2024,19 +2032,6 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
           </div>
         </div>
         """)
-
-        # Admin Input Streamlit Component for Streamless Publishing
-        if is_admin:
-            col_inp, col_btn = st.columns([3, 1])
-            with col_inp:
-                entered_actual_val = st.text_input(f"Publish Actual for {ev['title']}:", value=saved_actual, placeholder="e.g. 0.7%", key=f"act_txt_{ev_code}", label_visibility="collapsed")
-            with col_btn:
-                if st.button("💾 Publish Actual", key=f"act_btn_{ev_code}", use_container_width=True):
-                    actuals_cache[ev_code] = entered_actual_val.strip()
-                    save_actuals_cache(actuals_cache)
-                    st.success(f"Published Actual: {entered_actual_val}")
-                    time.sleep(0.3)
-                    st.rerun()
 
         with st.expander(f"📊 Macro Indicators & Correlated News: {ev['title']}", expanded=False):
             if nowcast["precursor_results"]:
