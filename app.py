@@ -1758,23 +1758,46 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_ove
     
     if actual_override:
         cur = meta.get("currency", "USD")
-        return {
-            "precursor_results": [],
-            "base_precursor_score": 1.0,
-            "correlated_articles": [],
-            "news_sentiment_pts": 1.0,
-            "nowcast_composite": 0.85,
-            "bias_label": f"✅ ACTUAL RELEASED: {actual_override} (Beat / Positive)",
-            "bias_color": "#00ffa3",
-            "confidence": 100,
-            "outcome_desc": f"Master Admin Verified Actual Print ({actual_override}) successfully overridden and published to terminal.",
-            "currency_action_en": f"📈 {cur} Appreciating on Actual Beat ({actual_override})",
-            "currency_action_color": "#00ffa3",
-            "currency_action_desc_en": f"Official confirmed actual release of {actual_override} exceeds consensus and drives strong bullish momentum.",
-            "gold_implication": "📉 Bearish Pressure on Gold (Confirmed strong macro actual)",
-            "usd_implication": "📈 Bullish Tailwind for USD (Confirmed Actual Beat)",
-            "oil_implication": "📈 Bullish Support"
-        }
+        clean_act = actual_override.strip()
+        is_negative = "-" in clean_act or "neg" in clean_act.lower() or (clean_act.replace(".", "", 1).isdigit() and float(clean_act.replace("%", "")) < 0)
+        
+        # Determine comparison vs consensus
+        forecast_str = event.get("forecast_str", "0.0%")
+        try:
+            f_val = float(forecast_str.replace("%", "").strip())
+            a_val = float(clean_act.replace("%", "").strip())
+            is_beat = a_val > f_val
+        except Exception:
+            is_beat = not is_negative
+
+        if is_beat:
+            return {
+                "precursor_results": [], "base_precursor_score": 1.0, "correlated_articles": [], "news_sentiment_pts": 1.0, "nowcast_composite": 0.85,
+                "bias_label": f"✅ ACTUAL RELEASED: {clean_act} (Beat / Positive)",
+                "bias_color": "#00ffa3",
+                "confidence": 100,
+                "outcome_desc": f"Master Admin Verified Actual Print ({clean_act}) successfully published as positive beat.",
+                "currency_action_en": f"📈 {cur} Appreciating on Actual Beat ({clean_act})",
+                "currency_action_color": "#00ffa3",
+                "currency_action_desc_en": f"Official confirmed actual release of {clean_act} exceeds consensus and drives strong bullish momentum.",
+                "gold_implication": "📉 Bearish Pressure on Gold (Confirmed strong macro actual)",
+                "usd_implication": "📈 Bullish Tailwind for USD (Confirmed Actual Beat)",
+                "oil_implication": "📈 Bullish Support"
+            }
+        else:
+            return {
+                "precursor_results": [], "base_precursor_score": -1.0, "correlated_articles": [], "news_sentiment_pts": -1.0, "nowcast_composite": -0.85,
+                "bias_label": f"❌ ACTUAL RELEASED: {clean_act} (Miss / Negative)",
+                "bias_color": "#ff5e75",
+                "confidence": 100,
+                "outcome_desc": f"Master Admin Verified Actual Print ({clean_act}) successfully published as negative miss.",
+                "currency_action_en": f"📉 {cur} Depreciating on Actual Miss ({clean_act})",
+                "currency_action_color": "#ff5e75",
+                "currency_action_desc_en": f"Official confirmed actual release of {clean_act} missed consensus expectations, triggering downside pressure.",
+                "gold_implication": "📈 Bullish Surge for Gold (Confirmed macro miss / rate cut bets)",
+                "usd_implication": "📉 Bearish Drag on USD (Confirmed Actual Miss)",
+                "oil_implication": "📉 Bearish Drag"
+            }
 
     precursor_results = []
     precursor_score_sum = 0.0
@@ -1995,21 +2018,16 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
           </div>
         """)
 
-        # Clean Streamlit Native Admin Input for Publishing Actuals (Fixes Mobile Keyboard Bug)
         if is_admin:
-            render_html(f"""
-            <div style="margin-top:12px;padding:10px 14px;background:rgba(255,209,102,0.06);border:1px solid rgba(255,209,102,0.3);border-radius:10px;">
-              <div style="font-size:11px;font-weight:900;color:#ffd166;text-transform:uppercase;margin-bottom:4px;">👑 MASTER ADMIN OVERRIDE (Publish Actual Data):</div>
-            </div>
-            """)
+            st.markdown(f"<div style='margin-top:10px;font-size:11px;font-weight:900;color:#ffd166;text-transform:uppercase;'>👑 ADMIN PUBLISH ACTUAL ({ev['title']}):</div>", unsafe_allow_html=True)
             col_inp, col_btn = st.columns([3, 1])
             with col_inp:
-                entered_actual_val = st.text_input(f"Actual Value for {ev['title']}:", value=saved_actual, placeholder="e.g. 0.7%", key=f"act_txt_{ev_code}", label_visibility="collapsed")
+                entered_actual_val = st.text_input(f"Actual Value for {ev_code}", value=saved_actual, placeholder="e.g. -0.5% or 0.5", key=f"act_txt_{ev_code}", label_visibility="collapsed")
             with col_btn:
                 if st.button("💾 Publish", key=f"act_btn_{ev_code}", use_container_width=True):
                     actuals_cache[ev_code] = entered_actual_val.strip()
                     save_actuals_cache(actuals_cache)
-                    st.success(f"Published: {entered_actual_val}")
+                    st.success(f"Published!")
                     time.sleep(0.3)
                     st.rerun()
 
