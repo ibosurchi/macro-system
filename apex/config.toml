@@ -1,0 +1,14 @@
+[client]
+showSidebarNavigation = false
+
+[browser]
+gatherUsageStats = false
+
+# Native Streamlit first-paint theme.
+# This prevents a white browser canvas before ApexMacro CSS is mounted on route changes.
+[theme]
+base = "dark"
+primaryColor = "#00F5FF"
+backgroundColor = "#050B10"
+secondaryBackgroundColor = "#081018"
+textColor = "#ECF7FF"
