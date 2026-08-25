@@ -123,6 +123,8 @@ ACTUALS_FILE = os.path.join(os.path.dirname(__file__), "actual_releases.json")
 ALERT_STATE_FILE = os.path.join(os.path.dirname(__file__), "alert_regime_state.json")
 TELEGRAM_UPDATE_STATE_FILE = os.path.join(os.path.dirname(__file__), "telegram_update_state.json")
 TELEGRAM_DAEMON_LOCK_FILE = os.path.join(os.path.dirname(__file__), ".apexmacro_telegram_daemon.lock")
+TACTICAL_STATE_FILE = os.path.join(os.path.dirname(__file__), "tactical_move_state.json")
+_TACTICAL_STATE_LOCK = threading.RLock()
 
 # Synchronizes Streamlit/Admin and Telegram worker access to the shared VIP registry.
 _VIP_REGISTRY_LOCK = threading.RLock()
@@ -1333,6 +1335,403 @@ _ASSET_MONITOR_CONFIG = [
 ]
 
 
+
+# ============================================================
+# TACTICAL MOVE LAYER — Short-Term Price Action (presentation/delivery only)
+# This layer NEVER changes the existing macro scores, weights, thresholds or Smart Shift engine.
+# ============================================================
+
+def _tactical_symbol_config(asset_key: str) -> dict[str, object] | None:
+    """Map an ApexMacro asset to a liquid Yahoo market symbol and direction convention."""
+    key = str(asset_key or "").strip()
+    fixed = {
+        "Gold": {"symbol": "GC=F", "invert": False, "display": "Gold (XAUUSD)", "icon": "🥇"},
+        "Oil": {"symbol": "CL=F", "invert": False, "display": "Crude Oil (WTI)", "icon": "🛢️"},
+        # Nasdaq futures are used so tactical movement remains available beyond cash-index hours.
+        "NDX": {"symbol": "NQ=F", "invert": False, "display": "Nasdaq-100 (NDX)", "icon": "📊"},
+        "USD": {"symbol": "DX-Y.NYB", "invert": False, "display": "US Dollar (USD)", "icon": "🇺🇸"},
+    }
+    if key in fixed:
+        return fixed[key]
+    if key not in CURRENCY_SERIES:
+        return None
+
+    meta = CURRENCY_SERIES.get(key, {})
+    # EUR/GBP/AUD/NZD are normally quoted XXXUSD; most other majors are USDXXX,
+    # so USDXXX must be inverted to represent strength of the target currency itself.
+    direct_usd = {"EUR", "GBP", "AUD", "NZD"}
+    if key in direct_usd:
+        symbol, invert = f"{key}USD=X", False
+    else:
+        symbol, invert = f"USD{key}=X", True
+    return {
+        "symbol": symbol,
+        "invert": invert,
+        "display": f"{meta.get('name', key)} ({key})",
+        "icon": meta.get("flag", "💱"),
+    }
+
+
+@st.cache_data(ttl=55, show_spinner=False)
+def _fetch_tactical_price_series(symbol: str) -> pd.DataFrame | None:
+    """Fetch 5-minute market prices. Failure is silent so the macro engine remains fully independent."""
+    if not symbol:
+        return None
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(symbol, safe='')}"
+        response = requests.get(
+            url,
+            params={
+                "range": "5d",
+                "interval": "5m",
+                "includePrePost": "true",
+                "events": "div,splits",
+            },
+            headers={"User-Agent": "Mozilla/5.0 ApexMacro Tactical/15.0"},
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        result = (((payload or {}).get("chart") or {}).get("result") or [None])[0]
+        if not isinstance(result, dict):
+            return None
+        timestamps = result.get("timestamp") or []
+        quote_data = ((((result.get("indicators") or {}).get("quote")) or [{}])[0])
+        closes = quote_data.get("close") or []
+        if not timestamps or not closes:
+            return None
+        rows = []
+        for ts, close in zip(timestamps, closes):
+            try:
+                if close is None:
+                    continue
+                value = float(close)
+                if not np.isfinite(value) or value <= 0:
+                    continue
+                rows.append((int(ts), value))
+            except Exception:
+                continue
+        if len(rows) < 40:
+            return None
+        df = pd.DataFrame(rows, columns=["ts", "close"])
+        df = df.drop_duplicates("ts").sort_values("ts").reset_index(drop=True)
+        return df
+    except Exception:
+        return None
+
+
+def _tactical_label(score: float) -> str:
+    if score >= 0.62:
+        return "Strong Bullish"
+    if score >= 0.24:
+        return "Bullish"
+    if score <= -0.62:
+        return "Strong Bearish"
+    if score <= -0.24:
+        return "Bearish"
+    return "Neutral"
+
+
+def _tactical_icon(label: str) -> str:
+    if label == "Strong Bullish": return "🚀"
+    if label == "Bullish": return "📈"
+    if label == "Strong Bearish": return "🔻"
+    if label == "Bearish": return "📉"
+    return "⚖️"
+
+
+def _tactical_interpretation(macro_regime: str, tactical_label: str) -> str:
+    macro = str(macro_regime or "Neutral")
+    tactical = str(tactical_label or "Neutral")
+    if tactical == "Neutral":
+        return "Price consolidation / no decisive short-term move"
+    tact_dir = "Bullish" if "Bullish" in tactical else "Bearish"
+    if macro == "Neutral":
+        return f"Short-term {tact_dir.lower()} price move inside a neutral macro regime"
+    if macro == tact_dir:
+        return "Macro outlook and short-term price action are aligned"
+    if macro == "Bullish" and tact_dir == "Bearish":
+        return "Bearish pullback against a bullish macro outlook"
+    if macro == "Bearish" and tact_dir == "Bullish":
+        return "Bullish rebound against a bearish macro outlook"
+    return "Mixed macro and short-term conditions"
+
+
+def compute_tactical_move(asset_key: str, macro_score: float | None = None) -> dict | None:
+    """Calculate short-term price action independently of the existing macro strategy."""
+    cfg = _tactical_symbol_config(asset_key)
+    if not cfg:
+        return None
+    df = _fetch_tactical_price_series(str(cfg["symbol"]))
+    if df is None or df.empty or len(df) < 40:
+        return None
+
+    closes = df["close"].astype(float).to_numpy()
+    if bool(cfg.get("invert")):
+        # Invert USDXXX pairs so positive movement always means target-currency strength.
+        closes = 1.0 / np.maximum(closes, 1e-12)
+
+    def ret(bars: int) -> float:
+        if len(closes) <= bars or closes[-1-bars] == 0:
+            return 0.0
+        return float((closes[-1] / closes[-1-bars]) - 1.0)
+
+    pct = np.diff(closes) / np.maximum(closes[:-1], 1e-12)
+    recent_pct = pct[-96:] if len(pct) >= 96 else pct
+    vol5 = float(np.nanstd(recent_pct)) if len(recent_pct) else 0.0
+    if not np.isfinite(vol5) or vol5 < 1e-6:
+        vol5 = max(float(np.nanmean(np.abs(recent_pct))) if len(recent_pct) else 0.0, 1e-6)
+
+    def normalized_move(raw_return: float, bars: int) -> float:
+        denom = max(vol5 * (max(bars, 1) ** 0.5), 1e-6)
+        return float(np.tanh(raw_return / denom))
+
+    r5 = ret(1)
+    r15 = ret(3)
+    r60 = ret(12)
+    r240 = ret(48) if len(closes) > 48 else ret(max(6, len(closes)//3))
+
+    series = pd.Series(closes)
+    ema_fast = float(series.ewm(span=12, adjust=False).mean().iloc[-1])
+    ema_slow = float(series.ewm(span=36, adjust=False).mean().iloc[-1])
+    trend_scale = max(abs(closes[-1]) * vol5 * 4.0, 1e-6)
+    ema_component = float(np.tanh((ema_fast - ema_slow) / trend_scale))
+
+    prior = closes[-73:-1] if len(closes) >= 73 else closes[:-1]
+    breakout_component = 0.0
+    structure = "Range / Mean-Reversion"
+    if len(prior) >= 12:
+        prior_high = float(np.nanmax(prior))
+        prior_low = float(np.nanmin(prior))
+        buffer = max(abs(closes[-1]) * vol5 * 0.35, 1e-8)
+        if closes[-1] > prior_high + buffer:
+            breakout_component = 1.0
+            structure = "Upside Breakout"
+        elif closes[-1] < prior_low - buffer:
+            breakout_component = -1.0
+            structure = "Downside Breakdown"
+        elif ema_fast > ema_slow:
+            structure = "Higher Short-Term Trend"
+        elif ema_fast < ema_slow:
+            structure = "Lower Short-Term Trend"
+
+    raw_score = (
+        0.10 * normalized_move(r5, 1)
+        + 0.22 * normalized_move(r15, 3)
+        + 0.30 * normalized_move(r60, 12)
+        + 0.20 * normalized_move(r240, 48)
+        + 0.13 * ema_component
+        + 0.05 * breakout_component
+    )
+    score = float(np.clip(raw_score, -1.0, 1.0))
+    label = _tactical_label(score)
+
+    prev15 = 0.0
+    if len(closes) > 6 and closes[-6] != 0:
+        prev15 = float((closes[-4] / closes[-7]) - 1.0)
+    same_direction = (r15 > 0 and r60 > 0) or (r15 < 0 and r60 < 0)
+    accelerating = same_direction and abs(r15) > abs(prev15) * 1.15
+    if score >= 0.24:
+        momentum = "Upside Accelerating" if accelerating else "Positive Momentum"
+    elif score <= -0.24:
+        momentum = "Downside Accelerating" if accelerating else "Negative Momentum"
+    else:
+        momentum = "Balanced Momentum"
+
+    if macro_score is not None:
+        detailed, _, _ = bias_from_score(float(macro_score))
+        macro_regime = _broad_regime(detailed)
+    else:
+        macro_regime = str((GLOBAL_ALERT_STATE.get(asset_key) or {}).get("confirmed_regime") or "Neutral")
+
+    confidence = int(min(95, max(50, 52 + abs(score) * 45 + (5 if abs(breakout_component) else 0))))
+    last_ts = int(df["ts"].iloc[-1])
+    return {
+        "key": asset_key,
+        "display_name": str(cfg.get("display", asset_key)),
+        "icon": str(cfg.get("icon", "📊")),
+        "symbol": str(cfg.get("symbol", "")),
+        "score": score,
+        "label": label,
+        "label_icon": _tactical_icon(label),
+        "macro_regime": macro_regime,
+        "interpretation": _tactical_interpretation(macro_regime, label),
+        "momentum": momentum,
+        "structure": structure,
+        "ret_5m": r5,
+        "ret_15m": r15,
+        "ret_1h": r60,
+        "ret_4h": r240,
+        "confidence": confidence,
+        "last_price": float(df["close"].iloc[-1]),
+        "market_ts": last_ts,
+    }
+
+
+def render_tactical_move_panel(asset_key: str, macro_score: float | None = None) -> None:
+    """Compact dashboard card that clearly separates live price action from Macro Outlook."""
+    tactical = compute_tactical_move(asset_key, macro_score)
+    render_html('<div class="sec-title">Tactical Move — Live Price Action</div>')
+    if not tactical:
+        st.caption("Live tactical price data is temporarily unavailable. Macro Outlook remains fully active.")
+        return
+    label = tactical["label"]
+    if "Bullish" in label:
+        color = "#00ffa3"
+    elif "Bearish" in label:
+        color = "#ff5e75"
+    else:
+        color = "#ffd166"
+    render_html(f"""
+    <div class="comp-box" style="text-align:left;padding:17px 19px;border-color:rgba(0,245,255,.20);">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
+        <div>
+          <div style="font-size:10px;font-weight:850;letter-spacing:1.4px;color:#8fa3b4;text-transform:uppercase;">SHORT-TERM PRICE ACTION</div>
+          <div style="font-size:20px;font-weight:950;color:{color};margin-top:5px;">{tactical['label_icon']} {label}</div>
+        </div>
+        <div style="font-size:10px;color:#8fa3b4;text-align:right;">Confidence<br><b style="color:#ecf7ff;font-size:14px;">{tactical['confidence']}%</b></div>
+      </div>
+      <div style="height:1px;background:rgba(255,255,255,.08);margin:13px 0;"></div>
+      <div style="font-size:11px;color:#b8c9d5;line-height:1.75;">
+        <b style="color:#ecf7ff;">Momentum:</b> {tactical['momentum']}<br>
+        <b style="color:#ecf7ff;">Structure:</b> {tactical['structure']}<br>
+        <b style="color:#ecf7ff;">15m:</b> {tactical['ret_15m']*100:+.2f}% &nbsp;•&nbsp;
+        <b style="color:#ecf7ff;">1h:</b> {tactical['ret_1h']*100:+.2f}% &nbsp;•&nbsp;
+        <b style="color:#ecf7ff;">4h:</b> {tactical['ret_4h']*100:+.2f}%
+      </div>
+      <div style="margin-top:11px;padding:9px 11px;border-radius:10px;background:rgba(255,255,255,.035);font-size:10.5px;color:#8fa3b4;">
+        {tactical['interpretation']}
+      </div>
+      <div style="margin-top:8px;font-size:9.5px;color:#607586;">Tactical Move tracks live short-term price action and does not alter the Macro Outlook model.</div>
+    </div>
+    """)
+
+
+def _load_tactical_state() -> dict[str, dict]:
+    data = _load_persistent_state("tactical_move_state", TACTICAL_STATE_FILE, {})
+    return data if isinstance(data, dict) else {}
+
+
+def _save_tactical_state(state: dict[str, dict]) -> None:
+    _save_persistent_state("tactical_move_state", TACTICAL_STATE_FILE, state)
+
+
+def _update_tactical_alert_state(state: dict[str, dict], tactical: dict, now_ts: float) -> bool:
+    """Return True only for a new, meaningful strong tactical move; suppress one-minute noise/spam."""
+    key = str(tactical.get("key", ""))
+    label = str(tactical.get("label", "Neutral"))
+    strong = label if label in {"Strong Bullish", "Strong Bearish"} else ""
+    stt = state.setdefault(key, {
+        "active": "", "candidate": "", "candidate_since": None,
+        "non_strong_since": None, "last_alert_ts": 0.0,
+    })
+
+    if not strong:
+        stt["candidate"] = ""
+        stt["candidate_since"] = None
+        if stt.get("active"):
+            if stt.get("non_strong_since") is None:
+                stt["non_strong_since"] = float(now_ts)
+            elif float(now_ts) - float(stt.get("non_strong_since") or now_ts) >= 600.0:
+                stt["active"] = ""
+                stt["non_strong_since"] = None
+        return False
+
+    stt["non_strong_since"] = None
+    if stt.get("active") == strong:
+        stt["candidate"] = ""
+        stt["candidate_since"] = None
+        return False
+
+    # Very strong breakout/breakdown can alert immediately; otherwise require ~3 minutes persistence.
+    immediate = abs(float(tactical.get("score", 0.0))) >= 0.78 and str(tactical.get("structure", "")) in {"Upside Breakout", "Downside Breakdown"}
+    if stt.get("candidate") != strong:
+        stt["candidate"] = strong
+        stt["candidate_since"] = float(now_ts)
+        if not immediate:
+            return False
+
+    candidate_since = float(stt.get("candidate_since") or now_ts)
+    if not immediate and float(now_ts) - candidate_since < 180.0:
+        return False
+
+    # Prevent repeated same-direction alerts during noisy reconnects/restarts.
+    last_alert = float(stt.get("last_alert_ts") or 0.0)
+    if last_alert and float(now_ts) - last_alert < 900.0 and stt.get("active") == strong:
+        return False
+
+    stt["active"] = strong
+    stt["candidate"] = ""
+    stt["candidate_since"] = None
+    stt["last_alert_ts"] = float(now_ts)
+    return True
+
+
+def _build_tactical_alert_msg(tactical: dict) -> str:
+    return (
+        "⚡ *APEXMACRO — TACTICAL MOVE*\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        f"{tactical['icon']} *Asset:* `{tactical['display_name']}`\n\n"
+        f"🏛️ *Macro Outlook:* `{tactical['macro_regime']}`\n"
+        f"🎯 *Tactical Move:* `{tactical['label']}`\n"
+        f"🚦 *Momentum:* `{tactical['momentum']}`\n"
+        f"🧱 *Structure:* `{tactical['structure']}`\n\n"
+        f"⏱ *15m:* `{tactical['ret_15m']*100:+.2f}%`  |  *1h:* `{tactical['ret_1h']*100:+.2f}%`  |  *4h:* `{tactical['ret_4h']*100:+.2f}%`\n"
+        f"📌 *Interpretation:* {tactical['interpretation']}\n\n"
+        "_Short-term price action layer — Macro Outlook remains independent._\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "⚡ *ApexMacro Institutional Terminal v15.0*"
+    )
+
+
+def send_personalized_tactical_alert(tactical: dict) -> list[dict]:
+    if not TELEGRAM_BOT_TOKEN or not tactical:
+        return []
+    results = []
+    seen_chat_ids: set[str] = set()
+    for client in load_vip_registry():
+        if not _client_license_is_current(client):
+            continue
+        chat_id = str(client.get("telegram_id", "")).strip()
+        if not chat_id or chat_id in seen_chat_ids:
+            continue
+        seen_chat_ids.add(chat_id)
+        if tactical.get("key") not in _client_alert_asset_keys(client):
+            continue
+        result = _telegram_api("sendMessage", {
+            "chat_id": chat_id,
+            "text": _build_tactical_alert_msg(tactical),
+            "parse_mode": "Markdown",
+        })
+        results.append({"chat_id": chat_id, "result": result})
+    return results
+
+
+def check_global_tactical_moves() -> None:
+    """Monitor every selectable asset for strong live price moves without touching macro calculations."""
+    try:
+        now_ts = time.time()
+        with _TACTICAL_STATE_LOCK:
+            state = _load_tactical_state()
+            changed = False
+            for asset_key in _all_alert_asset_keys():
+                try:
+                    tactical = compute_tactical_move(asset_key, None)
+                    if not tactical:
+                        continue
+                    before = json.dumps(state.get(asset_key, {}), sort_keys=True)
+                    should_alert = _update_tactical_alert_state(state, tactical, now_ts)
+                    after = json.dumps(state.get(asset_key, {}), sort_keys=True)
+                    changed = changed or before != after
+                    if should_alert:
+                        send_personalized_tactical_alert(tactical)
+                except Exception:
+                    continue
+            if changed:
+                _save_tactical_state(state)
+    except Exception:
+        pass
+
 def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL, selected_assets: set[str] | None = None) -> str:
     """Build the hourly brief, optionally containing only one client's selected market assets."""
     now = get_current_time()
@@ -1349,6 +1748,9 @@ def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHAN
             score = _calc_currency_score_only(cur, fred_key, channel_name) or 0.0
             meta = CURRENCY_SERIES[cur]
             forex_lines.append(f"  {meta['flag']} {cur} Macro Outlook: {_emoji(score)}")
+            tactical = compute_tactical_move(cur, score)
+            if tactical:
+                forex_lines.append(f"     Tactical Move: {tactical['label_icon']} {tactical['label']} | 1h {tactical['ret_1h']*100:+.2f}%")
         except Exception: pass
     if forex_lines: lines.extend(["", "🌐 *Forex Macro Outlook*", *forex_lines])
     market_lines = []; ry_val_str = "N/A"
@@ -1356,16 +1758,23 @@ def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHAN
         try:
             score, ry_val_str, _ = _calc_gold_score_only(fred_key, channel_name)
             market_lines.append(f"  🥇 Gold (XAUUSD) Macro Outlook: {_emoji(score or 0.0)}")
+            tactical = compute_tactical_move("Gold", score or 0.0)
+            if tactical: market_lines.append(f"     Tactical Move: {tactical['label_icon']} {tactical['label']} | 1h {tactical['ret_1h']*100:+.2f}%")
         except Exception: pass
     if "Oil" in selected:
         try:
             score, _ = _calc_oil_score_only(fred_key, channel_name)
             market_lines.append(f"  🛢️ Oil (WTI) Macro Outlook: {_emoji(score or 0.0)}")
+            tactical = compute_tactical_move("Oil", score or 0.0)
+            if tactical: market_lines.append(f"     Tactical Move: {tactical['label_icon']} {tactical['label']} | 1h {tactical['ret_1h']*100:+.2f}%")
         except Exception: pass
     if "NDX" in selected:
         try:
             score, _ = _calc_ndx_score_only(fred_key, channel_name)
-            if score is not None: market_lines.append(f"  📊 Nasdaq-100 (NDX) Macro Outlook: {_emoji(score)}")
+            if score is not None:
+                market_lines.append(f"  📊 Nasdaq-100 (NDX) Macro Outlook: {_emoji(score)}")
+                tactical = compute_tactical_move("NDX", score)
+                if tactical: market_lines.append(f"     Tactical Move: {tactical['label_icon']} {tactical['label']} | 1h {tactical['ret_1h']*100:+.2f}%")
         except Exception: pass
     if market_lines: lines.extend(["", "🏅 *Macro Outlook — Commodities & Equity*", *market_lines])
     if not forex_lines and not market_lines: return ""
@@ -1615,6 +2024,7 @@ def start_background_alert_daemon(fred_key: str, channel_name: str) -> None:
                         send_personalized_hourly_reports(fred_key, channel_name)
 
                 check_global_market_shifts(fred_key, channel_name)
+                check_global_tactical_moves()
             except Exception:
                 pass
             time.sleep(60)
@@ -2215,6 +2625,9 @@ def page_dashboard(fred_key: str, channel_name: str, auth_user: dict | None = No
         </div>
         """)
 
+    st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
+    render_tactical_move_panel(currency, s)
+
     st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
     render_html('<div class="sec-title">Live Institutional Wire &amp; Macro Flow</div>')
     arts = fetch_all_instant_news(channel_name)
@@ -2342,6 +2755,9 @@ def page_gold(fred_key: str, channel_name: str) -> None:
         </div>
         """)
 
+    st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
+    render_tactical_move_panel("Gold", gold_s)
+
     st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
     render_html('<div class="sec-title">Live Safe-Haven &amp; Gold Wire Flow</div>')
     n_cols = st.columns(2)
@@ -2462,6 +2878,9 @@ def page_oil(fred_key: str, channel_name: str) -> None:
           </div>
         </div>
         """)
+
+    st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
+    render_tactical_move_panel("Oil", final_oil_score)
 
     st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
     render_html('<div class="sec-title">Live Energy Wire &amp; Crude Flow</div>')
@@ -2617,6 +3036,9 @@ def page_nasdaq(fred_key: str, channel_name: str) -> None:
           </div>
         </div>
         """)
+
+    st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
+    render_tactical_move_panel("NDX", ndx_s)
 
     st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
     render_html('<div class="sec-title">Live Tech &amp; Equity Wire Flow</div>')
