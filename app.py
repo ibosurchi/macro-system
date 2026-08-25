@@ -5698,7 +5698,166 @@ def render_public_home() -> None:
         .apex-ref-fcopy { font-size:8.2px; line-height:1.47; }
         .apex-ref-ficon { width:31px; height:31px; margin-bottom:12px; }
       }
-    </style>
+    
+      /* ----- HEADER ALIGNMENT + TYPOGRAPHY FIX ----- */
+      .apex-public-nav{
+        width:min(1180px, calc(100% - 40px)) !important;
+        min-height:82px !important;
+        margin:18px auto 30px !important;
+        padding:0 22px !important;
+        box-sizing:border-box !important;
+        display:grid !important;
+        grid-template-columns:minmax(250px,1fr) auto minmax(130px,1fr) !important;
+        align-items:center !important;
+        column-gap:24px !important;
+        overflow:visible !important;
+      }
+
+      .apex-public-nav .apex-brand,
+      .apex-public-nav .apex-brand-wrap,
+      .apex-public-nav .brand-wrap{
+        position:static !important;
+        transform:none !important;
+        margin:0 !important;
+        align-self:center !important;
+        justify-self:start !important;
+        display:flex !important;
+        align-items:center !important;
+        gap:12px !important;
+      }
+
+      .apex-public-nav .apex-logo,
+      .apex-public-nav .brand-logo{
+        position:static !important;
+        margin:0 !important;
+        width:48px !important;
+        height:48px !important;
+        min-width:48px !important;
+        align-self:center !important;
+      }
+
+      .apex-public-nav .apex-brand-name,
+      .apex-public-nav .brand-name{
+        font-size:20px !important;
+        line-height:1.05 !important;
+        letter-spacing:1.2px !important;
+        white-space:nowrap !important;
+      }
+
+      .apex-public-nav .apex-brand-sub,
+      .apex-public-nav .brand-sub{
+        margin-top:5px !important;
+        font-size:8px !important;
+        line-height:1 !important;
+        letter-spacing:2.4px !important;
+        white-space:nowrap !important;
+      }
+
+      .apex-public-nav .apex-nav-links,
+      .apex-public-nav .nav-links{
+        position:static !important;
+        transform:none !important;
+        margin:0 !important;
+        align-self:center !important;
+        justify-self:center !important;
+        display:flex !important;
+        align-items:center !important;
+        justify-content:center !important;
+        gap:34px !important;
+      }
+
+      .apex-public-nav .apex-nav-links a,
+      .apex-public-nav .nav-links a{
+        font-size:12.5px !important;
+        line-height:1 !important;
+        font-weight:800 !important;
+        letter-spacing:.1px !important;
+        white-space:nowrap !important;
+      }
+
+      .apex-public-nav .apex-nav-actions,
+      .apex-public-nav .nav-actions{
+        position:static !important;
+        transform:none !important;
+        margin:0 !important;
+        align-self:center !important;
+        justify-self:end !important;
+        display:flex !important;
+        align-items:center !important;
+        gap:12px !important;
+      }
+
+      .apex-public-nav .apex-search,
+      .apex-public-nav .nav-search,
+      .apex-public-nav .apex-profile,
+      .apex-public-nav .nav-profile{
+        position:static !important;
+        margin:0 !important;
+        align-self:center !important;
+      }
+
+      @media (min-width:1200px){
+        .apex-public-nav{
+          min-height:88px !important;
+          padding:0 26px !important;
+        }
+        .apex-public-nav .apex-brand-name,
+        .apex-public-nav .brand-name{
+          font-size:22px !important;
+        }
+        .apex-public-nav .apex-nav-links a,
+        .apex-public-nav .nav-links a{
+          font-size:13px !important;
+        }
+      }
+
+      @media (max-width:900px){
+        .apex-public-nav{
+          width:calc(100% - 24px) !important;
+          min-height:72px !important;
+          margin:12px auto 20px !important;
+          padding:0 14px !important;
+          grid-template-columns:minmax(0,1fr) auto !important;
+          column-gap:10px !important;
+        }
+        .apex-public-nav .apex-nav-links,
+        .apex-public-nav .nav-links{
+          display:none !important;
+        }
+        .apex-public-nav .apex-brand-name,
+        .apex-public-nav .brand-name{
+          font-size:17px !important;
+        }
+        .apex-public-nav .apex-brand-sub,
+        .apex-public-nav .brand-sub{
+          font-size:7px !important;
+          letter-spacing:1.8px !important;
+        }
+        .apex-public-nav .apex-logo,
+        .apex-public-nav .brand-logo{
+          width:43px !important;
+          height:43px !important;
+          min-width:43px !important;
+        }
+      }
+
+      @media (max-width:430px){
+        .apex-public-nav{
+          width:calc(100% - 18px) !important;
+          min-height:68px !important;
+          padding:0 11px !important;
+        }
+        .apex-public-nav .apex-brand,
+        .apex-public-nav .apex-brand-wrap,
+        .apex-public-nav .brand-wrap{
+          gap:9px !important;
+        }
+        .apex-public-nav .apex-brand-name,
+        .apex-public-nav .brand-name{
+          font-size:15px !important;
+        }
+      }
+</style>
     """, unsafe_allow_html=True)
 
     render_public_nav("home")
