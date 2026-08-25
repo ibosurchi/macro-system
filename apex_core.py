@@ -4389,11 +4389,11 @@ def _set_public_view(view: str) -> None:
     if view != "vip":
         st.session_state["APEX_SHOW_VIP_CHECKOUT"] = False
     route_map = {
-        "home": "pages/home.py",
-        "login": "pages/login.py",
-        "vip": "pages/vip.py",
-        "terminal": "pages/terminal.py",
-        "admin": "pages/admin.py",
+        "home": "home.py",
+        "login": "login.py",
+        "vip": "vip.py",
+        "terminal": "terminal.py",
+        "admin": "admin.py",
     }
     target = route_map.get(view)
     if target:

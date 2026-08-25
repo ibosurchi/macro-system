@@ -5,7 +5,7 @@ import apex_core as core
 fred_key, channel_name = core.bootstrap_runtime()
 auth_user = st.session_state.get("APEX_AUTH_USER")
 if not (auth_user and auth_user.get("is_authenticated")):
-    st.switch_page("pages/login.py")
+    st.switch_page("login.py")
 
 core.render_top_header(auth_user)
 core.page_dashboard(fred_key, channel_name, auth_user)
