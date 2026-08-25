@@ -1234,26 +1234,26 @@ def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHAN
         try:
             score = _calc_currency_score_only(cur, fred_key, channel_name) or 0.0
             meta = CURRENCY_SERIES[cur]
-            forex_lines.append(f"  {meta['flag']} {cur}: {_emoji(score)}")
+            forex_lines.append(f"  {meta['flag']} {cur} Macro Outlook: {_emoji(score)}")
         except Exception: pass
-    if forex_lines: lines.extend(["", "🌐 *Forex Macro Bias*", *forex_lines])
+    if forex_lines: lines.extend(["", "🌐 *Forex Macro Outlook*", *forex_lines])
     market_lines = []; ry_val_str = "N/A"
     if "Gold" in selected:
         try:
             score, ry_val_str, _ = _calc_gold_score_only(fred_key, channel_name)
-            market_lines.append(f"  🥇 Gold (XAUUSD): {_emoji(score or 0.0)}")
+            market_lines.append(f"  🥇 Gold (XAUUSD) Macro Outlook: {_emoji(score or 0.0)}")
         except Exception: pass
     if "Oil" in selected:
         try:
             score, _ = _calc_oil_score_only(fred_key, channel_name)
-            market_lines.append(f"  🛢️ Oil (WTI): {_emoji(score or 0.0)}")
+            market_lines.append(f"  🛢️ Oil (WTI) Macro Outlook: {_emoji(score or 0.0)}")
         except Exception: pass
     if "NDX" in selected:
         try:
             score, _ = _calc_ndx_score_only(fred_key, channel_name)
-            if score is not None: market_lines.append(f"  📊 Nasdaq-100 (NDX): {_emoji(score)}")
+            if score is not None: market_lines.append(f"  📊 Nasdaq-100 (NDX) Macro Outlook: {_emoji(score)}")
         except Exception: pass
-    if market_lines: lines.extend(["", "🏅 *Commodities & Equity*", *market_lines])
+    if market_lines: lines.extend(["", "🏅 *Macro Outlook — Commodities & Equity*", *market_lines])
     if not forex_lines and not market_lines: return ""
     lines.append("")
     if "Gold" in selected and ry_val_str != "N/A": lines.append(f"▫️ Real Yield 10Y: {ry_val_str}")
@@ -1291,8 +1291,8 @@ def _build_single_asset_alert_msg(
         "━━━━━━━━━━━━━━━━━━━\n"
         f"{icon} *Asset:* `{display_name}`\n"
         f"📊 *Status:* `Broad Regime Changed`\n\n"
-        f"▪️ *Previous Bias:*  `{old_regime}`\n"
-        f"▪️ *New Bias:*       `{new_regime}`\n\n"
+        f"▪️ *Previous Macro Outlook:*  `{old_regime}`\n"
+        f"▪️ *New Macro Outlook:*       `{new_regime}`\n\n"
         f"📈 *Composite Score:*  `{score:+.3f}`"
         f"{news_line}\n"
         f"🕐 *Reason:* {reason}\n"
@@ -1303,7 +1303,7 @@ def _build_single_asset_alert_msg(
 
 def _build_multi_asset_alert_msg(asset_shifts: list[dict]) -> str:
     lines = [
-        "🔄 *APEX MACRO — MULTI-ASSET SHIFT*",
+        "🔄 *APEX MACRO — MULTI-ASSET MACRO OUTLOOK SHIFT*",
         "━━━━━━━━━━━━━━━━━━━━━━━━━",
     ]
     for s in asset_shifts:
