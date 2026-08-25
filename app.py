@@ -109,6 +109,16 @@ VIP_PAYMENT_PLANS = {
 PAYMENTS_FILE = os.path.join(os.path.dirname(__file__), "vip_payments.json")
 _PAYMENT_LOCK = threading.RLock()
 SESSIONS_FILE = os.path.join(os.path.dirname(__file__), "vip_sessions.json")
+
+# Persistent client storage. Supabase is optional at code level so the app can still
+# start locally, but production Streamlit should configure these secrets.
+SUPABASE_URL = get_secret("SUPABASE_URL", "").rstrip("/")
+SUPABASE_SERVICE_ROLE_KEY = get_secret("SUPABASE_SERVICE_ROLE_KEY", "")
+SUPABASE_STATE_TABLE = get_secret("SUPABASE_STATE_TABLE", "apexmacro_state") or "apexmacro_state"
+if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", SUPABASE_STATE_TABLE):
+    SUPABASE_STATE_TABLE = "apexmacro_state"
+_PERSISTENCE_LOCK = threading.RLock()
+_PERSISTENCE_STATUS = {"backend": "local", "last_error": ""}
 ACTUALS_FILE = os.path.join(os.path.dirname(__file__), "actual_releases.json")
 ALERT_STATE_FILE = os.path.join(os.path.dirname(__file__), "alert_regime_state.json")
 TELEGRAM_UPDATE_STATE_FILE = os.path.join(os.path.dirname(__file__), "telegram_update_state.json")
@@ -116,6 +126,126 @@ TELEGRAM_DAEMON_LOCK_FILE = os.path.join(os.path.dirname(__file__), ".apexmacro_
 
 # Synchronizes Streamlit/Admin and Telegram worker access to the shared VIP registry.
 _VIP_REGISTRY_LOCK = threading.RLock()
+
+def _supabase_enabled() -> bool:
+    return bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY)
+
+
+def _supabase_headers(prefer: str = "") -> dict[str, str]:
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "Content-Type": "application/json",
+    }
+    if prefer:
+        headers["Prefer"] = prefer
+    return headers
+
+
+def _supabase_state_url() -> str:
+    return f"{SUPABASE_URL}/rest/v1/{SUPABASE_STATE_TABLE}"
+
+
+def _supabase_load_state(state_id: str) -> tuple[bool, object | None]:
+    """Return (request_succeeded, payload). payload=None means the row does not exist yet."""
+    if not _supabase_enabled():
+        return False, None
+    try:
+        response = requests.get(
+            _supabase_state_url(),
+            headers=_supabase_headers(),
+            params={"id": f"eq.{state_id}", "select": "payload"},
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        rows = response.json()
+        if not isinstance(rows, list) or not rows:
+            _PERSISTENCE_STATUS.update({"backend": "supabase", "last_error": ""})
+            return True, None
+        payload = rows[0].get("payload") if isinstance(rows[0], dict) else None
+        _PERSISTENCE_STATUS.update({"backend": "supabase", "last_error": ""})
+        return True, payload
+    except Exception as exc:
+        _PERSISTENCE_STATUS.update({"backend": "local-fallback", "last_error": str(exc)[:220]})
+        return False, None
+
+
+def _supabase_save_state(state_id: str, payload: object) -> bool:
+    if not _supabase_enabled():
+        return False
+    try:
+        response = requests.post(
+            _supabase_state_url(),
+            headers=_supabase_headers("resolution=merge-duplicates,return=minimal"),
+            params={"on_conflict": "id"},
+            json={
+                "id": state_id,
+                "payload": payload,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        _PERSISTENCE_STATUS.update({"backend": "supabase", "last_error": ""})
+        return True
+    except Exception as exc:
+        _PERSISTENCE_STATUS.update({"backend": "local-fallback", "last_error": str(exc)[:220]})
+        return False
+
+
+def _read_local_json(path: str, default: object) -> object:
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return default
+
+
+def _write_local_json_atomic(path: str, payload: object) -> None:
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, path)
+
+
+def _load_persistent_state(state_id: str, local_path: str, default: object) -> object:
+    """Supabase-first read with automatic one-time migration from the existing JSON file."""
+    with _PERSISTENCE_LOCK:
+        remote_ok, remote_payload = _supabase_load_state(state_id)
+        if remote_ok and remote_payload is not None:
+            try:
+                _write_local_json_atomic(local_path, remote_payload)  # local cache/mirror only
+            except Exception:
+                pass
+            return remote_payload
+
+        local_payload = _read_local_json(local_path, default)
+        if remote_ok and remote_payload is None:
+            # First run after enabling Supabase: preserve the current clients/payments/sessions.
+            _supabase_save_state(state_id, local_payload)
+        return local_payload
+
+
+def _save_persistent_state(state_id: str, local_path: str, payload: object) -> None:
+    """Write a local safety copy and the durable Supabase copy."""
+    with _PERSISTENCE_LOCK:
+        try:
+            _write_local_json_atomic(local_path, payload)
+        except Exception:
+            pass
+        _supabase_save_state(state_id, payload)
+
+
+def get_persistence_status() -> dict[str, str]:
+    status = dict(_PERSISTENCE_STATUS)
+    if _supabase_enabled() and status.get("backend") == "local":
+        status["backend"] = "supabase-configured"
+    return status
+
 
 def load_actuals_cache() -> dict:
     if os.path.exists(ACTUALS_FILE):
@@ -134,20 +264,11 @@ def save_actuals_cache(data: dict) -> None:
         pass
 
 def load_sessions_cache() -> dict:
-    if os.path.exists(SESSIONS_FILE):
-        try:
-            with open(SESSIONS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
+    data = _load_persistent_state("vip_sessions", SESSIONS_FILE, {})
+    return data if isinstance(data, dict) else {}
 
 def save_sessions_cache(sessions: dict) -> None:
-    try:
-        with open(SESSIONS_FILE, "w", encoding="utf-8") as f:
-            json.dump(sessions, f, indent=2)
-    except Exception:
-        pass
+    _save_persistent_state("vip_sessions", SESSIONS_FILE, sessions if isinstance(sessions, dict) else {})
 
 def get_client_device_info() -> tuple[str, str]:
     ip = ""
@@ -176,58 +297,35 @@ def get_client_device_info() -> tuple[str, str]:
 
 def load_vip_registry() -> list[dict]:
     with _VIP_REGISTRY_LOCK:
-        if os.path.exists(REGISTRY_FILE):
-            try:
-                with open(REGISTRY_FILE, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                return data if isinstance(data, list) else []
-            except Exception:
-                return []
-        return []
+        data = _load_persistent_state("vip_registry", REGISTRY_FILE, [])
+        return data if isinstance(data, list) else []
 
 
 def _write_vip_registry_unlocked(clients: list[dict]) -> None:
-    tmp_path = REGISTRY_FILE + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(clients, f, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp_path, REGISTRY_FILE)
+    _save_persistent_state("vip_registry", REGISTRY_FILE, clients)
 
 
 def save_vip_registry(clients: list[dict]) -> None:
-    """Atomically persist VIP data while preserving Telegram-owned preferences during concurrent admin writes."""
+    """Persist VIP data durably while preserving Telegram-owned alert preferences."""
     with _VIP_REGISTRY_LOCK:
         try:
-            # Admin/device actions do not edit alert_assets. If a Telegram callback saved
-            # newer preferences after an admin page loaded, retain the on-disk preference.
-            current_by_key: dict[str, dict] = {}
-            if os.path.exists(REGISTRY_FILE):
-                try:
-                    with open(REGISTRY_FILE, "r", encoding="utf-8") as f:
-                        current = json.load(f)
-                    if isinstance(current, list):
-                        current_by_key = {
-                            str(c.get("key", "")): c for c in current
-                            if isinstance(c, dict) and c.get("key")
-                        }
-                except Exception:
-                    current_by_key = {}
+            current = _load_persistent_state("vip_registry", REGISTRY_FILE, [])
+            current_by_key = {
+                str(c.get("key", "")): c for c in current
+                if isinstance(c, dict) and c.get("key")
+            } if isinstance(current, list) else {}
 
             merged: list[dict] = []
             for client in clients:
                 item = dict(client)
-                disk_client = current_by_key.get(str(item.get("key", "")))
-                if disk_client is not None and "alert_assets" in disk_client:
-                    item["alert_assets"] = disk_client.get("alert_assets")
+                persisted_client = current_by_key.get(str(item.get("key", "")))
+                if persisted_client is not None and "alert_assets" in persisted_client:
+                    item["alert_assets"] = persisted_client.get("alert_assets")
                 merged.append(item)
             _write_vip_registry_unlocked(merged)
         except Exception:
-            try:
-                if os.path.exists(REGISTRY_FILE + ".tmp"):
-                    os.remove(REGISTRY_FILE + ".tmp")
-            except Exception:
-                pass
+            pass
+
 
 def register_new_client_key(name: str, key: str, duration_label: str, exp_date_str: str, tg_id: str) -> None:
     clients = load_vip_registry()
@@ -3278,14 +3376,8 @@ def _normalize_txid(value: str) -> str:
 
 
 def _load_payment_records_unlocked() -> list[dict]:
-    if not os.path.exists(PAYMENTS_FILE):
-        return []
-    try:
-        with open(PAYMENTS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, list) else []
-    except Exception:
-        return []
+    data = _load_persistent_state("vip_payments", PAYMENTS_FILE, [])
+    return data if isinstance(data, list) else []
 
 
 def load_payment_records() -> list[dict]:
@@ -3294,12 +3386,7 @@ def load_payment_records() -> list[dict]:
 
 
 def _write_payment_records_unlocked(records: list[dict]) -> None:
-    tmp_path = PAYMENTS_FILE + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(records, f, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp_path, PAYMENTS_FILE)
+    _save_persistent_state("vip_payments", PAYMENTS_FILE, records if isinstance(records, list) else [])
 
 
 def _payment_record_for_txid(txid: str) -> dict | None:
@@ -3593,6 +3680,14 @@ def _login_paid_client(record: dict) -> bool:
 
 def render_payment_admin_summary() -> None:
     records = load_payment_records()
+    persistence = get_persistence_status()
+    if _supabase_enabled():
+        if persistence.get("backend") in {"supabase", "supabase-configured"}:
+            st.caption("☁️ VIP data persistence: Supabase enabled")
+        else:
+            st.warning("Supabase persistence is configured but currently unavailable; local fallback is active.")
+    else:
+        st.warning("VIP data is using local JSON only. Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to Streamlit Secrets for reboot-safe persistence.")
     if not records:
         return
     st.markdown("---")
