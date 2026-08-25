@@ -3613,6 +3613,10 @@ def render_payment_admin_summary() -> None:
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
+_apex_fragment = getattr(st, "fragment", lambda f: f)
+
+
+@_apex_fragment
 def render_vip_checkout() -> None:
     """Self-service VIP checkout with confirmed USDT-TRC20 verification and activation."""
     selected_plan = st.session_state.get("APEX_VIP_PLAN", "1 Month")
@@ -3651,41 +3655,57 @@ def render_vip_checkout() -> None:
     if telegram_id and not re.fullmatch(r"\d{5,15}", telegram_id.strip()):
         st.caption("Telegram ID must contain numbers only.")
 
+    # Native Streamlit buttons are used instead of URL/query-param links.
+    # Inside this fragment, selecting a plan refreshes only the checkout section.
     plan_cols = st.columns(2)
     for idx, plan_name in enumerate(["1 Month", "3 Months"]):
         info = VIP_PAYMENT_PLANS[plan_name]
         active = selected_plan == plan_name
-        border = "#00f5ff" if active else "rgba(255,255,255,.12)"
-        glow = "0 0 25px rgba(0,245,255,.16)" if active else "none"
-        badge_bg = "rgba(0,245,255,.12)" if active else "rgba(255,209,102,.10)"
-        badge_color = "#00f5ff" if active else "#ffd166"
-        plan_qp = "1m" if plan_name == "1 Month" else "3m"
-        selected_text = "✓ SELECTED" if active else "TAP TO SELECT"
-        selected_color = "#77fbff" if active else "#7f94a5"
+        card_key = f"apex_plan_card_{idx}"
+        selected_line = "✓ SELECTED" if active else "TAP TO SELECT"
+        label = (
+            f"{plan_name}\n\n"
+            f"${info['amount']} USDT\n\n"
+            f"{info['days']} days of ApexMacro VIP access\n\n"
+            f"{selected_line}"
+        )
         with plan_cols[idx]:
+            # Per-card CSS keeps the whole button looking like a pricing card.
+            border = "#00f5ff" if active else "rgba(255,255,255,.14)"
+            glow = "0 0 25px rgba(0,245,255,.16)" if active else "none"
             render_html(f"""
-            <a href="?vip_plan={plan_qp}" target="_self"
-               style="display:block;text-decoration:none;color:inherit;border-radius:18px;">
-              <div style="min-height:205px;padding:22px 20px;border-radius:18px;background:rgba(10,18,29,.82);
-                          border:1px solid {border};box-shadow:{glow};cursor:pointer;
-                          transition:transform .16s ease,border-color .16s ease,box-shadow .16s ease;">
-                <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
-                  <div style="font-size:17px;font-weight:850;color:#eef8ff;">{plan_name}</div>
-                  <div style="font-size:9px;font-weight:900;letter-spacing:1.3px;color:{badge_color};
-                              background:{badge_bg};padding:5px 8px;border-radius:999px;">{info['badge']}</div>
-                </div>
-                <div style="margin-top:24px;display:flex;align-items:baseline;gap:5px;">
-                  <span style="font-size:37px;font-weight:950;color:#ffffff;">${info['amount']}</span>
-                  <span style="font-size:12px;color:#8fa3b4;">USDT</span>
-                </div>
-                <div style="font-size:11px;color:#8fa3b4;margin-top:11px;">{info['days']} days of ApexMacro VIP access</div>
-                <div style="margin-top:22px;padding-top:13px;border-top:1px solid rgba(255,255,255,.07);
-                            font-size:9px;font-weight:900;letter-spacing:1.5px;color:{selected_color};">
-                  {selected_text}
-                </div>
-              </div>
-            </a>
+            <style>
+            .st-key-{card_key} button {{
+                min-height: 205px !important;
+                width: 100% !important;
+                padding: 22px 20px !important;
+                border-radius: 18px !important;
+                border: 1px solid {border} !important;
+                background: rgba(10,18,29,.82) !important;
+                box-shadow: {glow} !important;
+                color: #eef8ff !important;
+                text-align: left !important;
+                justify-content: flex-start !important;
+                transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease !important;
+            }}
+            .st-key-{card_key} button:hover {{
+                transform: translateY(-2px);
+                border-color: #00f5ff !important;
+            }}
+            .st-key-{card_key} button p {{
+                white-space: pre-line !important;
+                text-align: left !important;
+                line-height: 1.55 !important;
+                font-size: 15px !important;
+                font-weight: 750 !important;
+            }}
+            </style>
             """)
+            if st.button(label, key=card_key, use_container_width=True):
+                st.session_state["APEX_VIP_PLAN"] = plan_name
+                st.session_state["APEX_CHECKOUT_OPEN"] = False
+                selected_plan = plan_name
+
 
     selected_plan = st.session_state.get("APEX_VIP_PLAN", "1 Month")
     selected_info = VIP_PAYMENT_PLANS[selected_plan]
@@ -3798,24 +3818,6 @@ def render_vip_checkout() -> None:
 
 def render_vip_gate() -> dict | None:
     client_id, dev_type = get_client_device_info()
-
-    # Whole-card VIP plan selection uses a tiny query-param handoff, then clears it.
-    try:
-        vip_plan_qp = str(st.query_params.get("vip_plan", "")).strip().lower()
-        if vip_plan_qp == "1m":
-            st.session_state["APEX_VIP_PLAN"] = "1 Month"
-            st.session_state["APEX_CHECKOUT_OPEN"] = False
-        elif vip_plan_qp == "3m":
-            st.session_state["APEX_VIP_PLAN"] = "3 Months"
-            st.session_state["APEX_CHECKOUT_OPEN"] = False
-    except Exception:
-        pass
-
-    try:
-        if len(st.query_params) > 0:
-            st.query_params.clear()
-    except Exception:
-        pass
 
     auth_user = st.session_state.get("APEX_AUTH_USER")
     if auth_user and auth_user.get("is_authenticated"):
