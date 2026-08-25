@@ -5261,7 +5261,149 @@ def render_public_home() -> None:
         .apex-ref-hero-inner{width:76%;}
         .apex-ref-title{font-size:35px;}
       }
-    </style>
+    
+      /* ===== MOBILE FEATURE CARDS FIX ===== */
+      @media(max-width:700px){
+        .apex-section-intro{
+          margin:28px 4px 16px !important;
+        }
+
+        .apex-section-kicker{
+          font-size:9px !important;
+          letter-spacing:2px !important;
+        }
+
+        .apex-section-title{
+          font-size:28px !important;
+          line-height:1.10 !important;
+          letter-spacing:-.7px !important;
+          max-width:100% !important;
+        }
+
+        .apex-section-copy{
+          margin-top:12px !important;
+          font-size:12px !important;
+          line-height:1.62 !important;
+          max-width:100% !important;
+        }
+
+        .apex-ref-features{
+          display:grid !important;
+          grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+          gap:10px !important;
+          width:100% !important;
+          margin-top:14px !important;
+        }
+
+        .apex-ref-feature-card{
+          display:flex !important;
+          flex-direction:column !important;
+          align-items:flex-start !important;
+          justify-content:flex-start !important;
+          min-width:0 !important;
+          min-height:176px !important;
+          height:auto !important;
+          padding:15px 14px !important;
+          border-radius:16px !important;
+          overflow:hidden !important;
+          background:
+            linear-gradient(180deg,rgba(8,19,28,.88),rgba(4,11,18,.94)) !important;
+          border:1px solid rgba(111,163,177,.20) !important;
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,.025),
+            0 10px 28px rgba(0,0,0,.20) !important;
+        }
+
+        .apex-ref-feature-icon{
+          width:42px !important;
+          height:42px !important;
+          min-width:42px !important;
+          min-height:42px !important;
+          max-width:42px !important;
+          max-height:42px !important;
+          margin:0 0 14px 0 !important;
+          padding:0 !important;
+          border-radius:12px !important;
+          display:flex !important;
+          align-items:center !important;
+          justify-content:center !important;
+          overflow:hidden !important;
+        }
+
+        .apex-ref-feature-icon svg{
+          width:22px !important;
+          height:22px !important;
+          min-width:22px !important;
+          min-height:22px !important;
+          max-width:22px !important;
+          max-height:22px !important;
+          display:block !important;
+        }
+
+        .apex-ref-feature-title{
+          width:100% !important;
+          margin:0 !important;
+          font-size:14px !important;
+          line-height:1.20 !important;
+          letter-spacing:-.15px !important;
+          font-weight:900 !important;
+          overflow-wrap:normal !important;
+          word-break:normal !important;
+          hyphens:none !important;
+        }
+
+        .apex-ref-feature-copy{
+          width:100% !important;
+          margin-top:8px !important;
+          font-size:10.3px !important;
+          line-height:1.48 !important;
+          color:#8fa3b4 !important;
+          overflow-wrap:normal !important;
+          word-break:normal !important;
+          hyphens:none !important;
+        }
+
+        .apex-ref-feature-card *{
+          max-width:100% !important;
+          box-sizing:border-box !important;
+        }
+      }
+
+      @media(max-width:390px){
+        .apex-ref-features{gap:8px !important;}
+
+        .apex-ref-feature-card{
+          min-height:168px !important;
+          padding:13px 12px !important;
+        }
+
+        .apex-ref-feature-icon{
+          width:38px !important;
+          height:38px !important;
+          min-width:38px !important;
+          min-height:38px !important;
+          max-width:38px !important;
+          max-height:38px !important;
+          margin-bottom:12px !important;
+        }
+
+        .apex-ref-feature-icon svg{
+          width:20px !important;
+          height:20px !important;
+          min-width:20px !important;
+          min-height:20px !important;
+          max-width:20px !important;
+          max-height:20px !important;
+        }
+
+        .apex-ref-feature-title{font-size:13px !important;}
+
+        .apex-ref-feature-copy{
+          font-size:9.7px !important;
+          line-height:1.45 !important;
+        }
+      }
+</style>
     """, unsafe_allow_html=True)
 
     render_public_nav("home")
