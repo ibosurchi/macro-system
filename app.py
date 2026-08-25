@@ -3659,22 +3659,33 @@ def render_vip_checkout() -> None:
         glow = "0 0 25px rgba(0,245,255,.16)" if active else "none"
         badge_bg = "rgba(0,245,255,.12)" if active else "rgba(255,209,102,.10)"
         badge_color = "#00f5ff" if active else "#ffd166"
+        plan_qp = "1m" if plan_name == "1 Month" else "3m"
+        selected_text = "✓ SELECTED" if active else "TAP TO SELECT"
+        selected_color = "#77fbff" if active else "#7f94a5"
         with plan_cols[idx]:
             render_html(f"""
-            <div style="min-height:168px;padding:20px 18px;border-radius:18px;background:rgba(10,18,29,.82);
-                        border:1px solid {border};box-shadow:{glow};">
-              <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
-                <div style="font-size:16px;font-weight:850;color:#eef8ff;">{plan_name}</div>
-                <div style="font-size:9px;font-weight:900;letter-spacing:1.3px;color:{badge_color};background:{badge_bg};padding:5px 8px;border-radius:999px;">{info['badge']}</div>
+            <a href="?vip_plan={plan_qp}" target="_self"
+               style="display:block;text-decoration:none;color:inherit;border-radius:18px;">
+              <div style="min-height:205px;padding:22px 20px;border-radius:18px;background:rgba(10,18,29,.82);
+                          border:1px solid {border};box-shadow:{glow};cursor:pointer;
+                          transition:transform .16s ease,border-color .16s ease,box-shadow .16s ease;">
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                  <div style="font-size:17px;font-weight:850;color:#eef8ff;">{plan_name}</div>
+                  <div style="font-size:9px;font-weight:900;letter-spacing:1.3px;color:{badge_color};
+                              background:{badge_bg};padding:5px 8px;border-radius:999px;">{info['badge']}</div>
+                </div>
+                <div style="margin-top:24px;display:flex;align-items:baseline;gap:5px;">
+                  <span style="font-size:37px;font-weight:950;color:#ffffff;">${info['amount']}</span>
+                  <span style="font-size:12px;color:#8fa3b4;">USDT</span>
+                </div>
+                <div style="font-size:11px;color:#8fa3b4;margin-top:11px;">{info['days']} days of ApexMacro VIP access</div>
+                <div style="margin-top:22px;padding-top:13px;border-top:1px solid rgba(255,255,255,.07);
+                            font-size:9px;font-weight:900;letter-spacing:1.5px;color:{selected_color};">
+                  {selected_text}
+                </div>
               </div>
-              <div style="margin-top:18px;"><span style="font-size:34px;font-weight:950;color:#ffffff;">{info['amount']}</span><span style="font-size:12px;color:#8fa3b4;"> USDT</span></div>
-              <div style="font-size:11px;color:#8fa3b4;margin-top:9px;">{info['days']} days of ApexMacro VIP access</div>
-            </div>
+            </a>
             """)
-            if st.button("✓ Selected" if active else f"Choose {plan_name}", key=f"apex_choose_{idx}", use_container_width=True, type="primary" if active else "secondary"):
-                st.session_state["APEX_VIP_PLAN"] = plan_name
-                st.session_state["APEX_CHECKOUT_OPEN"] = False
-                st.rerun()
 
     selected_plan = st.session_state.get("APEX_VIP_PLAN", "1 Month")
     selected_info = VIP_PAYMENT_PLANS[selected_plan]
@@ -3682,7 +3693,7 @@ def render_vip_checkout() -> None:
 
     if not st.session_state.get("APEX_CHECKOUT_OPEN", False):
         if st.button(
-            f"Continue to Payment — {selected_info['amount']} USDT",
+            f"Continue to Payment — ${selected_info['amount']} USDT",
             key="apex_continue_payment",
             type="primary",
             use_container_width=True,
@@ -3698,7 +3709,7 @@ def render_vip_checkout() -> None:
     <div style="margin-top:12px;padding:22px 20px;border-radius:20px;background:linear-gradient(180deg,rgba(9,18,30,.97),rgba(4,9,16,.99));border:1px solid rgba(255,209,102,.28);box-shadow:0 18px 60px rgba(0,0,0,.5);">
       <div style="display:flex;justify-content:space-between;gap:14px;align-items:flex-start;">
         <div><div style="font-size:10px;color:#ffd166;font-weight:900;letter-spacing:2px;text-transform:uppercase;">Secure Crypto Checkout</div><div style="font-size:20px;color:#f5fbff;font-weight:900;margin-top:5px;">Pay with USDT — TRC20</div></div>
-        <div style="text-align:right;"><div style="font-size:10px;color:#8fa3b4;">AMOUNT DUE</div><div style="font-size:24px;color:#00f5ff;font-weight:950;">{selected_info['amount']} USDT</div></div>
+        <div style="text-align:right;"><div style="font-size:10px;color:#8fa3b4;">AMOUNT DUE</div><div style="font-size:24px;color:#00f5ff;font-weight:950;">${selected_info['amount']} USDT</div></div>
       </div>
       <div style="height:1px;background:linear-gradient(90deg,rgba(255,209,102,.35),transparent);margin:18px 0;"></div>
       <div style="font-size:12px;color:#dceaf2;line-height:1.65;">Send exactly <b>{selected_info['amount']} USDT</b> using <b>TRON (TRC20)</b> only. Do not use ERC20, BEP20 or another network.</div>
@@ -3719,7 +3730,7 @@ def render_vip_checkout() -> None:
             render_html(f"""
             <div style="margin-top:12px;padding:13px 14px;border-radius:13px;background:rgba(0,245,255,.06);border:1px solid rgba(0,245,255,.16);">
               <div style="font-size:10px;color:#8fa3b4;text-transform:uppercase;letter-spacing:1.3px;">ORDER</div>
-              <div style="font-size:14px;color:#f3fbff;font-weight:800;margin-top:3px;">{selected_plan} • {selected_info['amount']} USDT</div>
+              <div style="font-size:14px;color:#f3fbff;font-weight:800;margin-top:3px;">{selected_plan} • ${selected_info['amount']} USDT</div>
               <div style="font-size:11px;color:#8fa3b4;margin-top:5px;">Telegram ID: {telegram_id.strip()}</div>
             </div>
             """)
@@ -3787,6 +3798,18 @@ def render_vip_checkout() -> None:
 
 def render_vip_gate() -> dict | None:
     client_id, dev_type = get_client_device_info()
+
+    # Whole-card VIP plan selection uses a tiny query-param handoff, then clears it.
+    try:
+        vip_plan_qp = str(st.query_params.get("vip_plan", "")).strip().lower()
+        if vip_plan_qp == "1m":
+            st.session_state["APEX_VIP_PLAN"] = "1 Month"
+            st.session_state["APEX_CHECKOUT_OPEN"] = False
+        elif vip_plan_qp == "3m":
+            st.session_state["APEX_VIP_PLAN"] = "3 Months"
+            st.session_state["APEX_CHECKOUT_OPEN"] = False
+    except Exception:
+        pass
 
     try:
         if len(st.query_params) > 0:
