@@ -4398,165 +4398,332 @@ def _set_public_view(view: str) -> None:
 
 
 def render_public_nav(active: str = "home") -> None:
-    """Compact public navigation: brand left, one login icon right."""
-    brand_col, spacer_col, login_col = st.columns([5.2, 1.0, 0.8], vertical_alignment="center")
+    """Reference-style public header with one compact access icon on Home."""
+    st.markdown("""
+    <style>
+      .apex-ref-brand {
+        display:flex; align-items:center; gap:12px; min-width:0;
+      }
+      .apex-ref-logo {
+        width:54px; height:54px; border-radius:14px;
+        display:flex; align-items:center; justify-content:center;
+        background:linear-gradient(145deg,rgba(6,31,42,.84),rgba(5,14,23,.90));
+        border:1px solid rgba(0,239,255,.34);
+        box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 0 26px rgba(0,229,255,.08);
+      }
+      .apex-ref-brand-name {
+        font-size:23px; line-height:1; font-weight:950; letter-spacing:2.2px;
+        color:#f5f8fb; white-space:nowrap;
+      }
+      .apex-ref-brand-name span { color:#f6bd3e; }
+      .apex-ref-brand-sub {
+        margin-top:7px; color:#7f91a3; font-size:9px; font-weight:750;
+        letter-spacing:3.25px; white-space:nowrap;
+      }
+      .apex-ref-navline {
+        height:1px; margin:14px 0 24px;
+        background:linear-gradient(90deg,transparent,rgba(21,224,241,.18),rgba(255,190,53,.08),transparent);
+      }
+      .st-key-apex_profile_access button {
+        width:54px !important; height:54px !important; min-height:54px !important;
+        padding:0 !important; border-radius:14px !important;
+        border:1px solid rgba(0,239,255,.55) !important;
+        background-color:rgba(5,20,29,.84) !important;
+        background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Ccircle cx='24' cy='16' r='7' fill='%2300efff'/%3E%3Cpath d='M11 38c1-9 6-13 13-13s12 4 13 13z' fill='%2300efff'/%3E%3C/svg%3E") !important;
+        background-repeat:no-repeat !important; background-position:center !important;
+        background-size:29px 29px !important;
+        box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 0 22px rgba(0,239,255,.12) !important;
+      }
+      .st-key-apex_profile_access button p { font-size:0 !important; }
+      .st-key-apex_profile_access button:hover {
+        border-color:#28f4ff !important;
+        box-shadow:0 0 28px rgba(0,239,255,.22) !important;
+      }
+      @media(max-width:700px) {
+        .apex-ref-logo { width:48px; height:48px; border-radius:13px; }
+        .apex-ref-logo svg { width:28px !important; height:28px !important; }
+        .apex-ref-brand-name { font-size:19px; letter-spacing:1.7px; }
+        .apex-ref-brand-sub { font-size:7.5px; letter-spacing:2.55px; margin-top:6px; }
+        .st-key-apex_profile_access button {
+          width:48px !important; height:48px !important; min-height:48px !important;
+          border-radius:13px !important; background-size:25px 25px !important;
+        }
+      }
+      @media(max-width:390px) {
+        .apex-ref-brand-name { font-size:17.5px; }
+        .apex-ref-brand-sub { letter-spacing:2.1px; }
+      }
+    </style>
+    """, unsafe_allow_html=True)
 
+    brand_col, spacer_col, access_col = st.columns([5.2, 1.0, 0.75], vertical_alignment="center")
     with brand_col:
         render_html("""
-        <div class="apex-top-brand">
-          <div class="apex-top-logo">
-            <svg width="28" height="28" viewBox="0 0 360 365" fill="none">
+        <div class="apex-ref-brand">
+          <div class="apex-ref-logo">
+            <svg width="31" height="31" viewBox="0 0 360 365" fill="none">
               <defs>
-                <linearGradient id="apexTopLogo" x1="0" y1="0" x2="1" y2="1">
-                  <stop stop-color="#19F4FF"/>
-                  <stop offset="1" stop-color="#00BFD8"/>
+                <linearGradient id="apexRefLogo" x1="0" y1="0" x2="1" y2="1">
+                  <stop stop-color="#1AF4FF"/>
+                  <stop offset="1" stop-color="#00BBD2"/>
                 </linearGradient>
               </defs>
-              <path d="M0 365L180 0L360 365H288L180 130L72 365Z" fill="url(#apexTopLogo)"/>
+              <path d="M0 365L180 0L360 365H288L180 130L72 365Z" fill="url(#apexRefLogo)"/>
             </svg>
           </div>
           <div>
-            <div class="apex-top-title">APEX<span>MACRO</span></div>
-            <div class="apex-top-sub">INTELLIGENCE DESK</div>
+            <div class="apex-ref-brand-name">APEX<span>MACRO</span></div>
+            <div class="apex-ref-brand-sub">INTELLIGENCE DESK</div>
           </div>
         </div>
         """)
+    with access_col:
+        if active == "home":
+            if st.button("Access", key="apex_profile_access", use_container_width=True, help="VIP Login / Get VIP"):
+                _set_public_view("login")
+                st.rerun()
+        else:
+            if st.button("←", key=f"public_home_back_{active}", use_container_width=True, help="Back to Home"):
+                _set_public_view("home")
+                st.rerun()
 
-    with login_col:
-        if st.button("👤", key=f"public_login_icon_{active}", use_container_width=True, help="Login / Get VIP"):
-            _set_public_view("login")
-            st.rerun()
-
-    render_html("""
-    <div class="apex-nav-line"></div>
-    """)
-
-
+    render_html('<div class="apex-ref-navline"></div>')
 
 
 def render_public_home() -> None:
-    """Reference-style ApexMacro landing page."""
+    """Public Home Page closely matching the supplied mobile reference."""
     st.markdown("""
     <style>
-      .apex-top-brand{
-        display:flex;align-items:center;gap:12px;padding:8px 0 10px;
+      /* ----- exact-reference landing page ----- */
+      .block-container {
+        max-width:1180px !important;
       }
-      .apex-top-logo{
-        width:52px;height:52px;border-radius:14px;
-        display:flex;align-items:center;justify-content:center;
-        background:linear-gradient(145deg,rgba(6,34,45,.78),rgba(8,17,28,.72));
-        border:1px solid rgba(0,245,255,.34);
-        box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 0 28px rgba(0,245,255,.08);
-        backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
+      .apex-home-shell {
+        width:100%; margin:0 auto;
       }
-      .apex-top-title{
-        font-size:22px;font-weight:950;letter-spacing:2px;color:#f2f8ff;line-height:1;
-      }
-      .apex-top-title span{color:#ffd166;}
-      .apex-top-sub{
-        margin-top:7px;font-size:9px;letter-spacing:3.2px;color:#8294a7;font-weight:700;
-      }
-      .apex-nav-line{
-        height:1px;margin:7px 0 26px;
-        background:linear-gradient(90deg,transparent,rgba(0,245,255,.20),rgba(255,209,102,.12),transparent);
-      }
-      .apex-glass{
-        background:linear-gradient(145deg,rgba(14,28,39,.62),rgba(5,12,21,.50));
-        border:1px solid rgba(167,230,240,.16);
-        box-shadow:inset 0 1px 0 rgba(255,255,255,.045),0 22px 55px rgba(0,0,0,.24);
-        backdrop-filter:blur(20px) saturate(125%);
-        -webkit-backdrop-filter:blur(20px) saturate(125%);
-      }
-      .apex-hero-ref{
-        position:relative;overflow:hidden;border-radius:24px;padding:40px 34px 32px;
+      .apex-ref-hero {
+        position:relative; overflow:hidden;
+        min-height:555px; border-radius:23px;
+        padding:43px 38px 32px;
         background:
-          radial-gradient(circle at 88% 28%,rgba(0,230,255,.12),transparent 30%),
-          radial-gradient(circle at 8% 96%,rgba(255,209,102,.05),transparent 32%),
-          linear-gradient(145deg,rgba(8,21,31,.90),rgba(4,10,17,.96));
-        border:1px solid rgba(0,245,255,.28);
-        box-shadow:0 24px 80px rgba(0,0,0,.40);
+          radial-gradient(circle at 91% 14%,rgba(0,209,235,.105),transparent 27%),
+          linear-gradient(145deg,rgba(5,20,28,.93),rgba(3,10,17,.985));
+        border:1px solid rgba(0,218,235,.42);
+        box-shadow:inset 0 1px 0 rgba(255,255,255,.045),0 26px 70px rgba(0,0,0,.38);
       }
-      .apex-hero-orb{
-        position:absolute;right:-120px;top:10px;width:420px;height:420px;border-radius:50%;
-        background:
-          radial-gradient(circle at 35% 35%,rgba(0,245,255,.26),rgba(0,92,132,.10) 36%,rgba(0,0,0,0) 64%),
-          repeating-radial-gradient(circle at 50% 50%,rgba(0,245,255,.05) 0 1px,transparent 1px 8px);
-        border:1px solid rgba(0,245,255,.10);
-        opacity:.72;
+      .apex-ref-globe {
+        position:absolute; z-index:0; right:-1px; top:0; bottom:0;
+        width:51%; opacity:.92;
+        background-image:
+          linear-gradient(90deg,rgba(3,12,20,1) 0%,rgba(3,12,20,.48) 24%,rgba(3,12,20,.04) 58%),
+          url("data:image/webp;base64,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");
+        background-size:cover,cover;
+        background-position:center,right center;
+        background-repeat:no-repeat;
       }
-      .apex-kicker{
-        display:inline-flex;align-items:center;gap:8px;padding:7px 12px;border-radius:999px;
-        background:rgba(0,255,163,.06);border:1px solid rgba(0,255,163,.20);
-        color:#8fffd4;font-size:9px;font-weight:900;letter-spacing:1.6px;text-transform:uppercase;
+      .apex-ref-hero-inner {
+        position:relative; z-index:2; width:59%;
       }
-      .apex-kicker-dot{
-        width:6px;height:6px;border-radius:50%;background:#00ffa3;box-shadow:0 0 13px #00ffa3;
+      .apex-ref-kicker {
+        display:inline-flex; align-items:center; gap:8px;
+        border:1px solid rgba(0,255,174,.18);
+        background:rgba(0,255,174,.055);
+        border-radius:999px; padding:7px 12px;
+        color:#78f6cd; font-size:9px; line-height:1;
+        font-weight:900; letter-spacing:1.55px; white-space:nowrap;
       }
-      .apex-hero-title{
-        position:relative;z-index:2;font-size:52px;line-height:1.02;letter-spacing:-2px;
-        font-weight:950;color:#f6fbff;margin-top:24px;max-width:680px;
+      .apex-ref-kdot {
+        width:6px; height:6px; border-radius:50%; background:#00f5a7;
+        box-shadow:0 0 11px rgba(0,245,167,.95);
       }
-      .apex-hero-title .cyan{color:#23efff;}
-      .apex-hero-title .gold{color:#ffd166;}
-      .apex-hero-copy{
-        position:relative;z-index:2;max-width:590px;margin-top:18px;
-        font-size:13.5px;line-height:1.72;color:#9eb0c1;
+      .apex-ref-headline {
+        margin-top:34px; color:#f6f7f8;
+        font-size:clamp(38px,5.25vw,65px); font-weight:950;
+        line-height:1.025; letter-spacing:-2.5px;
       }
-      .apex-hero-metrics{
-        position:relative;z-index:2;display:flex;gap:28px;align-items:center;margin-top:27px;
+      .apex-ref-headline .cyan { color:#13e5f2; }
+      .apex-ref-headline .gold { color:#f7bf43; }
+      .apex-ref-desc {
+        margin-top:22px; max-width:590px;
+        color:#b1bdc8; font-size:14px; line-height:1.75; font-weight:450;
       }
-      .apex-hero-metric{
-        display:flex;gap:10px;align-items:center;padding-right:24px;
-        border-right:1px solid rgba(255,255,255,.10);
+      .apex-ref-capabilities {
+        display:flex; align-items:center; gap:34px; margin-top:34px;
       }
-      .apex-hero-metric:last-child{border-right:none;}
-      .apex-hero-metric-icon{font-size:22px;}
-      .apex-hero-metric-title{font-size:12px;color:#eef8ff;font-weight:900;}
-      .apex-hero-metric-sub{font-size:10.5px;color:#8498aa;margin-top:3px;}
+      .apex-ref-cap {
+        display:flex; align-items:center; gap:12px; min-width:0;
+      }
+      .apex-ref-cap + .apex-ref-cap {
+        padding-left:34px; border-left:1px solid rgba(255,255,255,.12);
+      }
+      .apex-ref-capicon {
+        width:46px; height:46px; flex:0 0 46px;
+        display:flex; align-items:center; justify-content:center;
+        border-radius:13px; font-size:24px;
+        border:1px solid rgba(0,231,247,.20);
+        background:rgba(0,231,247,.045);
+        box-shadow:0 0 25px rgba(0,231,247,.07);
+      }
+      .apex-ref-capicon.gold {
+        border-color:rgba(247,191,67,.16); background:rgba(247,191,67,.04);
+      }
+      .apex-ref-captitle { color:#f2f6f9; font-size:14px; font-weight:900; }
+      .apex-ref-capsub { color:#8ea0b1; font-size:11.5px; margin-top:3px; }
 
-      .apex-feature-grid{
-        display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:26px;
+      .apex-ref-features {
+        display:grid; grid-template-columns:repeat(3,minmax(0,1fr));
+        gap:16px; margin-top:24px;
       }
-      .apex-feature-card{
-        min-height:188px;padding:20px;border-radius:17px;
-        background:linear-gradient(145deg,rgba(13,25,36,.62),rgba(5,12,21,.48));
-        border:1px solid rgba(180,230,239,.14);
-        box-shadow:inset 0 1px 0 rgba(255,255,255,.04),0 14px 34px rgba(0,0,0,.20);
-        backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
+      .apex-ref-feature {
+        min-width:0; min-height:232px; border-radius:20px;
+        padding:24px 22px 21px;
+        background:linear-gradient(145deg,rgba(11,23,33,.72),rgba(5,12,20,.72));
+        border:1px solid rgba(132,169,185,.25);
+        box-shadow:inset 0 1px 0 rgba(255,255,255,.035),0 16px 38px rgba(0,0,0,.22);
+        backdrop-filter:blur(17px); -webkit-backdrop-filter:blur(17px);
       }
-      .apex-feature-icon{
-        width:40px;height:40px;border-radius:11px;display:flex;align-items:center;justify-content:center;
-        background:rgba(0,245,255,.06);border:1px solid rgba(0,245,255,.14);
-        font-size:20px;margin-bottom:17px;
+      .apex-ref-ficon {
+        width:43px; height:43px; border-radius:12px;
+        display:flex; align-items:center; justify-content:center;
+        margin-bottom:20px;
+        background:rgba(0,225,241,.055);
+        border:1px solid rgba(0,225,241,.22);
+        box-shadow:0 0 19px rgba(0,225,241,.07);
       }
-      .apex-feature-title{font-size:15px;font-weight:900;color:#eff8ff;line-height:1.25;}
-      .apex-feature-copy{font-size:11.5px;line-height:1.58;color:#879bad;margin-top:9px;}
-      .apex-final-cta{
-        margin:30px 0 10px;padding:24px;border-radius:18px;
-        display:flex;align-items:center;justify-content:space-between;gap:18px;
-        background:
-          radial-gradient(circle at 95% 50%,rgba(255,209,102,.11),transparent 30%),
-          linear-gradient(145deg,rgba(8,24,31,.76),rgba(6,14,22,.70));
-        border:1px solid rgba(0,245,255,.22);
-        box-shadow:0 18px 45px rgba(0,0,0,.22);
+      .apex-ref-ficon svg { width:25px; height:25px; }
+      .apex-ref-feature.purple .apex-ref-ficon {
+        background:rgba(202,49,255,.055); border-color:rgba(202,49,255,.25);
+        box-shadow:0 0 19px rgba(202,49,255,.08);
       }
-      .apex-final-title{font-size:19px;font-weight:950;color:#f3fbff;}
-      .apex-final-copy{font-size:11.5px;color:#91a4b5;margin-top:6px;line-height:1.55;}
+      .apex-ref-feature.gold .apex-ref-ficon {
+        background:rgba(247,191,67,.055); border-color:rgba(247,191,67,.24);
+        box-shadow:0 0 19px rgba(247,191,67,.08);
+      }
+      .apex-ref-feature.blue .apex-ref-ficon {
+        background:rgba(0,145,255,.055); border-color:rgba(0,145,255,.24);
+        box-shadow:0 0 19px rgba(0,145,255,.08);
+      }
+      .apex-ref-ftitle {
+        color:#f4f6f8; font-size:17px; font-weight:900;
+        line-height:1.23; overflow-wrap:normal; word-break:normal; hyphens:none;
+      }
+      .apex-ref-fcopy {
+        margin-top:11px; color:#94a5b5; font-size:12.5px; line-height:1.6;
+        overflow-wrap:normal; word-break:normal; hyphens:none;
+      }
 
-      @media (max-width:700px){
-        .apex-top-logo{width:46px;height:46px;}
-        .apex-top-title{font-size:20px;}
-        .apex-top-sub{font-size:8px;letter-spacing:2.6px;}
-        .apex-hero-ref{padding:34px 22px 28px;border-radius:22px;}
-        .apex-hero-orb{right:-190px;top:45px;width:390px;height:390px;opacity:.55;}
-        .apex-hero-title{font-size:41px;line-height:1.02;max-width:100%;}
-        .apex-hero-copy{font-size:12.7px;line-height:1.7;max-width:92%;}
-        .apex-hero-metrics{gap:16px;flex-wrap:wrap;}
-        .apex-feature-grid{grid-template-columns:1fr;gap:11px;}
-        .apex-feature-card{min-height:auto;padding:18px;}
-        .apex-feature-title{font-size:16px;}
-        .apex-feature-copy{font-size:12px;}
-        .apex-final-cta{display:block;padding:22px;}
+      .st-key-apex_home_cta {
+        margin-top:27px !important; padding:22px 24px !important;
+        border-radius:20px !important;
+        background:
+          radial-gradient(circle at 92% 50%,rgba(247,191,67,.12),transparent 28%),
+          linear-gradient(135deg,rgba(4,31,35,.76),rgba(10,18,24,.78)) !important;
+        border:1px solid rgba(0,219,232,.36) !important;
+        box-shadow:inset 0 1px 0 rgba(255,255,255,.04),0 18px 48px rgba(0,0,0,.24) !important;
+        backdrop-filter:blur(18px); -webkit-backdrop-filter:blur(18px);
+      }
+      .apex-ref-cta-title { color:#f4f6f8; font-size:19px; font-weight:950; line-height:1.2; }
+      .apex-ref-cta-copy { color:#9aabb8; margin-top:7px; font-size:11.5px; line-height:1.5; }
+      .st-key-apex_learn_more button {
+        border:1px solid rgba(0,226,239,.40) !important;
+        background:rgba(0,226,239,.035) !important; color:#12e2ee !important;
+        box-shadow:none !important; font-weight:850 !important;
+      }
+      .st-key-apex_get_started button {
+        border:1px solid rgba(255,204,73,.72) !important;
+        background:linear-gradient(135deg,#ffd15a,#efa71e) !important;
+        color:#111 !important; font-weight:900 !important;
+        box-shadow:0 0 26px rgba(246,181,42,.20) !important;
+      }
+      .apex-ref-footer {
+        display:flex; align-items:center; justify-content:center; gap:7px;
+        margin:28px 0 4px; color:#d4d8dc; font-size:11px;
+      }
+      .apex-ref-lock { color:#7f8b96; }
+
+      @media(max-width:700px) {
+        .block-container {
+          padding-left:14px !important; padding-right:14px !important;
+          padding-top:18px !important;
+        }
+        .apex-ref-hero {
+          min-height:535px; padding:32px 24px 27px; border-radius:20px;
+        }
+        .apex-ref-globe {
+          width:54%; right:-13%; opacity:.85;
+          background-image:
+            linear-gradient(90deg,rgba(3,12,20,1) 0%,rgba(3,12,20,.62) 28%,rgba(3,12,20,.04) 67%),
+            url("data:image/webp;base64,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");
+          background-size:cover,cover;
+          background-position:center,right center;
+        }
+        .apex-ref-hero-inner { width:67%; }
+        .apex-ref-kicker {
+          font-size:7.2px; letter-spacing:1.15px; padding:6px 9px; gap:6px;
+        }
+        .apex-ref-kdot { width:5px; height:5px; }
+        .apex-ref-headline {
+          margin-top:29px; font-size:35px; line-height:1.055; letter-spacing:-1.55px;
+        }
+        .apex-ref-desc {
+          margin-top:19px; font-size:11.4px; line-height:1.65; max-width:94%;
+        }
+        .apex-ref-capabilities { gap:12px; margin-top:28px; }
+        .apex-ref-cap { gap:7px; }
+        .apex-ref-cap + .apex-ref-cap { padding-left:12px; }
+        .apex-ref-capicon {
+          width:33px; height:33px; flex-basis:33px; border-radius:10px; font-size:18px;
+        }
+        .apex-ref-captitle { font-size:10.5px; }
+        .apex-ref-capsub { font-size:8.6px; }
+        .apex-ref-features {
+          grid-template-columns:repeat(3,minmax(0,1fr));
+          gap:9px; margin-top:16px;
+        }
+        .apex-ref-feature {
+          min-height:206px; padding:16px 13px 14px; border-radius:16px;
+        }
+        .apex-ref-ficon {
+          width:34px; height:34px; border-radius:10px; margin-bottom:14px;
+        }
+        .apex-ref-ficon svg { width:20px; height:20px; }
+        .apex-ref-ftitle {
+          font-size:12.4px; line-height:1.23; letter-spacing:-.1px;
+        }
+        .apex-ref-fcopy {
+          margin-top:8px; font-size:9.8px; line-height:1.5;
+        }
+        .st-key-apex_home_cta {
+          margin-top:17px !important; padding:16px 15px !important; border-radius:16px !important;
+        }
+        .apex-ref-cta-title { font-size:14px; }
+        .apex-ref-cta-copy { font-size:9px; line-height:1.45; margin-top:5px; }
+        .st-key-apex_learn_more button, .st-key-apex_get_started button {
+          min-height:42px !important; padding:7px 8px !important;
+          font-size:10px !important; border-radius:11px !important;
+        }
+        .apex-ref-footer { margin-top:22px; font-size:10px; }
+      }
+
+      @media(max-width:430px) {
+        .apex-ref-hero { min-height:505px; padding:28px 20px 24px; }
+        .apex-ref-headline { font-size:31px; }
+        .apex-ref-desc { font-size:10.7px; }
+        .apex-ref-feature { min-height:190px; padding:14px 11px 12px; }
+        .apex-ref-ftitle { font-size:11.2px; }
+        .apex-ref-fcopy { font-size:8.9px; }
+      }
+      @media(max-width:390px) {
+        .block-container { padding-left:10px !important; padding-right:10px !important; }
+        .apex-ref-hero { min-height:482px; padding:25px 17px 22px; }
+        .apex-ref-hero-inner { width:69%; }
+        .apex-ref-headline { font-size:28.5px; }
+        .apex-ref-desc { font-size:10px; }
+        .apex-ref-features { gap:7px; }
+        .apex-ref-feature { min-height:181px; padding:13px 9px 11px; border-radius:14px; }
+        .apex-ref-ftitle { font-size:10.2px; }
+        .apex-ref-fcopy { font-size:8.2px; line-height:1.47; }
+        .apex-ref-ficon { width:31px; height:31px; margin-bottom:12px; }
       }
     </style>
     """, unsafe_allow_html=True)
@@ -4564,92 +4731,98 @@ def render_public_home() -> None:
     render_public_nav("home")
 
     render_html("""
-    <div class="apex-hero-ref">
-      <div class="apex-hero-orb"></div>
-      <div class="apex-kicker"><span class="apex-kicker-dot"></span> Global Macro Intelligence Engine</div>
-      <div class="apex-hero-title">
-        See the macro shift<br>
-        <span class="cyan">before it becomes</span><br>
-        <span class="gold">obvious.</span>
-      </div>
-      <div class="apex-hero-copy">
-        ApexMacro combines global macro data, market catalysts, causal intelligence and live tactical price action
-        into one institutional-grade decision desk for Gold, Oil, Nasdaq-100 and global currencies.
-      </div>
-      <div class="apex-hero-metrics">
-        <div class="apex-hero-metric">
-          <div class="apex-hero-metric-icon">🎯</div>
-          <div><div class="apex-hero-metric-title">Multi-Asset</div><div class="apex-hero-metric-sub">Global Coverage</div></div>
+    <div class="apex-home-shell">
+      <section class="apex-ref-hero">
+        <div class="apex-ref-globe"></div>
+        <div class="apex-ref-hero-inner">
+          <div class="apex-ref-kicker"><span class="apex-ref-kdot"></span>GLOBAL MACRO INTELLIGENCE ENGINE</div>
+          <div class="apex-ref-headline">
+            See the macro shift<br>
+            <span class="cyan">before it becomes</span><br>
+            <span class="gold">obvious.</span>
+          </div>
+          <div class="apex-ref-desc">
+            ApexMacro combines global macro data, market catalysts, causal intelligence and live tactical price action
+            into one institutional-grade decision desk for Gold, Oil, Nasdaq-100 and global currencies.
+          </div>
+          <div class="apex-ref-capabilities">
+            <div class="apex-ref-cap">
+              <div class="apex-ref-capicon">◎</div>
+              <div><div class="apex-ref-captitle">Multi-Asset</div><div class="apex-ref-capsub">Global Coverage</div></div>
+            </div>
+            <div class="apex-ref-cap">
+              <div class="apex-ref-capicon gold">ϟ</div>
+              <div><div class="apex-ref-captitle">Real-Time</div><div class="apex-ref-capsub">Macro Intelligence</div></div>
+            </div>
+          </div>
         </div>
-        <div class="apex-hero-metric">
-          <div class="apex-hero-metric-icon">⚡</div>
-          <div><div class="apex-hero-metric-title">Real-Time</div><div class="apex-hero-metric-sub">Macro Intelligence</div></div>
-        </div>
-      </div>
-    </div>
+      </section>
 
-    <div class="apex-feature-grid">
-      <div class="apex-feature-card">
-        <div class="apex-feature-icon">📈</div>
-        <div class="apex-feature-title">Macro Outlook</div>
-        <div class="apex-feature-copy">Institutional macro view across assets and changing market regimes.</div>
-      </div>
-      <div class="apex-feature-card">
-        <div class="apex-feature-icon">🟣</div>
-        <div class="apex-feature-title">Tactical Move</div>
-        <div class="apex-feature-copy">Live price action readings, momentum shifts, pullbacks and breakouts.</div>
-      </div>
-      <div class="apex-feature-card">
-        <div class="apex-feature-icon">⚡</div>
-        <div class="apex-feature-title">Smart Shift Alerts</div>
-        <div class="apex-feature-copy">Regime-change monitoring with confirmation logic built to reduce noise.</div>
-      </div>
-      <div class="apex-feature-card">
-        <div class="apex-feature-icon">🗓️</div>
-        <div class="apex-feature-title">Catalyst Forecaster</div>
-        <div class="apex-feature-copy">Upcoming macro catalysts and structured event-impact analysis.</div>
-      </div>
-      <div class="apex-feature-card">
-        <div class="apex-feature-icon">🧠</div>
-        <div class="apex-feature-title">Causal Intelligence</div>
-        <div class="apex-feature-copy">Connects drivers, catalysts and market transmission channels.</div>
-      </div>
-      <div class="apex-feature-card">
-        <div class="apex-feature-icon">✈️</div>
-        <div class="apex-feature-title">Telegram Alerts</div>
-        <div class="apex-feature-copy">Personalized market alerts delivered directly to each VIP client.</div>
-      </div>
-    </div>
-
-    <div class="apex-final-cta">
-      <div>
-        <div class="apex-final-title">Ready to access ApexMacro?</div>
-        <div class="apex-final-copy">Use the login icon above to enter your VIP key or choose a plan.</div>
-      </div>
+      <section id="apex-features" class="apex-ref-features">
+        <article class="apex-ref-feature">
+          <div class="apex-ref-ficon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#15e5f1" stroke-width="2"><path d="M4 18l5-6 4 3 7-9"/><path d="M16 6h4v4"/></svg>
+          </div>
+          <div class="apex-ref-ftitle">Macro Outlook</div>
+          <div class="apex-ref-fcopy">Institutional macro view across assets and regimes.</div>
+        </article>
+        <article class="apex-ref-feature purple">
+          <div class="apex-ref-ficon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#d151ff" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
+          </div>
+          <div class="apex-ref-ftitle">Tactical Move</div>
+          <div class="apex-ref-fcopy">Live price action readings and momentum shifts.</div>
+        </article>
+        <article class="apex-ref-feature gold">
+          <div class="apex-ref-ficon">
+            <svg viewBox="0 0 24 24" fill="#f7bf43"><path d="M13.5 1L5 13h6l-1 10 9-13h-6z"/></svg>
+          </div>
+          <div class="apex-ref-ftitle">Smart Shift Alerts</div>
+          <div class="apex-ref-fcopy">Regime change monitoring with confirmation logic.</div>
+        </article>
+        <article class="apex-ref-feature blue">
+          <div class="apex-ref-ficon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#1a9fff" stroke-width="2"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M8 3v4M16 3v4M4 10h16"/></svg>
+          </div>
+          <div class="apex-ref-ftitle">Catalyst Forecaster</div>
+          <div class="apex-ref-fcopy">Upcoming macro catalysts and event impact analysis.</div>
+        </article>
+        <article class="apex-ref-feature purple">
+          <div class="apex-ref-ficon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#e05bbd" stroke-width="2"><path d="M9 5a3 3 0 0 0-5 2.2A3.5 3.5 0 0 0 5 14a3 3 0 0 0 4 4V5zM15 5a3 3 0 0 1 5 2.2A3.5 3.5 0 0 1 19 14a3 3 0 0 1-4 4V5z"/><path d="M9 9H6M15 9h3M9 14H7M15 14h2"/></svg>
+          </div>
+          <div class="apex-ref-ftitle">Causal Intelligence</div>
+          <div class="apex-ref-fcopy">Connects drivers, catalysts and market transmission.</div>
+        </article>
+        <article class="apex-ref-feature">
+          <div class="apex-ref-ficon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#16e7f5" stroke-width="2"><path d="M21 3L3 10l7 3 3 7 8-17z"/><path d="M10 13l5-5"/></svg>
+          </div>
+          <div class="apex-ref-ftitle">Telegram Alerts</div>
+          <div class="apex-ref-fcopy">Personalized alerts delivered directly to you.</div>
+        </article>
+      </section>
     </div>
     """)
 
-    # Keep the requested bottom access controls only once.
-    bottom_left, bottom_mid, bottom_right = st.columns([1, 1.6, 1])
-    with bottom_mid:
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("Login", key="home_bottom_login_ref", use_container_width=True):
-                _set_public_view("login")
-                st.rerun()
-        with c2:
-            if st.button("Get VIP", key="home_bottom_vip_ref", type="primary", use_container_width=True):
-                _set_public_view("vip")
-                st.rerun()
+    with st.container(key="apex_home_cta"):
+        left, buttons = st.columns([2.1, 1.0], vertical_alignment="center")
+        with left:
+            render_html("""
+            <div class="apex-ref-cta-title">Ready to access ApexMacro?</div>
+            <div class="apex-ref-cta-copy">Join professional traders and investors who act before the market moves.</div>
+            """)
+        with buttons:
+            b1, b2 = st.columns(2)
+            with b1:
+                if st.button("Learn More", key="apex_learn_more", use_container_width=True):
+                    st.toast("Explore the ApexMacro intelligence tools above.")
+            with b2:
+                if st.button("Get Started →", key="apex_get_started", use_container_width=True):
+                    _set_public_view("vip")
+                    st.rerun()
 
-    render_html("""
-    <div style="margin:34px 0 6px;padding-top:16px;border-top:1px solid rgba(255,255,255,.06);
-                color:#5f7587;font-size:9.5px;text-align:center;">
-      © 2026 ApexMacro • Global Macro & Geopolitical Intelligence Desk
-    </div>
-    """)
-
-
+    render_html('<div class="apex-ref-footer"><span class="apex-ref-lock">▣</span><span>apexmacro.com</span></div>')
 
 
 def render_public_checkout_page() -> None:
