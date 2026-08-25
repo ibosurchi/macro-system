@@ -4389,6 +4389,292 @@ def render_vip_checkout() -> None:
     st.caption("ApexMacro never asks for your wallet seed phrase or private key.")
 
 
+
+def _set_public_view(view: str) -> None:
+    st.session_state["APEX_PUBLIC_VIEW"] = view
+    # Close checkout sub-state when switching public sections.
+    if view != "vip":
+        st.session_state["APEX_SHOW_VIP_CHECKOUT"] = False
+
+
+def render_public_nav(active: str = "home") -> None:
+    """Compact public navigation used before terminal authentication."""
+    nav_logo, nav_spacer, nav_login, nav_vip = st.columns([2.8, 3.9, 1.15, 1.35], vertical_alignment="center")
+    with nav_logo:
+        render_html("""
+        <div style="display:flex;align-items:center;gap:11px;padding:4px 0 8px;">
+          <div style="display:flex;align-items:center;justify-content:center;width:38px;height:38px;
+                      border-radius:11px;background:rgba(0,245,255,.08);
+                      border:1px solid rgba(0,245,255,.28);box-shadow:0 0 22px rgba(0,245,255,.10);">
+            <svg width="24" height="24" viewBox="0 0 360 365" fill="none">
+              <defs>
+                <linearGradient id="apexHomeLogo" x1="0" y1="0" x2="1" y2="1">
+                  <stop stop-color="#00FFFF"/>
+                  <stop offset="1" stop-color="#00C9DE"/>
+                </linearGradient>
+              </defs>
+              <path d="M0 365L180 0L360 365H288L180 130L72 365Z" fill="url(#apexHomeLogo)"/>
+            </svg>
+          </div>
+          <div>
+            <div style="font-size:17px;font-weight:950;letter-spacing:1.8px;color:#edfaff;line-height:1;">
+              APEX<span style="color:#ffd166;">MACRO</span>
+            </div>
+            <div style="font-size:8px;letter-spacing:2px;color:#71899b;margin-top:4px;text-transform:uppercase;">
+              Intelligence Desk
+            </div>
+          </div>
+        </div>
+        """)
+    with nav_login:
+        if st.button(
+            "Login",
+            key=f"public_nav_login_{active}",
+            type="secondary",
+            use_container_width=True,
+        ):
+            _set_public_view("login")
+            st.rerun()
+    with nav_vip:
+        if st.button(
+            "Get VIP",
+            key=f"public_nav_vip_{active}",
+            type="primary",
+            use_container_width=True,
+        ):
+            _set_public_view("vip")
+            st.rerun()
+
+    render_html("""
+    <div style="height:1px;background:linear-gradient(90deg,transparent,rgba(0,245,255,.18),rgba(255,209,102,.12),transparent);
+                margin:0 0 22px;"></div>
+    """)
+
+
+def render_public_home() -> None:
+    """ApexMacro public landing page shown before login or VIP checkout."""
+    render_public_nav("home")
+
+    # Hero
+    render_html("""
+    <div style="position:relative;overflow:hidden;border-radius:28px;padding:58px 34px 46px;
+                background:
+                  radial-gradient(circle at 82% 18%,rgba(0,245,255,.12),transparent 29%),
+                  radial-gradient(circle at 14% 92%,rgba(255,209,102,.07),transparent 28%),
+                  linear-gradient(145deg,rgba(8,18,31,.98),rgba(4,9,17,.99));
+                border:1px solid rgba(0,245,255,.20);
+                box-shadow:0 28px 90px rgba(0,0,0,.48),inset 0 1px 0 rgba(255,255,255,.025);">
+      <div style="position:absolute;right:-90px;top:-130px;width:360px;height:360px;border-radius:50%;
+                  border:1px solid rgba(0,245,255,.08);box-shadow:0 0 90px rgba(0,245,255,.055);"></div>
+      <div style="position:relative;z-index:2;max-width:840px;margin:0 auto;text-align:center;">
+        <div style="display:inline-flex;align-items:center;gap:8px;padding:7px 12px;border-radius:999px;
+                    background:rgba(0,255,163,.055);border:1px solid rgba(0,255,163,.16);
+                    color:#8fffd4;font-size:9px;font-weight:850;letter-spacing:1.7px;text-transform:uppercase;">
+          <span style="width:6px;height:6px;border-radius:50%;background:#00ffa3;box-shadow:0 0 12px #00ffa3;"></span>
+          Global Macro Intelligence Engine
+        </div>
+        <div style="font-size:clamp(36px,6vw,72px);font-weight:950;line-height:.98;letter-spacing:-2.8px;
+                    color:#f4fbff;margin-top:23px;">
+          See the macro shift<br>
+          <span style="background:linear-gradient(90deg,#00f5ff,#9ffcff,#ffd166);
+                       -webkit-background-clip:text;background-clip:text;color:transparent;">
+            before it becomes obvious.
+          </span>
+        </div>
+        <div style="max-width:690px;margin:22px auto 0;font-size:14px;line-height:1.75;color:#91a7b8;">
+          ApexMacro combines global macro data, market catalysts, causal intelligence and live tactical price action
+          into one institutional-grade decision desk for Gold, Oil, Nasdaq-100 and global currencies.
+        </div>
+      </div>
+    </div>
+    """)
+
+    cta1, cta2, cta3 = st.columns([1, 1.25, 1], vertical_alignment="center")
+    with cta2:
+        a, b = st.columns(2)
+        with a:
+            if st.button("Open Login", key="home_hero_login", use_container_width=True):
+                _set_public_view("login")
+                st.rerun()
+        with b:
+            if st.button("Get VIP Access", key="home_hero_vip", type="primary", use_container_width=True):
+                _set_public_view("vip")
+                st.rerun()
+
+    render_html("""
+    <div style="margin:26px auto 8px;max-width:920px;display:grid;grid-template-columns:repeat(4,1fr);
+                gap:10px;">
+      <div style="padding:13px 10px;text-align:center;border-radius:13px;background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.07);">
+        <div style="font-size:9px;color:#6f879a;letter-spacing:1.2px;">MARKETS</div>
+        <div style="font-size:13px;font-weight:850;color:#e9f7ff;margin-top:4px;">Multi-Asset</div>
+      </div>
+      <div style="padding:13px 10px;text-align:center;border-radius:13px;background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.07);">
+        <div style="font-size:9px;color:#6f879a;letter-spacing:1.2px;">SIGNALS</div>
+        <div style="font-size:13px;font-weight:850;color:#e9f7ff;margin-top:4px;">Macro + Tactical</div>
+      </div>
+      <div style="padding:13px 10px;text-align:center;border-radius:13px;background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.07);">
+        <div style="font-size:9px;color:#6f879a;letter-spacing:1.2px;">ALERTS</div>
+        <div style="font-size:13px;font-weight:850;color:#e9f7ff;margin-top:4px;">Telegram Live</div>
+      </div>
+      <div style="padding:13px 10px;text-align:center;border-radius:13px;background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.07);">
+        <div style="font-size:9px;color:#6f879a;letter-spacing:1.2px;">ACCESS</div>
+        <div style="font-size:13px;font-weight:850;color:#e9f7ff;margin-top:4px;">VIP Terminal</div>
+      </div>
+    </div>
+    """)
+
+    # Product story
+    render_html("""
+    <div style="margin:54px 0 18px;text-align:center;">
+      <div style="font-size:9px;font-weight:900;letter-spacing:2.2px;color:#00f5ff;text-transform:uppercase;">The Intelligence Stack</div>
+      <div style="font-size:28px;font-weight:950;color:#eef9ff;margin-top:7px;">One desk. Two horizons. Clearer decisions.</div>
+      <div style="font-size:12px;color:#8298aa;max-width:660px;margin:8px auto 0;line-height:1.65;">
+        Macro Outlook looks ahead. Tactical Move reads what price is doing now. ApexMacro keeps both layers separate so early signals stay early.
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:20px;">
+      <div style="padding:24px;border-radius:19px;background:linear-gradient(145deg,rgba(0,245,255,.055),rgba(7,14,23,.95));
+                  border:1px solid rgba(0,245,255,.15);">
+        <div style="font-size:10px;letter-spacing:1.6px;color:#00f5ff;font-weight:900;">01 • MACRO OUTLOOK</div>
+        <div style="font-size:19px;font-weight:900;color:#f1fbff;margin-top:10px;">Forward-looking regime intelligence</div>
+        <div style="font-size:12px;color:#8da3b4;line-height:1.7;margin-top:8px;">
+          Tracks macro conditions, policy, yields, growth, inflation, currencies and catalysts to identify Bullish, Neutral or Bearish pressure before price fully reflects it.
+        </div>
+      </div>
+      <div style="padding:24px;border-radius:19px;background:linear-gradient(145deg,rgba(255,209,102,.05),rgba(7,14,23,.95));
+                  border:1px solid rgba(255,209,102,.14);">
+        <div style="font-size:10px;letter-spacing:1.6px;color:#ffd166;font-weight:900;">02 • TACTICAL MOVE</div>
+        <div style="font-size:19px;font-weight:900;color:#f1fbff;margin-top:10px;">Live short-term price-action layer</div>
+        <div style="font-size:12px;color:#8da3b4;line-height:1.7;margin-top:8px;">
+          Reads short-term momentum, acceleration and structure so pullbacks, breakouts and counter-trend moves are visible without changing the core macro thesis.
+        </div>
+      </div>
+    </div>
+    """)
+
+    # Feature cards
+    render_html("""
+    <div style="margin:52px 0 17px;">
+      <div style="font-size:9px;font-weight:900;letter-spacing:2.2px;color:#00f5ff;text-transform:uppercase;">Inside ApexMacro</div>
+      <div style="font-size:26px;font-weight:950;color:#eef9ff;margin-top:6px;">Built for macro awareness, not noise.</div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;">
+      <div style="padding:20px;border-radius:17px;background:rgba(8,16,27,.78);border:1px solid rgba(255,255,255,.075);">
+        <div style="font-size:22px;">⚡</div><div style="font-size:15px;font-weight:900;color:#edf9ff;margin-top:10px;">Smart Shift Alerts</div>
+        <div style="font-size:11.5px;color:#8299aa;line-height:1.65;margin-top:6px;">Regime-change monitoring with confirmation logic designed to reduce repetitive alerts.</div>
+      </div>
+      <div style="padding:20px;border-radius:17px;background:rgba(8,16,27,.78);border:1px solid rgba(255,255,255,.075);">
+        <div style="font-size:22px;">🧭</div><div style="font-size:15px;font-weight:900;color:#edf9ff;margin-top:10px;">Catalyst Forecaster</div>
+        <div style="font-size:11.5px;color:#8299aa;line-height:1.65;margin-top:6px;">A structured view of upcoming macro catalysts and their potential cross-asset implications.</div>
+      </div>
+      <div style="padding:20px;border-radius:17px;background:rgba(8,16,27,.78);border:1px solid rgba(255,255,255,.075);">
+        <div style="font-size:22px;">🧠</div><div style="font-size:15px;font-weight:900;color:#edf9ff;margin-top:10px;">Causal Intelligence</div>
+        <div style="font-size:11.5px;color:#8299aa;line-height:1.65;margin-top:6px;">Connects drivers, catalysts and market transmission channels instead of showing isolated indicators.</div>
+      </div>
+      <div style="padding:20px;border-radius:17px;background:rgba(8,16,27,.78);border:1px solid rgba(255,255,255,.075);">
+        <div style="font-size:22px;">📡</div><div style="font-size:15px;font-weight:900;color:#edf9ff;margin-top:10px;">Personal Telegram Alerts</div>
+        <div style="font-size:11.5px;color:#8299aa;line-height:1.65;margin-top:6px;">Clients choose the markets they care about and receive personalized shift and tactical notifications.</div>
+      </div>
+      <div style="padding:20px;border-radius:17px;background:rgba(8,16,27,.78);border:1px solid rgba(255,255,255,.075);">
+        <div style="font-size:22px;">🌐</div><div style="font-size:15px;font-weight:900;color:#edf9ff;margin-top:10px;">Multi-Asset Desks</div>
+        <div style="font-size:11.5px;color:#8299aa;line-height:1.65;margin-top:6px;">Dedicated views for currencies, Gold, Oil and Nasdaq-100 in a single institutional workspace.</div>
+      </div>
+      <div style="padding:20px;border-radius:17px;background:rgba(8,16,27,.78);border:1px solid rgba(255,255,255,.075);">
+        <div style="font-size:22px;">📰</div><div style="font-size:15px;font-weight:900;color:#edf9ff;margin-top:10px;">Live Catalyst Feeds</div>
+        <div style="font-size:11.5px;color:#8299aa;line-height:1.65;margin-top:6px;">Macro releases, news feeds and geopolitical catalysts are brought into the same analytical workflow.</div>
+      </div>
+    </div>
+    """)
+
+    # Markets
+    forex_codes = " • ".join(CURRENCY_SERIES.keys())
+    render_html(f"""
+    <div style="margin:52px 0 16px;text-align:center;">
+      <div style="font-size:9px;font-weight:900;letter-spacing:2.2px;color:#ffd166;text-transform:uppercase;">Coverage</div>
+      <div style="font-size:27px;font-weight:950;color:#eef9ff;margin-top:6px;">Follow the markets that move the macro story.</div>
+    </div>
+    <div style="padding:22px;border-radius:19px;background:linear-gradient(135deg,rgba(8,17,28,.9),rgba(5,11,19,.96));
+                border:1px solid rgba(255,255,255,.08);text-align:center;">
+      <div style="font-size:15px;font-weight:900;color:#f2fbff;">🥇 Gold &nbsp;&nbsp; • &nbsp;&nbsp; 🛢️ Crude Oil &nbsp;&nbsp; • &nbsp;&nbsp; 📊 Nasdaq-100</div>
+      <div style="font-size:11.5px;color:#849bac;margin-top:12px;line-height:1.7;">{forex_codes}</div>
+    </div>
+    """)
+
+    # How it works
+    render_html("""
+    <div style="margin:54px 0 18px;text-align:center;">
+      <div style="font-size:9px;font-weight:900;letter-spacing:2.2px;color:#00f5ff;text-transform:uppercase;">Workflow</div>
+      <div style="font-size:27px;font-weight:950;color:#eef9ff;margin-top:6px;">From raw information to an actionable macro view.</div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;">
+      <div style="padding:16px 8px;text-align:center;border-radius:14px;background:rgba(0,245,255,.035);border:1px solid rgba(0,245,255,.10);">
+        <div style="font-size:10px;color:#00f5ff;font-weight:900;">01</div><div style="font-size:11.5px;color:#e7f6ff;font-weight:800;margin-top:6px;">Macro Data</div>
+      </div>
+      <div style="padding:16px 8px;text-align:center;border-radius:14px;background:rgba(0,245,255,.035);border:1px solid rgba(0,245,255,.10);">
+        <div style="font-size:10px;color:#00f5ff;font-weight:900;">02</div><div style="font-size:11.5px;color:#e7f6ff;font-weight:800;margin-top:6px;">Catalysts</div>
+      </div>
+      <div style="padding:16px 8px;text-align:center;border-radius:14px;background:rgba(0,245,255,.035);border:1px solid rgba(0,245,255,.10);">
+        <div style="font-size:10px;color:#00f5ff;font-weight:900;">03</div><div style="font-size:11.5px;color:#e7f6ff;font-weight:800;margin-top:6px;">Regime Engine</div>
+      </div>
+      <div style="padding:16px 8px;text-align:center;border-radius:14px;background:rgba(0,245,255,.035);border:1px solid rgba(0,245,255,.10);">
+        <div style="font-size:10px;color:#00f5ff;font-weight:900;">04</div><div style="font-size:11.5px;color:#e7f6ff;font-weight:800;margin-top:6px;">Tactical Move</div>
+      </div>
+      <div style="padding:16px 8px;text-align:center;border-radius:14px;background:rgba(0,245,255,.035);border:1px solid rgba(0,245,255,.10);">
+        <div style="font-size:10px;color:#00f5ff;font-weight:900;">05</div><div style="font-size:11.5px;color:#e7f6ff;font-weight:800;margin-top:6px;">Smart Alerts</div>
+      </div>
+    </div>
+    """)
+
+    # Final CTA
+    render_html("""
+    <div style="margin:56px 0 16px;padding:34px 24px;border-radius:23px;text-align:center;
+                background:radial-gradient(circle at 50% 0%,rgba(0,245,255,.10),transparent 45%),rgba(6,13,22,.93);
+                border:1px solid rgba(0,245,255,.17);">
+      <div style="font-size:25px;font-weight:950;color:#f0fbff;">Access the ApexMacro terminal.</div>
+      <div style="font-size:12px;color:#8298aa;margin-top:7px;">Already a client? Login. New to ApexMacro? Choose a VIP plan and activate access.</div>
+    </div>
+    """)
+    bottom_l, bottom_m, bottom_r = st.columns([1, 1.6, 1])
+    with bottom_m:
+        x, y = st.columns(2)
+        with x:
+            if st.button("Login to Terminal", key="home_bottom_login", use_container_width=True):
+                _set_public_view("login")
+                st.rerun()
+        with y:
+            if st.button("View VIP Plans", key="home_bottom_vip", type="primary", use_container_width=True):
+                _set_public_view("vip")
+                st.rerun()
+
+    render_html("""
+    <div style="margin:42px 0 6px;padding-top:18px;border-top:1px solid rgba(255,255,255,.06);
+                display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;
+                color:#5f7587;font-size:9.5px;">
+      <div>© 2026 ApexMacro • Global Macro & Geopolitical Intelligence Desk</div>
+      <div>Market intelligence and research • Not a guarantee of returns</div>
+    </div>
+    """)
+
+
+def render_public_checkout_page() -> None:
+    render_public_nav("vip")
+    home_col, title_col = st.columns([1, 5], vertical_alignment="center")
+    with home_col:
+        if st.button("← Home", key="vip_page_home", use_container_width=True):
+            _set_public_view("home")
+            st.rerun()
+    with title_col:
+        render_html("""
+        <div style="padding:3px 0 10px;">
+          <div style="font-size:20px;font-weight:950;color:#edf9ff;">ApexMacro VIP Access</div>
+          <div style="font-size:10.5px;color:#7f95a7;margin-top:3px;">Choose a plan and activate your terminal access with USDT on TRON.</div>
+        </div>
+        """)
+    render_vip_checkout()
+
+
 def render_vip_gate() -> dict | None:
     client_id, dev_type = get_client_device_info()
 
@@ -4415,6 +4701,13 @@ def render_vip_gate() -> dict | None:
                 return auto_user
         except Exception:
             pass
+
+    render_public_nav("login")
+    back_col, spacer_col = st.columns([1, 5])
+    with back_col:
+        if st.button("← Home", key="login_page_home", use_container_width=True):
+            _set_public_view("home")
+            st.rerun()
 
     col1, col2, col3 = st.columns([1, 2.2, 1])
     with col2:
@@ -4664,12 +4957,26 @@ def main() -> None:
     if fred_key:
         start_background_alert_daemon(fred_key, channel_name)
 
-    auth_user = render_vip_gate()
-    if not auth_user:
-        return
+    # The public landing page is now the default entry point.
+    auth_user = st.session_state.get("APEX_AUTH_USER")
+    if not (auth_user and auth_user.get("is_authenticated")):
+        public_view = st.session_state.get("APEX_PUBLIC_VIEW", "home")
+
+        if public_view == "home":
+            render_public_home()
+            return
+
+        if public_view == "vip":
+            render_public_checkout_page()
+            auth_user = st.session_state.get("APEX_AUTH_USER")
+            if not (auth_user and auth_user.get("is_authenticated")):
+                return
+        else:
+            auth_user = render_vip_gate()
+            if not auth_user:
+                return
 
     render_top_header(auth_user)
-
     page_dashboard(fred_key, channel_name, auth_user)
 
     render_html(f"""
