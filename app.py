@@ -5403,6 +5403,153 @@ def render_public_home() -> None:
           line-height:1.45 !important;
         }
       }
+
+      /* ===== FINAL MOBILE FEATURE GRID: COMPACT BOXED CARDS ===== */
+      @media(max-width:700px){
+
+        .apex-ref-features{
+          display:grid !important;
+          grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+          gap:10px !important;
+          width:100% !important;
+          margin:16px 0 0 0 !important;
+          padding:0 !important;
+        }
+
+        .apex-ref-feature-card{
+          position:relative !important;
+          display:flex !important;
+          flex-direction:column !important;
+          align-items:flex-start !important;
+          justify-content:flex-start !important;
+          width:100% !important;
+          min-width:0 !important;
+          max-width:100% !important;
+          min-height:158px !important;
+          height:auto !important;
+          padding:13px 12px 14px !important;
+          margin:0 !important;
+          border-radius:15px !important;
+          overflow:hidden !important;
+
+          background:
+            radial-gradient(circle at 15% 0%,rgba(0,235,255,.045),transparent 30%),
+            linear-gradient(180deg,rgba(7,18,27,.94),rgba(3,10,17,.98)) !important;
+
+          border:1px solid rgba(109,169,183,.22) !important;
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,.025),
+            0 8px 22px rgba(0,0,0,.20) !important;
+        }
+
+        .apex-ref-feature-icon{
+          width:34px !important;
+          height:34px !important;
+          min-width:34px !important;
+          min-height:34px !important;
+          max-width:34px !important;
+          max-height:34px !important;
+          padding:0 !important;
+          margin:0 0 11px 0 !important;
+          border-radius:10px !important;
+          display:flex !important;
+          align-items:center !important;
+          justify-content:center !important;
+          flex:0 0 34px !important;
+          overflow:hidden !important;
+          transform:none !important;
+        }
+
+        .apex-ref-feature-icon svg{
+          width:18px !important;
+          height:18px !important;
+          min-width:18px !important;
+          min-height:18px !important;
+          max-width:18px !important;
+          max-height:18px !important;
+          display:block !important;
+          margin:0 !important;
+          padding:0 !important;
+          transform:none !important;
+        }
+
+        .apex-ref-feature-title{
+          display:block !important;
+          width:100% !important;
+          max-width:100% !important;
+          margin:0 !important;
+          padding:0 !important;
+          font-size:12.5px !important;
+          line-height:1.18 !important;
+          font-weight:900 !important;
+          letter-spacing:-.1px !important;
+          white-space:normal !important;
+          word-break:normal !important;
+          overflow-wrap:normal !important;
+          hyphens:none !important;
+        }
+
+        .apex-ref-feature-copy{
+          display:block !important;
+          width:100% !important;
+          max-width:100% !important;
+          margin:7px 0 0 0 !important;
+          padding:0 !important;
+          font-size:9.4px !important;
+          line-height:1.43 !important;
+          color:#8ea2b4 !important;
+          white-space:normal !important;
+          word-break:normal !important;
+          overflow-wrap:normal !important;
+          hyphens:none !important;
+        }
+
+        .apex-ref-feature-card > *{
+          max-width:100% !important;
+          box-sizing:border-box !important;
+        }
+      }
+
+      @media(max-width:390px){
+        .apex-ref-features{
+          gap:8px !important;
+        }
+
+        .apex-ref-feature-card{
+          min-height:150px !important;
+          padding:12px 10px 13px !important;
+          border-radius:14px !important;
+        }
+
+        .apex-ref-feature-icon{
+          width:31px !important;
+          height:31px !important;
+          min-width:31px !important;
+          min-height:31px !important;
+          max-width:31px !important;
+          max-height:31px !important;
+          flex-basis:31px !important;
+          margin-bottom:10px !important;
+        }
+
+        .apex-ref-feature-icon svg{
+          width:16px !important;
+          height:16px !important;
+          min-width:16px !important;
+          min-height:16px !important;
+          max-width:16px !important;
+          max-height:16px !important;
+        }
+
+        .apex-ref-feature-title{
+          font-size:11.8px !important;
+        }
+
+        .apex-ref-feature-copy{
+          font-size:8.9px !important;
+          line-height:1.40 !important;
+        }
+      }
 </style>
     """, unsafe_allow_html=True)
 
