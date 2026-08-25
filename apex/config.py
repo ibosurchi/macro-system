@@ -1,0 +1,22 @@
+"""Configuration facade backed by the authoritative production core."""
+from .production_core import (
+    PROJECT_ROOT,
+    SUPPORTED_TIMEZONES,
+    DEFAULT_FRED_KEY,
+    DEFAULT_TELEGRAM_CHANNEL,
+    DEFAULT_OPENROUTER_KEY,
+    TELEGRAM_BOT_TOKEN,
+    APEX_MASTER_KEY,
+    APEX_SECRET_SALT,
+    USDT_TRC20_ADDRESS,
+    TRONGRID_API_KEY,
+    TRONGRID_BASE_URL,
+    TRON_USDT_CONTRACT,
+    VIP_PAYMENT_PLANS,
+    SUPABASE_URL,
+    SUPABASE_SERVICE_ROLE_KEY,
+    SUPABASE_STATE_TABLE,
+    REQUEST_TIMEOUT,
+    get_secret,
+    get_current_time,
+)

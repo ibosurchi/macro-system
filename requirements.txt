@@ -1,10 +1,7 @@
-streamlit
+streamlit>=1.45,<2
 pandas
 numpy
 requests
 plotly
-pytz
 feedparser
 beautifulsoup4
-streamlit-autorefresh
-google-genai
