@@ -11,6 +11,7 @@ import numpy as np
 import requests
 import plotly.graph_objects as go
 from datetime import datetime, date, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 import calendar as cal_lib
 import re
 import feedparser
@@ -20,6 +21,7 @@ import time
 import hashlib
 import xml.etree.ElementTree as ET
 import urllib.request
+from urllib.parse import quote
 
 st.set_page_config(
     page_title="ApexMacro — Global Intelligence Desk",
@@ -94,6 +96,18 @@ TELEGRAM_BOT_TOKEN = get_secret("TELEGRAM_BOT_TOKEN", "")
 APEX_MASTER_KEY = get_secret("APEX_MASTER_KEY", "")
 APEX_SECRET_SALT = "APEX_MACRO_SECRET_2026_SALT"
 REGISTRY_FILE = os.path.join(os.path.dirname(__file__), "vip_registry.json")
+
+# VIP checkout configuration. Only public receiving/API values are used; no wallet private key is required.
+USDT_TRC20_ADDRESS = get_secret("USDT_TRC20_ADDRESS", "")
+TRONGRID_API_KEY = get_secret("TRONGRID_API_KEY", "")  # Optional; improves TronGrid rate limits.
+TRONGRID_BASE_URL = get_secret("TRONGRID_BASE_URL", "https://api.trongrid.io").rstrip("/")
+TRON_USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+VIP_PAYMENT_PLANS = {
+    "1 Month": {"amount": 29, "days": 30, "badge": "MONTHLY"},
+    "3 Months": {"amount": 75, "days": 90, "badge": "BEST VALUE"},
+}
+PAYMENTS_FILE = os.path.join(os.path.dirname(__file__), "vip_payments.json")
+_PAYMENT_LOCK = threading.RLock()
 SESSIONS_FILE = os.path.join(os.path.dirname(__file__), "vip_sessions.json")
 ACTUALS_FILE = os.path.join(os.path.dirname(__file__), "actual_releases.json")
 ALERT_STATE_FILE = os.path.join(os.path.dirname(__file__), "alert_regime_state.json")
@@ -567,6 +581,7 @@ def _handle_telegram_update(update: dict) -> None:
                     "text": (
                         "🏛️ *Welcome to ApexMacro*\n\n"
                         "Your Telegram account is connected to an active ApexMacro client.\n\n"
+                        f"🆔 Your Telegram ID: `{user_id}`\n\n"
                         "Use /alerts to choose which market Shift Alerts and personalized hourly market reports you receive.\n\n"
                         "⚡ *ApexMacro Institutional Terminal*"
                     ),
@@ -577,8 +592,9 @@ def _handle_telegram_update(update: dict) -> None:
                     "chat_id": chat_id,
                     "text": (
                         "🏛️ *ApexMacro*\n\n"
-                        "This Telegram account is not linked to an active ApexMacro client.\n"
-                        "Please register this Telegram ID through your existing ApexMacro client account first."
+                        "This Telegram account is not linked to an active ApexMacro client yet.\n\n"
+                        f"🆔 Your Telegram ID: `{user_id}`\n\n"
+                        "Use this ID when purchasing ApexMacro VIP, then /alerts will become available automatically."
                     ),
                     "parse_mode": "Markdown",
                 })
@@ -3247,6 +3263,528 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
         st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
 
 
+
+
+def _tron_headers() -> dict[str, str]:
+    headers = {"Accept": "application/json", "User-Agent": "ApexMacro-VIP-Payments/1.0"}
+    if TRONGRID_API_KEY:
+        headers["TRON-PRO-API-KEY"] = TRONGRID_API_KEY
+    return headers
+
+
+def _normalize_txid(value: str) -> str:
+    clean = re.sub(r"\s+", "", str(value or "")).lower()
+    return clean if re.fullmatch(r"[0-9a-f]{64}", clean) else ""
+
+
+def _load_payment_records_unlocked() -> list[dict]:
+    if not os.path.exists(PAYMENTS_FILE):
+        return []
+    try:
+        with open(PAYMENTS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def load_payment_records() -> list[dict]:
+    with _PAYMENT_LOCK:
+        return _load_payment_records_unlocked()
+
+
+def _write_payment_records_unlocked(records: list[dict]) -> None:
+    tmp_path = PAYMENTS_FILE + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(records, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, PAYMENTS_FILE)
+
+
+def _payment_record_for_txid(txid: str) -> dict | None:
+    clean = _normalize_txid(txid)
+    if not clean:
+        return None
+    for record in load_payment_records():
+        if str(record.get("txid", "")).lower() == clean:
+            return record
+    return None
+
+
+def _fetch_confirmed_usdt_transfer(txid: str, receiver: str) -> tuple[bool, str, dict | None]:
+    """Find a confirmed USDT TRC20 transfer to receiver and validate its solidified receipt."""
+    clean_txid = _normalize_txid(txid)
+    receiver = str(receiver or "").strip()
+    if not clean_txid:
+        return False, "Enter a valid 64-character TRON transaction ID.", None
+    if not receiver or not receiver.startswith("T"):
+        return False, "The configured TRC20 receiving address is invalid.", None
+
+    url = f"{TRONGRID_BASE_URL}/v1/accounts/{receiver}/transactions/trc20"
+    params = {
+        "only_confirmed": "true",
+        "limit": 200,
+        "contract_address": TRON_USDT_CONTRACT,
+        "order_by": "block_timestamp,desc",
+    }
+    found = None
+    fingerprint = ""
+    try:
+        # Search several recent pages. A buyer normally verifies immediately, so this is ample
+        # while avoiding unbounded external API work.
+        for _ in range(5):
+            call_params = dict(params)
+            if fingerprint:
+                call_params["fingerprint"] = fingerprint
+            response = requests.get(url, params=call_params, headers=_tron_headers(), timeout=12)
+            if response.status_code == 429:
+                return False, "TRON verification is temporarily rate-limited. Please retry in a moment.", None
+            response.raise_for_status()
+            payload = response.json()
+            for item in payload.get("data", []) if isinstance(payload, dict) else []:
+                if str(item.get("transaction_id", "")).lower() == clean_txid:
+                    found = item
+                    break
+            if found:
+                break
+            fingerprint = str((payload.get("meta") or {}).get("fingerprint", "")) if isinstance(payload, dict) else ""
+            if not fingerprint:
+                break
+    except Exception:
+        return False, "Could not reach the TRON network right now. Please retry shortly.", None
+
+    if not found:
+        return False, "Confirmed USDT payment not found yet. Wait for TRON confirmations, then retry.", None
+
+    token_info = found.get("token_info") or {}
+    token_address = str(token_info.get("address", "")).strip()
+    symbol = str(token_info.get("symbol", "")).upper().strip()
+    destination = str(found.get("to", "")).strip()
+    transfer_type = str(found.get("type", "")).lower().strip()
+
+    if token_address != TRON_USDT_CONTRACT or symbol != "USDT":
+        return False, "This transaction is not the supported USDT token on TRON mainnet.", None
+    if destination != receiver:
+        return False, "This transaction was not sent to the ApexMacro payment address.", None
+    if transfer_type and transfer_type != "transfer":
+        return False, "This transaction is not a standard USDT transfer.", None
+
+    try:
+        decimals = int(token_info.get("decimals", 6))
+        raw_value = Decimal(str(found.get("value", "0")))
+        amount = raw_value / (Decimal(10) ** decimals)
+    except (InvalidOperation, ValueError, TypeError):
+        return False, "The USDT amount in this transaction could not be validated.", None
+
+    # Confirm finality using the SolidityNode receipt, not just indexer visibility.
+    try:
+        receipt_response = requests.post(
+            f"{TRONGRID_BASE_URL}/walletsolidity/gettransactioninfobyid",
+            json={"value": clean_txid},
+            headers=_tron_headers(),
+            timeout=12,
+        )
+        if receipt_response.status_code == 429:
+            return False, "TRON finality check is temporarily rate-limited. Please retry shortly.", None
+        receipt_response.raise_for_status()
+        receipt = receipt_response.json()
+    except Exception:
+        return False, "The payment was found, but final confirmation could not be checked yet. Please retry.", None
+
+    if not isinstance(receipt, dict) or not receipt.get("blockNumber"):
+        return False, "Payment found but not fully solidified yet. Please wait and retry.", None
+    receipt_result = str((receipt.get("receipt") or {}).get("result", "SUCCESS")).upper()
+    if receipt_result and receipt_result != "SUCCESS":
+        return False, "The TRON contract execution did not complete successfully.", None
+
+    details = {
+        "txid": clean_txid,
+        "from": str(found.get("from", "")),
+        "to": destination,
+        "amount": str(amount.normalize()),
+        "block_timestamp": found.get("block_timestamp"),
+        "token_contract": token_address,
+        "confirmed": True,
+    }
+    return True, "Confirmed", details
+
+
+def verify_usdt_payment(txid: str, expected_amount: int | float, receiver: str) -> tuple[bool, str, dict | None]:
+    ok, message, details = _fetch_confirmed_usdt_transfer(txid, receiver)
+    if not ok or not details:
+        return ok, message, details
+    try:
+        actual = Decimal(str(details.get("amount", "0")))
+        expected = Decimal(str(expected_amount))
+    except InvalidOperation:
+        return False, "Payment amount validation failed.", None
+    if actual != expected:
+        return False, f"Payment amount is {actual} USDT, but this plan requires exactly {expected} USDT.", details
+    return True, "Payment confirmed.", details
+
+
+def _make_key_for_expiry(client_name: str, expiry_date: date, telegram_id: str, existing_keys: set[str]) -> str:
+    clean_name = re.sub(r"[^A-Z0-9]", "", str(client_name).upper())[:10] or "CLIENT"
+    exp_str = expiry_date.strftime("%Y%m%d")
+    candidates = [clean_name, f"{clean_name[:6]}{str(telegram_id)[-4:]}"]
+    for name_part in candidates:
+        payload = f"{name_part}:{exp_str}:{APEX_SECRET_SALT}"
+        sig = hashlib.sha256(payload.encode()).hexdigest()[:4].upper()
+        key = f"APEX-{name_part}-{exp_str}-{sig}"
+        if key not in existing_keys:
+            return key
+    # Extremely unlikely collision fallback remains compatible with the existing key verifier.
+    suffix = hashlib.sha256(f"{telegram_id}:{time.time_ns()}".encode()).hexdigest()[:4].upper()
+    name_part = f"{clean_name[:5]}{suffix}"[:10]
+    payload = f"{name_part}:{exp_str}:{APEX_SECRET_SALT}"
+    sig = hashlib.sha256(payload.encode()).hexdigest()[:4].upper()
+    return f"APEX-{name_part}-{exp_str}-{sig}"
+
+
+def _activate_verified_payment(client_name: str, telegram_id: str, plan_name: str, payment: dict) -> tuple[bool, str, dict | None]:
+    """Idempotently reserve a TxID and activate/renew one Telegram-linked VIP record."""
+    clean_name = re.sub(r"\s+", " ", str(client_name or "").strip())[:60] or "VIP CLIENT"
+    tg_id = str(telegram_id or "").strip()
+    txid = _normalize_txid(payment.get("txid", ""))
+    plan = VIP_PAYMENT_PLANS.get(plan_name)
+    if not plan or not txid or not re.fullmatch(r"\d{5,15}", tg_id):
+        return False, "Payment activation details are invalid.", None
+
+    with _PAYMENT_LOCK, _VIP_REGISTRY_LOCK:
+        records = _load_payment_records_unlocked()
+        prior = next((r for r in records if str(r.get("txid", "")).lower() == txid), None)
+        if prior:
+            if str(prior.get("telegram_id", "")) != tg_id:
+                return False, "This transaction has already been used for another VIP account.", None
+            if prior.get("status") == "Activated" and prior.get("vip_key"):
+                return True, "This payment was already activated.", prior
+
+        clients = []
+        if os.path.exists(REGISTRY_FILE):
+            try:
+                with open(REGISTRY_FILE, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                clients = loaded if isinstance(loaded, list) else []
+            except Exception:
+                clients = []
+
+        # Renew from the later of today or an existing active expiration date.
+        matching = [c for c in clients if str(c.get("telegram_id", "")).strip() == tg_id]
+        primary = matching[0] if matching else None
+        today = get_current_time().date()
+        base_date = today
+        if primary:
+            try:
+                old_exp = datetime.strptime(str(primary.get("expires_at", "")), "%Y-%m-%d").date()
+                if old_exp > base_date:
+                    base_date = old_exp
+            except Exception:
+                pass
+        expiry_date = base_date + timedelta(days=int(plan["days"]))
+        existing_keys = {str(c.get("key", "")) for c in clients if c is not primary}
+        vip_key = _make_key_for_expiry(clean_name, expiry_date, tg_id, existing_keys)
+
+        if primary:
+            preserved_alerts = primary.get("alert_assets") if "alert_assets" in primary else None
+            primary.update({
+                "client_name": clean_name,
+                "key": vip_key,
+                "telegram_id": tg_id,
+                "duration": plan_name,
+                "expires_at": expiry_date.strftime("%Y-%m-%d"),
+                "status": "Active",
+                "payment_txid": txid,
+                "last_payment_at": get_current_time().strftime("%Y-%m-%d %H:%M:%S"),
+            })
+            if preserved_alerts is not None:
+                primary["alert_assets"] = preserved_alerts
+            # Consolidate legacy duplicate Telegram records to prevent duplicate delivery.
+            clients = [c for c in clients if c is primary or str(c.get("telegram_id", "")).strip() != tg_id]
+        else:
+            primary = {
+                "client_name": clean_name,
+                "key": vip_key,
+                "telegram_id": tg_id,
+                "duration": plan_name,
+                "created_at": get_current_time().strftime("%Y-%m-%d"),
+                "expires_at": expiry_date.strftime("%Y-%m-%d"),
+                "status": "Active",
+                "bound_mobile_id": "",
+                "bound_pc_id": "",
+                "bound_at": "",
+                "payment_txid": txid,
+                "last_payment_at": get_current_time().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            clients.insert(0, primary)
+
+        record = prior if prior is not None else {}
+        record.update({
+            "txid": txid,
+            "client_name": clean_name,
+            "telegram_id": tg_id,
+            "plan": plan_name,
+            "amount_usdt": str(plan["amount"]),
+            "network": "TRON (TRC20)",
+            "receiver": USDT_TRC20_ADDRESS,
+            "sender": payment.get("from", ""),
+            "verified_at": get_current_time().strftime("%Y-%m-%d %H:%M:%S"),
+            "status": "Activated",
+            "vip_key": vip_key,
+            "expires_at": expiry_date.strftime("%Y-%m-%d"),
+        })
+        if prior is None:
+            records.insert(0, record)
+
+        # Both files use atomic replace while locks prevent in-process races.
+        _write_vip_registry_unlocked(clients)
+        _write_payment_records_unlocked(records)
+
+    return True, "VIP activated successfully.", record
+
+
+def _send_vip_activation_telegram(record: dict) -> None:
+    tg_id = str(record.get("telegram_id", "")).strip()
+    if not tg_id or not TELEGRAM_BOT_TOKEN:
+        return
+    _telegram_api("sendMessage", {
+        "chat_id": tg_id,
+        "text": (
+            "✅ *APEXMACRO VIP ACTIVATED*\n"
+            "━━━━━━━━━━━━━━━━━━━\n\n"
+            f"Plan: *{record.get('plan', 'VIP')}*\n"
+            f"Valid until: *{record.get('expires_at', '')}*\n\n"
+            f"🔑 Your VIP Key:\n`{record.get('vip_key', '')}`\n\n"
+            "Use /alerts to configure your personal market notifications.\n\n"
+            "⚡ *ApexMacro Institutional Terminal*"
+        ),
+        "parse_mode": "Markdown",
+    })
+
+
+def _login_paid_client(record: dict) -> bool:
+    key = str(record.get("vip_key", "")).strip().upper()
+    if not key:
+        return False
+    client_id, dev_type = get_client_device_info()
+    ok, user_name, expiry_info = verify_vip_key(key, client_id, dev_type)
+    if not ok:
+        return False
+    sessions = load_sessions_cache()
+    sessions[client_id] = {
+        "key": key,
+        "device_id": client_id,
+        "dev_type": dev_type,
+        "last_active": get_current_time().strftime("%Y-%m-%d %H:%M:%S"),
+        "user_name": user_name,
+        "expiry_info": expiry_info,
+        "is_admin": False,
+    }
+    save_sessions_cache(sessions)
+    st.session_state["APEX_AUTH_USER"] = {
+        "is_authenticated": True,
+        "user_name": user_name,
+        "expiry_info": expiry_info,
+        "is_admin": False,
+        "key": key,
+    }
+    return True
+
+
+def render_payment_admin_summary() -> None:
+    records = load_payment_records()
+    if not records:
+        return
+    st.markdown("---")
+    render_html('<div class="sec-title">Verified VIP Payments</div>')
+    rows = []
+    for r in records[:100]:
+        txid = str(r.get("txid", ""))
+        rows.append({
+            "Client": r.get("client_name", ""),
+            "Telegram ID": r.get("telegram_id", ""),
+            "Plan": r.get("plan", ""),
+            "USDT": r.get("amount_usdt", ""),
+            "Status": r.get("status", ""),
+            "Expires": r.get("expires_at", ""),
+            "TxID": f"{txid[:10]}…{txid[-8:]}" if len(txid) > 20 else txid,
+            "Verified": r.get("verified_at", ""),
+        })
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+def render_vip_checkout() -> None:
+    """Self-service VIP checkout with confirmed USDT-TRC20 verification and activation."""
+    selected_plan = st.session_state.get("APEX_VIP_PLAN", "1 Month")
+    if selected_plan not in VIP_PAYMENT_PLANS:
+        selected_plan = "1 Month"
+        st.session_state["APEX_VIP_PLAN"] = selected_plan
+
+    render_html("""
+    <div style="margin:14px 0 18px;padding:22px 20px;border-radius:20px;
+                background:linear-gradient(180deg,rgba(9,18,30,.96),rgba(5,10,18,.98));
+                border:1px solid rgba(0,245,255,.22);
+                box-shadow:0 18px 55px rgba(0,0,0,.45),0 0 30px rgba(0,245,255,.08);">
+      <div style="font-size:10px;font-weight:850;letter-spacing:2.5px;color:#00f5ff;text-transform:uppercase;">ApexMacro VIP Access</div>
+      <div style="font-size:23px;font-weight:900;color:#f4fbff;margin-top:7px;">Choose Your Membership</div>
+      <div style="font-size:12px;color:#8fa3b4;margin-top:6px;line-height:1.6;">
+        Institutional macro intelligence, Smart Shift Alerts, personalized Telegram alerts and the full ApexMacro terminal.
+      </div>
+    </div>
+    """)
+
+    identity_cols = st.columns(2)
+    with identity_cols[0]:
+        client_name = st.text_input(
+            "Your name",
+            key="APEX_PAYMENT_CLIENT_NAME",
+            placeholder="Name for your VIP license",
+        )
+    with identity_cols[1]:
+        telegram_id = st.text_input(
+            "Telegram ID",
+            key="APEX_PAYMENT_TELEGRAM_ID",
+            placeholder="e.g. 7153364048",
+            help="Send /start to the ApexMacro bot to see your Telegram ID.",
+        )
+    valid_identity = bool(client_name.strip()) and bool(re.fullmatch(r"\d{5,15}", telegram_id.strip()))
+    if telegram_id and not re.fullmatch(r"\d{5,15}", telegram_id.strip()):
+        st.caption("Telegram ID must contain numbers only.")
+
+    plan_cols = st.columns(2)
+    for idx, plan_name in enumerate(["1 Month", "3 Months"]):
+        info = VIP_PAYMENT_PLANS[plan_name]
+        active = selected_plan == plan_name
+        border = "#00f5ff" if active else "rgba(255,255,255,.12)"
+        glow = "0 0 25px rgba(0,245,255,.16)" if active else "none"
+        badge_bg = "rgba(0,245,255,.12)" if active else "rgba(255,209,102,.10)"
+        badge_color = "#00f5ff" if active else "#ffd166"
+        with plan_cols[idx]:
+            render_html(f"""
+            <div style="min-height:168px;padding:20px 18px;border-radius:18px;background:rgba(10,18,29,.82);
+                        border:1px solid {border};box-shadow:{glow};">
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                <div style="font-size:16px;font-weight:850;color:#eef8ff;">{plan_name}</div>
+                <div style="font-size:9px;font-weight:900;letter-spacing:1.3px;color:{badge_color};background:{badge_bg};padding:5px 8px;border-radius:999px;">{info['badge']}</div>
+              </div>
+              <div style="margin-top:18px;"><span style="font-size:34px;font-weight:950;color:#ffffff;">{info['amount']}</span><span style="font-size:12px;color:#8fa3b4;"> USDT</span></div>
+              <div style="font-size:11px;color:#8fa3b4;margin-top:9px;">{info['days']} days of ApexMacro VIP access</div>
+            </div>
+            """)
+            if st.button("✓ Selected" if active else f"Choose {plan_name}", key=f"apex_choose_{idx}", use_container_width=True, type="primary" if active else "secondary"):
+                st.session_state["APEX_VIP_PLAN"] = plan_name
+                st.session_state["APEX_CHECKOUT_OPEN"] = False
+                st.rerun()
+
+    selected_plan = st.session_state.get("APEX_VIP_PLAN", "1 Month")
+    selected_info = VIP_PAYMENT_PLANS[selected_plan]
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+    if not st.session_state.get("APEX_CHECKOUT_OPEN", False):
+        if st.button(
+            f"Continue to Payment — {selected_info['amount']} USDT",
+            key="apex_continue_payment",
+            type="primary",
+            use_container_width=True,
+            disabled=not valid_identity,
+        ):
+            st.session_state["APEX_CHECKOUT_OPEN"] = True
+            st.rerun()
+        if not valid_identity:
+            st.caption("Enter your name and Telegram ID to continue.")
+        return
+
+    render_html(f"""
+    <div style="margin-top:12px;padding:22px 20px;border-radius:20px;background:linear-gradient(180deg,rgba(9,18,30,.97),rgba(4,9,16,.99));border:1px solid rgba(255,209,102,.28);box-shadow:0 18px 60px rgba(0,0,0,.5);">
+      <div style="display:flex;justify-content:space-between;gap:14px;align-items:flex-start;">
+        <div><div style="font-size:10px;color:#ffd166;font-weight:900;letter-spacing:2px;text-transform:uppercase;">Secure Crypto Checkout</div><div style="font-size:20px;color:#f5fbff;font-weight:900;margin-top:5px;">Pay with USDT — TRC20</div></div>
+        <div style="text-align:right;"><div style="font-size:10px;color:#8fa3b4;">AMOUNT DUE</div><div style="font-size:24px;color:#00f5ff;font-weight:950;">{selected_info['amount']} USDT</div></div>
+      </div>
+      <div style="height:1px;background:linear-gradient(90deg,rgba(255,209,102,.35),transparent);margin:18px 0;"></div>
+      <div style="font-size:12px;color:#dceaf2;line-height:1.65;">Send exactly <b>{selected_info['amount']} USDT</b> using <b>TRON (TRC20)</b> only. Do not use ERC20, BEP20 or another network.</div>
+    </div>
+    """)
+
+    if not USDT_TRC20_ADDRESS:
+        st.error("Payment address is not configured yet. Add USDT_TRC20_ADDRESS to Streamlit Secrets.")
+    else:
+        qr_url = "https://api.qrserver.com/v1/create-qr-code/" + f"?size=320x320&margin=14&data={quote(USDT_TRC20_ADDRESS, safe='')}"
+        q1, q2 = st.columns([1, 1.45])
+        with q1:
+            st.image(qr_url, caption="USDT • TRON (TRC20)", use_container_width=True)
+        with q2:
+            st.markdown("**Wallet Address**")
+            st.code(USDT_TRC20_ADDRESS, language=None)
+            st.caption("Copy the address exactly. Network: TRON (TRC20) only.")
+            render_html(f"""
+            <div style="margin-top:12px;padding:13px 14px;border-radius:13px;background:rgba(0,245,255,.06);border:1px solid rgba(0,245,255,.16);">
+              <div style="font-size:10px;color:#8fa3b4;text-transform:uppercase;letter-spacing:1.3px;">ORDER</div>
+              <div style="font-size:14px;color:#f3fbff;font-weight:800;margin-top:3px;">{selected_plan} • {selected_info['amount']} USDT</div>
+              <div style="font-size:11px;color:#8fa3b4;margin-top:5px;">Telegram ID: {telegram_id.strip()}</div>
+            </div>
+            """)
+
+    st.markdown("#### Already paid?")
+    txid = st.text_input("Transaction ID (TxID)", key="APEX_PAYMENT_TXID", placeholder="Paste your 64-character TRON transaction hash", help="Use the TxID shown by your wallet/exchange after sending USDT.")
+
+    verify_col, back_col = st.columns([1.35, 1])
+    with verify_col:
+        if st.button("🔎 Verify & Activate VIP", key="apex_verify_payment", type="primary", use_container_width=True):
+            clean_txid = _normalize_txid(txid)
+            if not valid_identity:
+                st.error("Enter a valid name and Telegram ID.")
+            elif not USDT_TRC20_ADDRESS:
+                st.error("Payment address is not configured.")
+            elif not clean_txid:
+                st.warning("Enter a valid 64-character TRON TxID first.")
+            else:
+                prior = _payment_record_for_txid(clean_txid)
+                if prior and str(prior.get("telegram_id", "")) != telegram_id.strip():
+                    st.error("This TxID has already been used for another VIP account.")
+                elif prior and prior.get("status") == "Activated" and prior.get("vip_key"):
+                    record = prior
+                    st.session_state["APEX_PAYMENT_SUCCESS"] = record
+                    st.success("✅ This payment is already verified and your VIP is active.")
+                else:
+                    with st.spinner("Checking the confirmed USDT transaction on TRON…"):
+                        ok, message, payment = verify_usdt_payment(clean_txid, selected_info["amount"], USDT_TRC20_ADDRESS)
+                    if not ok or not payment:
+                        st.error(message)
+                    else:
+                        activated, activation_message, record = _activate_verified_payment(client_name, telegram_id, selected_plan, payment)
+                        if not activated or not record:
+                            st.error(activation_message)
+                        else:
+                            st.session_state["APEX_PAYMENT_SUCCESS"] = record
+                            _send_vip_activation_telegram(record)
+                            st.success("✅ Payment confirmed — ApexMacro VIP is now active.")
+
+    with back_col:
+        if st.button("← Change Plan", key="apex_change_plan", use_container_width=True):
+            st.session_state["APEX_CHECKOUT_OPEN"] = False
+            st.rerun()
+
+    success_record = st.session_state.get("APEX_PAYMENT_SUCCESS")
+    if success_record and str(success_record.get("telegram_id", "")) == telegram_id.strip():
+        render_html(f"""
+        <div style="margin-top:18px;padding:20px;border-radius:18px;background:rgba(0,255,163,.06);border:1px solid rgba(0,255,163,.25);">
+          <div style="font-size:11px;color:#00ffa3;font-weight:900;letter-spacing:1.5px;">PAYMENT CONFIRMED</div>
+          <div style="font-size:18px;color:#f5fbff;font-weight:900;margin-top:5px;">Your ApexMacro VIP is active</div>
+          <div style="font-size:12px;color:#a9bdc9;margin-top:7px;">Valid until {success_record.get('expires_at','')}</div>
+        </div>
+        """)
+        st.markdown("**Your VIP License Key**")
+        st.code(str(success_record.get("vip_key", "")), language=None)
+        st.caption("Save this key. It has also been sent to your Telegram account when Telegram allows delivery.")
+        if st.button("⚡ Enter ApexMacro VIP Terminal", key="apex_enter_after_payment", type="primary", use_container_width=True):
+            if _login_paid_client(success_record):
+                st.rerun()
+            else:
+                st.error("VIP is active, but automatic login could not complete. Use the VIP key shown above.")
+
+    st.caption("ApexMacro never asks for your wallet seed phrase or private key.")
+
+
 def render_vip_gate() -> dict | None:
     client_id, dev_type = get_client_device_info()
 
@@ -3312,10 +3850,12 @@ def render_vip_gate() -> dict | None:
         with b1:
             unlock_clicked = st.button("⚡ Unlock Terminal", type="primary", use_container_width=True)
         with b2:
-            st.markdown(
-                '<a href="https://t.me/ibosurchii" target="_blank" style="text-decoration:none;"><button style="width:100%;padding:10px 12px;background:rgba(255,209,102,0.10);border:1px solid rgba(255,209,102,0.35);border-radius:11px;color:#ffd166;font-weight:750;font-size:12px;cursor:pointer;">💬 Get VIP License</button></a>',
-                unsafe_allow_html=True
-            )
+            if st.button("💳 Get VIP Access", key="apex_open_vip_checkout", use_container_width=True):
+                st.session_state["APEX_SHOW_VIP_CHECKOUT"] = not st.session_state.get("APEX_SHOW_VIP_CHECKOUT", False)
+                st.rerun()
+
+        if st.session_state.get("APEX_SHOW_VIP_CHECKOUT", False):
+            render_vip_checkout()
 
         if unlock_clicked:
             clean_entered = entered_key.strip().upper()
@@ -3511,6 +4051,8 @@ def render_admin_key_generator() -> None:
                 st.rerun()
     else:
         st.info("No VIP clients registered yet. Generate a key above to start building your client base!")
+
+    render_payment_admin_summary()
 
 def main() -> None:
     inject_css()
