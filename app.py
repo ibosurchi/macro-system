@@ -97,10 +97,6 @@ REGISTRY_FILE = os.path.join(os.path.dirname(__file__), "vip_registry.json")
 SESSIONS_FILE = os.path.join(os.path.dirname(__file__), "vip_sessions.json")
 ACTUALS_FILE = os.path.join(os.path.dirname(__file__), "actual_releases.json")
 ALERT_STATE_FILE = os.path.join(os.path.dirname(__file__), "alert_regime_state.json")
-TELEGRAM_UPDATE_STATE_FILE = os.path.join(os.path.dirname(__file__), "telegram_update_state.json")
-
-# Synchronizes Streamlit/Admin and Telegram worker access to the shared VIP registry.
-_VIP_REGISTRY_LOCK = threading.RLock()
 
 def load_actuals_cache() -> dict:
     if os.path.exists(ACTUALS_FILE):
@@ -160,59 +156,20 @@ def get_client_device_info() -> tuple[str, str]:
     return fp, dev_type
 
 def load_vip_registry() -> list[dict]:
-    with _VIP_REGISTRY_LOCK:
-        if os.path.exists(REGISTRY_FILE):
-            try:
-                with open(REGISTRY_FILE, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                return data if isinstance(data, list) else []
-            except Exception:
-                return []
-        return []
-
-
-def _write_vip_registry_unlocked(clients: list[dict]) -> None:
-    tmp_path = REGISTRY_FILE + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(clients, f, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp_path, REGISTRY_FILE)
-
+    if os.path.exists(REGISTRY_FILE):
+        try:
+            with open(REGISTRY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
 
 def save_vip_registry(clients: list[dict]) -> None:
-    """Atomically persist VIP data while preserving Telegram-owned preferences during concurrent admin writes."""
-    with _VIP_REGISTRY_LOCK:
-        try:
-            # Admin/device actions do not edit alert_assets. If a Telegram callback saved
-            # newer preferences after an admin page loaded, retain the on-disk preference.
-            current_by_key: dict[str, dict] = {}
-            if os.path.exists(REGISTRY_FILE):
-                try:
-                    with open(REGISTRY_FILE, "r", encoding="utf-8") as f:
-                        current = json.load(f)
-                    if isinstance(current, list):
-                        current_by_key = {
-                            str(c.get("key", "")): c for c in current
-                            if isinstance(c, dict) and c.get("key")
-                        }
-                except Exception:
-                    current_by_key = {}
-
-            merged: list[dict] = []
-            for client in clients:
-                item = dict(client)
-                disk_client = current_by_key.get(str(item.get("key", "")))
-                if disk_client is not None and "alert_assets" in disk_client:
-                    item["alert_assets"] = disk_client.get("alert_assets")
-                merged.append(item)
-            _write_vip_registry_unlocked(merged)
-        except Exception:
-            try:
-                if os.path.exists(REGISTRY_FILE + ".tmp"):
-                    os.remove(REGISTRY_FILE + ".tmp")
-            except Exception:
-                pass
+    try:
+        with open(REGISTRY_FILE, "w", encoding="utf-8") as f:
+            json.dump(clients, f, indent=2)
+    except Exception:
+        pass
 
 def register_new_client_key(name: str, key: str, duration_label: str, exp_date_str: str, tg_id: str) -> None:
     clients = load_vip_registry()
@@ -405,319 +362,6 @@ CURRENCY_SERIES = {
         "key_indicators": ["CPI", "Unemployment", "Interest Rate"],
     },
 }
-
-# Canonical Telegram-selectable market keys. Forex entries are derived from the
-# existing CURRENCY_SERIES so future configured currencies can be exposed easily.
-ALERT_ASSETS: dict[str, str] = {
-    "Gold": "🥇 Gold (XAUUSD)",
-}
-if "USD" in CURRENCY_SERIES:
-    _usd_meta = CURRENCY_SERIES["USD"]
-    ALERT_ASSETS["USD"] = f"{_usd_meta.get('flag', '💵')} US Dollar (USD)"
-ALERT_ASSETS["Oil"] = "🛢️ Crude Oil (WTI/Brent)"
-ALERT_ASSETS["NDX"] = "📊 Nasdaq-100 (NDX)"
-for _currency_code, _currency_meta in CURRENCY_SERIES.items():
-    if _currency_code == "USD":
-        continue
-    ALERT_ASSETS[_currency_code] = (
-        f"{_currency_meta.get('flag', '💱')} {_currency_meta.get('name', _currency_code)} ({_currency_code})"
-    )
-
-
-def _all_alert_asset_keys() -> list[str]:
-    return list(ALERT_ASSETS.keys())
-
-
-def _client_alert_asset_keys(client: dict) -> set[str]:
-    """Missing field means ALL (backward compatibility); an explicit [] means none."""
-    if "alert_assets" not in client:
-        return set(_all_alert_asset_keys())
-    raw = client.get("alert_assets")
-    if not isinstance(raw, list):
-        return set(_all_alert_asset_keys())
-    supported = set(_all_alert_asset_keys())
-    return {str(key) for key in raw if str(key) in supported}
-
-
-def _client_license_is_current(client: dict) -> bool:
-    if str(client.get("status", "")).strip().lower() != "active":
-        return False
-    exp = str(client.get("expires_at", "")).strip()
-    if not exp or exp.lower() in {"lifetime", "never", "unlimited"}:
-        return True
-    try:
-        return get_current_time().date() <= datetime.strptime(exp, "%Y-%m-%d").date()
-    except Exception:
-        # Preserve existing behavior for legacy/custom registry date formats.
-        return True
-
-
-def _find_authorized_telegram_client(telegram_user_id: str, clients: list[dict] | None = None) -> dict | None:
-    target = str(telegram_user_id or "").strip()
-    if not target:
-        return None
-    source = clients if clients is not None else load_vip_registry()
-    for client in source:
-        if str(client.get("telegram_id", "")).strip() == target and _client_license_is_current(client):
-            return client
-    return None
-
-
-def _set_client_alert_assets(telegram_user_id: str, selected_assets: set[str]) -> bool:
-    """Update only the requesting Telegram user's active registry entry in one locked transaction."""
-    target = str(telegram_user_id or "").strip()
-    supported = set(_all_alert_asset_keys())
-    clean_selection = [key for key in _all_alert_asset_keys() if key in selected_assets and key in supported]
-    with _VIP_REGISTRY_LOCK:
-        clients = load_vip_registry()
-        changed = False
-        for client in clients:
-            if str(client.get("telegram_id", "")).strip() == target and _client_license_is_current(client):
-                client["alert_assets"] = clean_selection
-                changed = True
-                break
-        if changed:
-            try:
-                _write_vip_registry_unlocked(clients)
-            except Exception:
-                return False
-        return changed
-
-
-def _telegram_api(method: str, payload: dict | None = None, timeout: int = 8) -> dict:
-    token = TELEGRAM_BOT_TOKEN
-    if not token:
-        return {"ok": False}
-    try:
-        response = requests.post(
-            f"https://api.telegram.org/bot{token}/{method}",
-            json=payload or {},
-            timeout=timeout,
-        )
-        return response.json() if response.content else {"ok": response.ok}
-    except Exception:
-        return {"ok": False}
-
-
-def _alert_settings_text() -> str:
-    return (
-        "🔔 *APEXMACRO — ALERT SETTINGS*\n"
-        "━━━━━━━━━━━━━━━━━━━\n\n"
-        "Select the markets you want ApexMacro to monitor for you.\n\n"
-        "You will only receive Telegram Shift Alerts for enabled markets.\n\n"
-        "Changes are saved automatically.\n\n"
-        "⚡ *ApexMacro Institutional Terminal*"
-    )
-
-
-def _alert_settings_keyboard(selected: set[str]) -> dict:
-    rows = []
-    for key, label in ALERT_ASSETS.items():
-        state = "✅" if key in selected else "❌"
-        rows.append([{
-            "text": f"{state} {label}",
-            "callback_data": f"apex_alert_toggle:{key}",
-        }])
-    rows.append([
-        {"text": "✅ Enable All", "callback_data": "apex_alert_all:on"},
-        {"text": "🔕 Disable All", "callback_data": "apex_alert_all:off"},
-    ])
-    rows.append([{
-        "text": "💾 Done",
-        "callback_data": "apex_alert_done",
-    }])
-    return {"inline_keyboard": rows}
-
-
-def _send_alert_settings_menu(chat_id: str, client: dict) -> None:
-    _telegram_api("sendMessage", {
-        "chat_id": chat_id,
-        "text": _alert_settings_text(),
-        "parse_mode": "Markdown",
-        "reply_markup": _alert_settings_keyboard(_client_alert_asset_keys(client)),
-    })
-
-
-def _edit_alert_settings_menu(chat_id: str, message_id: int, selected: set[str]) -> None:
-    _telegram_api("editMessageText", {
-        "chat_id": chat_id,
-        "message_id": message_id,
-        "text": _alert_settings_text(),
-        "parse_mode": "Markdown",
-        "reply_markup": _alert_settings_keyboard(selected),
-    })
-
-
-def _handle_telegram_update(update: dict) -> None:
-    message = update.get("message") or {}
-    if message:
-        text = str(message.get("text", "")).strip()
-        command = text.split()[0].split("@", 1)[0].lower() if text else ""
-        if command == "/alerts":
-            from_user = message.get("from") or {}
-            chat = message.get("chat") or {}
-            user_id = str(from_user.get("id", "")).strip()
-            chat_id = str(chat.get("id", "")).strip()
-            client = _find_authorized_telegram_client(user_id)
-            if client and chat_id:
-                _send_alert_settings_menu(chat_id, client)
-            elif chat_id:
-                _telegram_api("sendMessage", {
-                    "chat_id": chat_id,
-                    "text": "⛔ ApexMacro VIP alert settings are available only to authorized active clients.",
-                })
-        return
-
-    callback = update.get("callback_query") or {}
-    if not callback:
-        return
-
-    callback_id = str(callback.get("id", ""))
-    data = str(callback.get("data", ""))
-    from_user = callback.get("from") or {}
-    user_id = str(from_user.get("id", "")).strip()
-    cb_message = callback.get("message") or {}
-    chat_id = str((cb_message.get("chat") or {}).get("id", "")).strip()
-    message_id = cb_message.get("message_id")
-
-    client = _find_authorized_telegram_client(user_id)
-    if not client:
-        if callback_id:
-            _telegram_api("answerCallbackQuery", {
-                "callback_query_id": callback_id,
-                "text": "VIP access is not authorized.",
-                "show_alert": True,
-            })
-        return
-
-    selected = _client_alert_asset_keys(client)
-    changed = False
-    if data.startswith("apex_alert_toggle:"):
-        asset_key = data.split(":", 1)[1]
-        if asset_key in ALERT_ASSETS:
-            if asset_key in selected:
-                selected.remove(asset_key)
-            else:
-                selected.add(asset_key)
-            changed = _set_client_alert_assets(user_id, selected)
-    elif data == "apex_alert_all:on":
-        selected = set(_all_alert_asset_keys())
-        changed = _set_client_alert_assets(user_id, selected)
-    elif data == "apex_alert_all:off":
-        selected = set()
-        changed = _set_client_alert_assets(user_id, selected)
-    elif data == "apex_alert_done":
-        if callback_id:
-            _telegram_api("answerCallbackQuery", {
-                "callback_query_id": callback_id,
-                "text": "Alert preferences saved.",
-            })
-        if chat_id and message_id is not None:
-            _telegram_api("editMessageText", {
-                "chat_id": chat_id,
-                "message_id": message_id,
-                "text": (
-                    "✅ *APEXMACRO — ALERT SETTINGS SAVED*\n"
-                    "━━━━━━━━━━━━━━━━━━━\n\n"
-                    "Your Shift Alert preferences are active.\n"
-                    "Send /alerts anytime to change them.\n\n"
-                    "⚡ *ApexMacro Institutional Terminal*"
-                ),
-                "parse_mode": "Markdown",
-            })
-        return
-    else:
-        if callback_id:
-            _telegram_api("answerCallbackQuery", {"callback_query_id": callback_id})
-        return
-
-    if callback_id:
-        _telegram_api("answerCallbackQuery", {
-            "callback_query_id": callback_id,
-            "text": "Saved" if changed else "No change",
-        })
-    if changed and chat_id and message_id is not None:
-        _edit_alert_settings_menu(chat_id, int(message_id), selected)
-
-
-def _load_telegram_update_offset() -> int:
-    try:
-        if os.path.exists(TELEGRAM_UPDATE_STATE_FILE):
-            with open(TELEGRAM_UPDATE_STATE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return max(0, int(data.get("offset", 0))) if isinstance(data, dict) else 0
-    except Exception:
-        pass
-    return 0
-
-
-def _save_telegram_update_offset(offset: int) -> None:
-    try:
-        tmp_path = TELEGRAM_UPDATE_STATE_FILE + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump({"offset": int(offset)}, f, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, TELEGRAM_UPDATE_STATE_FILE)
-    except Exception:
-        pass
-
-
-@st.cache_resource
-def _get_telegram_update_controller():
-    return {
-        "running": False,
-        "offset": _load_telegram_update_offset(),
-        "lock": threading.Lock(),
-    }
-
-
-def start_telegram_update_worker() -> None:
-    """Start one non-blocking daemon worker for /alerts and callback_query updates."""
-    if not TELEGRAM_BOT_TOKEN:
-        return
-    ctrl = _get_telegram_update_controller()
-    with ctrl["lock"]:
-        if ctrl["running"]:
-            return
-        ctrl["running"] = True
-
-    def _poll_updates() -> None:
-        while True:
-            try:
-                token = TELEGRAM_BOT_TOKEN
-                if not token:
-                    time.sleep(5)
-                    continue
-                response = requests.get(
-                    f"https://api.telegram.org/bot{token}/getUpdates",
-                    params={
-                        "offset": int(ctrl["offset"]),
-                        "timeout": 20,
-                        "allowed_updates": json.dumps(["message", "callback_query"]),
-                    },
-                    timeout=25,
-                )
-                data = response.json()
-                if not data.get("ok"):
-                    time.sleep(2)
-                    continue
-                for update in data.get("result", []):
-                    update_id = int(update.get("update_id", -1))
-                    try:
-                        _handle_telegram_update(update)
-                    finally:
-                        if update_id >= 0:
-                            ctrl["offset"] = max(int(ctrl["offset"]), update_id + 1)
-                            _save_telegram_update_offset(int(ctrl["offset"]))
-            except Exception:
-                time.sleep(2)
-
-    threading.Thread(
-        target=_poll_updates,
-        daemon=True,
-        name="ApexMacroTelegramUpdateWorker",
-    ).start()
 
 GOLD_SERIES = {"real_yield": "DFII10", "yield": "DGS10", "inflation_exp": "T10YIE"}
 OIL_SERIES  = {"wti": "DCOILWTICO", "brent": "DCOILBRENTEU"}
@@ -1239,45 +883,6 @@ def _build_multi_asset_alert_msg(asset_shifts: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def send_personalized_shift_alerts(asset_shifts: list[dict]) -> list[dict]:
-    """Filter confirmed global shifts per VIP client's saved Telegram market preferences."""
-    if not TELEGRAM_BOT_TOKEN or not asset_shifts:
-        return []
-
-    clients = load_vip_registry()
-    results: list[dict] = []
-    seen_chat_ids: set[str] = set()
-    for client in clients:
-        if not _client_license_is_current(client):
-            continue
-        chat_id = str(client.get("telegram_id", "")).strip()
-        if not chat_id or chat_id in seen_chat_ids:
-            continue
-        seen_chat_ids.add(chat_id)
-
-        selected = _client_alert_asset_keys(client)
-        filtered = [shift for shift in asset_shifts if shift.get("key") in selected]
-        if not filtered:
-            continue
-
-        if len(filtered) == 1:
-            sft = filtered[0]
-            message = _build_single_asset_alert_msg(
-                sft["display_name"], sft["icon"], sft["old_regime"], sft["new_regime"],
-                sft["score"], sft.get("news_pts"), sft["reason"]
-            )
-        else:
-            message = _build_multi_asset_alert_msg(filtered)
-
-        result = _telegram_api("sendMessage", {
-            "chat_id": chat_id,
-            "text": message,
-            "parse_mode": "Markdown",
-        })
-        results.append({"chat_id": chat_id, "result": result})
-    return results
-
-
 def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
     """Smart broad-regime monitoring for every configured currency plus Gold, Oil and NDX."""
     if not fred_key:
@@ -1336,9 +941,15 @@ def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
         except Exception:
             pass
 
-        if confirmed_shifts:
-            # Global Smart Shift detection remains unchanged; delivery is personalized per client.
-            send_personalized_shift_alerts(confirmed_shifts)
+        if len(confirmed_shifts) == 1:
+            sft = confirmed_shifts[0]
+            send_telegram_alert(_build_single_asset_alert_msg(
+                sft["display_name"], sft["icon"], sft["old_regime"], sft["new_regime"],
+                sft["score"], sft.get("news_pts"), sft["reason"]
+            ))
+        elif len(confirmed_shifts) >= 2:
+            # One grouped message only; no individual follow-up alerts for this cycle.
+            send_telegram_alert(_build_multi_asset_alert_msg(confirmed_shifts))
     except Exception:
         pass
 
@@ -3351,7 +2962,6 @@ def render_admin_key_generator() -> None:
                 "Client Name": c.get("client_name"),
                 "License Key": c.get("key"),
                 "Telegram ID": c.get("telegram_id", "—"),
-                "Alerts": ", ".join(_client_alert_asset_keys(c)) or "None",
                 "Plan": c.get("duration"),
                 "Expires": c.get("expires_at"),
                 "Status": c.get("current_status"),
@@ -3419,9 +3029,6 @@ def main() -> None:
 
     fred_key = DEFAULT_FRED_KEY
     channel_name = DEFAULT_TELEGRAM_CHANNEL
-
-    # Inbound bot settings run in their own cached daemon and never block Streamlit.
-    start_telegram_update_worker()
 
     if fred_key:
         start_background_alert_daemon(fred_key, channel_name)
