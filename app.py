@@ -1,5 +1,4 @@
 from __future__ import annotations
-from pathlib import Path
 import streamlit as st
 
 st.set_page_config(
@@ -9,14 +8,15 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-ROOT = Path(__file__).resolve().parent
-
+# IMPORTANT:
+# Register page sources with the SAME relative paths used by st.switch_page().
+# Streamlit requires the target page to exactly match a page registered here.
 pages = [
-    st.Page(str(ROOT / "home.py"), title="ApexMacro", default=True),
-    st.Page(str(ROOT / "login.py"), title="Login", url_path="login"),
-    st.Page(str(ROOT / "vip.py"), title="VIP Access", url_path="vip"),
-    st.Page(str(ROOT / "terminal.py"), title="Terminal", url_path="terminal"),
-    st.Page(str(ROOT / "admin.py"), title="Master Admin", url_path="admin"),
+    st.Page("home.py", title="ApexMacro", default=True),
+    st.Page("login.py", title="Login", url_path="login"),
+    st.Page("vip.py", title="VIP Access", url_path="vip"),
+    st.Page("terminal.py", title="Terminal", url_path="terminal"),
+    st.Page("admin.py", title="Master Admin", url_path="admin"),
 ]
 
 router = st.navigation(pages, position="hidden")
