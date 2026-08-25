@@ -5010,6 +5010,277 @@ def render_public_home() -> None:
     st.markdown("""
     <style>
       /* ----- exact-reference landing page ----- */
+      /* ----- premium header + hero refinement ----- */
+      .apex-home-shell{
+        position:relative;
+      }
+
+      .apex-ref-hero{
+        position:relative;
+        overflow:hidden;
+        min-height:560px;
+        border-radius:26px;
+        padding:46px 42px 38px;
+        background:
+          linear-gradient(90deg,rgba(3,12,19,.96) 0%,rgba(3,12,19,.93) 43%,rgba(3,12,19,.56) 62%,rgba(3,12,19,.18) 100%),
+          radial-gradient(circle at 88% 20%,rgba(0,226,242,.10),transparent 30%),
+          linear-gradient(145deg,rgba(5,18,27,.96),rgba(2,8,14,.995));
+        border:1px solid rgba(0,224,238,.35);
+        box-shadow:
+          inset 0 1px 0 rgba(255,255,255,.045),
+          0 28px 80px rgba(0,0,0,.42),
+          0 0 36px rgba(0,220,240,.035);
+      }
+
+      .apex-ref-hero::before{
+        content:"";
+        position:absolute;
+        inset:0;
+        pointer-events:none;
+        background:
+          linear-gradient(rgba(0,220,240,.018) 1px, transparent 1px),
+          linear-gradient(90deg,rgba(0,220,240,.018) 1px, transparent 1px);
+        background-size:34px 34px;
+        mask-image:linear-gradient(90deg,transparent,rgba(0,0,0,.45),rgba(0,0,0,.9));
+        opacity:.5;
+      }
+
+      .apex-ref-hero-inner{
+        position:relative;
+        z-index:3;
+        width:53%;
+        max-width:630px;
+      }
+
+      .apex-ref-badge{
+        display:inline-flex;
+        align-items:center;
+        gap:8px;
+        height:29px;
+        padding:0 12px;
+        border-radius:999px;
+        background:rgba(0,255,184,.06);
+        border:1px solid rgba(0,255,184,.24);
+        color:#82ffd7;
+        font-size:9px;
+        font-weight:900;
+        letter-spacing:1.55px;
+        text-transform:uppercase;
+        box-shadow:0 0 18px rgba(0,255,184,.06);
+      }
+
+      .apex-ref-badge::before{
+        content:"";
+        width:6px;
+        height:6px;
+        border-radius:50%;
+        background:#00f0a8;
+        box-shadow:0 0 10px #00f0a8;
+      }
+
+      .apex-ref-title{
+        margin-top:27px;
+        font-size:clamp(50px,4.4vw,72px);
+        line-height:.98;
+        letter-spacing:-2.6px;
+        font-weight:950;
+        color:#f5f7fa;
+        max-width:650px;
+      }
+
+      .apex-ref-title .line-white{color:#f5f7fa;}
+      .apex-ref-title .line-cyan{
+        color:#17ecfb;
+        text-shadow:0 0 22px rgba(23,236,251,.10);
+      }
+      .apex-ref-title .line-gold{
+        color:#f5bc3d;
+        text-shadow:0 0 22px rgba(245,188,61,.08);
+      }
+
+      .apex-ref-copy{
+        margin-top:22px;
+        max-width:600px;
+        color:#c5d0d9;
+        font-size:14px;
+        line-height:1.72;
+      }
+
+      .apex-ref-mini-grid{
+        margin-top:30px;
+        display:grid;
+        grid-template-columns:repeat(2,minmax(0,1fr));
+        gap:14px;
+        max-width:520px;
+      }
+
+      .apex-ref-mini-card{
+        display:flex;
+        align-items:center;
+        gap:12px;
+        min-height:74px;
+        padding:12px 14px;
+        border-radius:14px;
+        background:linear-gradient(145deg,rgba(8,20,30,.68),rgba(5,13,20,.52));
+        border:1px solid rgba(113,184,197,.15);
+        box-shadow:inset 0 1px 0 rgba(255,255,255,.025);
+        backdrop-filter:blur(12px);
+        -webkit-backdrop-filter:blur(12px);
+      }
+
+      .apex-ref-mini-icon{
+        width:42px;
+        height:42px;
+        min-width:42px;
+        border-radius:12px;
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        border:1px solid rgba(0,235,255,.25);
+        background:rgba(0,235,255,.045);
+        color:#24efff;
+        box-shadow:0 0 20px rgba(0,235,255,.07);
+      }
+
+      .apex-ref-mini-card.gold .apex-ref-mini-icon{
+        border-color:rgba(245,188,61,.25);
+        background:rgba(245,188,61,.045);
+        color:#f5bc3d;
+        box-shadow:0 0 18px rgba(245,188,61,.06);
+      }
+
+      .apex-ref-mini-title{
+        color:#f2f7fb;
+        font-size:13px;
+        font-weight:900;
+      }
+
+      .apex-ref-mini-sub{
+        margin-top:3px;
+        color:#8fa2b2;
+        font-size:10.5px;
+      }
+
+      .apex-ref-globe{
+        position:absolute;
+        z-index:1;
+        right:-1%;
+        top:0;
+        bottom:0;
+        width:52%;
+        opacity:.94;
+        background-position:center right;
+        background-size:cover;
+        filter:saturate(.95) contrast(1.03);
+        mask-image:linear-gradient(90deg,transparent 0%,rgba(0,0,0,.45) 16%,rgba(0,0,0,.92) 45%,#000 100%);
+        -webkit-mask-image:linear-gradient(90deg,transparent 0%,rgba(0,0,0,.45) 16%,rgba(0,0,0,.92) 45%,#000 100%);
+      }
+
+      .apex-ref-globe::after{
+        content:"";
+        position:absolute;
+        inset:0;
+        background:
+          linear-gradient(90deg,rgba(2,9,15,.88) 0%,rgba(2,9,15,.18) 34%,rgba(0,0,0,0) 72%),
+          radial-gradient(circle at 60% 45%,rgba(0,235,255,.08),transparent 38%);
+      }
+
+      @media(max-width:900px){
+        .apex-ref-hero{
+          min-height:530px;
+          padding:36px 24px 28px;
+        }
+        .apex-ref-hero-inner{
+          width:64%;
+          max-width:none;
+        }
+        .apex-ref-title{
+          font-size:44px;
+          max-width:500px;
+        }
+        .apex-ref-copy{
+          font-size:12.7px;
+          max-width:500px;
+        }
+        .apex-ref-globe{
+          width:55%;
+          opacity:.82;
+        }
+      }
+
+      @media(max-width:700px){
+        .apex-ref-hero{
+          min-height:520px;
+          padding:30px 20px 24px;
+          border-radius:22px;
+          background:
+            linear-gradient(90deg,rgba(3,12,19,.985) 0%,rgba(3,12,19,.94) 56%,rgba(3,12,19,.32) 100%),
+            radial-gradient(circle at 88% 18%,rgba(0,226,242,.09),transparent 28%),
+            linear-gradient(145deg,rgba(5,18,27,.96),rgba(2,8,14,.995));
+        }
+        .apex-ref-hero-inner{
+          width:72%;
+        }
+        .apex-ref-title{
+          font-size:39px;
+          line-height:1.01;
+          letter-spacing:-1.6px;
+        }
+        .apex-ref-copy{
+          font-size:12px;
+          line-height:1.65;
+        }
+        .apex-ref-mini-grid{
+          grid-template-columns:1fr 1fr;
+          gap:9px;
+          margin-top:22px;
+        }
+        .apex-ref-mini-card{
+          min-height:68px;
+          padding:10px 11px;
+        }
+        .apex-ref-mini-icon{
+          width:36px;
+          height:36px;
+          min-width:36px;
+        }
+        .apex-ref-mini-title{
+          font-size:11px;
+        }
+        .apex-ref-mini-sub{
+          font-size:9px;
+        }
+        .apex-ref-globe{
+          width:54%;
+          right:-8%;
+          opacity:.72;
+        }
+      }
+
+      @media(max-width:430px){
+        .apex-ref-hero{
+          min-height:500px;
+          padding:26px 17px 22px;
+        }
+        .apex-ref-hero-inner{
+          width:76%;
+        }
+        .apex-ref-title{
+          font-size:35px;
+        }
+        .apex-ref-copy{
+          font-size:11.5px;
+        }
+        .apex-ref-badge{
+          font-size:7.7px;
+          letter-spacing:1.25px;
+          height:27px;
+        }
+        .apex-ref-mini-grid{
+          max-width:100%;
+        }
+      }
+
       .block-container {
         max-width:1180px !important;
       }
@@ -5434,31 +5705,53 @@ def render_public_home() -> None:
 
     render_html("""
     <div class="apex-home-shell"><div id="apex-platform"></div>
+      
       <section class="apex-ref-hero">
         <div class="apex-ref-globe"></div>
         <div class="apex-ref-hero-inner">
-          <div class="apex-ref-kicker"><span class="apex-ref-kdot"></span>GLOBAL MACRO INTELLIGENCE ENGINE</div>
-          <div class="apex-ref-headline">
-            See the macro shift<br>
-            <span class="cyan">before it becomes</span><br>
-            <span class="gold">obvious.</span>
+          <div class="apex-ref-badge">GLOBAL MACRO INTELLIGENCE ENGINE</div>
+
+          <div class="apex-ref-title">
+            <div class="line-white">See the macro</div>
+            <div class="line-cyan">shift before it becomes</div>
+            <div class="line-gold">obvious.</div>
           </div>
-          <div class="apex-ref-desc">
-            ApexMacro combines global macro data, market catalysts, causal intelligence and live tactical price action
-            into one institutional-grade decision desk for Gold, Oil, Nasdaq-100 and global currencies.
+
+          <div class="apex-ref-copy">
+            ApexMacro combines global macro data, market catalysts, causal intelligence and live tactical
+            price action into one institutional-grade decision desk for Gold, Oil, Nasdaq-100 and global currencies.
           </div>
-          <div class="apex-ref-capabilities">
-            <div class="apex-ref-cap">
-              <div class="apex-ref-capicon">◎</div>
-              <div><div class="apex-ref-captitle">Multi-Asset</div><div class="apex-ref-capsub">Global Coverage</div></div>
+
+          <div class="apex-ref-mini-grid">
+            <div class="apex-ref-mini-card">
+              <div class="apex-ref-mini-icon">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
+                  <circle cx="12" cy="12" r="6"></circle>
+                  <circle cx="12" cy="12" r="2.3"></circle>
+                  <path d="M12 2v3M12 19v3M2 12h3M19 12h3"></path>
+                </svg>
+              </div>
+              <div>
+                <div class="apex-ref-mini-title">Multi-Asset</div>
+                <div class="apex-ref-mini-sub">Global Coverage</div>
+              </div>
             </div>
-            <div class="apex-ref-cap">
-              <div class="apex-ref-capicon gold">ϟ</div>
-              <div><div class="apex-ref-captitle">Real-Time</div><div class="apex-ref-capsub">Macro Intelligence</div></div>
+
+            <div class="apex-ref-mini-card gold">
+              <div class="apex-ref-mini-icon">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M13 2L5 13h6l-1 9 9-12h-6z"></path>
+                </svg>
+              </div>
+              <div>
+                <div class="apex-ref-mini-title">Real-Time</div>
+                <div class="apex-ref-mini-sub">Macro Intelligence</div>
+              </div>
             </div>
           </div>
         </div>
       </section>
+
 
       <div id="apex-features" class="apex-section-intro">
         <div class="apex-section-kicker">FEATURES</div>
