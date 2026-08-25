@@ -1,7 +1,0 @@
-streamlit>=1.45,<2
-pandas
-numpy
-requests
-plotly
-feedparser
-beautifulsoup4
