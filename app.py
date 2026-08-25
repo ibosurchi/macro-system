@@ -4908,6 +4908,92 @@ def render_public_home() -> None:
       .apex-market-items {display:flex;align-items:center;flex-wrap:wrap;gap:7px;color:#c8d4dc;font-size:9.5px;font-weight:750;}
       .apex-market-items i {width:3px;height:3px;border-radius:50%;background:#2adce8;opacity:.55;}
 
+
+      /* Desktop / laptop refinement */
+      @media(min-width:1000px) {
+        .block-container {
+          max-width:1240px !important;
+          padding-left:34px !important;
+          padding-right:34px !important;
+        }
+
+        .apex-home-shell {
+          max-width:1180px !important;
+          margin:0 auto !important;
+        }
+
+        .apex-ref-hero {
+          min-height:520px !important;
+          max-height:590px !important;
+          padding:40px 38px 30px !important;
+        }
+
+        .apex-ref-hero-inner {
+          width:52% !important;
+          max-width:610px !important;
+        }
+
+        .apex-ref-globe {
+          width:49% !important;
+          right:0 !important;
+          opacity:.88 !important;
+        }
+
+        .apex-ref-title {
+          font-size:clamp(48px,4.1vw,68px) !important;
+          line-height:.99 !important;
+          letter-spacing:-2.2px !important;
+          max-width:600px !important;
+        }
+
+        .apex-ref-copy {
+          font-size:14px !important;
+          line-height:1.68 !important;
+          max-width:560px !important;
+        }
+
+        .apex-ref-feature-grid {
+          grid-template-columns:repeat(3,minmax(0,1fr)) !important;
+          gap:16px !important;
+        }
+
+        .apex-ref-feature-card {
+          min-height:205px !important;
+          padding:22px !important;
+        }
+
+        .apex-ref-feature-title {
+          font-size:16px !important;
+          line-height:1.25 !important;
+        }
+
+        .apex-ref-feature-copy {
+          font-size:12px !important;
+          line-height:1.58 !important;
+        }
+
+        .apex-ref-cta {
+          display:grid !important;
+          grid-template-columns:1fr auto !important;
+          align-items:center !important;
+          gap:24px !important;
+          padding:26px 30px !important;
+        }
+      }
+
+      @media(min-width:1450px) {
+        .block-container { max-width:1320px !important; }
+        .apex-home-shell { max-width:1240px !important; }
+        .apex-ref-hero {
+          min-height:540px !important;
+          max-height:610px !important;
+        }
+        .apex-ref-title {
+          font-size:70px !important;
+          max-width:620px !important;
+        }
+      }
+
       @media(max-width:700px) {
         .block-container {
           padding-left:14px !important; padding-right:14px !important;
