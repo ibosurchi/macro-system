@@ -1228,6 +1228,40 @@ def _calc_currency_score_only(currency: str, fred_key: str, channel_name: str = 
     final_score = (0.50 * macro_score) + (0.50 * (news_points / 0.50))
     return final_score
 
+
+def _compose_gold_intelligence_score(gold_ry: float, gold_usd: float, sentiment_res: dict) -> dict:
+    """Established Gold model plus a bounded live-price confirmation overlay."""
+    gold_news_pts = float((sentiment_res.get("scores") or {}).get("Gold", 0.0))
+    base_score = (
+        (0.30 * float(gold_ry))
+        + (0.20 * float(gold_usd))
+        + (0.50 * (gold_news_pts / 0.50))
+    )
+
+    tactical = None
+    tactical_score = 0.0
+    try:
+        tactical = compute_tactical_move("Gold", base_score)
+        if tactical and int(tactical.get("confidence", 0)) >= 60:
+            tactical_score = float(np.clip(float(tactical.get("score", 0.0)), -1.0, 1.0))
+    except Exception:
+        tactical = None
+
+    # The original macro/news engine still owns 90% of the final decision.
+    final_score = float(np.clip((0.90 * base_score) + (0.10 * tactical_score), -1.0, 1.0))
+    return {
+        "score": final_score,
+        "base_score": base_score,
+        "news_points": gold_news_pts,
+        "tactical_score": tactical_score,
+        "tactical": tactical,
+        "gold_ai": sentiment_res.get("gold_ai", {}),
+        "gold_rule_points": float(sentiment_res.get("gold_rule_points", 0.0)),
+        "gold_ai_points": float(sentiment_res.get("gold_ai_points", 0.0)),
+        "gold_relevant_news_count": int(sentiment_res.get("gold_relevant_news_count", 0)),
+    }
+
+
 @st.cache_data(ttl=30, show_spinner=False)
 def _calc_gold_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> tuple[float | None, str, float]:
     ry_val_str = "N/A"
@@ -1267,10 +1301,8 @@ def _calc_gold_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CH
 
     all_news = fetch_all_instant_news(channel_name)
     sentiment_res = analyze_news_rule_based(all_news)
-    gold_news_pts = sentiment_res["scores"].get("Gold", 0.0)
-
-    gold_s = (0.30 * gold_ry) + (0.20 * gold_usd) + (0.50 * (gold_news_pts / 0.50))
-    return gold_s, ry_val_str, gold_news_pts
+    gold_intel = _compose_gold_intelligence_score(gold_ry, gold_usd, sentiment_res)
+    return gold_intel["score"], ry_val_str, gold_intel["news_points"]
 
 @st.cache_data(ttl=30, show_spinner=False)
 def _calc_oil_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> tuple[float | None, float]:
@@ -1345,7 +1377,7 @@ def _tactical_symbol_config(asset_key: str) -> dict[str, object] | None:
     """Map an ApexMacro asset to a liquid Yahoo market symbol and direction convention."""
     key = str(asset_key or "").strip()
     fixed = {
-        "Gold": {"symbol": "GC=F", "invert": False, "display": "Gold (XAUUSD)", "icon": "🥇"},
+        "Gold": {"symbol": "XAUUSD=X", "fallback_symbols": ["GC=F"], "invert": False, "display": "Gold (XAUUSD)", "icon": "🥇"},
         "Oil": {"symbol": "CL=F", "invert": False, "display": "Crude Oil (WTI)", "icon": "🛢️"},
         # Nasdaq futures are used so tactical movement remains available beyond cash-index hours.
         "NDX": {"symbol": "NQ=F", "invert": False, "display": "Nasdaq-100 (NDX)", "icon": "📊"},
@@ -1462,7 +1494,16 @@ def compute_tactical_move(asset_key: str, macro_score: float | None = None) -> d
     cfg = _tactical_symbol_config(asset_key)
     if not cfg:
         return None
-    df = _fetch_tactical_price_series(str(cfg["symbol"]))
+    symbols_to_try = [str(cfg.get("symbol", ""))]
+    symbols_to_try.extend([str(x) for x in (cfg.get("fallback_symbols") or []) if str(x)])
+    df = None
+    used_symbol = ""
+    for _symbol in symbols_to_try:
+        _candidate = _fetch_tactical_price_series(_symbol)
+        if _candidate is not None and not _candidate.empty and len(_candidate) >= 40:
+            df = _candidate
+            used_symbol = _symbol
+            break
     if df is None or df.empty or len(df) < 40:
         return None
 
@@ -1550,7 +1591,7 @@ def compute_tactical_move(asset_key: str, macro_score: float | None = None) -> d
         "key": asset_key,
         "display_name": str(cfg.get("display", asset_key)),
         "icon": str(cfg.get("icon", "📊")),
-        "symbol": str(cfg.get("symbol", "")),
+        "symbol": used_symbol or str(cfg.get("symbol", "")),
         "score": score,
         "label": label,
         "label_icon": _tactical_icon(label),
@@ -1621,6 +1662,22 @@ def _update_tactical_alert_state(state: dict[str, dict], tactical: dict, now_ts:
     key = str(tactical.get("key", ""))
     label = str(tactical.get("label", "Neutral"))
     strong = label if label in {"Strong Bullish", "Strong Bearish"} else ""
+
+    if key == "Gold" and label in {"Bullish", "Bearish"}:
+        ret15 = float(tactical.get("ret_15m", 0.0))
+        ret1h = float(tactical.get("ret_1h", 0.0))
+        confidence = int(tactical.get("confidence", 0))
+        structure = str(tactical.get("structure", ""))
+        same_direction = (
+            (ret15 > 0 and ret1h > 0)
+            if label == "Bullish"
+            else (ret15 < 0 and ret1h < 0)
+        )
+        meaningful_move = abs(ret1h) >= 0.0035
+        structural_move = structure in {"Upside Breakout", "Downside Breakdown"}
+        if confidence >= 68 and same_direction and (meaningful_move or structural_move):
+            strong = label
+
     stt = state.setdefault(key, {
         "active": "", "candidate": "", "candidate_since": None,
         "non_strong_since": None, "last_alert_ts": 0.0,
@@ -1643,8 +1700,20 @@ def _update_tactical_alert_state(state: dict[str, dict], tactical: dict, now_ts:
         stt["candidate_since"] = None
         return False
 
-    # Very strong breakout/breakdown can alert immediately; otherwise require ~3 minutes persistence.
-    immediate = abs(float(tactical.get("score", 0.0))) >= 0.78 and str(tactical.get("structure", "")) in {"Upside Breakout", "Downside Breakdown"}
+    structure_now = str(tactical.get("structure", ""))
+    score_now = abs(float(tactical.get("score", 0.0)))
+    confidence_now = int(tactical.get("confidence", 0))
+    ret1h_now = abs(float(tactical.get("ret_1h", 0.0)))
+
+    immediate = score_now >= 0.78 and structure_now in {"Upside Breakout", "Downside Breakdown"}
+    if key == "Gold" and strong:
+        immediate = immediate or (
+            confidence_now >= 72
+            and (
+                (score_now >= 0.42 and structure_now in {"Upside Breakout", "Downside Breakdown"})
+                or ret1h_now >= 0.006
+            )
+        )
     if stt.get("candidate") != strong:
         stt["candidate"] = strong
         stt["candidate_since"] = float(now_ts)
@@ -1652,7 +1721,8 @@ def _update_tactical_alert_state(state: dict[str, dict], tactical: dict, now_ts:
             return False
 
     candidate_since = float(stt.get("candidate_since") or now_ts)
-    if not immediate and float(now_ts) - candidate_since < 180.0:
+    required_persistence = 60.0 if key == "Gold" else 180.0
+    if not immediate and float(now_ts) - candidate_since < required_persistence:
         return False
 
     # Prevent repeated same-direction alerts during noisy reconnects/restarts.
@@ -1677,8 +1747,9 @@ def _build_tactical_alert_msg(tactical: dict) -> str:
         f"🚦 *Momentum:* `{tactical['momentum']}`\n"
         f"🧱 *Structure:* `{tactical['structure']}`\n\n"
         f"⏱ *15m:* `{tactical['ret_15m']*100:+.2f}%`  |  *1h:* `{tactical['ret_1h']*100:+.2f}%`  |  *4h:* `{tactical['ret_4h']*100:+.2f}%`\n"
-        f"📌 *Interpretation:* {tactical['interpretation']}\n\n"
-        "_Short-term price action layer — Macro Outlook remains independent._\n"
+        f"📌 *Interpretation:* {tactical['interpretation']}\n"
+        f"💹 *Price Source:* `{tactical.get('symbol', 'Live Market')}`\n\n"
+        "_This alert can fire before the broader Macro Outlook changes; price action and macro regime are intentionally tracked as separate layers._\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "⚡ *ApexMacro Institutional Terminal v15.0*"
     )
@@ -2167,6 +2238,206 @@ def get_openrouter_analysis(news_text: str, api_key: str = DEFAULT_OPENROUTER_KE
     except Exception as e:
         return f"AI Error: {str(e)}"
 
+
+def _is_gold_relevant_news(article: dict) -> bool:
+    """Identify headlines that can materially affect XAUUSD, even if 'gold' is not named."""
+    text = f"{article.get('title', '')} {article.get('description', '')}".lower()
+    terms = [
+        "gold", "xau", "xauusd", "bullion", "precious metal", "safe haven", "safe-haven",
+        "real yield", "real yields", "treasury yield", "treasury yields", "bond yield", "bond yields",
+        "dollar index", "dxy", "us dollar", "u.s. dollar", "dollar weak", "dollar strength",
+        "federal reserve", "fed ", "powell", "rate cut", "rate cuts", "rate hike", "rate hikes",
+        "dovish", "hawkish", "inflation", "cpi", "pce", "payroll", "nonfarm", "nfp",
+        "geopolitical", "war", "missile", "attack", "escalation", "ceasefire", "sanction",
+        "central bank buying", "central banks buy", "gold reserve", "gold reserves",
+        "gold etf", "etf inflow", "etf outflow"
+    ]
+    return any(term in text for term in terms)
+
+
+def _gold_relevant_articles(articles: list, limit: int = 14) -> list:
+    relevant = [a for a in (articles or []) if _is_gold_relevant_news(a)]
+    return relevant[:max(1, int(limit))]
+
+
+def _gold_rule_based_news_points(articles: list) -> float:
+    """Contextual XAUUSD news score in the existing [-0.50, +0.50] convention."""
+    score = 0.0
+    for art in _gold_relevant_articles(articles, 20):
+        text = f"{art.get('title', '')} {art.get('description', '')}".lower()
+
+        if any(k in text for k in [
+            "gold rises", "gold rise", "gold gains", "gold jumps", "gold surges", "gold rallies",
+            "bullion rises", "bullion gains", "xauusd rises", "xauusd rallies",
+            "gold hits record", "gold record high", "gold breaks higher"
+        ]):
+            score += 0.11
+        if any(k in text for k in [
+            "gold falls", "gold drops", "gold slides", "gold slumps", "gold tumbles",
+            "bullion falls", "xauusd falls", "gold selloff", "gold breaks lower"
+        ]):
+            score -= 0.11
+
+        if any(k in text for k in [
+            "real yields fall", "real yield falls", "real yields decline", "treasury yields fall",
+            "yields drop", "yields retreat", "bond yields fall"
+        ]):
+            score += 0.075
+        if any(k in text for k in [
+            "real yields rise", "real yield rises", "real yields climb", "treasury yields rise",
+            "yields jump", "yield spike", "yields spike", "bond yields rise"
+        ]):
+            score -= 0.075
+
+        if any(k in text for k in [
+            "dollar weakens", "dollar falls", "dollar drops", "dxy falls", "dxy weakens",
+            "weaker dollar", "dollar retreats"
+        ]):
+            score += 0.07
+        if any(k in text for k in [
+            "dollar strengthens", "dollar rises", "dollar jumps", "dxy rises", "dxy strengthens",
+            "stronger dollar", "dollar rallies"
+        ]):
+            score -= 0.07
+
+        if any(k in text for k in [
+            "rate cut", "rate cuts", "dovish fed", "fed dovish", "easing cycle",
+            "lower rates", "cuts rates"
+        ]):
+            score += 0.055
+        if any(k in text for k in [
+            "rate hike", "rate hikes", "hawkish fed", "fed hawkish",
+            "higher for longer", "rates stay high"
+        ]):
+            score -= 0.055
+
+        if any(k in text for k in [
+            "geopolitical tensions", "geopolitical risk", "escalation", "missile", "attack",
+            "military strike", "war ", "safe haven demand", "safe-haven demand", "crisis"
+        ]):
+            score += 0.055
+        if any(k in text for k in [
+            "ceasefire", "de-escalation", "deescalation", "peace deal",
+            "geopolitical tensions ease"
+        ]):
+            score -= 0.035
+
+        if any(k in text for k in [
+            "central bank buying", "central banks buy", "gold reserves increase",
+            "gold etf inflow", "gold etf inflows", "etf inflows into gold"
+        ]):
+            score += 0.07
+        if any(k in text for k in [
+            "central bank selling", "gold reserves decline", "gold etf outflow",
+            "gold etf outflows", "etf outflows from gold"
+        ]):
+            score -= 0.07
+
+    return float(np.clip(score, -0.50, 0.50))
+
+
+def get_openrouter_gold_signal(news_text: str, api_key: str = DEFAULT_OPENROUTER_KEY) -> dict:
+    """Structured, bounded AI interpretation for Gold."""
+    default = {
+        "direction": "Neutral",
+        "score": 0.0,
+        "confidence": 0.0,
+        "horizon": "Unknown",
+        "reason": "AI Gold signal unavailable.",
+        "active": False,
+    }
+    if not news_text or not api_key:
+        return default
+
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "HTTP-Referer": "https://apexmacro.com",
+        "X-Title": "ApexMacro Gold Intelligence",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": "openai/gpt-4o-mini",
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are the Gold intelligence analyst for an institutional macro terminal. "
+                    "Assess ONLY the directional impact of the supplied CURRENT news on Gold/XAUUSD. "
+                    "Reason through real yields, USD/DXY, Federal Reserve expectations, inflation, "
+                    "safe-haven/geopolitical demand, central-bank demand and ETF flows. "
+                    "Do not treat generic positive/negative words as Gold direction. "
+                    "Return ONLY valid JSON with keys: direction, score, confidence, horizon, reason. "
+                    "direction must be Bullish, Neutral or Bearish. "
+                    "score must be from -1.0 to +1.0. confidence must be from 0 to 100. "
+                    "horizon must be Intraday, 1-3 Days, or Multi-Day. "
+                    "reason must be one concise sentence."
+                )
+            },
+            {"role": "user", "content": news_text},
+        ],
+        "temperature": 0.1,
+    }
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        content = str(data["choices"][0]["message"]["content"]).strip()
+        content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.I | re.S).strip()
+        parsed = json.loads(content)
+        direction = str(parsed.get("direction", "Neutral")).strip().title()
+        if direction not in {"Bullish", "Neutral", "Bearish"}:
+            direction = "Neutral"
+        score = float(np.clip(float(parsed.get("score", 0.0)), -1.0, 1.0))
+        confidence = float(np.clip(float(parsed.get("confidence", 0.0)), 0.0, 100.0))
+        return {
+            "direction": direction,
+            "score": score,
+            "confidence": confidence,
+            "horizon": str(parsed.get("horizon", "Unknown"))[:40],
+            "reason": str(parsed.get("reason", ""))[:280],
+            "active": True,
+        }
+    except Exception:
+        return default
+
+
+def _gold_news_intelligence(articles: list) -> dict:
+    """Blend contextual Gold rules with bounded AI in the existing ±0.50 news layer."""
+    relevant = _gold_relevant_articles(articles, 14)
+    rule_points = _gold_rule_based_news_points(relevant)
+    if not relevant:
+        return {
+            "points": 0.0,
+            "rule_points": 0.0,
+            "ai_points": 0.0,
+            "ai": {
+                "direction": "Neutral", "score": 0.0, "confidence": 0.0,
+                "horizon": "Unknown", "reason": "No Gold-relevant live news detected.",
+                "active": False,
+            },
+            "relevant_count": 0,
+        }
+
+    news_text = "\n".join(
+        f"- {a.get('title', '')}: {a.get('description', '')}"
+        for a in relevant[:12]
+    )
+    ai = get_openrouter_gold_signal(news_text)
+    confidence_factor = float(ai.get("confidence", 0.0)) / 100.0 if ai.get("active") else 0.0
+    ai_points = float(np.clip(float(ai.get("score", 0.0)) * 0.50 * confidence_factor, -0.50, 0.50))
+
+    # Rules remain the majority of the news layer; AI is deliberately bounded.
+    blended = (0.65 * rule_points) + (0.35 * ai_points)
+    return {
+        "points": float(np.clip(blended, -0.50, 0.50)),
+        "rule_points": rule_points,
+        "ai_points": ai_points,
+        "ai": ai,
+        "relevant_count": len(relevant),
+    }
+
+
 def _is_nasdaq_news(article: dict) -> bool:
     text = f"{article.get('title', '')} {article.get('description', '')}".lower()
     terms = [
@@ -2198,7 +2469,7 @@ def analyze_news_rule_based(articles: list) -> dict:
     if not articles:
         return {"scores": scores, "drivers": drivers, "ai_summary": "No live news articles detected for AI analysis.", "ai_active": True}
 
-    combined_news = "\n".join([f"- {a.get('title', '')}: {a.get('description', '')}" for a in articles[:6]])
+    combined_news = "\n".join([f"- {a.get('title', '')}: {a.get('description', '')}" for a in articles[:10]])
     ai_summary = get_openrouter_analysis(combined_news)
 
     bullish_keywords = ["surge", "jump", "higher", "beat", "strong", "rally", "growth", "bull", "cut inflation", "options", "profit"]
@@ -2212,8 +2483,12 @@ def analyze_news_rule_based(articles: list) -> dict:
         if any(k in text for k in bearish_keywords):
             sentiment_delta -= 0.04
 
+    gold_intel = _gold_news_intelligence(articles)
+
     for k in scores:
-        if k in ["Gold", "CHF"]:
+        if k == "Gold":
+            scores[k] = float(gold_intel["points"])
+        elif k == "CHF":
             scores[k] = max(min(-sentiment_delta + 0.05, 0.5), -0.5)
         elif k in ["Oil"]:
             scores[k] = max(min(sentiment_delta + 0.08, 0.5), -0.5)
@@ -2237,7 +2512,16 @@ def analyze_news_rule_based(articles: list) -> dict:
         else:
             scores[k] = max(min(sentiment_delta, 0.5), -0.5)
 
-    return {"scores": scores, "drivers": drivers, "ai_summary": ai_summary, "ai_active": True}
+    return {
+        "scores": scores,
+        "drivers": drivers,
+        "ai_summary": ai_summary,
+        "ai_active": True,
+        "gold_ai": gold_intel.get("ai", {}),
+        "gold_rule_points": gold_intel.get("rule_points", 0.0),
+        "gold_ai_points": gold_intel.get("ai_points", 0.0),
+        "gold_relevant_news_count": gold_intel.get("relevant_count", 0),
+    }
 
 def calc_mtf(vals: list, cat: str) -> dict | None:
     if not vals or len(vals) < 2:
@@ -2680,9 +2964,12 @@ def page_gold(fred_key: str, channel_name: str) -> None:
     
     all_news = fetch_all_instant_news(channel_name)
     sentiment_res = analyze_news_rule_based(all_news)
-    gold_news_pts = sentiment_res["scores"].get("Gold", 0.0)
-
-    gold_s = (0.30 * gold_ry) + (0.20 * gold_usd) + (0.50 * (gold_news_pts / 0.50))
+    gold_intel = _compose_gold_intelligence_score(gold_ry, gold_usd, sentiment_res)
+    gold_news_pts = gold_intel["news_points"]
+    gold_s = gold_intel["score"]
+    gold_base_s = gold_intel["base_score"]
+    gold_ai = gold_intel.get("gold_ai", {})
+    gold_tactical_confirm = gold_intel.get("tactical")
 
     render_html('<div class="sec-title">Key Safe-Haven Indicators</div>')
     k1, k2, k3 = st.columns(3)
@@ -2738,15 +3025,35 @@ def page_gold(fred_key: str, channel_name: str) -> None:
     with d_col:
         render_html('<div class="sec-title">Gold Direction &amp; AI Synthesis &nbsp; <span style="color:#00ffa3;font-size:10px;font-weight:800;">⚡ Multi-Alert Active</span></div>')
         gn_color = "#00ffa3" if gold_news_pts > 0 else ("#ff5e75" if gold_news_pts < 0 else "#8fa3b4")
-        ai_gold_summary = sentiment_res.get("ai_summary", "")
-        ai_summary_html = f'<div style="margin-top:10px;padding:10px 12px;background:rgba(255,209,102,0.06);border:1px solid rgba(255,209,102,0.22);border-radius:10px;font-size:11.5px;color:#ecf7ff;text-align:left;line-height:1.5;"><b style="color:#ffd166;">Gold Desk AI Summary:</b> {ai_gold_summary}</div>' if ai_gold_summary else ''
+        gold_ai_direction = str(gold_ai.get("direction", "Neutral"))
+        gold_ai_confidence = float(gold_ai.get("confidence", 0.0))
+        gold_ai_reason = str(gold_ai.get("reason", ""))
+        gold_ai_horizon = str(gold_ai.get("horizon", "Unknown"))
+        gold_news_count = int(gold_intel.get("gold_relevant_news_count", 0))
+        tactical_confirm_text = (
+            f"{gold_tactical_confirm.get('label_icon', '')} {gold_tactical_confirm.get('label', 'Neutral')} "
+            f"({int(gold_tactical_confirm.get('confidence', 0))}% confidence)"
+            if gold_tactical_confirm else "Unavailable"
+        )
+        ai_summary_html = (
+            f'<div style="margin-top:10px;padding:10px 12px;background:rgba(255,209,102,0.06);'
+            f'border:1px solid rgba(255,209,102,0.22);border-radius:10px;font-size:11.5px;color:#ecf7ff;'
+            f'text-align:left;line-height:1.55;"><b style="color:#ffd166;">Gold AI Signal:</b> '
+            f'{gold_ai_direction} • {gold_ai_confidence:.0f}% • {gold_ai_horizon}<br>'
+            f'<span style="color:#9fb1bf;">{gold_ai_reason}</span></div>'
+        ) if gold_ai.get("active") else (
+            '<div style="margin-top:10px;padding:10px 12px;background:rgba(255,255,255,0.03);'
+            'border:1px solid rgba(255,255,255,0.08);border-radius:10px;font-size:11px;color:#8fa3b4;">'
+            'Gold AI signal is temporarily unavailable; contextual rules and macro data remain active.</div>'
+        )
 
         render_html(f"""
         <div class="comp-box" style="height:100%;text-align:left;padding:18px 20px;">
           <div style="font-size:11px;font-weight:800;color:#8fa3b4;text-transform:uppercase;margin-bottom:8px;">🥇 GOLD (XAUUSD) OVERALL BIAS</div>
           <div style="margin-bottom:12px;">{badge(gold_s, lg=True)}</div>
           <div style="font-size:18px;font-weight:900;color:#fff;">Composite: <span style="color:#ffd166;">{gold_s:+.3f}</span></div>
-          <div style="font-size:11.5px;color:#8fa3b4;margin-top:4px;">Yield Dynamics (50%): <b style="color:#fff;">{(0.30*gold_ry + 0.20*gold_usd):+.3f}</b> | News Sentiment (50%): <b style="color:{gn_color};">{gold_news_pts:+.2f} pts</b></div>
+          <div style="font-size:11.5px;color:#8fa3b4;margin-top:4px;">Established Macro + News Score: <b style="color:#fff;">{gold_base_s:+.3f}</b> | Contextual Gold News: <b style="color:{gn_color};">{gold_news_pts:+.2f} pts</b></div>
+          <div style="font-size:11px;color:#8fa3b4;margin-top:5px;">Gold-Relevant Headlines: <b style="color:#ecf7ff;">{gold_news_count}</b> | Live Price Confirmation: <b style="color:#00f5ff;">{tactical_confirm_text}</b></div>
           {ai_summary_html}
           <div style="margin-top:10px;font-size:11px;color:#8fa3b4;">
             <div>• <b>Real Yield Spread:</b> Negative real yield momentum supports XAUUSD expansion.</div>
