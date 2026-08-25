@@ -4455,9 +4455,52 @@ def render_public_home() -> None:
     """ApexMacro public landing page shown before login or VIP checkout."""
     render_public_nav("home")
 
+    # Public landing-page responsive glass system.
+    st.markdown("""
+    <style>
+      /* Glass treatment for the public landing page */
+      .apex-glass {
+        background: linear-gradient(145deg, rgba(16,30,43,.62), rgba(5,12,21,.48)) !important;
+        border: 1px solid rgba(170,232,242,.16) !important;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.055), 0 18px 50px rgba(0,0,0,.22) !important;
+        backdrop-filter: blur(18px) saturate(125%);
+        -webkit-backdrop-filter: blur(18px) saturate(125%);
+      }
+      @media (max-width: 700px) {
+        /* HTML grids must stack on phones instead of squeezing text into narrow columns. */
+        .apex-feature-grid { grid-template-columns: 1fr !important; gap: 12px !important; }
+        .apex-stack-grid { grid-template-columns: 1fr !important; gap: 12px !important; }
+        .apex-workflow-grid { grid-template-columns: repeat(2, minmax(0,1fr)) !important; }
+        .apex-stat-grid { grid-template-columns: repeat(2, minmax(0,1fr)) !important; }
+        .apex-hero { padding: 38px 18px 32px !important; border-radius: 22px !important; }
+        .apex-hero-title { font-size: 38px !important; line-height: 1.04 !important; letter-spacing: -1.5px !important; }
+        .apex-section-title { font-size: 24px !important; line-height: 1.18 !important; }
+        .apex-card { padding: 20px !important; min-width: 0 !important; }
+        .apex-card-title {
+          font-size: 17px !important;
+          line-height: 1.25 !important;
+          overflow-wrap: normal !important;
+          word-break: normal !important;
+          hyphens: none !important;
+        }
+        .apex-card-copy {
+          font-size: 12.5px !important;
+          line-height: 1.65 !important;
+          overflow-wrap: normal !important;
+          word-break: normal !important;
+          hyphens: none !important;
+        }
+      }
+      @media (max-width: 420px) {
+        .apex-hero-title { font-size: 34px !important; }
+        .apex-workflow-grid { grid-template-columns: 1fr !important; }
+      }
+    </style>
+    """, unsafe_allow_html=True)
+
     # Hero
     render_html("""
-    <div style="position:relative;overflow:hidden;border-radius:28px;padding:58px 34px 46px;
+    <div class="apex-hero apex-glass" style="position:relative;overflow:hidden;border-radius:28px;padding:58px 34px 46px;
                 background:
                   radial-gradient(circle at 82% 18%,rgba(0,245,255,.12),transparent 29%),
                   radial-gradient(circle at 14% 92%,rgba(255,209,102,.07),transparent 28%),
@@ -4473,7 +4516,7 @@ def render_public_home() -> None:
           <span style="width:6px;height:6px;border-radius:50%;background:#00ffa3;box-shadow:0 0 12px #00ffa3;"></span>
           Global Macro Intelligence Engine
         </div>
-        <div style="font-size:clamp(36px,6vw,72px);font-weight:950;line-height:.98;letter-spacing:-2.8px;
+        <div class="apex-hero-title" style="font-size:clamp(36px,6vw,72px);font-weight:950;line-height:.98;letter-spacing:-2.8px;
                     color:#f4fbff;margin-top:23px;">
           See the macro shift<br>
           <span style="background:linear-gradient(90deg,#00f5ff,#9ffcff,#ffd166);
@@ -4489,34 +4532,22 @@ def render_public_home() -> None:
     </div>
     """)
 
-    cta1, cta2, cta3 = st.columns([1, 1.25, 1], vertical_alignment="center")
-    with cta2:
-        a, b = st.columns(2)
-        with a:
-            if st.button("Open Login", key="home_hero_login", use_container_width=True):
-                _set_public_view("login")
-                st.rerun()
-        with b:
-            if st.button("Get VIP Access", key="home_hero_vip", type="primary", use_container_width=True):
-                _set_public_view("vip")
-                st.rerun()
-
     render_html("""
-    <div style="margin:26px auto 8px;max-width:920px;display:grid;grid-template-columns:repeat(4,1fr);
+    <div class="apex-stat-grid" style="margin:26px auto 8px;max-width:920px;display:grid;grid-template-columns:repeat(4,1fr);
                 gap:10px;">
-      <div style="padding:13px 10px;text-align:center;border-radius:13px;background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.07);">
+      <div style="padding:13px 10px;text-align:center;border-radius:13px;background:linear-gradient(145deg,rgba(20,38,50,.55),rgba(7,15,24,.48));border:1px solid rgba(190,235,242,.14);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);">
         <div style="font-size:9px;color:#6f879a;letter-spacing:1.2px;">MARKETS</div>
         <div style="font-size:13px;font-weight:850;color:#e9f7ff;margin-top:4px;">Multi-Asset</div>
       </div>
-      <div style="padding:13px 10px;text-align:center;border-radius:13px;background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.07);">
+      <div style="padding:13px 10px;text-align:center;border-radius:13px;background:linear-gradient(145deg,rgba(20,38,50,.55),rgba(7,15,24,.48));border:1px solid rgba(190,235,242,.14);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);">
         <div style="font-size:9px;color:#6f879a;letter-spacing:1.2px;">SIGNALS</div>
         <div style="font-size:13px;font-weight:850;color:#e9f7ff;margin-top:4px;">Macro + Tactical</div>
       </div>
-      <div style="padding:13px 10px;text-align:center;border-radius:13px;background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.07);">
+      <div style="padding:13px 10px;text-align:center;border-radius:13px;background:linear-gradient(145deg,rgba(20,38,50,.55),rgba(7,15,24,.48));border:1px solid rgba(190,235,242,.14);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);">
         <div style="font-size:9px;color:#6f879a;letter-spacing:1.2px;">ALERTS</div>
         <div style="font-size:13px;font-weight:850;color:#e9f7ff;margin-top:4px;">Telegram Live</div>
       </div>
-      <div style="padding:13px 10px;text-align:center;border-radius:13px;background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.07);">
+      <div style="padding:13px 10px;text-align:center;border-radius:13px;background:linear-gradient(145deg,rgba(20,38,50,.55),rgba(7,15,24,.48));border:1px solid rgba(190,235,242,.14);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);">
         <div style="font-size:9px;color:#6f879a;letter-spacing:1.2px;">ACCESS</div>
         <div style="font-size:13px;font-weight:850;color:#e9f7ff;margin-top:4px;">VIP Terminal</div>
       </div>
@@ -4527,14 +4558,14 @@ def render_public_home() -> None:
     render_html("""
     <div style="margin:54px 0 18px;text-align:center;">
       <div style="font-size:9px;font-weight:900;letter-spacing:2.2px;color:#00f5ff;text-transform:uppercase;">The Intelligence Stack</div>
-      <div style="font-size:28px;font-weight:950;color:#eef9ff;margin-top:7px;">One desk. Two horizons. Clearer decisions.</div>
+      <div class="apex-section-title" style="font-size:28px;font-weight:950;color:#eef9ff;margin-top:7px;">One desk. Two horizons. Clearer decisions.</div>
       <div style="font-size:12px;color:#8298aa;max-width:660px;margin:8px auto 0;line-height:1.65;">
         Macro Outlook looks ahead. Tactical Move reads what price is doing now. ApexMacro keeps both layers separate so early signals stay early.
       </div>
     </div>
 
-    <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:20px;">
-      <div style="padding:24px;border-radius:19px;background:linear-gradient(145deg,rgba(0,245,255,.055),rgba(7,14,23,.95));
+    <div class="apex-stack-grid" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:20px;">
+      <div class="apex-card apex-glass" style="padding:24px;border-radius:19px;background:linear-gradient(145deg,rgba(0,245,255,.055),rgba(7,14,23,.72));
                   border:1px solid rgba(0,245,255,.15);">
         <div style="font-size:10px;letter-spacing:1.6px;color:#00f5ff;font-weight:900;">01 • MACRO OUTLOOK</div>
         <div style="font-size:19px;font-weight:900;color:#f1fbff;margin-top:10px;">Forward-looking regime intelligence</div>
@@ -4542,7 +4573,7 @@ def render_public_home() -> None:
           Tracks macro conditions, policy, yields, growth, inflation, currencies and catalysts to identify Bullish, Neutral or Bearish pressure before price fully reflects it.
         </div>
       </div>
-      <div style="padding:24px;border-radius:19px;background:linear-gradient(145deg,rgba(255,209,102,.05),rgba(7,14,23,.95));
+      <div class="apex-card apex-glass" style="padding:24px;border-radius:19px;background:linear-gradient(145deg,rgba(255,209,102,.05),rgba(7,14,23,.72));
                   border:1px solid rgba(255,209,102,.14);">
         <div style="font-size:10px;letter-spacing:1.6px;color:#ffd166;font-weight:900;">02 • TACTICAL MOVE</div>
         <div style="font-size:19px;font-weight:900;color:#f1fbff;margin-top:10px;">Live short-term price-action layer</div>
@@ -4557,33 +4588,33 @@ def render_public_home() -> None:
     render_html("""
     <div style="margin:52px 0 17px;">
       <div style="font-size:9px;font-weight:900;letter-spacing:2.2px;color:#00f5ff;text-transform:uppercase;">Inside ApexMacro</div>
-      <div style="font-size:26px;font-weight:950;color:#eef9ff;margin-top:6px;">Built for macro awareness, not noise.</div>
+      <div class="apex-section-title" style="font-size:26px;font-weight:950;color:#eef9ff;margin-top:6px;">Built for macro awareness, not noise.</div>
     </div>
 
-    <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;">
-      <div style="padding:20px;border-radius:17px;background:rgba(8,16,27,.78);border:1px solid rgba(255,255,255,.075);">
-        <div style="font-size:22px;">⚡</div><div style="font-size:15px;font-weight:900;color:#edf9ff;margin-top:10px;">Smart Shift Alerts</div>
-        <div style="font-size:11.5px;color:#8299aa;line-height:1.65;margin-top:6px;">Regime-change monitoring with confirmation logic designed to reduce repetitive alerts.</div>
+    <div class="apex-feature-grid" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;">
+      <div class="apex-card apex-glass" style="padding:20px;border-radius:17px;">
+        <div style="font-size:22px;">⚡</div><div class="apex-card-title" style="font-size:15px;font-weight:900;color:#edf9ff;margin-top:10px;">Smart Shift Alerts</div>
+        <div class="apex-card-copy" style="font-size:11.5px;color:#8299aa;line-height:1.65;margin-top:6px;">Regime-change monitoring with confirmation logic designed to reduce repetitive alerts.</div>
       </div>
-      <div style="padding:20px;border-radius:17px;background:rgba(8,16,27,.78);border:1px solid rgba(255,255,255,.075);">
-        <div style="font-size:22px;">🧭</div><div style="font-size:15px;font-weight:900;color:#edf9ff;margin-top:10px;">Catalyst Forecaster</div>
-        <div style="font-size:11.5px;color:#8299aa;line-height:1.65;margin-top:6px;">A structured view of upcoming macro catalysts and their potential cross-asset implications.</div>
+      <div class="apex-card apex-glass" style="padding:20px;border-radius:17px;">
+        <div style="font-size:22px;">🧭</div><div class="apex-card-title" style="font-size:15px;font-weight:900;color:#edf9ff;margin-top:10px;">Catalyst Forecaster</div>
+        <div class="apex-card-copy" style="font-size:11.5px;color:#8299aa;line-height:1.65;margin-top:6px;">A structured view of upcoming macro catalysts and their potential cross-asset implications.</div>
       </div>
-      <div style="padding:20px;border-radius:17px;background:rgba(8,16,27,.78);border:1px solid rgba(255,255,255,.075);">
-        <div style="font-size:22px;">🧠</div><div style="font-size:15px;font-weight:900;color:#edf9ff;margin-top:10px;">Causal Intelligence</div>
-        <div style="font-size:11.5px;color:#8299aa;line-height:1.65;margin-top:6px;">Connects drivers, catalysts and market transmission channels instead of showing isolated indicators.</div>
+      <div class="apex-card apex-glass" style="padding:20px;border-radius:17px;">
+        <div style="font-size:22px;">🧠</div><div class="apex-card-title" style="font-size:15px;font-weight:900;color:#edf9ff;margin-top:10px;">Causal Intelligence</div>
+        <div class="apex-card-copy" style="font-size:11.5px;color:#8299aa;line-height:1.65;margin-top:6px;">Connects drivers, catalysts and market transmission channels instead of showing isolated indicators.</div>
       </div>
-      <div style="padding:20px;border-radius:17px;background:rgba(8,16,27,.78);border:1px solid rgba(255,255,255,.075);">
-        <div style="font-size:22px;">📡</div><div style="font-size:15px;font-weight:900;color:#edf9ff;margin-top:10px;">Personal Telegram Alerts</div>
-        <div style="font-size:11.5px;color:#8299aa;line-height:1.65;margin-top:6px;">Clients choose the markets they care about and receive personalized shift and tactical notifications.</div>
+      <div class="apex-card apex-glass" style="padding:20px;border-radius:17px;">
+        <div style="font-size:22px;">📡</div><div class="apex-card-title" style="font-size:15px;font-weight:900;color:#edf9ff;margin-top:10px;">Personal Telegram Alerts</div>
+        <div class="apex-card-copy" style="font-size:11.5px;color:#8299aa;line-height:1.65;margin-top:6px;">Clients choose the markets they care about and receive personalized shift and tactical notifications.</div>
       </div>
-      <div style="padding:20px;border-radius:17px;background:rgba(8,16,27,.78);border:1px solid rgba(255,255,255,.075);">
-        <div style="font-size:22px;">🌐</div><div style="font-size:15px;font-weight:900;color:#edf9ff;margin-top:10px;">Multi-Asset Desks</div>
-        <div style="font-size:11.5px;color:#8299aa;line-height:1.65;margin-top:6px;">Dedicated views for currencies, Gold, Oil and Nasdaq-100 in a single institutional workspace.</div>
+      <div class="apex-card apex-glass" style="padding:20px;border-radius:17px;">
+        <div style="font-size:22px;">🌐</div><div class="apex-card-title" style="font-size:15px;font-weight:900;color:#edf9ff;margin-top:10px;">Multi-Asset Desks</div>
+        <div class="apex-card-copy" style="font-size:11.5px;color:#8299aa;line-height:1.65;margin-top:6px;">Dedicated views for currencies, Gold, Oil and Nasdaq-100 in a single institutional workspace.</div>
       </div>
-      <div style="padding:20px;border-radius:17px;background:rgba(8,16,27,.78);border:1px solid rgba(255,255,255,.075);">
-        <div style="font-size:22px;">📰</div><div style="font-size:15px;font-weight:900;color:#edf9ff;margin-top:10px;">Live Catalyst Feeds</div>
-        <div style="font-size:11.5px;color:#8299aa;line-height:1.65;margin-top:6px;">Macro releases, news feeds and geopolitical catalysts are brought into the same analytical workflow.</div>
+      <div class="apex-card apex-glass" style="padding:20px;border-radius:17px;">
+        <div style="font-size:22px;">📰</div><div class="apex-card-title" style="font-size:15px;font-weight:900;color:#edf9ff;margin-top:10px;">Live Catalyst Feeds</div>
+        <div class="apex-card-copy" style="font-size:11.5px;color:#8299aa;line-height:1.65;margin-top:6px;">Macro releases, news feeds and geopolitical catalysts are brought into the same analytical workflow.</div>
       </div>
     </div>
     """)
@@ -4593,9 +4624,9 @@ def render_public_home() -> None:
     render_html(f"""
     <div style="margin:52px 0 16px;text-align:center;">
       <div style="font-size:9px;font-weight:900;letter-spacing:2.2px;color:#ffd166;text-transform:uppercase;">Coverage</div>
-      <div style="font-size:27px;font-weight:950;color:#eef9ff;margin-top:6px;">Follow the markets that move the macro story.</div>
+      <div class="apex-section-title" style="font-size:27px;font-weight:950;color:#eef9ff;margin-top:6px;">Follow the markets that move the macro story.</div>
     </div>
-    <div style="padding:22px;border-radius:19px;background:linear-gradient(135deg,rgba(8,17,28,.9),rgba(5,11,19,.96));
+    <div class="apex-glass" style="padding:22px;border-radius:19px;background:linear-gradient(135deg,rgba(8,17,28,.64),rgba(5,11,19,.58));
                 border:1px solid rgba(255,255,255,.08);text-align:center;">
       <div style="font-size:15px;font-weight:900;color:#f2fbff;">🥇 Gold &nbsp;&nbsp; • &nbsp;&nbsp; 🛢️ Crude Oil &nbsp;&nbsp; • &nbsp;&nbsp; 📊 Nasdaq-100</div>
       <div style="font-size:11.5px;color:#849bac;margin-top:12px;line-height:1.7;">{forex_codes}</div>
@@ -4606,9 +4637,9 @@ def render_public_home() -> None:
     render_html("""
     <div style="margin:54px 0 18px;text-align:center;">
       <div style="font-size:9px;font-weight:900;letter-spacing:2.2px;color:#00f5ff;text-transform:uppercase;">Workflow</div>
-      <div style="font-size:27px;font-weight:950;color:#eef9ff;margin-top:6px;">From raw information to an actionable macro view.</div>
+      <div class="apex-section-title" style="font-size:27px;font-weight:950;color:#eef9ff;margin-top:6px;">From raw information to an actionable macro view.</div>
     </div>
-    <div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;">
+    <div class="apex-workflow-grid" style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;">
       <div style="padding:16px 8px;text-align:center;border-radius:14px;background:rgba(0,245,255,.035);border:1px solid rgba(0,245,255,.10);">
         <div style="font-size:10px;color:#00f5ff;font-weight:900;">01</div><div style="font-size:11.5px;color:#e7f6ff;font-weight:800;margin-top:6px;">Macro Data</div>
       </div>
@@ -4629,7 +4660,7 @@ def render_public_home() -> None:
 
     # Final CTA
     render_html("""
-    <div style="margin:56px 0 16px;padding:34px 24px;border-radius:23px;text-align:center;
+    <div class="apex-glass" style="margin:56px 0 16px;padding:34px 24px;border-radius:23px;text-align:center;
                 background:radial-gradient(circle at 50% 0%,rgba(0,245,255,.10),transparent 45%),rgba(6,13,22,.93);
                 border:1px solid rgba(0,245,255,.17);">
       <div style="font-size:25px;font-weight:950;color:#f0fbff;">Access the ApexMacro terminal.</div>
