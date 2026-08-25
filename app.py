@@ -3655,56 +3655,112 @@ def render_vip_checkout() -> None:
     if telegram_id and not re.fullmatch(r"\d{5,15}", telegram_id.strip()):
         st.caption("Telegram ID must contain numbers only.")
 
-    # Native Streamlit buttons are used instead of URL/query-param links.
-    # Inside this fragment, selecting a plan refreshes only the checkout section.
-    plan_cols = st.columns(2)
-    for idx, plan_name in enumerate(["1 Month", "3 Months"]):
-        info = VIP_PAYMENT_PLANS[plan_name]
-        active = selected_plan == plan_name
-        card_key = f"apex_plan_card_{idx}"
-        selected_line = "✓ SELECTED" if active else "TAP TO SELECT"
-        label = (
-            f"{plan_name}\n\n"
-            f"${info['amount']} USDT\n\n"
-            f"{info['days']} days of ApexMacro VIP access\n\n"
-            f"{selected_line}"
-        )
-        with plan_cols[idx]:
-            # Per-card CSS keeps the whole button looking like a pricing card.
-            border = "#00f5ff" if active else "rgba(255,255,255,.14)"
-            glow = "0 0 25px rgba(0,245,255,.16)" if active else "none"
-            render_html(f"""
-            <style>
-            .st-key-{card_key} button {{
-                min-height: 205px !important;
-                width: 100% !important;
-                padding: 22px 20px !important;
-                border-radius: 18px !important;
-                border: 1px solid {border} !important;
-                background: rgba(10,18,29,.82) !important;
-                box-shadow: {glow} !important;
-                color: #eef8ff !important;
-                text-align: left !important;
-                justify-content: flex-start !important;
-                transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease !important;
-            }}
-            .st-key-{card_key} button:hover {{
-                transform: translateY(-2px);
-                border-color: #00f5ff !important;
-            }}
-            .st-key-{card_key} button p {{
-                white-space: pre-line !important;
-                text-align: left !important;
-                line-height: 1.55 !important;
-                font-size: 15px !important;
-                font-weight: 750 !important;
-            }}
-            </style>
-            """)
-            if st.button(label, key=card_key, use_container_width=True):
-                st.session_state["APEX_VIP_PLAN"] = plan_name
-                st.session_state["APEX_CHECKOUT_OPEN"] = False
-                selected_plan = plan_name
+    # Compact native selector: no URL navigation and no giant button cards.
+    # Because this function is a Streamlit fragment, changing the plan reruns only checkout.
+    render_html("""
+    <div style="margin:18px 0 8px;">
+      <div style="font-size:10px;font-weight:900;letter-spacing:1.8px;color:#7f95a7;text-transform:uppercase;">
+        Select a plan
+      </div>
+    </div>
+    <style>
+    .st-key-APEX_VIP_PLAN_SELECTOR [data-testid="stRadio"] > div {
+        display:grid !important;
+        grid-template-columns:1fr 1fr !important;
+        gap:10px !important;
+    }
+    .st-key-APEX_VIP_PLAN_SELECTOR [data-testid="stRadio"] label {
+        min-height:58px !important;
+        padding:0 14px !important;
+        border:1px solid rgba(255,255,255,.12) !important;
+        border-radius:14px !important;
+        background:rgba(8,16,27,.82) !important;
+        display:flex !important;
+        align-items:center !important;
+        justify-content:center !important;
+        transition:border-color .15s ease, background .15s ease, box-shadow .15s ease !important;
+    }
+    .st-key-APEX_VIP_PLAN_SELECTOR [data-testid="stRadio"] label:hover {
+        border-color:rgba(0,245,255,.55) !important;
+        background:rgba(0,245,255,.055) !important;
+    }
+    .st-key-APEX_VIP_PLAN_SELECTOR [data-testid="stRadio"] label:has(input:checked) {
+        border-color:#00f5ff !important;
+        background:linear-gradient(180deg,rgba(0,245,255,.12),rgba(0,245,255,.055)) !important;
+        box-shadow:0 0 0 1px rgba(0,245,255,.10),0 10px 28px rgba(0,245,255,.08) !important;
+    }
+    .st-key-APEX_VIP_PLAN_SELECTOR [data-testid="stRadio"] label p {
+        font-size:13px !important;
+        font-weight:850 !important;
+        color:#eaf7ff !important;
+    }
+    .st-key-APEX_VIP_PLAN_SELECTOR [data-testid="stRadio"] label:has(input:checked) p {
+        color:#33f4ff !important;
+    }
+    .st-key-APEX_VIP_PLAN_SELECTOR [data-testid="stRadio"] [data-testid="stWidgetLabel"] {
+        display:none !important;
+    }
+    </style>
+    """)
+
+    selector_labels = {
+        "1 Month": "1 Month  •  $29",
+        "3 Months": "3 Months  •  $75",
+    }
+    reverse_labels = {v: k for k, v in selector_labels.items()}
+    selector_options = [selector_labels["1 Month"], selector_labels["3 Months"]]
+    current_label = selector_labels[selected_plan]
+
+    picked_label = st.radio(
+        "Choose plan",
+        selector_options,
+        index=selector_options.index(current_label),
+        horizontal=True,
+        label_visibility="collapsed",
+        key="APEX_VIP_PLAN_SELECTOR",
+    )
+    picked_plan = reverse_labels.get(picked_label, "1 Month")
+    if picked_plan != st.session_state.get("APEX_VIP_PLAN"):
+        st.session_state["APEX_VIP_PLAN"] = picked_plan
+        st.session_state["APEX_CHECKOUT_OPEN"] = False
+    selected_plan = picked_plan
+    info = VIP_PAYMENT_PLANS[selected_plan]
+
+    badge = "BEST VALUE" if selected_plan == "3 Months" else "MONTHLY"
+    saving = (
+        '<div style="font-size:11px;color:#7fffd4;margin-top:5px;font-weight:750;">Save $12 vs monthly</div>'
+        if selected_plan == "3 Months" else
+        '<div style="font-size:11px;color:#8296a8;margin-top:5px;">Flexible monthly access</div>'
+    )
+    render_html(f"""
+    <div style="margin:12px 0 4px;padding:18px 18px;border-radius:17px;
+                background:linear-gradient(135deg,rgba(8,18,29,.96),rgba(6,13,22,.94));
+                border:1px solid rgba(0,245,255,.20);
+                box-shadow:0 14px 34px rgba(0,0,0,.28);">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px;">
+        <div>
+          <div style="font-size:17px;font-weight:900;color:#f4fbff;">{selected_plan}</div>
+          <div style="margin-top:7px;">
+            <span style="font-size:31px;font-weight:950;color:#ffffff;">${info["amount"]}</span>
+            <span style="font-size:12px;color:#8296a8;margin-left:4px;">USDT</span>
+          </div>
+          {saving}
+        </div>
+        <div style="font-size:9px;font-weight:900;letter-spacing:1.2px;color:#00f5ff;
+                    background:rgba(0,245,255,.10);border:1px solid rgba(0,245,255,.16);
+                    padding:6px 9px;border-radius:999px;white-space:nowrap;">{badge}</div>
+      </div>
+      <div style="height:1px;background:rgba(255,255,255,.07);margin:15px 0 12px;"></div>
+      <div style="display:flex;gap:7px;align-items:center;font-size:12px;color:#b7c8d5;">
+        <span style="color:#00f5ff;">✓</span>
+        <span>{info["days"]} days full ApexMacro VIP access</span>
+      </div>
+      <div style="display:flex;gap:7px;align-items:center;font-size:12px;color:#b7c8d5;margin-top:7px;">
+        <span style="color:#00f5ff;">✓</span>
+        <span>Smart Shift + personalized Telegram alerts</span>
+      </div>
+    </div>
+    """)
 
 
     selected_plan = st.session_state.get("APEX_VIP_PLAN", "1 Month")
