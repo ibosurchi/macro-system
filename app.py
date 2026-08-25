@@ -8,6 +8,39 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# Critical first-paint canvas.
+# This is intentionally loaded before st.navigation(...).run() so route reruns never expose Streamlit's default light canvas.
+st.markdown(
+    """
+    <style>
+      html, body, #root,
+      [data-testid="stApp"],
+      [data-testid="stAppViewContainer"],
+      .stApp {
+        background-color: #050b10 !important;
+        color: #ecf7ff !important;
+      }
+
+      html, body, #root {
+        min-height: 100%;
+      }
+
+      [data-testid="stAppViewContainer"],
+      .stApp {
+        min-height: 100vh !important;
+      }
+
+      /* Keep the blank canvas dark during Streamlit reruns/page switches. */
+      [data-testid="stAppViewContainer"] > .main,
+      [data-testid="stMain"],
+      .main {
+        background-color: transparent !important;
+      }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 from apex.bootstrap import initialize_background_services
 
 initialize_background_services()
