@@ -4398,95 +4398,40 @@ def _set_public_view(view: str) -> None:
 
 
 def render_public_nav(active: str = "home") -> None:
-    """Reference-style public header with one compact access icon on Home."""
+    """Reference-style public header with a truly top-right access icon."""
     st.markdown("""
     <style>
-      .apex-ref-brand {
-        display:flex; align-items:center; gap:12px; min-width:0;
-      }
-      .apex-ref-logo {
-        width:54px; height:54px; border-radius:14px;
-        display:flex; align-items:center; justify-content:center;
-        background:linear-gradient(145deg,rgba(6,31,42,.84),rgba(5,14,23,.90));
-        border:1px solid rgba(0,239,255,.34);
-        box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 0 26px rgba(0,229,255,.08);
-      }
-      .apex-ref-brand-name {
-        font-size:23px; line-height:1; font-weight:950; letter-spacing:2.2px;
-        color:#f5f8fb; white-space:nowrap;
-      }
-      .apex-ref-brand-name span { color:#f6bd3e; }
-      .apex-ref-brand-sub {
-        margin-top:7px; color:#7f91a3; font-size:9px; font-weight:750;
-        letter-spacing:3.25px; white-space:nowrap;
-      }
-      .apex-ref-navline {
-        height:1px; margin:14px 0 24px;
-        background:linear-gradient(90deg,transparent,rgba(21,224,241,.18),rgba(255,190,53,.08),transparent);
-      }
-      .st-key-apex_profile_access button {
-        width:54px !important; height:54px !important; min-height:54px !important;
-        padding:0 !important; border-radius:14px !important;
-        border:1px solid rgba(0,239,255,.55) !important;
-        background-color:rgba(5,20,29,.84) !important;
-        background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Ccircle cx='24' cy='16' r='7' fill='%2300efff'/%3E%3Cpath d='M11 38c1-9 6-13 13-13s12 4 13 13z' fill='%2300efff'/%3E%3C/svg%3E") !important;
-        background-repeat:no-repeat !important; background-position:center !important;
-        background-size:29px 29px !important;
-        box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 0 22px rgba(0,239,255,.12) !important;
-      }
-      .st-key-apex_profile_access button p { font-size:0 !important; }
-      .st-key-apex_profile_access button:hover {
-        border-color:#28f4ff !important;
-        box-shadow:0 0 28px rgba(0,239,255,.22) !important;
-      }
-      @media(max-width:700px) {
-        .apex-ref-logo { width:48px; height:48px; border-radius:13px; }
-        .apex-ref-logo svg { width:28px !important; height:28px !important; }
-        .apex-ref-brand-name { font-size:19px; letter-spacing:1.7px; }
-        .apex-ref-brand-sub { font-size:7.5px; letter-spacing:2.55px; margin-top:6px; }
-        .st-key-apex_profile_access button {
-          width:48px !important; height:48px !important; min-height:48px !important;
-          border-radius:13px !important; background-size:25px 25px !important;
-        }
-      }
-      @media(max-width:390px) {
-        .apex-ref-brand-name { font-size:17.5px; }
-        .apex-ref-brand-sub { letter-spacing:2.1px; }
-      }
+      .st-key-apex_public_header {position:relative !important;width:100% !important;min-height:76px !important;}
+      .st-key-apex_public_header .apex-ref-brand-wrap {padding-right:78px;}
+      .apex-ref-brand {display:flex;align-items:center;gap:12px;min-width:0;}
+      .apex-ref-logo {width:54px;height:54px;border-radius:14px;display:flex;align-items:center;justify-content:center;background:linear-gradient(145deg,rgba(6,31,42,.84),rgba(5,14,23,.90));border:1px solid rgba(0,239,255,.34);box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 0 26px rgba(0,229,255,.08);}
+      .apex-ref-brand-name {font-size:23px;line-height:1;font-weight:950;letter-spacing:2.2px;color:#f5f8fb;white-space:nowrap;}
+      .apex-ref-brand-name span {color:#f6bd3e;}
+      .apex-ref-brand-sub {margin-top:7px;color:#7f91a3;font-size:9px;font-weight:750;letter-spacing:3.25px;white-space:nowrap;}
+      .apex-ref-navline {height:1px;margin:14px 0 24px;background:linear-gradient(90deg,transparent,rgba(21,224,241,.18),rgba(255,190,53,.08),transparent);}
+      .st-key-apex_public_header .st-key-apex_profile_access,.st-key-apex_public_header [class*="st-key-public_home_back_"] {position:absolute !important;top:2px !important;right:0 !important;width:54px !important;z-index:20 !important;}
+      .st-key-apex_profile_access button,.st-key-public_home_back_login button,.st-key-public_home_back_vip button {width:54px !important;height:54px !important;min-height:54px !important;padding:0 !important;border-radius:14px !important;border:1px solid rgba(0,239,255,.55) !important;background-color:rgba(5,20,29,.84) !important;box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 0 22px rgba(0,239,255,.12) !important;}
+      .st-key-apex_profile_access button {background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Ccircle cx='24' cy='16' r='7' fill='%2300efff'/%3E%3Cpath d='M11 38c1-9 6-13 13-13s12 4 13 13z' fill='%2300efff'/%3E%3C/svg%3E") !important;background-repeat:no-repeat !important;background-position:center !important;background-size:29px 29px !important;}
+      .st-key-apex_profile_access button p {font-size:0 !important;}
+      .st-key-apex_profile_access button:hover,.st-key-public_home_back_login button:hover,.st-key-public_home_back_vip button:hover {border-color:#28f4ff !important;box-shadow:0 0 28px rgba(0,239,255,.22) !important;}
+      @media(max-width:700px){.st-key-apex_public_header{min-height:68px !important}.st-key-apex_public_header .apex-ref-brand-wrap{padding-right:64px}.apex-ref-logo{width:48px;height:48px;border-radius:13px}.apex-ref-logo svg{width:28px !important;height:28px !important}.apex-ref-brand-name{font-size:19px;letter-spacing:1.7px}.apex-ref-brand-sub{font-size:7.5px;letter-spacing:2.55px;margin-top:6px}.st-key-apex_public_header .st-key-apex_profile_access,.st-key-apex_public_header [class*="st-key-public_home_back_"]{top:0 !important;right:0 !important;width:48px !important}.st-key-apex_profile_access button,.st-key-public_home_back_login button,.st-key-public_home_back_vip button{width:48px !important;height:48px !important;min-height:48px !important;border-radius:13px !important}.st-key-apex_profile_access button{background-size:25px 25px !important}}
+      @media(max-width:390px){.apex-ref-brand-name{font-size:17.5px}.apex-ref-brand-sub{letter-spacing:2.1px}}
     </style>
     """, unsafe_allow_html=True)
-
-    brand_col, spacer_col, access_col = st.columns([5.2, 1.0, 0.75], vertical_alignment="center")
-    with brand_col:
+    with st.container(key="apex_public_header"):
         render_html("""
-        <div class="apex-ref-brand">
-          <div class="apex-ref-logo">
-            <svg width="31" height="31" viewBox="0 0 360 365" fill="none">
-              <defs>
-                <linearGradient id="apexRefLogo" x1="0" y1="0" x2="1" y2="1">
-                  <stop stop-color="#1AF4FF"/>
-                  <stop offset="1" stop-color="#00BBD2"/>
-                </linearGradient>
-              </defs>
-              <path d="M0 365L180 0L360 365H288L180 130L72 365Z" fill="url(#apexRefLogo)"/>
-            </svg>
-          </div>
-          <div>
-            <div class="apex-ref-brand-name">APEX<span>MACRO</span></div>
-            <div class="apex-ref-brand-sub">INTELLIGENCE DESK</div>
-          </div>
-        </div>
+        <div class="apex-ref-brand-wrap"><div class="apex-ref-brand"><div class="apex-ref-logo">
+          <svg width="31" height="31" viewBox="0 0 360 365" fill="none"><defs><linearGradient id="apexRefLogo" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#1AF4FF"/><stop offset="1" stop-color="#00BBD2"/></linearGradient></defs><path d="M0 365L180 0L360 365H288L180 130L72 365Z" fill="url(#apexRefLogo)"/></svg>
+        </div><div><div class="apex-ref-brand-name">APEX<span>MACRO</span></div><div class="apex-ref-brand-sub">INTELLIGENCE DESK</div></div></div></div>
         """)
-    with access_col:
         if active == "home":
-            if st.button("Access", key="apex_profile_access", use_container_width=True, help="VIP Login / Get VIP"):
+            if st.button("Access", key="apex_profile_access", help="VIP Login / Get VIP"):
                 _set_public_view("login")
                 st.rerun()
         else:
-            if st.button("←", key=f"public_home_back_{active}", use_container_width=True, help="Back to Home"):
+            if st.button("←", key=f"public_home_back_{active}", help="Back to Home"):
                 _set_public_view("home")
                 st.rerun()
-
     render_html('<div class="apex-ref-navline"></div>')
 
 
@@ -4641,6 +4586,21 @@ def render_public_home() -> None:
       }
       .apex-ref-lock { color:#7f8b96; }
 
+      .apex-proof-section {margin-top:18px;padding:27px 25px 24px;border-radius:20px;background:radial-gradient(circle at 8% 0%,rgba(0,231,244,.09),transparent 28%),radial-gradient(circle at 96% 100%,rgba(248,190,63,.07),transparent 30%),linear-gradient(145deg,rgba(8,22,31,.82),rgba(4,11,18,.94));border:1px solid rgba(117,198,211,.17);box-shadow:inset 0 1px 0 rgba(255,255,255,.035),0 18px 44px rgba(0,0,0,.24);}
+      .apex-proof-eyebrow {color:#28eaf5;font-size:9px;letter-spacing:2.2px;font-weight:900;}
+      .apex-proof-title {margin-top:7px;color:#f5f9fc;font-size:24px;line-height:1.12;font-weight:950;}
+      .apex-proof-copy {margin-top:9px;max-width:760px;color:#8ea2b4;font-size:12px;line-height:1.65;}
+      .apex-proof-grid {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:20px;}
+      .apex-proof-card {min-height:137px;padding:16px 14px;border-radius:15px;background:rgba(7,16,25,.64);border:1px solid rgba(130,193,205,.13);}
+      .apex-proof-num {color:#27e8f3;font-size:9px;font-weight:900;letter-spacing:1.4px;}
+      .apex-proof-card.purple .apex-proof-num{color:#d05cff}.apex-proof-card.gold .apex-proof-num{color:#f5bf45}.apex-proof-card.blue .apex-proof-num{color:#329fff}
+      .apex-proof-card-title {margin-top:10px;color:#f3f8fc;font-size:13px;font-weight:900;line-height:1.2;}
+      .apex-proof-card-copy {margin-top:7px;color:#879aac;font-size:9.8px;line-height:1.55;}
+      .apex-market-strip {margin-top:14px;padding:14px 15px;border-radius:13px;display:flex;align-items:center;gap:16px;background:rgba(2,11,17,.54);border:1px solid rgba(0,229,242,.10);}
+      .apex-market-label {color:#6f8799;font-size:8px;font-weight:900;letter-spacing:1.7px;white-space:nowrap;}
+      .apex-market-items {display:flex;align-items:center;flex-wrap:wrap;gap:7px;color:#c8d4dc;font-size:9.5px;font-weight:750;}
+      .apex-market-items i {width:3px;height:3px;border-radius:50%;background:#2adce8;opacity:.55;}
+
       @media(max-width:700px) {
         .block-container {
           padding-left:14px !important; padding-right:14px !important;
@@ -4703,6 +4663,17 @@ def render_public_home() -> None:
           font-size:10px !important; border-radius:11px !important;
         }
         .apex-ref-footer { margin-top:22px; font-size:10px; }
+        .apex-proof-section {margin-top:13px;padding:20px 15px 18px;border-radius:17px;}
+        .apex-proof-eyebrow {font-size:7.5px;letter-spacing:1.7px;}
+        .apex-proof-title {font-size:18px;margin-top:6px;}
+        .apex-proof-copy {font-size:9.6px;line-height:1.58;margin-top:7px;}
+        .apex-proof-grid {grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:15px;}
+        .apex-proof-card {min-height:118px;padding:13px 11px;border-radius:13px;}
+        .apex-proof-card-title {font-size:10.7px;margin-top:7px;}
+        .apex-proof-card-copy {font-size:8.2px;line-height:1.48;}
+        .apex-market-strip {display:block;margin-top:11px;padding:12px;}
+        .apex-market-label {font-size:7px;margin-bottom:7px;}
+        .apex-market-items {gap:6px;font-size:8.2px;line-height:1.5;}
       }
 
       @media(max-width:430px) {
@@ -4801,6 +4772,19 @@ def render_public_home() -> None:
           <div class="apex-ref-ftitle">Telegram Alerts</div>
           <div class="apex-ref-fcopy">Personalized alerts delivered directly to you.</div>
         </article>
+      </section>
+
+      <section class="apex-proof-section">
+        <div class="apex-proof-eyebrow">WHY APEXMACRO</div>
+        <div class="apex-proof-title">Built to see more than a single chart.</div>
+        <div class="apex-proof-copy">ApexMacro separates forward-looking macro pressure from live tactical price action, helping clients understand both the broader regime and the move happening now.</div>
+        <div class="apex-proof-grid">
+          <div class="apex-proof-card cyan"><div class="apex-proof-num">01</div><div class="apex-proof-card-title">Early Macro Outlook</div><div class="apex-proof-card-copy">Tracks macro pressure before it is fully reflected in market price.</div></div>
+          <div class="apex-proof-card purple"><div class="apex-proof-num">02</div><div class="apex-proof-card-title">Macro + Tactical</div><div class="apex-proof-card-copy">Combines regime intelligence with live momentum, pullbacks and breakouts.</div></div>
+          <div class="apex-proof-card gold"><div class="apex-proof-num">03</div><div class="apex-proof-card-title">Personalized Alerts</div><div class="apex-proof-card-copy">VIP clients choose exactly which markets they want delivered to Telegram.</div></div>
+          <div class="apex-proof-card blue"><div class="apex-proof-num">04</div><div class="apex-proof-card-title">One Intelligence Desk</div><div class="apex-proof-card-copy">Gold, Oil, Nasdaq-100 and global currencies analyzed inside one workflow.</div></div>
+        </div>
+        <div class="apex-market-strip"><div class="apex-market-label">CORE COVERAGE</div><div class="apex-market-items"><span>Gold</span><i></i><span>Crude Oil</span><i></i><span>Nasdaq-100</span><i></i><span>USD</span><i></i><span>EUR</span><i></i><span>GBP</span><i></i><span>CAD</span><i></i><span>JPY</span><i></i><span>CHF</span></div></div>
       </section>
     </div>
     """)
