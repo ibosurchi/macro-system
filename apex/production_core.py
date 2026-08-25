@@ -23,6 +23,7 @@ import hashlib
 import xml.etree.ElementTree as ET
 import urllib.request
 from urllib.parse import quote
+from email.utils import parsedate_to_datetime
 
 # Stable repository root: persistence files remain in their original project-root locations.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -2131,10 +2132,131 @@ def deduplicate_news_articles(articles: list) -> list:
     return unique_articles
 
 @st.cache_data(ttl=30, show_spinner=False)
+def _news_source_display_name(channel_username: str) -> str:
+    clean = str(channel_username or "").replace("@", "").replace("https://t.me/", "").strip()
+    known = {
+        "financialjuice": "FinancialJuice",
+        "forexlive": "ForexLive",
+        "firstsquawk": "First Squawk",
+        "Forex_LiveStream": "Forex LiveStream",
+        "forex_livestream": "Forex LiveStream",
+    }
+    return known.get(clean, clean or "Telegram")
+
+
+def _parse_news_datetime(value: object) -> datetime | None:
+    """Best-effort timestamp parsing used only for freshness ranking."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+
+    candidates = [raw, raw.replace("Z", "+00:00")]
+    for candidate in candidates:
+        try:
+            dt = datetime.fromisoformat(candidate)
+            if dt.tzinfo is not None:
+                return dt.astimezone(timezone.utc).replace(tzinfo=None)
+            return dt
+        except Exception:
+            pass
+
+    try:
+        dt = parsedate_to_datetime(raw)
+        if dt.tzinfo is not None:
+            return dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
+    except Exception:
+        return None
+
+
+def _news_priority_score(article: dict) -> float:
+    """
+    Ranking affects which CURRENT headlines reach AI first.
+    It does not change any macro, Gold, Tactical, alert, or strategy thresholds.
+    """
+    source_name = str((article.get("source") or {}).get("name", "")).strip().lower()
+    text = f"{article.get('title', '')} {article.get('description', '')}".lower()
+
+    source_weight = 0.45
+    source_priorities = {
+        "first squawk": 1.00,
+        "financialjuice": 0.96,
+        "kitco gold": 0.96,
+        "kitco commodities": 0.94,
+        "forexlive": 0.90,
+        "fxstreet": 0.86,
+        "axios world": 0.84,
+        "axios business": 0.84,
+        "axios energy & climate": 0.84,
+        "dailyfx": 0.80,
+        "marketwatch": 0.78,
+        "investing macro": 0.77,
+        "yahoo finance": 0.72,
+        "forex livestream": 0.82,
+    }
+    for key, weight in source_priorities.items():
+        if key in source_name:
+            source_weight = max(source_weight, weight)
+
+    # Freshness is deliberately bounded: unknown timestamps are not treated as "fresh".
+    freshness = 0.22
+    dt = _parse_news_datetime(article.get("publishedAt", ""))
+    if dt is not None:
+        now_utc = datetime.utcnow()
+        age_hours = max(0.0, (now_utc - dt).total_seconds() / 3600.0)
+        if age_hours <= 0.5:
+            freshness = 1.00
+        elif age_hours <= 2:
+            freshness = 0.92
+        elif age_hours <= 6:
+            freshness = 0.78
+        elif age_hours <= 12:
+            freshness = 0.62
+        elif age_hours <= 24:
+            freshness = 0.44
+        elif age_hours <= 48:
+            freshness = 0.28
+        else:
+            freshness = 0.12
+
+    high_impact_terms = [
+        "federal reserve", "fed ", "powell", "rate cut", "rate hike", "interest rate",
+        "cpi", "pce", "inflation", "nonfarm", "nfp", "payroll", "unemployment",
+        "treasury yield", "real yield", "dxy", "dollar index", "us dollar", "u.s. dollar",
+        "gold", "xau", "bullion", "central bank", "gold etf",
+        "war", "missile", "attack", "ceasefire", "sanction", "geopolitical",
+        "middle east", "iran", "israel", "oil", "opec", "hormuz",
+    ]
+    relevance_hits = sum(1 for term in high_impact_terms if term in text)
+    relevance = min(1.0, 0.18 + (0.12 * relevance_hits))
+
+    breaking_bonus = 0.0
+    if any(term in text for term in [
+        "breaking", "just in", "unexpected", "surprise", "emergency",
+        "strikes", "attacks", "cuts rates", "raises rates", "record high",
+    ]):
+        breaking_bonus = 0.12
+
+    return float((0.43 * source_weight) + (0.37 * freshness) + (0.20 * relevance) + breaking_bonus)
+
+
+def _rank_news_articles(articles: list) -> list:
+    enriched = []
+    for art in articles or []:
+        if not isinstance(art, dict):
+            continue
+        item = dict(art)
+        item["_priority"] = _news_priority_score(item)
+        enriched.append(item)
+    enriched.sort(key=lambda x: float(x.get("_priority", 0.0)), reverse=True)
+    return enriched
+
+
+@st.cache_data(ttl=30, show_spinner=False)
 def fetch_telegram_channel_news(channel_username: str) -> list:
     clean_username = channel_username.replace("@", "").replace("https://t.me/", "").strip()
     url = f"https://t.me/s/{clean_username}"
-    headers = {"User-Agent": "Mozilla/5.0"}
+    headers = {"User-Agent": "Mozilla/5.0 ApexMacro/14.0"}
     articles = []
     try:
         r = requests.get(url, headers=headers, timeout=8)
@@ -2142,28 +2264,113 @@ def fetch_telegram_channel_news(channel_username: str) -> list:
             soup = BeautifulSoup(r.text, "html.parser")
             messages = soup.find_all("div", class_="tgme_widget_message_text")
             times = soup.find_all("time", class_="time")
+            source_name = _news_source_display_name(clean_username)
             for msg, tm in zip(messages[-10:], times[-10:]):
                 txt = msg.get_text(separator=" ").strip()
                 if len(txt) > 15:
                     articles.append({
                         "title": txt[:110] + "..." if len(txt) > 110 else txt,
                         "description": txt,
-                        "publishedAt": tm.get("datetime", "")[:16].replace("T", " ") if tm else datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        "source": {"name": "Institutional Wire"},
+                        "publishedAt": tm.get("datetime", "") if tm else "",
+                        "source": {"name": source_name},
+                        "url": url,
                     })
     except Exception:
         pass
     return list(reversed(articles))
 
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_axios_macro_news() -> list:
+    """
+    Read only publicly visible Axios section headlines/metadata.
+    No article-body scraping is performed.
+    """
+    sections = [
+        ("Axios Business", "https://www.axios.com/business"),
+        ("Axios World", "https://www.axios.com/world"),
+        ("Axios Energy & Climate", "https://www.axios.com/energy-climate"),
+    ]
+    articles = []
+    headers = {"User-Agent": "Mozilla/5.0 ApexMacro/14.0"}
+    seen = set()
+
+    for source_name, url in sections:
+        try:
+            response = requests.get(url, headers=headers, timeout=8)
+            if not response.ok:
+                continue
+            soup = BeautifulSoup(response.text, "html.parser")
+
+            # Axios section pages expose article headlines in heading links.
+            links = soup.select("h2 a[href], h3 a[href]")
+            for link in links:
+                title = link.get_text(" ", strip=True)
+                href = str(link.get("href", "")).strip()
+                if not title or len(title) < 20 or len(title) > 180:
+                    continue
+                if title.lower() in seen:
+                    continue
+                if href.startswith("/"):
+                    href = "https://www.axios.com" + href
+                if "axios.com" not in href:
+                    continue
+
+                parent = link.find_parent(["article", "section", "div"])
+                time_tag = parent.find("time") if parent else None
+                published = ""
+                if time_tag:
+                    published = str(time_tag.get("datetime", "") or time_tag.get_text(" ", strip=True)).strip()
+
+                articles.append({
+                    "title": title,
+                    "description": "",
+                    "publishedAt": published,
+                    "source": {"name": source_name},
+                    "url": href,
+                })
+                seen.add(title.lower())
+
+                if sum(1 for a in articles if a.get("source", {}).get("name") == source_name) >= 4:
+                    break
+        except Exception:
+            continue
+
+    return articles
+
+
+def _rss_entry_to_article(src_name: str, entry: object) -> dict:
+    title = str(entry.get("title", "")).strip()
+    summary = str(entry.get("summary", "") or entry.get("description", ""))
+    desc = re.sub(r"<[^>]+>", "", summary).strip()[:300]
+    published = str(
+        entry.get("published", "")
+        or entry.get("updated", "")
+        or entry.get("pubDate", "")
+    ).strip()
+    return {
+        "title": title,
+        "description": desc,
+        "publishedAt": published,
+        "source": {"name": src_name},
+        "url": str(entry.get("link", "")).strip(),
+    }
+
+
 @st.cache_data(ttl=30, show_spinner=False)
 def fetch_all_instant_news(channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> list:
     all_raw = []
+
+    # Fast public Telegram wires.
     tg_channels = [channel_name, "financialjuice", "forexlive", "firstsquawk"]
     for ch in tg_channels:
         if ch:
             all_raw.extend(fetch_telegram_channel_news(ch))
 
+    # Existing macro feeds plus dedicated precious-metals coverage.
     rss_urls = [
+        ("Kitco Gold", "https://www.kitco.com/news/category/commodities/rss"),
+        ("Kitco Commodities", "https://www.kitco.com/news/category/markets/rss"),
         ("ForexLive", "https://www.forexlive.com/feed/news"),
         ("FXStreet", "https://www.fxstreet.com/rss/news"),
         ("Investing Macro", "https://www.investing.com/rss/news_25.rss"),
@@ -2174,29 +2381,23 @@ def fetch_all_instant_news(channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> list
     for src_name, url in rss_urls:
         try:
             feed = feedparser.parse(url)
-            for entry in feed.entries[:4]:
-                desc = re.sub(r'<[^>]+>', '', entry.get("summary", ""))[:140]
-                all_raw.append({
-                    "title": entry.get("title", ""),
-                    "description": desc,
-                    "publishedAt": entry.get("published", "")[:16] or datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    "source": {"name": "Institutional Wire"},
-                })
+            for entry in feed.entries[:5]:
+                article = _rss_entry_to_article(src_name, entry)
+                if article["title"]:
+                    all_raw.append(article)
         except Exception:
             continue
 
-    deduped = deduplicate_news_articles(all_raw)
-    if not deduped:
-        now_dt = get_current_time().strftime("%Y-%m-%d %H:%M")
-        deduped = [
-            {"title": "Treasury yields hold steady as institutional participants position for key US PCE inflation data.", "description": "Global bond markets consolidated as cross-asset desks await core inflation print.", "publishedAt": now_dt, "source": {"name": "Institutional Wire"}},
-            {"title": "Middle East geopolitical headlines and crude supply balance underpin Gold (XAUUSD) & Brent baseline.", "description": "Safe-haven flows and oil transport risk premiums support defensive commodity positioning.", "publishedAt": now_dt, "source": {"name": "Institutional Wire"}},
-            {"title": "ECB officials signal measured policy approach amid persistent core services inflation in Eurozone.", "description": "European sovereign yield curves maintain steady rate pricing across sovereign bonds.", "publishedAt": now_dt, "source": {"name": "Institutional Wire"}},
-            {"title": "Dollar Index (DXY) consolidates near technical pivot as G10 currency crosses steady.", "description": "Forex desks highlight balanced order book flows heading into high-impact catalysts.", "publishedAt": now_dt, "source": {"name": "Institutional Wire"}},
-            {"title": "Bank of Japan monitors inflation-wage spiral velocity as Yen tracks global bond differentials.", "description": "Tokyo market flows reflect ongoing normalization expectations by monetary authorities.", "publishedAt": now_dt, "source": {"name": "Institutional Wire"}},
-            {"title": "Global equity flows show institutional capital rotation toward energy and real-asset allocations.", "description": "Portfolio rebalancing favors commodities and defensive dividend-generating equities.", "publishedAt": now_dt, "source": {"name": "Institutional Wire"}}
-        ]
-    return deduped
+    # Axios is a confirmation/context layer for policy, geopolitics, business and energy.
+    all_raw.extend(fetch_axios_macro_news())
+
+    # Rank BEFORE deduplication so the stronger/fresher source survives duplicate removal.
+    ranked_raw = _rank_news_articles(all_raw)
+    deduped = deduplicate_news_articles(ranked_raw)
+
+    # No synthetic/fake "live" headlines. An empty feed remains explicitly empty.
+    return _rank_news_articles(deduped)
+
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_openrouter_analysis(news_text: str, api_key: str = DEFAULT_OPENROUTER_KEY) -> str:
@@ -2216,8 +2417,11 @@ def get_openrouter_analysis(news_text: str, api_key: str = DEFAULT_OPENROUTER_KE
                 "role": "system",
                 "content": (
                     "You are an institutional financial analyst and macro strategist. "
-                    "Analyze the given news flow and provide a concise, high-impact executive summary (2-3 sentences max) "
-                    "highlighting the immediate directional impact on Gold (XAUUSD), US Dollar (USD), and Crude Oil."
+                    "Analyze ONLY the supplied live-news items. Respect source names and timestamps, prioritize the freshest "
+                    "high-impact developments, and treat cross-source confirmation as stronger evidence than a single headline. "
+                    "Do not invent missing facts and do not treat stale or undated items as breaking news. "
+                    "Provide a concise 2-3 sentence executive summary highlighting the immediate directional impact on "
+                    "Gold (XAUUSD), US Dollar (USD), and Crude Oil."
                 )
             },
             {
@@ -2362,9 +2566,11 @@ def get_openrouter_gold_signal(news_text: str, api_key: str = DEFAULT_OPENROUTER
                 "content": (
                     "You are the Gold intelligence analyst for an institutional macro terminal. "
                     "Assess ONLY the directional impact of the supplied CURRENT news on Gold/XAUUSD. "
+                    "Use the supplied source names and timestamps: prioritize fresher high-quality reports, look for "
+                    "cross-source confirmation, and lower confidence when evidence is stale, undated, contradictory or single-source. "
                     "Reason through real yields, USD/DXY, Federal Reserve expectations, inflation, "
                     "safe-haven/geopolitical demand, central-bank demand and ETF flows. "
-                    "Do not treat generic positive/negative words as Gold direction. "
+                    "Do not treat generic positive/negative words as Gold direction, and do not invent facts not present in the feed. "
                     "Return ONLY valid JSON with keys: direction, score, confidence, horizon, reason. "
                     "direction must be Bullish, Neutral or Bearish. "
                     "score must be from -1.0 to +1.0. confidence must be from 0 to 100. "
@@ -2417,9 +2623,11 @@ def _gold_news_intelligence(articles: list) -> dict:
             "relevant_count": 0,
         }
 
+    ranked_relevant = _rank_news_articles(relevant)
     news_text = "\n".join(
-        f"- {a.get('title', '')}: {a.get('description', '')}"
-        for a in relevant[:12]
+        f"- [{(a.get('source') or {}).get('name', 'Unknown Source')} | {a.get('publishedAt', '')}] "
+        f"{a.get('title', '')}: {a.get('description', '')}"
+        for a in ranked_relevant[:12]
     )
     ai = get_openrouter_gold_signal(news_text)
     confidence_factor = float(ai.get("confidence", 0.0)) / 100.0 if ai.get("active") else 0.0
@@ -2467,7 +2675,12 @@ def analyze_news_rule_based(articles: list) -> dict:
     if not articles:
         return {"scores": scores, "drivers": drivers, "ai_summary": "No live news articles detected for AI analysis.", "ai_active": True}
 
-    combined_news = "\n".join([f"- {a.get('title', '')}: {a.get('description', '')}" for a in articles[:10]])
+    ranked_articles = _rank_news_articles(articles)
+    combined_news = "\n".join([
+        f"- [{(a.get('source') or {}).get('name', 'Unknown Source')} | {a.get('publishedAt', '')}] "
+        f"{a.get('title', '')}: {a.get('description', '')}"
+        for a in ranked_articles[:10]
+    ])
     ai_summary = get_openrouter_analysis(combined_news)
 
     bullish_keywords = ["surge", "jump", "higher", "beat", "strong", "rally", "growth", "bull", "cut inflation", "options", "profit"]
