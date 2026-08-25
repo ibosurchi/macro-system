@@ -4705,81 +4705,292 @@ def _set_public_view(view: str) -> None:
 
 
 def render_public_nav(active: str = "home") -> None:
-    """Reference-style public header with a truly top-right access icon."""
+    """Compact glass navbar matching the supplied desktop reference."""
     st.markdown("""
     <style>
-      .st-key-apex_public_header {position:relative !important;width:100% !important;min-height:76px !important;}
-      .st-key-apex_public_header .apex-ref-brand-wrap {padding-right:78px;}
-      .apex-ref-brand {display:flex;align-items:center;gap:12px;min-width:0;}
-      .apex-ref-logo {width:54px;height:54px;border-radius:14px;display:flex;align-items:center;justify-content:center;background:linear-gradient(145deg,rgba(6,31,42,.84),rgba(5,14,23,.90));border:1px solid rgba(0,239,255,.34);box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 0 26px rgba(0,229,255,.08);}
-      .apex-ref-brand-name {font-size:23px;line-height:1;font-weight:950;letter-spacing:2.2px;color:#f5f8fb;white-space:nowrap;}
-      .apex-ref-brand-name span {color:#f6bd3e;}
-      .apex-ref-brand-sub {margin-top:7px;color:#7f91a3;font-size:9px;font-weight:750;letter-spacing:3.25px;white-space:nowrap;}
-      .apex-ref-toplinks {
-        position:absolute; left:50%; top:14px; transform:translateX(-50%);
-        display:flex; align-items:center; gap:8px; z-index:15;
+      .st-key-apex_public_header{
+        position:relative !important;
+        width:100% !important;
+        max-width:1180px !important;
+        margin:18px auto 18px !important;
+        min-height:76px !important;
+        padding:10px 12px !important;
+        border-radius:18px !important;
+        background:
+          radial-gradient(circle at 0% 0%,rgba(0,235,255,.055),transparent 32%),
+          linear-gradient(145deg,rgba(8,21,30,.80),rgba(4,11,18,.90)) !important;
+        border:1px solid rgba(116,193,205,.18) !important;
+        box-shadow:
+          inset 0 1px 0 rgba(255,255,255,.035),
+          0 16px 40px rgba(0,0,0,.25) !important;
+        backdrop-filter:blur(18px) saturate(120%);
+        -webkit-backdrop-filter:blur(18px) saturate(120%);
       }
-      .apex-ref-toplinks a {
-        display:inline-flex; align-items:center; justify-content:center;
-        min-width:88px; height:38px; padding:0 15px;
-        border-radius:11px; text-decoration:none !important;
-        color:#9eb0bf !important; font-size:11px; font-weight:800; letter-spacing:.25px;
+
+      .st-key-apex_public_header .apex-ref-brand-wrap{
+        position:absolute;
+        left:14px;
+        top:50%;
+        transform:translateY(-50%);
+        display:flex;
+        align-items:center;
+        z-index:10;
+      }
+
+      .apex-ref-brand{
+        display:flex;
+        align-items:center;
+        gap:10px;
+        min-width:0;
+      }
+
+      .apex-ref-logo{
+        width:44px;
+        height:44px;
+        border-radius:12px;
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        background:linear-gradient(145deg,rgba(6,31,42,.84),rgba(5,14,23,.90));
+        border:1px solid rgba(0,239,255,.30);
+        box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 0 22px rgba(0,229,255,.07);
+      }
+
+      .apex-ref-brand-name{
+        font-size:16px;
+        line-height:1;
+        font-weight:950;
+        letter-spacing:1.8px;
+        color:#f5f8fb;
+        white-space:nowrap;
+      }
+      .apex-ref-brand-name span{color:#f6bd3e;}
+
+      .apex-ref-brand-sub{
+        margin-top:5px;
+        color:#75899b;
+        font-size:6.8px;
+        font-weight:800;
+        letter-spacing:2.5px;
+        white-space:nowrap;
+      }
+
+      .apex-ref-toplinks{
+        position:absolute;
+        left:50%;
+        top:50%;
+        transform:translate(-50%,-50%);
+        display:flex;
+        align-items:center;
+        gap:4px;
+        z-index:12;
+        white-space:nowrap;
+      }
+
+      .apex-ref-toplinks a{
+        display:inline-flex;
+        align-items:center;
+        justify-content:center;
+        height:38px;
+        padding:0 13px;
+        border-radius:10px;
+        text-decoration:none !important;
+        color:#c1ccd5 !important;
+        font-size:10.5px;
+        font-weight:800;
+        letter-spacing:.12px;
         border:1px solid transparent;
         transition:all .18s ease;
       }
-      .apex-ref-toplinks a:hover {
-        color:#f1fbff !important;
-        border-color:rgba(0,239,255,.24);
-        background:rgba(0,239,255,.045);
-        box-shadow:0 0 20px rgba(0,239,255,.06);
+
+      .apex-ref-toplinks a:hover{
+        color:#fff !important;
+        background:rgba(0,235,255,.045);
+        border-color:rgba(0,235,255,.14);
       }
-      .apex-ref-navline {height:1px;margin:14px 0 24px;background:linear-gradient(90deg,transparent,rgba(21,224,241,.18),rgba(255,190,53,.08),transparent);}
-      .st-key-apex_public_header .st-key-apex_profile_access,.st-key-apex_public_header [class*="st-key-public_home_back_"] {position:absolute !important;top:2px !important;right:0 !important;width:54px !important;z-index:20 !important;}
-      .st-key-apex_profile_access button,.st-key-public_home_back_login button,.st-key-public_home_back_vip button {width:54px !important;height:54px !important;min-height:54px !important;padding:0 !important;border-radius:14px !important;border:1px solid rgba(0,239,255,.55) !important;background-color:rgba(5,20,29,.84) !important;box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 0 22px rgba(0,239,255,.12) !important;}
-      .st-key-apex_profile_access button {background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Ccircle cx='24' cy='16' r='7' fill='%2300efff'/%3E%3Cpath d='M11 38c1-9 6-13 13-13s12 4 13 13z' fill='%2300efff'/%3E%3C/svg%3E") !important;background-repeat:no-repeat !important;background-position:center !important;background-size:29px 29px !important;}
-      .st-key-apex_profile_access button p {font-size:0 !important;}
-      .st-key-apex_profile_access button:hover,.st-key-public_home_back_login button:hover,.st-key-public_home_back_vip button:hover {border-color:#28f4ff !important;box-shadow:0 0 28px rgba(0,239,255,.22) !important;}
-      @media(max-width:700px){
-        .st-key-apex_public_header{min-height:112px !important}
-        .st-key-apex_public_header .apex-ref-brand-wrap{padding-right:64px}
-        .apex-ref-logo{width:48px;height:48px;border-radius:13px}
-        .apex-ref-logo svg{width:28px !important;height:28px !important}
-        .apex-ref-brand-name{font-size:19px;letter-spacing:1.7px}
-        .apex-ref-brand-sub{font-size:7.5px;letter-spacing:2.55px;margin-top:6px}
-        .apex-ref-toplinks{
-          left:0; right:0; top:64px; transform:none;
-          justify-content:center; gap:5px;
+
+      .apex-ref-search{
+        position:absolute;
+        right:74px;
+        top:50%;
+        transform:translateY(-50%);
+        width:40px;
+        height:40px;
+        border-radius:11px;
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        color:#dbe7ef;
+        border:1px solid rgba(128,181,192,.12);
+        background:rgba(6,16,24,.46);
+      }
+
+      .apex-ref-search svg{
+        width:18px;
+        height:18px;
+        opacity:.9;
+      }
+
+      .st-key-apex_public_header .st-key-apex_profile_access,
+      .st-key-apex_public_header [class*="st-key-public_home_back_"]{
+        position:absolute !important;
+        top:50% !important;
+        right:14px !important;
+        transform:translateY(-50%) !important;
+        width:46px !important;
+        z-index:20 !important;
+      }
+
+      .st-key-apex_profile_access button,
+      .st-key-public_home_back_login button,
+      .st-key-public_home_back_vip button{
+        width:46px !important;
+        height:46px !important;
+        min-height:46px !important;
+        padding:0 !important;
+        border-radius:12px !important;
+        border:1px solid rgba(0,239,255,.34) !important;
+        background-color:rgba(5,20,29,.74) !important;
+        box-shadow:inset 0 1px 0 rgba(255,255,255,.04),0 0 20px rgba(0,239,255,.08) !important;
+      }
+
+      .st-key-apex_profile_access button{
+        background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Ccircle cx='24' cy='16' r='7' fill='%2300efff'/%3E%3Cpath d='M11 38c1-9 6-13 13-13s12 4 13 13z' fill='%2300efff'/%3E%3C/svg%3E") !important;
+        background-repeat:no-repeat !important;
+        background-position:center !important;
+        background-size:25px 25px !important;
+      }
+
+      .st-key-apex_profile_access button p{
+        font-size:0 !important;
+      }
+
+      .st-key-apex_profile_access button:hover,
+      .st-key-public_home_back_login button:hover,
+      .st-key-public_home_back_vip button:hover{
+        border-color:#28f4ff !important;
+        box-shadow:0 0 24px rgba(0,239,255,.16) !important;
+      }
+
+      .apex-ref-navline{display:none;}
+
+      @media(max-width:900px){
+        .st-key-apex_public_header{
+          min-height:122px !important;
+          padding:10px 12px 12px !important;
         }
+        .st-key-apex_public_header .apex-ref-brand-wrap{
+          top:12px;
+          left:12px;
+          transform:none;
+        }
+        .apex-ref-toplinks{
+          left:12px;
+          right:12px;
+          top:72px;
+          transform:none;
+          justify-content:center;
+          gap:3px;
+          overflow-x:auto;
+          scrollbar-width:none;
+        }
+        .apex-ref-toplinks::-webkit-scrollbar{display:none;}
         .apex-ref-toplinks a{
-          min-width:0; height:32px; padding:0 12px;
-          font-size:10px; border:1px solid rgba(114,162,177,.12);
-          background:rgba(6,16,24,.45);
+          height:32px;
+          padding:0 10px;
+          font-size:9.5px;
+          background:rgba(6,16,24,.42);
+          border:1px solid rgba(128,181,192,.09);
+        }
+        .apex-ref-search{
+          top:12px;
+          right:66px;
+          transform:none;
+          width:42px;
+          height:42px;
         }
         .st-key-apex_public_header .st-key-apex_profile_access,
         .st-key-apex_public_header [class*="st-key-public_home_back_"]{
-          top:0 !important;right:0 !important;width:48px !important
+          top:12px !important;
+          right:12px !important;
+          transform:none !important;
+          width:42px !important;
         }
         .st-key-apex_profile_access button,
         .st-key-public_home_back_login button,
         .st-key-public_home_back_vip button{
-          width:48px !important;height:48px !important;min-height:48px !important;border-radius:13px !important
+          width:42px !important;
+          height:42px !important;
+          min-height:42px !important;
+          border-radius:11px !important;
         }
-        .st-key-apex_profile_access button{background-size:25px 25px !important}
       }
-      @media(max-width:390px){.apex-ref-brand-name{font-size:17.5px}.apex-ref-brand-sub{letter-spacing:2.1px}}
+
+      @media(max-width:430px){
+        .st-key-apex_public_header{
+          margin-top:10px !important;
+          border-radius:15px !important;
+        }
+        .apex-ref-logo{
+          width:40px;height:40px;
+        }
+        .apex-ref-logo svg{
+          width:24px !important;height:24px !important;
+        }
+        .apex-ref-brand-name{
+          font-size:14.5px;
+          letter-spacing:1.45px;
+        }
+        .apex-ref-brand-sub{
+          font-size:6.2px;
+          letter-spacing:2px;
+        }
+        .apex-ref-toplinks a{
+          padding:0 9px;
+          font-size:9px;
+        }
+      }
     </style>
     """, unsafe_allow_html=True)
+
     with st.container(key="apex_public_header"):
         render_html("""
-        <div class="apex-ref-brand-wrap"><div class="apex-ref-brand"><div class="apex-ref-logo">
-          <svg width="31" height="31" viewBox="0 0 360 365" fill="none"><defs><linearGradient id="apexRefLogo" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#1AF4FF"/><stop offset="1" stop-color="#00BBD2"/></linearGradient></defs><path d="M0 365L180 0L360 365H288L180 130L72 365Z" fill="url(#apexRefLogo)"/></svg>
-        </div><div><div class="apex-ref-brand-name">APEX<span>MACRO</span></div><div class="apex-ref-brand-sub">INTELLIGENCE DESK</div></div></div></div>
+        <div class="apex-ref-brand-wrap">
+          <div class="apex-ref-brand">
+            <div class="apex-ref-logo">
+              <svg width="27" height="27" viewBox="0 0 360 365" fill="none">
+                <defs>
+                  <linearGradient id="apexRefLogo" x1="0" y1="0" x2="1" y2="1">
+                    <stop stop-color="#1AF4FF"/>
+                    <stop offset="1" stop-color="#00BBD2"/>
+                  </linearGradient>
+                </defs>
+                <path d="M0 365L180 0L360 365H288L180 130L72 365Z" fill="url(#apexRefLogo)"/>
+              </svg>
+            </div>
+            <div>
+              <div class="apex-ref-brand-name">APEX<span>MACRO</span></div>
+              <div class="apex-ref-brand-sub">INTELLIGENCE DESK</div>
+            </div>
+          </div>
+        </div>
+
         <nav class="apex-ref-toplinks" aria-label="ApexMacro home sections">
+          <a href="#apex-platform">Platform</a>
           <a href="#apex-features">Features</a>
-          <a href="#apex-company">Company</a>
+          <a href="#apex-data">Data Sources</a>
           <a href="#apex-pricing">Pricing</a>
+          <a href="#apex-company">Company</a>
         </nav>
+
+        <div class="apex-ref-search" title="Search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="7"></circle>
+            <path d="M20 20l-3.5-3.5"></path>
+          </svg>
+        </div>
         """)
+
         if active == "home":
             if st.button("Access", key="apex_profile_access", help="VIP Login / Get VIP"):
                 _set_public_view("login")
@@ -4788,7 +4999,10 @@ def render_public_nav(active: str = "home") -> None:
             if st.button("←", key=f"public_home_back_{active}", help="Back to Home"):
                 _set_public_view("home")
                 st.rerun()
+
     render_html('<div class="apex-ref-navline"></div>')
+
+
 
 
 def render_public_home() -> None:
@@ -5219,7 +5433,7 @@ def render_public_home() -> None:
     render_public_nav("home")
 
     render_html("""
-    <div class="apex-home-shell">
+    <div class="apex-home-shell"><div id="apex-platform"></div>
       <section class="apex-ref-hero">
         <div class="apex-ref-globe"></div>
         <div class="apex-ref-hero-inner">
@@ -5300,7 +5514,23 @@ def render_public_home() -> None:
         </article>
       </section>
 
-      <section id="apex-company" class="apex-proof-section">
+      
+      <section id="apex-data" class="apex-proof-section">
+        <div class="apex-proof-eyebrow">DATA SOURCES</div>
+        <div class="apex-proof-title">Built from multiple intelligence layers.</div>
+        <div class="apex-proof-copy">
+          ApexMacro combines macroeconomic data, market-price data, economic calendars,
+          live news feeds and AI-assisted interpretation so no single source controls the final view.
+        </div>
+        <div class="apex-proof-grid">
+          <div class="apex-proof-card cyan"><div class="apex-proof-num">01</div><div class="apex-proof-card-title">Macro Data</div><div class="apex-proof-card-copy">Rates, yields, inflation, growth and policy-sensitive data feed the macro regime engine.</div></div>
+          <div class="apex-proof-card purple"><div class="apex-proof-num">02</div><div class="apex-proof-card-title">Market Prices</div><div class="apex-proof-card-copy">Live price action confirms momentum, pullbacks, breakouts and tactical market structure.</div></div>
+          <div class="apex-proof-card gold"><div class="apex-proof-num">03</div><div class="apex-proof-card-title">News & Catalysts</div><div class="apex-proof-card-copy">Current headlines, geopolitical risk and economic events are filtered into asset-specific intelligence.</div></div>
+          <div class="apex-proof-card blue"><div class="apex-proof-num">04</div><div class="apex-proof-card-title">AI Interpretation</div><div class="apex-proof-card-copy">AI helps structure and interpret information while remaining bounded by the quantitative engine.</div></div>
+        </div>
+      </section>
+
+<section id="apex-company" class="apex-proof-section">
         <div class="apex-proof-eyebrow">COMPANY</div>
         <div class="apex-proof-title">Built to see more than a single chart.</div>
         <div class="apex-proof-copy">
