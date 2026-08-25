@@ -97,8 +97,9 @@ APEX_MASTER_KEY = get_secret("APEX_MASTER_KEY", "")
 APEX_SECRET_SALT = "APEX_MACRO_SECRET_2026_SALT"
 REGISTRY_FILE = os.path.join(os.path.dirname(__file__), "vip_registry.json")
 
+# VIP checkout configuration. Only public receiving/API values are used; no wallet private key is required.
 USDT_TRC20_ADDRESS = get_secret("USDT_TRC20_ADDRESS", "")
-TRONGRID_API_KEY = get_secret("TRONGRID_API_KEY", "")
+TRONGRID_API_KEY = get_secret("TRONGRID_API_KEY", "")  # Optional; improves TronGrid rate limits.
 TRONGRID_BASE_URL = get_secret("TRONGRID_BASE_URL", "https://api.trongrid.io").rstrip("/")
 TRON_USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
 VIP_PAYMENT_PLANS = {
@@ -109,6 +110,8 @@ PAYMENTS_FILE = os.path.join(os.path.dirname(__file__), "vip_payments.json")
 _PAYMENT_LOCK = threading.RLock()
 SESSIONS_FILE = os.path.join(os.path.dirname(__file__), "vip_sessions.json")
 
+# Persistent client storage. Supabase is optional at code level so the app can still
+# start locally, but production Streamlit should configure these secrets.
 SUPABASE_URL = get_secret("SUPABASE_URL", "").rstrip("/")
 SUPABASE_SERVICE_ROLE_KEY = get_secret("SUPABASE_SERVICE_ROLE_KEY", "")
 SUPABASE_STATE_TABLE = get_secret("SUPABASE_STATE_TABLE", "apexmacro_state") or "apexmacro_state"
@@ -123,6 +126,7 @@ TELEGRAM_DAEMON_LOCK_FILE = os.path.join(os.path.dirname(__file__), ".apexmacro_
 TACTICAL_STATE_FILE = os.path.join(os.path.dirname(__file__), "tactical_move_state.json")
 _TACTICAL_STATE_LOCK = threading.RLock()
 
+# Synchronizes Streamlit/Admin and Telegram worker access to the shared VIP registry.
 _VIP_REGISTRY_LOCK = threading.RLock()
 
 def _supabase_enabled() -> bool:
@@ -145,6 +149,7 @@ def _supabase_state_url() -> str:
 
 
 def _supabase_load_state(state_id: str) -> tuple[bool, object | None]:
+    """Return (request_succeeded, payload). payload=None means the row does not exist yet."""
     if not _supabase_enabled():
         return False, None
     try:
@@ -210,22 +215,25 @@ def _write_local_json_atomic(path: str, payload: object) -> None:
 
 
 def _load_persistent_state(state_id: str, local_path: str, default: object) -> object:
+    """Supabase-first read with automatic one-time migration from the existing JSON file."""
     with _PERSISTENCE_LOCK:
         remote_ok, remote_payload = _supabase_load_state(state_id)
         if remote_ok and remote_payload is not None:
             try:
-                _write_local_json_atomic(local_path, remote_payload)
+                _write_local_json_atomic(local_path, remote_payload)  # local cache/mirror only
             except Exception:
                 pass
             return remote_payload
 
         local_payload = _read_local_json(local_path, default)
         if remote_ok and remote_payload is None:
+            # First run after enabling Supabase: preserve the current clients/payments/sessions.
             _supabase_save_state(state_id, local_payload)
         return local_payload
 
 
 def _save_persistent_state(state_id: str, local_path: str, payload: object) -> None:
+    """Write a local safety copy and the durable Supabase copy."""
     with _PERSISTENCE_LOCK:
         try:
             _write_local_json_atomic(local_path, payload)
@@ -300,6 +308,7 @@ def _write_vip_registry_unlocked(clients: list[dict]) -> None:
 
 
 def save_vip_registry(clients: list[dict]) -> None:
+    """Persist VIP data durably while preserving Telegram-owned alert preferences."""
     with _VIP_REGISTRY_LOCK:
         try:
             current = _load_persistent_state("vip_registry", REGISTRY_FILE, [])
@@ -512,6 +521,8 @@ CURRENCY_SERIES = {
     },
 }
 
+# Canonical Telegram-selectable market keys. Forex entries are derived from the
+# existing CURRENCY_SERIES so future configured currencies can be exposed easily.
 ALERT_ASSETS: dict[str, str] = {
     "Gold": "🥇 Gold (XAUUSD)",
 }
@@ -533,6 +544,7 @@ def _all_alert_asset_keys() -> list[str]:
 
 
 def _client_alert_asset_keys(client: dict) -> set[str]:
+    """Missing field means ALL (backward compatibility); an explicit [] means none."""
     if "alert_assets" not in client:
         return set(_all_alert_asset_keys())
     raw = client.get("alert_assets")
@@ -551,6 +563,7 @@ def _client_license_is_current(client: dict) -> bool:
     try:
         return get_current_time().date() <= datetime.strptime(exp, "%Y-%m-%d").date()
     except Exception:
+        # Preserve existing behavior for legacy/custom registry date formats.
         return True
 
 
@@ -566,6 +579,7 @@ def _find_authorized_telegram_client(telegram_user_id: str, clients: list[dict] 
 
 
 def _set_client_alert_assets(telegram_user_id: str, selected_assets: set[str]) -> bool:
+    """Update only the requesting Telegram user's active registry entry in one locked transaction."""
     target = str(telegram_user_id or "").strip()
     supported = set(_all_alert_asset_keys())
     clean_selection = [key for key in _all_alert_asset_keys() if key in selected_assets and key in supported]
@@ -768,6 +782,7 @@ def _handle_telegram_update(update: dict) -> None:
 
 
 def _telegram_bot_fingerprint(token: str | None = None) -> str:
+    """Non-secret fingerprint used only to separate persisted getUpdates offsets per bot."""
     raw = str(token if token is not None else TELEGRAM_BOT_TOKEN).strip()
     if not raw:
         return ""
@@ -775,6 +790,7 @@ def _telegram_bot_fingerprint(token: str | None = None) -> str:
 
 
 def _load_telegram_update_offset() -> int:
+    """Load an offset only when it belongs to the currently configured Telegram bot."""
     try:
         if os.path.exists(TELEGRAM_UPDATE_STATE_FILE):
             with open(TELEGRAM_UPDATE_STATE_FILE, "r", encoding="utf-8") as f:
@@ -816,6 +832,7 @@ def _get_telegram_update_controller():
 
 
 def start_telegram_update_worker() -> None:
+    """Start one non-blocking daemon worker for /alerts and callback_query updates."""
     if not TELEGRAM_BOT_TOKEN:
         return
     ctrl = _get_telegram_update_controller()
@@ -829,6 +846,7 @@ def start_telegram_update_worker() -> None:
         if not token:
             return
 
+        # getUpdates cannot operate while a webhook is configured.
         try:
             requests.post(
                 f"https://api.telegram.org/bot{token}/deleteWebhook",
@@ -838,6 +856,7 @@ def start_telegram_update_worker() -> None:
         except Exception:
             pass
 
+        # Register the commands in Telegram's command menu.
         try:
             requests.post(
                 f"https://api.telegram.org/bot{token}/setMyCommands",
@@ -1024,168 +1043,6 @@ div[data-testid="stPopover"] > button {
 .fc-outlook{display:grid;grid-template-columns:1.45fr repeat(3,.72fr);gap:8px;margin-top:10px}.fc-outlook-main,.fc-asset{background:rgba(0,0,0,.18);border:1px solid rgba(255,255,255,.055);border-radius:10px;padding:10px}.fc-outlook-main{border-color:rgba(0,245,255,.13)}.fc-small-lbl{font-size:8.5px;color:#718795;text-transform:uppercase;font-weight:850;letter-spacing:.7px}.fc-main-action{font-size:11.5px;font-weight:900;margin-top:4px}.fc-main-desc{font-size:9.8px;color:#92a5b1;line-height:1.4;margin-top:3px}.fc-asset{font-size:10px;color:#dce7ed;line-height:1.35}.fc-asset b{display:block;color:#fff;margin-bottom:3px}
 .fc-ai{margin-top:10px;background:rgba(8,15,23,.72);border:1px solid rgba(173,123,255,.16);border-radius:12px;padding:12px}.fc-ai-head{display:flex;justify-content:space-between;gap:8px;align-items:center}.fc-ai-title{font-size:9px;font-weight:900;color:#ad7bff;letter-spacing:1px;text-transform:uppercase}.fc-ai-conf{font-size:9px;font-weight:850;color:#00ffa3}.fc-ai-assess{font-size:12px;font-weight:850;color:#fff;margin-top:6px}.fc-ai-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:8px}.fc-ai-box{background:rgba(255,255,255,.018);border:1px solid rgba(255,255,255,.055);border-radius:8px;padding:8px;font-size:9.8px;color:#dce7ed;line-height:1.4}.fc-ai-box b{font-size:8.5px;letter-spacing:.6px}.fc-ai-foot{font-size:9.5px;color:#8397a4;margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.05)}
 @media(max-width:760px){.fc-hero-row,.fc-event-top{align-items:flex-start;flex-direction:column}.fc-horizon{text-align:left}.fc-event-name{white-space:normal;max-width:none}.fc-metrics{grid-template-columns:1fr 1fr}.fc-nowcast{grid-template-columns:1fr}.fc-score{text-align:left}.fc-outlook{grid-template-columns:1fr 1fr}.fc-outlook-main{grid-column:1/-1}.fc-ai-grid{grid-template-columns:1fr}.fc-body{padding:12px}.fc-event-top{padding:12px}.fc-title{font-size:19px}}
-
-
-      /* ===== HEADER ALIGNMENT + TYPOGRAPHY FIX ===== */
-      .apex-public-nav{
-        width:min(1180px, calc(100% - 40px)) !important;
-        min-height:96px !important;
-        margin:18px auto 30px !important;
-        padding:0 28px !important;
-        box-sizing:border-box !important;
-        display:grid !important;
-        grid-template-columns:auto 1fr auto !important;
-        align-items:center !important;
-        justify-content:space-between !important;
-        column-gap:40px !important;
-        overflow:visible !important;
-      }
-
-      .apex-public-nav .apex-brand,
-      .apex-public-nav .apex-brand-wrap,
-      .apex-public-nav .brand-wrap{
-        position:static !important;
-        transform:none !important;
-        margin:0 !important;
-        align-self:center !important;
-        justify-self:start !important;
-        display:flex !important;
-        align-items:center !important;
-        gap:15px !important;
-      }
-
-      .apex-public-nav .apex-logo,
-      .apex-public-nav .brand-logo{
-        position:static !important;
-        margin:0 !important;
-        width:54px !important;
-        height:54px !important;
-        min-width:54px !important;
-        align-self:center !important;
-      }
-
-      .apex-public-nav .apex-brand-name,
-      .apex-public-nav .brand-name{
-        font-size:24px !important;
-        line-height:1.05 !important;
-        letter-spacing:1.8px !important;
-        white-space:nowrap !important;
-      }
-
-      .apex-public-nav .apex-brand-sub,
-      .apex-public-nav .brand-sub{
-        margin-top:6px !important;
-        font-size:9.5px !important;
-        line-height:1 !important;
-        letter-spacing:3.2px !important;
-        white-space:nowrap !important;
-      }
-
-      .apex-public-nav .apex-nav-links,
-      .apex-public-nav .nav-links{
-        position:static !important;
-        transform:none !important;
-        margin:0 !important;
-        align-self:center !important;
-        justify-self:center !important;
-        display:flex !important;
-        align-items:center !important;
-        justify-content:center !important;
-        gap:42px !important;
-      }
-
-      .apex-public-nav .apex-nav-links a,
-      .apex-public-nav .nav-links a{
-        font-size:14.5px !important;
-        line-height:1 !important;
-        font-weight:900 !important;
-        letter-spacing:.2px !important;
-        white-space:nowrap !important;
-      }
-
-      .apex-public-nav .apex-nav-actions,
-      .apex-public-nav .nav-actions{
-        position:static !important;
-        transform:none !important;
-        margin:0 !important;
-        align-self:center !important;
-        justify-self:end !important;
-        display:flex !important;
-        align-items:center !important;
-        gap:16px !important;
-      }
-
-      .apex-public-nav .apex-search,
-      .apex-public-nav .nav-search,
-      .apex-public-nav .apex-profile,
-      .apex-public-nav .nav-profile{
-        position:static !important;
-        margin:0 !important;
-        align-self:center !important;
-      }
-
-      @media (min-width:1200px){
-        .apex-public-nav{
-          min-height:104px !important;
-          padding:0 34px !important;
-          column-gap:50px !important;
-        }
-        .apex-public-nav .apex-brand-name,
-        .apex-public-nav .brand-name{
-          font-size:26px !important;
-        }
-        .apex-public-nav .apex-nav-links a,
-        .apex-public-nav .nav-links a{
-          font-size:15px !important;
-        }
-      }
-
-      @media (max-width:900px){
-        .apex-public-nav{
-          width:calc(100% - 24px) !important;
-          min-height:76px !important;
-          margin:12px auto 20px !important;
-          padding:0 16px !important;
-          grid-template-columns:minmax(0,1fr) auto !important;
-          column-gap:12px !important;
-        }
-        .apex-public-nav .apex-nav-links,
-        .apex-public-nav .nav-links{
-          display:none !important;
-        }
-        .apex-public-nav .apex-brand-name,
-        .apex-public-nav .brand-name{
-          font-size:19px !important;
-        }
-        .apex-public-nav .apex-brand-sub,
-        .apex-public-nav .brand-sub{
-          font-size:8px !important;
-          letter-spacing:2.2px !important;
-        }
-        .apex-public-nav .apex-logo,
-        .apex-public-nav .brand-logo{
-          width:46px !important;
-          height:46px !important;
-          min-width:46px !important;
-        }
-      }
-
-      @media (max-width:430px){
-        .apex-public-nav{
-          width:calc(100% - 18px) !important;
-          min-height:70px !important;
-          padding:0 12px !important;
-        }
-        .apex-public-nav .apex-brand,
-        .apex-public-nav .apex-brand-wrap,
-        .apex-public-nav .brand-wrap{
-          gap:11px !important;
-        }
-        .apex-public-nav .apex-brand-name,
-        .apex-public-nav .brand-name{
-          font-size:17px !important;
-        }
-      }
 </style>
 """)
 
@@ -1219,6 +1076,7 @@ def fetch_fred(series_id: str, key: str, limit: int = 48) -> pd.DataFrame | None
 _ALERT_STATE_LOCK = threading.Lock()
 
 def _load_alert_state() -> dict[str, dict]:
+    """Load persisted broad-regime state. Invalid state is ignored safely."""
     try:
         if os.path.exists(ALERT_STATE_FILE):
             with open(ALERT_STATE_FILE, "r", encoding="utf-8") as f:
@@ -1235,6 +1093,7 @@ def _load_alert_state() -> dict[str, dict]:
 
 
 def _save_alert_state() -> None:
+    """Persist regime state atomically so Streamlit reruns/restarts do not duplicate shifts."""
     try:
         tmp_path = ALERT_STATE_FILE + ".tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
@@ -1244,10 +1103,14 @@ def _save_alert_state() -> None:
         pass
 
 
+# Per-asset state:
+# {"confirmed_regime": str, "confirmed_score": float,
+#  "pending_regime": str|None, "pending_since": float|None}
 GLOBAL_ALERT_STATE: dict[str, dict] = _load_alert_state()
 
 
 def _broad_regime(bias_label: str) -> str:
+    """Map dashboard detail labels to Bullish | Neutral | Bearish for Telegram only."""
     label = str(bias_label or "").lower()
     if "bullish" in label:
         return "Bullish"
@@ -1257,6 +1120,7 @@ def _broad_regime(bias_label: str) -> str:
 
 
 def _init_asset_state(asset_key: str, regime: str, score: float) -> bool:
+    """Silently initialize an unseen asset; returns True only when initialization occurred."""
     with _ALERT_STATE_LOCK:
         if asset_key in GLOBAL_ALERT_STATE:
             return False
@@ -1277,6 +1141,7 @@ def _check_regime_shift(
     now_ts: float,
     confirmation_secs: float = 900.0,
 ) -> str | None:
+    """Confirm only broad regime shifts; neutral transitions wait 15 minutes, direct reversals are immediate."""
     with _ALERT_STATE_LOCK:
         state = GLOBAL_ALERT_STATE.get(asset_key)
         if state is None:
@@ -1285,6 +1150,7 @@ def _check_regime_shift(
         new_regime = _broad_regime(new_detailed_label)
         confirmed = str(state.get("confirmed_regime") or new_regime)
 
+        # Same broad regime: no alert, and any threshold-noise pending transition is cancelled.
         if new_regime == confirmed:
             changed = state.get("pending_regime") is not None or state.get("pending_since") is not None
             state["confirmed_score"] = float(new_score)
@@ -1294,6 +1160,7 @@ def _check_regime_shift(
                 _save_alert_state()
             return None
 
+        # Bullish <-> Bearish is a major reversal and bypasses neutral confirmation.
         is_major_reversal = (
             confirmed in {"Bullish", "Bearish"}
             and new_regime in {"Bullish", "Bearish"}
@@ -1310,6 +1177,7 @@ def _check_regime_shift(
             _save_alert_state()
             return f"{old_regime}→{new_regime}|IMMEDIATE"
 
+        # Every transition involving Neutral must remain valid for ~15 minutes.
         if state.get("pending_regime") != new_regime:
             state["pending_regime"] = new_regime
             state["pending_since"] = float(now_ts)
@@ -1362,6 +1230,7 @@ def _calc_currency_score_only(currency: str, fred_key: str, channel_name: str = 
 
 
 def _compose_gold_intelligence_score(gold_ry: float, gold_usd: float, sentiment_res: dict) -> dict:
+    """Established Gold model plus a bounded live-price confirmation overlay."""
     gold_news_pts = float((sentiment_res.get("scores") or {}).get("Gold", 0.0))
     base_score = (
         (0.30 * float(gold_ry))
@@ -1378,6 +1247,7 @@ def _compose_gold_intelligence_score(gold_ry: float, gold_usd: float, sentiment_
     except Exception:
         tactical = None
 
+    # The original macro/news engine still owns 90% of the final decision.
     final_score = float(np.clip((0.90 * base_score) + (0.10 * tactical_score), -1.0, 1.0))
     return {
         "score": final_score,
@@ -1454,6 +1324,7 @@ def _calc_oil_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHA
 
 @st.cache_data(ttl=30, show_spinner=False)
 def _calc_ndx_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> tuple[float | None, float]:
+    """Nasdaq-100: 40% price momentum + 20% inverse real yield + 15% inverse USD + 25% NDX news."""
     try:
         ndx_df = fetch_fred("NASDAQ100", fred_key, limit=90)
         if ndx_df is None or ndx_df.empty:
@@ -1489,15 +1360,26 @@ def _calc_ndx_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHA
 
 
 
+# Asset registry for smart monitoring
+_ASSET_MONITOR_CONFIG = [
+    # (asset_key, display_name, icon, score_fn_args)
+    # score functions are called per-asset in check_global_market_shifts
+]
+
+
+
 # ============================================================
-# TACTICAL MOVE LAYER — Short-Term Price Action
+# TACTICAL MOVE LAYER — Short-Term Price Action (presentation/delivery only)
+# This layer NEVER changes the existing macro scores, weights, thresholds or Smart Shift engine.
 # ============================================================
 
 def _tactical_symbol_config(asset_key: str) -> dict[str, object] | None:
+    """Map an ApexMacro asset to a liquid Yahoo market symbol and direction convention."""
     key = str(asset_key or "").strip()
     fixed = {
         "Gold": {"symbol": "XAUUSD=X", "fallback_symbols": ["GC=F"], "invert": False, "display": "Gold (XAUUSD)", "icon": "🥇"},
         "Oil": {"symbol": "CL=F", "invert": False, "display": "Crude Oil (WTI)", "icon": "🛢️"},
+        # Nasdaq futures are used so tactical movement remains available beyond cash-index hours.
         "NDX": {"symbol": "NQ=F", "invert": False, "display": "Nasdaq-100 (NDX)", "icon": "📊"},
         "USD": {"symbol": "DX-Y.NYB", "invert": False, "display": "US Dollar (USD)", "icon": "🇺🇸"},
     }
@@ -1507,6 +1389,8 @@ def _tactical_symbol_config(asset_key: str) -> dict[str, object] | None:
         return None
 
     meta = CURRENCY_SERIES.get(key, {})
+    # EUR/GBP/AUD/NZD are normally quoted XXXUSD; most other majors are USDXXX,
+    # so USDXXX must be inverted to represent strength of the target currency itself.
     direct_usd = {"EUR", "GBP", "AUD", "NZD"}
     if key in direct_usd:
         symbol, invert = f"{key}USD=X", False
@@ -1522,6 +1406,7 @@ def _tactical_symbol_config(asset_key: str) -> dict[str, object] | None:
 
 @st.cache_data(ttl=55, show_spinner=False)
 def _fetch_tactical_price_series(symbol: str) -> pd.DataFrame | None:
+    """Fetch 5-minute market prices. Failure is silent so the macro engine remains fully independent."""
     if not symbol:
         return None
     try:
@@ -1605,6 +1490,7 @@ def _tactical_interpretation(macro_regime: str, tactical_label: str) -> str:
 
 
 def compute_tactical_move(asset_key: str, macro_score: float | None = None) -> dict | None:
+    """Calculate short-term price action independently of the existing macro strategy."""
     cfg = _tactical_symbol_config(asset_key)
     if not cfg:
         return None
@@ -1623,6 +1509,7 @@ def compute_tactical_move(asset_key: str, macro_score: float | None = None) -> d
 
     closes = df["close"].astype(float).to_numpy()
     if bool(cfg.get("invert")):
+        # Invert USDXXX pairs so positive movement always means target-currency strength.
         closes = 1.0 / np.maximum(closes, 1e-12)
 
     def ret(bars: int) -> float:
@@ -1723,6 +1610,7 @@ def compute_tactical_move(asset_key: str, macro_score: float | None = None) -> d
 
 
 def render_tactical_move_panel(asset_key: str, macro_score: float | None = None) -> None:
+    """Compact dashboard card that clearly separates live price action from Macro Outlook."""
     tactical = compute_tactical_move(asset_key, macro_score)
     render_html('<div class="sec-title">Tactical Move — Live Price Action</div>')
     if not tactical:
@@ -1770,6 +1658,7 @@ def _save_tactical_state(state: dict[str, dict]) -> None:
 
 
 def _update_tactical_alert_state(state: dict[str, dict], tactical: dict, now_ts: float) -> bool:
+    """Return True only for a new, meaningful strong tactical move; suppress one-minute noise/spam."""
     key = str(tactical.get("key", ""))
     label = str(tactical.get("label", "Neutral"))
     strong = label if label in {"Strong Bullish", "Strong Bearish"} else ""
@@ -1836,6 +1725,7 @@ def _update_tactical_alert_state(state: dict[str, dict], tactical: dict, now_ts:
     if not immediate and float(now_ts) - candidate_since < required_persistence:
         return False
 
+    # Prevent repeated same-direction alerts during noisy reconnects/restarts.
     last_alert = float(stt.get("last_alert_ts") or 0.0)
     if last_alert and float(now_ts) - last_alert < 900.0 and stt.get("active") == strong:
         return False
@@ -1889,6 +1779,7 @@ def send_personalized_tactical_alert(tactical: dict) -> list[dict]:
 
 
 def check_global_tactical_moves() -> None:
+    """Monitor every selectable asset for strong live price moves without touching macro calculations."""
     try:
         now_ts = time.time()
         with _TACTICAL_STATE_LOCK:
@@ -1913,6 +1804,7 @@ def check_global_tactical_moves() -> None:
         pass
 
 def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL, selected_assets: set[str] | None = None) -> str:
+    """Build the hourly brief, optionally containing only one client's selected market assets."""
     now = get_current_time()
     selected = set(_all_alert_asset_keys()) if selected_assets is None else set(selected_assets)
     def _emoji(score: float) -> str:
@@ -1964,6 +1856,7 @@ def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHAN
 
 
 def send_personalized_hourly_reports(fred_key: str, channel_name: str) -> list[dict]:
+    """Send each active VIP an hourly brief containing only enabled market assets."""
     if not TELEGRAM_BOT_TOKEN: return []
     results = []; sent_chat_ids = set()
     for client in load_vip_registry():
@@ -2019,6 +1912,7 @@ def _build_multi_asset_alert_msg(asset_shifts: list[dict]) -> str:
 
 
 def send_personalized_shift_alerts(asset_shifts: list[dict]) -> list[dict]:
+    """Filter confirmed global shifts per VIP client's saved Telegram market preferences."""
     if not TELEGRAM_BOT_TOKEN or not asset_shifts:
         return []
 
@@ -2057,6 +1951,7 @@ def send_personalized_shift_alerts(asset_shifts: list[dict]) -> list[dict]:
 
 
 def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
+    """Smart broad-regime monitoring for every configured currency plus Gold, Oil and NDX."""
     if not fred_key:
         return
     try:
@@ -2069,7 +1964,7 @@ def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
             detailed, _, _ = bias_from_score(float(score))
             broad = _broad_regime(detailed)
             if _init_asset_state(asset_key, broad, float(score)):
-                return
+                return  # first observation is intentionally silent
             result = _check_regime_shift(asset_key, detailed, float(score), now_ts)
             if not result:
                 return
@@ -2087,6 +1982,7 @@ def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
                 "reason": reason,
             })
 
+        # Dynamically monitor every currency defined by the existing project strategy.
         for cur, meta in CURRENCY_SERIES.items():
             try:
                 score = _calc_currency_score_only(cur, fred_key, channel_name)
@@ -2113,6 +2009,7 @@ def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
             pass
 
         if confirmed_shifts:
+            # Global Smart Shift detection remains unchanged; delivery is personalized per client.
             send_personalized_shift_alerts(confirmed_shifts)
     except Exception:
         pass
@@ -2120,6 +2017,7 @@ def check_global_market_shifts(fred_key: str, channel_name: str) -> None:
 
 
 def _acquire_telegram_daemon_process_lock():
+    """Best-effort OS lock preventing duplicate alert daemons on the same host/filesystem."""
     handle = None
     try:
         import fcntl
@@ -2342,6 +2240,7 @@ def get_openrouter_analysis(news_text: str, api_key: str = DEFAULT_OPENROUTER_KE
 
 
 def _is_gold_relevant_news(article: dict) -> bool:
+    """Identify headlines that can materially affect XAUUSD, even if 'gold' is not named."""
     text = f"{article.get('title', '')} {article.get('description', '')}".lower()
     terms = [
         "gold", "xau", "xauusd", "bullion", "precious metal", "safe haven", "safe-haven",
@@ -2362,6 +2261,7 @@ def _gold_relevant_articles(articles: list, limit: int = 14) -> list:
 
 
 def _gold_rule_based_news_points(articles: list) -> float:
+    """Contextual XAUUSD news score in the existing [-0.50, +0.50] convention."""
     score = 0.0
     for art in _gold_relevant_articles(articles, 20):
         text = f"{art.get('title', '')} {art.get('description', '')}".lower()
@@ -2437,6 +2337,7 @@ def _gold_rule_based_news_points(articles: list) -> float:
 
 
 def get_openrouter_gold_signal(news_text: str, api_key: str = DEFAULT_OPENROUTER_KEY) -> dict:
+    """Structured, bounded AI interpretation for Gold."""
     default = {
         "direction": "Neutral",
         "score": 0.0,
@@ -2482,4 +2383,4011 @@ def get_openrouter_gold_signal(news_text: str, api_key: str = DEFAULT_OPENROUTER
         response.raise_for_status()
         data = response.json()
         content = str(data["choices"][0]["message"]["content"]).strip()
-        content = re.sub(r"^```(?:json)?\s*|\s*
+        content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.I | re.S).strip()
+        parsed = json.loads(content)
+        direction = str(parsed.get("direction", "Neutral")).strip().title()
+        if direction not in {"Bullish", "Neutral", "Bearish"}:
+            direction = "Neutral"
+        score = float(np.clip(float(parsed.get("score", 0.0)), -1.0, 1.0))
+        confidence = float(np.clip(float(parsed.get("confidence", 0.0)), 0.0, 100.0))
+        return {
+            "direction": direction,
+            "score": score,
+            "confidence": confidence,
+            "horizon": str(parsed.get("horizon", "Unknown"))[:40],
+            "reason": str(parsed.get("reason", ""))[:280],
+            "active": True,
+        }
+    except Exception:
+        return default
+
+
+def _gold_news_intelligence(articles: list) -> dict:
+    """Blend contextual Gold rules with bounded AI in the existing ±0.50 news layer."""
+    relevant = _gold_relevant_articles(articles, 14)
+    rule_points = _gold_rule_based_news_points(relevant)
+    if not relevant:
+        return {
+            "points": 0.0,
+            "rule_points": 0.0,
+            "ai_points": 0.0,
+            "ai": {
+                "direction": "Neutral", "score": 0.0, "confidence": 0.0,
+                "horizon": "Unknown", "reason": "No Gold-relevant live news detected.",
+                "active": False,
+            },
+            "relevant_count": 0,
+        }
+
+    news_text = "\n".join(
+        f"- {a.get('title', '')}: {a.get('description', '')}"
+        for a in relevant[:12]
+    )
+    ai = get_openrouter_gold_signal(news_text)
+    confidence_factor = float(ai.get("confidence", 0.0)) / 100.0 if ai.get("active") else 0.0
+    ai_points = float(np.clip(float(ai.get("score", 0.0)) * 0.50 * confidence_factor, -0.50, 0.50))
+
+    # Rules remain the majority of the news layer; AI is deliberately bounded.
+    blended = (0.65 * rule_points) + (0.35 * ai_points)
+    return {
+        "points": float(np.clip(blended, -0.50, 0.50)),
+        "rule_points": rule_points,
+        "ai_points": ai_points,
+        "ai": ai,
+        "relevant_count": len(relevant),
+    }
+
+
+def _is_nasdaq_news(article: dict) -> bool:
+    text = f"{article.get('title', '')} {article.get('description', '')}".lower()
+    terms = [
+        "nasdaq", "nasdaq-100", "ndx", "technology stocks", "tech stocks", "megacap",
+        "mega-cap", "ai stocks", "artificial intelligence stocks", "semiconductor", "chip sector",
+        "nvidia", "microsoft", "apple", "amazon", "meta", "alphabet", "google", "tesla",
+        "us equities", "u.s. equities", "growth stocks", "treasury yield", "real yield", "fed",
+        "rate expectations", "risk-on", "risk on", "risk-off", "risk off", "technology sector"
+    ]
+    return any(term in text for term in terms)
+
+
+def _nasdaq_relevant_articles(articles: list) -> list:
+    return [a for a in (articles or []) if _is_nasdaq_news(a)]
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def analyze_news_rule_based(articles: list) -> dict:
+    scores = {
+        "USD": 0.0, "EUR": 0.0, "GBP": 0.0, "CAD": 0.0,
+        "JPY": 0.0, "AUD": 0.0, "NZD": 0.0, "CHF": 0.0,
+        "Gold": 0.0, "Oil": 0.0, "Nasdaq": 0.0
+    }
+    drivers = [
+        {"name": "Macro Data Momentum", "icon": "📊", "expected_duration": "Active Session", "reason": "Evaluated via multi-timeframe FRED indicators."},
+        {"name": "Geopolitical & Feed Flow", "icon": "📡", "expected_duration": "1-2 Days", "reason": "Real-time institutional news stream monitored."}
+    ]
+
+    if not articles:
+        return {"scores": scores, "drivers": drivers, "ai_summary": "No live news articles detected for AI analysis.", "ai_active": True}
+
+    combined_news = "\n".join([f"- {a.get('title', '')}: {a.get('description', '')}" for a in articles[:10]])
+    ai_summary = get_openrouter_analysis(combined_news)
+
+    bullish_keywords = ["surge", "jump", "higher", "beat", "strong", "rally", "growth", "bull", "cut inflation", "options", "profit"]
+    bearish_keywords = ["drop", "fall", "lower", "miss", "weak", "slump", "bear", "inflation rise", "tension", "attacking", "military", "war"]
+
+    sentiment_delta = 0.0
+    for art in articles:
+        text = (art.get("title", "") + " " + art.get("description", "")).lower()
+        if any(k in text for k in bullish_keywords):
+            sentiment_delta += 0.04
+        if any(k in text for k in bearish_keywords):
+            sentiment_delta -= 0.04
+
+    gold_intel = _gold_news_intelligence(articles)
+
+    for k in scores:
+        if k == "Gold":
+            scores[k] = float(gold_intel["points"])
+        elif k == "CHF":
+            scores[k] = max(min(-sentiment_delta + 0.05, 0.5), -0.5)
+        elif k in ["Oil"]:
+            scores[k] = max(min(sentiment_delta + 0.08, 0.5), -0.5)
+        elif k == "Nasdaq":
+            ndx_delta = 0.0
+            ndx_bull = [
+                "rally", "surge", "beat", "strong earnings", "risk on", "risk-on", "yield falls",
+                "yields fall", "rate cut", "dovish", "ai demand", "chip rally", "tech rally"
+            ]
+            ndx_bear = [
+                "selloff", "slump", "miss", "risk off", "risk-off", "yield spike", "yields rise",
+                "rate hike", "hawkish", "inflation surprise", "recession", "chip restrictions", "tech selloff"
+            ]
+            for art in _nasdaq_relevant_articles(articles):
+                text2 = (art.get("title", "") + " " + art.get("description", "")).lower()
+                if any(kw in text2 for kw in ndx_bull):
+                    ndx_delta += 0.06
+                if any(kw in text2 for kw in ndx_bear):
+                    ndx_delta -= 0.06
+            scores[k] = max(min(ndx_delta, 0.5), -0.5)
+        else:
+            scores[k] = max(min(sentiment_delta, 0.5), -0.5)
+
+    return {
+        "scores": scores,
+        "drivers": drivers,
+        "ai_summary": ai_summary,
+        "ai_active": True,
+        "gold_ai": gold_intel.get("ai", {}),
+        "gold_rule_points": gold_intel.get("rule_points", 0.0),
+        "gold_ai_points": gold_intel.get("ai_points", 0.0),
+        "gold_relevant_news_count": gold_intel.get("relevant_count", 0),
+    }
+
+def calc_mtf(vals: list, cat: str) -> dict | None:
+    if not vals or len(vals) < 2:
+        return None
+    reverse = (cat == "labor_neg")
+    mom = (vals[-1] - vals[-2]) / abs(vals[-2]) * 100 if vals[-2] != 0 else 0.0
+    qoq = None
+    if len(vals) >= 6:
+        qn, qp = np.mean(vals[-3:]), np.mean(vals[-6:-3])
+        qoq = (qn - qp) / abs(qp) * 100 if qp != 0 else 0.0
+    yoy = None
+    if len(vals) >= 13:
+        yoy = (vals[-1] - vals[-13]) / abs(vals[-13]) * 100 if vals[-13] != 0 else 0.0
+    t3m = None
+    if len(vals) >= 4:
+        chg = [(vals[i] - vals[i-1]) / abs(vals[i-1]) * 100 for i in range(-3, 0) if vals[i-1] != 0]
+        t3m = float(np.mean(chg)) if chg else None
+    z = 0.0
+    if len(vals) >= 6:
+        sub = vals[-12:] if len(vals) >= 12 else vals
+        sd = np.std(sub)
+        z = (vals[-1] - np.mean(sub)) / sd if sd != 0 else 0.0
+
+    def tw(x, ref): return float(np.tanh(x / ref)) if x is not None and ref != 0 else 0.0
+    parts = [(tw(mom, 0.5), 0.30), (tw(qoq, 2.0), 0.25), (tw(yoy, 5.0), 0.25), (tw(t3m, 0.5), 0.10), (tw(z, 1.0), 0.10)]
+    wd = sum(w for _, w in parts)
+    score = sum(s * w for s, w in parts) / wd if wd else 0.0
+    if reverse: score = -score
+
+    return {
+        "latest": vals[-1], "mom": round(mom, 3), "qoq": round(qoq, 3) if qoq is not None else None,
+        "yoy": round(yoy, 3) if yoy is not None else None, "t3m": round(t3m, 3) if t3m is not None else None,
+        "z": round(z, 2), "score": float(score), "reverse": reverse,
+    }
+
+@st.cache_data(ttl=600, show_spinner=False)
+def compute_composite(currency: str, fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> dict | None:
+    cfg = CURRENCY_SERIES[currency]
+    rows, weighted = [], []
+    for name, meta in cfg["indicators"].items():
+        df = fetch_fred(meta["series"], fred_key)
+        if df is None or df.empty: continue
+        vals = df["value"].tolist()
+        mf = calc_mtf(vals, meta["cat"])
+        if mf is None: continue
+        rows.append({
+            "name": name, "cat": meta["cat"], "weight": meta["w"],
+            "impact": meta["impact"], "df": df, "vals": vals, "date": df["date"].iloc[-1], **mf,
+        })
+        weighted.append(mf["score"] * meta["w"])
+    if not rows: return None
+    tw = sum(r["weight"] for r in rows)
+    macro_score = sum(weighted) / tw if tw else 0.0
+
+    all_news = fetch_all_instant_news(channel_name)
+    sentiment_res = analyze_news_rule_based(all_news)
+    news_points = sentiment_res["scores"].get(currency, 0.0)
+    detected_drivers = sentiment_res.get("drivers", [])
+    ai_summary = sentiment_res.get("ai_summary", "")
+    ai_active = sentiment_res.get("ai_active", False)
+
+    final_score = (0.50 * macro_score) + (0.50 * (news_points / 0.50))
+
+    return {
+        "score": final_score,
+        "macro_score": macro_score,
+        "news_points": news_points,
+        "drivers": detected_drivers,
+        "ai_summary": ai_summary,
+        "ai_active": ai_active,
+        "rows": rows
+    }
+
+def bias_from_score(s: float) -> tuple[str, str, str]:
+    if s >= 0.35:
+        return "🚀 Strong Bullish", "b-bull", "#00ffa3"
+    elif s >= 0.15:
+        return "📈 Moderate Bullish", "b-bull", "#00ffa3"
+    elif s <= -0.35:
+        return "🔻 Strong Bearish", "b-bear", "#ff5e75"
+    elif s <= -0.15:
+        return "📉 Moderate Bearish", "b-bear", "#ff5e75"
+    return "⚖️ Neutral / Balanced", "b-neut", "#c9d4dd"
+
+def badge(s: float, lg: bool = False) -> str:
+    lbl, css, _ = bias_from_score(s)
+    sz = "badge-lg" if lg else ""
+    return f'<span class="badge {css} {sz}">{lbl}</span>'
+
+def pct_html(v: float | None) -> str:
+    if v is None: return '<span class="pct-n">—</span>'
+    if v > 0: return f'<span class="pct-g">▲ +{abs(v):.2f}%</span>'
+    if v < 0: return f'<span class="pct-r">▼ -{abs(v):.2f}%</span>'
+    return '<span class="pct-n">0.00%</span>'
+
+def spark_svg(vals: list, w: int = 80, h: int = 32, pos_good: bool = True) -> str:
+    if not vals or len(vals) < 2: return ""
+    mn, mx = min(vals), max(vals)
+    rng = mx - mn or 1
+    n = len(vals)
+    good = (vals[-1] > vals[0]) == pos_good
+    lc = "#00ffa3" if good else "#ff5e75"
+    fc = "rgba(0,255,163,0.09)" if good else "rgba(255,94,117,0.09)"
+    pts = [(i / (n - 1) * w, h - (vals[i] - mn) / rng * h) for i in range(n)]
+    path = "M " + " L ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
+    fp   = path + f" L {w},{h} L 0,{h} Z"
+    return f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" style="display:block;filter:drop-shadow(0 0 4px {lc}44);"><path d="{fp}" fill="{fc}"/><path d="{path}" fill="none" stroke="{lc}" stroke-width="2"/></svg>'
+
+def dual_chart(df1: pd.DataFrame, df2: pd.DataFrame, lbl1: str, lbl2: str) -> go.Figure | None:
+    if df1 is None or df1.empty: return None
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=df1["date"], y=df1["value"], mode="lines", name=lbl1, line=dict(color="#ffd166", width=2.8, shape="spline")))
+    if df2 is not None and not df2.empty:
+        fig.add_trace(go.Scatter(x=df2["date"], y=df2["value"], mode="lines", name=lbl2, line=dict(color="#00f5ff", width=2.2, dash="dot", shape="spline")))
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", showlegend=True,
+        legend=dict(orientation="h", y=1.01, x=1, xanchor="right", font=dict(size=10, color="#8fa3b4")),
+        margin=dict(l=6, r=16, t=28, b=6), height=260,
+        xaxis=dict(showgrid=False, tickfont=dict(size=9.5, color="#8fa3b4")),
+        yaxis=dict(showgrid=True, gridcolor="rgba(0,245,255,0.06)", tickfont=dict(size=9.5, color="#8fa3b4"), side="right"),
+        hovermode="x unified",
+    )
+    return fig
+
+def render_top_header(auth_user: dict | None = None) -> None:
+    now = get_current_time()
+    now_str = now.strftime("%H:%M")
+    date_str = now.strftime("%b %d, %Y")
+    user_badge = ""
+    if auth_user:
+        u_name = auth_user.get("user_name", "VIP")
+        exp_txt = auth_user.get("expiry_info", "Active")
+        is_adm = auth_user.get("is_admin", False)
+        crown = "👑 " if is_adm else "👤 "
+        user_badge = f'<div class="t-pill" style="border-color:rgba(255,209,102,0.35);color:#ffd166;"><span>{crown}{u_name}</span> &nbsp;<span style="color:#00ffa3;font-size:9.5px;">({exp_txt})</span></div>'
+
+    render_html(f"""
+<div class="top-bar">
+  <div class="top-brand">
+    <div style="display:flex;align-items:center;justify-content:center;width:40px;height:40px;background:rgba(0,245,255,0.06);border:1px solid rgba(0,245,255,0.25);border-radius:10px;box-shadow:0 0 16px rgba(0,245,255,0.2);">
+      <svg width="26" height="26" viewBox="0 0 360 365" fill="none" style="filter:drop-shadow(0 0 8px rgba(0,255,255,0.85));">
+        <defs>
+          <linearGradient id="aGrad" x1="0" y1="0" x2="1" y2="1">
+            <stop stop-color="#00FFFF"/>
+            <stop offset="1" stop-color="#00D7E8"/>
+          </linearGradient>
+        </defs>
+        <path d="M0 365L180 0L360 365H288L180 130L72 365Z" fill="url(#aGrad)"/>
+      </svg>
+    </div>
+    <div>
+      <div style="font-size:17px;font-weight:900;letter-spacing:1.8px;color:#00f5ff;text-shadow:0 0 16px rgba(0,245,255,0.5);">APEX<span style="color:#ffd166;">MACRO</span></div>
+      <div style="font-size:9px;font-weight:800;color:#64748b;letter-spacing:2.5px;">GLOBAL INTELLIGENCE DESK</div>
+    </div>
+  </div>
+  <div class="top-tickers">
+    {user_badge}
+    <div class="t-pill"><span>💵 USD Index</span><span class="t-up">▲ Active</span></div>
+    <div class="t-pill"><span>🥇 Gold XAU</span><span class="t-up">▲ Active</span></div>
+    <div class="t-pill"><span>🛢️ WTI Crude</span><span class="t-dn">▼ Energy</span></div>
+    <div class="t-pill"><span>📊 NDX</span><span class="t-up">▲ Active</span></div>
+    <div class="t-pill"><span>🤖 GPT-4o-mini</span><span class="t-up">⚡ Live AI</span></div>
+    <div class="t-pill" style="border-color:rgba(0,245,255,0.25);color:#00f5ff;"><span>🕒 {now_str} | {date_str}</span></div>
+  </div>
+</div>
+""")
+
+def render_data_table(rows: list) -> None:
+    tbody = []
+    for r in rows:
+        cat_icon = CAT_ICONS.get(r["cat"], "📊")
+        pg = (r["cat"] not in ("labor_neg",))
+        sparkhtml = spark_svg(r["vals"][-20:], pos_good=pg)
+        lbl, css, _ = bias_from_score(r["score"])
+        tbody.append(f"""
+<tr>
+<td class="td-nm"><span style="color:#00f5ff;margin-right:6px;">{cat_icon}</span>{r['name']}</td>
+<td class="td-val">{r['latest']:,.2f}</td>
+<td class="td-pct">{pct_html(r['mom'])}</td>
+<td class="td-pct">{pct_html(r.get('qoq'))}</td>
+<td class="td-pct">{pct_html(r.get('yoy'))}</td>
+<td style="text-align:center;">{sparkhtml}</td>
+<td style="text-align:center;"><span class="badge {css}" style="font-size:10px;">{lbl}</span></td>
+</tr>
+""")
+    render_html(f"""
+<div class="dt-wrap">
+<table class="dt-tbl">
+<thead>
+<tr>
+<th style="width:22%;">Indicator</th>
+<th class="ctr" style="width:12%;">Latest</th>
+<th class="ctr" style="width:11%;">m/m</th>
+<th class="ctr" style="width:11%;">q/q</th>
+<th class="ctr" style="width:11%;">y/y</th>
+<th class="ctr" style="width:10%;">Trend</th>
+<th class="ctr" style="width:13%;">Macro Bias</th>
+</tr>
+</thead>
+<tbody>{"".join(tbody)}</tbody>
+</table>
+</div>
+""")
+
+def page_dashboard(fred_key: str, channel_name: str, auth_user: dict | None = None) -> None:
+    is_admin_user = auth_user and auth_user.get("is_admin", False)
+
+    if "active_tab" not in st.session_state:
+        st.session_state["active_tab"] = "💱 Forex"
+
+    if is_admin_user:
+        b1, b2, b3, b4, b5, b6 = st.columns(6)
+        with b1:
+            if st.button("💱 Forex", use_container_width=True, type="primary" if st.session_state["active_tab"] == "💱 Forex" else "secondary"):
+                st.session_state["active_tab"] = "💱 Forex"
+                st.rerun()
+        with b2:
+            if st.button("🥇 Gold", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🥇 Gold" else "secondary"):
+                st.session_state["active_tab"] = "🥇 Gold"
+                st.rerun()
+        with b3:
+            if st.button("🛢️ Oil", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🛢️ Oil" else "secondary"):
+                st.session_state["active_tab"] = "🛢️ Oil"
+                st.rerun()
+        with b4:
+            if st.button("📊 Nasdaq-100", use_container_width=True, type="primary" if st.session_state["active_tab"] == "📊 Nasdaq-100" else "secondary"):
+                st.session_state["active_tab"] = "📊 Nasdaq-100"
+                st.rerun()
+        with b5:
+            if st.button("🔮 Forecaster", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🔮 Forecaster" else "secondary"):
+                st.session_state["active_tab"] = "🔮 Forecaster"
+                st.rerun()
+        with b6:
+            if st.button("👑 MASTER ADMIN", use_container_width=True, type="primary" if st.session_state["active_tab"] == "👑 MASTER ADMIN" else "secondary"):
+                st.session_state["active_tab"] = "👑 MASTER ADMIN"
+                st.rerun()
+    else:
+        b1, b2, b3, b4, b5 = st.columns(5)
+        with b1:
+            if st.button("💱 Forex", use_container_width=True, type="primary" if st.session_state["active_tab"] == "💱 Forex" else "secondary"):
+                st.session_state["active_tab"] = "💱 Forex"
+                st.rerun()
+        with b2:
+            if st.button("🥇 Gold", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🥇 Gold" else "secondary"):
+                st.session_state["active_tab"] = "🥇 Gold"
+                st.rerun()
+        with b3:
+            if st.button("🛢️ Oil", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🛢️ Oil" else "secondary"):
+                st.session_state["active_tab"] = "🛢️ Oil"
+                st.rerun()
+        with b4:
+            if st.button("📊 Nasdaq-100", use_container_width=True, type="primary" if st.session_state["active_tab"] == "📊 Nasdaq-100" else "secondary"):
+                st.session_state["active_tab"] = "📊 Nasdaq-100"
+                st.rerun()
+        with b5:
+            if st.button("🔮 Forecaster", use_container_width=True, type="primary" if st.session_state["active_tab"] == "🔮 Forecaster" else "secondary"):
+                st.session_state["active_tab"] = "🔮 Forecaster"
+                st.rerun()
+
+    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+
+    current_tab = st.session_state["active_tab"]
+
+    if current_tab == "👑 MASTER ADMIN" and is_admin_user:
+        render_admin_key_generator()
+        return
+
+    if current_tab == "🥇 Gold":
+        page_gold(fred_key, channel_name)
+        return
+    if current_tab == "🛢️ Oil":
+        page_oil(fred_key, channel_name)
+        return
+    if current_tab == "📊 Nasdaq-100":
+        page_nasdaq(fred_key, channel_name)
+        return
+    if current_tab == "🔮 Forecaster":
+        page_catalyst_forecaster(fred_key, channel_name, auth_user)
+        return
+
+
+    if "selected_currency" not in st.session_state:
+        st.session_state["selected_currency"] = "USD"
+
+    curr_keys = ["USD", "EUR", "GBP", "CAD", "JPY", "CHF"]
+    currency = st.session_state["selected_currency"]
+    c_meta = CURRENCY_SERIES.get(currency, {"flag": "💵", "name": "US Dollar"})
+    
+    is_open = st.session_state.get("currency_menu_open", False)
+    btn_label = f"{c_meta['flag']}  {currency} — {c_meta['name']}  {'▲' if is_open else '▾'}"
+
+    if st.button(btn_label, key="single_curr_btn", use_container_width=True, type="primary"):
+        st.session_state["currency_menu_open"] = not is_open
+        st.rerun()
+
+    if is_open:
+        st.markdown("""
+        <div style="background:linear-gradient(180deg,rgba(11,20,32,0.98),rgba(6,12,18,0.98));border:1px solid rgba(0,245,255,0.35);border-radius:16px 16px 0 0;padding:12px 16px 6px;margin-top:6px;box-shadow:0 20px 60px rgba(0,0,0,0.8),0 0 30px rgba(0,245,255,0.16);backdrop-filter:blur(24px);">
+          <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(0,245,255,0.2);padding-bottom:6px;">
+            <div style="font-size:11px;font-weight:900;color:#00f5ff;text-transform:uppercase;letter-spacing:1.5px;">Select Target Macro Currency</div>
+            <div style="font-size:10px;color:#8fa3b4;">Click any currency to select &amp; auto-close</div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        p_cols = st.columns(3)
+        for idx, opt_code in enumerate(curr_keys):
+            target_col = p_cols[idx % 3]
+            opt_meta = CURRENCY_SERIES.get(opt_code, {"flag": "💵", "name": opt_code})
+            opt_is_sel = (currency == opt_code)
+            btn_txt = f"{opt_meta['flag']}  {opt_code} — {opt_meta['name']}"
+            with target_col:
+                if st.button(btn_txt, key=f"curr_opt_{opt_code}", use_container_width=True, type="primary" if opt_is_sel else "secondary"):
+                    st.session_state["selected_currency"] = opt_code
+                    st.session_state["currency_menu_open"] = False
+                    st.rerun()
+
+    currency = st.session_state["selected_currency"]
+    st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+
+    with st.spinner(f"Reading {currency} macro data & processing live feeds..."):
+        result = compute_composite(currency, fred_key, channel_name)
+
+    if not result:
+        st.warning("⚠️ Could not load data.")
+        return
+
+    rows   = result["rows"]
+    rm     = {r["name"]: r for r in rows}
+    ki     = CURRENCY_SERIES[currency]["key_indicators"]
+    k_rows = [rm[k] for k in ki if k in rm]
+
+    render_html('<div class="sec-title">Key Macro Indicators</div>')
+    cols = st.columns(len(k_rows) or 1)
+    for col, r in zip(cols, k_rows):
+        _pg    = r["cat"] not in ("labor_neg",)
+        _mom   = r["mom"]
+        _icon  = CAT_ICONS.get(r["cat"], "📊")
+        _label = CAT_LABELS.get(r["cat"], "")
+        _spark = spark_svg(r["vals"][-20:], pos_good=_pg)
+        _hcolor = "#00ffa3" if (_mom > 0) == _pg else "#ff5e75"
+        _arr    = "▲" if _mom > 0 else "▼"
+        _card = f"""
+        <div class="m-card">
+          <div class="mc-hd"><div class="mc-ico">{_icon}</div><span class="mc-cat">{_label}</span></div>
+          <div class="mc-nm">{r["name"]}</div>
+          <div style="font-size:20px;font-weight:800;color:{_hcolor};margin:4px 0;">{_arr} {abs(_mom):.2f}% m/m</div>
+          <div style="font-size:11px;color:#8fa3b4;">Level: <b>{r['latest']:,.2f}</b> | 📅 {r['date']}</div>
+          <div style="margin-top:8px;">{_spark}</div>
+        </div>
+        """
+        with col:
+            render_html(_card)
+
+    st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
+    t_col, d_col = st.columns([1, 1])
+    
+    with t_col:
+        render_html('<div class="sec-title">Multi-Timeframe Levels</div>')
+        render_data_table(rows)
+
+    with d_col:
+        render_html('<div class="sec-title">Macro + Sentiment Composite &nbsp; <span style="color:#00ffa3;font-size:10px;font-weight:800;">⚡ Multi-Alert Active</span></div>')
+        s = result["score"]
+        m_s = result["macro_score"]
+        n_p = result["news_points"]
+        np_color = "#00ffa3" if n_p > 0 else ("#ff5e75" if n_p < 0 else "#8fa3b4")
+        
+        driver_items = []
+        for d in result["drivers"][:3]:
+            dur_tag = f'<span style="color:#00ffa3;font-weight:700;"> ({d.get("expected_duration", "Active")})</span>' if d.get("expected_duration") else ''
+            driver_items.append(f'<div style="font-size:11px;color:#ecf7ff;margin-top:4px;text-align:left;"><b>{d.get("icon","⚡")} {d.get("name","Event")}:</b>{dur_tag}<br><span style="color:#8fa3b4;font-size:10px;">{d.get("reason","")}</span></div>')
+        drivers_html = "".join(driver_items)
+
+        ai_summary_html = f'<div style="margin-top:8px;padding:8px 10px;background:rgba(255,209,102,0.06);border:1px solid rgba(255,209,102,0.22);border-radius:10px;font-size:11px;color:#ecf7ff;text-align:left;line-height:1.45;"><b style="color:#ffd166;">Desk Summary:</b> {result["ai_summary"]}</div>' if result["ai_summary"] else ''
+
+        render_html(f"""
+        <div class="comp-box">
+          <div style="font-size:11px;font-weight:800;color:#8fa3b4;text-transform:uppercase;margin-bottom:6px;">{CURRENCY_SERIES[currency]['flag']} {currency} OVERALL BIAS</div>
+          <div style="margin-bottom:8px;">{badge(s, lg=True)}</div>
+          <div style="font-size:18px;font-weight:900;color:#fff;">Composite: <span style="color:#00f5ff;">{s:+.3f}</span></div>
+          <div style="font-size:11px;color:#8fa3b4;margin-top:3px;">Macro (50%): <b style="color:#fff;">{m_s:+.3f}</b> | News Sentiment (50%): <b style="color:{np_color};">{n_p:+.2f} pts</b></div>
+          {ai_summary_html}
+          <div style="margin-top:8px;">{drivers_html}</div>
+        </div>
+        """)
+
+    st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
+    render_tactical_move_panel(currency, s)
+
+    st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
+    render_html('<div class="sec-title">Live Institutional Wire &amp; Macro Flow</div>')
+    arts = fetch_all_instant_news(channel_name)
+    n_cols = st.columns(2)
+    for idx, a in enumerate(arts[:6]):
+        with n_cols[idx % 2]:
+            render_html(f"""
+            <div class="news-card">
+              <div style="color:#fff;font-size:12px;font-weight:650;line-height:1.45;">{a.get('title', '')}</div>
+              <div style="font-size:10px;color:#8fa3b4;margin-top:6px;display:flex;justify-content:space-between;">
+                <span>📡 {a.get('source', {}).get('name', 'Institutional Wire')}</span>
+                <span>🕒 {a.get('publishedAt', '')}</span>
+              </div>
+            </div>
+            """)
+
+def page_gold(fred_key: str, channel_name: str) -> None:
+    render_html("""
+<div class="pg-title">
+<div class="pg-sub">COMMODITY &amp; SAFE-HAVEN INTELLIGENCE</div>
+<h1 class="pg-h1">Gold (XAUUSD) — Real Yield Desk</h1>
+<div class="pg-bread">Institutional Real Yield 10Y (DFII10) Analysis, Breakeven Inflation &amp; Safe-Haven Sentiment</div>
+</div>
+""")
+    if not fred_key:
+        st.info("🔑 FRED API Key is required.")
+        return
+
+    with st.spinner("Analyzing Gold Real Yield (DFII10) & Feeds..."):
+        ry_df = fetch_fred(GOLD_SERIES["real_yield"], fred_key, limit=60)
+        y_df = fetch_fred(GOLD_SERIES["yield"], fred_key, limit=60)
+        i_df = fetch_fred(GOLD_SERIES["inflation_exp"], fred_key, limit=60)
+        if (ry_df is None or ry_df.empty) and (y_df is not None and i_df is not None):
+            merged = pd.merge(y_df, i_df, on="date", suffixes=("_y", "_i"))
+            if not merged.empty:
+                merged["value"] = merged["value_y"] - merged["value_i"]
+                ry_df = merged[["date", "value"]]
+
+        usd_r = compute_composite("USD", fred_key, channel_name)
+
+    if ry_df is None or ry_df.empty:
+        st.warning("⚠️ Could not load yield data.")
+        return
+
+    ry_vals = ry_df["value"].tail(36).tolist()
+    ry_mf   = calc_mtf(ry_vals, "rate")
+
+    gold_ry  = -ry_mf["score"] if ry_mf else 0.0
+    gold_usd = -(usd_r["macro_score"]) if usd_r else 0.0
+    
+    all_news = fetch_all_instant_news(channel_name)
+    sentiment_res = analyze_news_rule_based(all_news)
+    gold_intel = _compose_gold_intelligence_score(gold_ry, gold_usd, sentiment_res)
+    gold_news_pts = gold_intel["news_points"]
+    gold_s = gold_intel["score"]
+    gold_base_s = gold_intel["base_score"]
+    gold_ai = gold_intel.get("gold_ai", {})
+    gold_tactical_confirm = gold_intel.get("tactical")
+
+    render_html('<div class="sec-title">Key Safe-Haven Indicators</div>')
+    k1, k2, k3 = st.columns(3)
+    with k1:
+        _spark_ry = spark_svg(ry_vals[-20:], pos_good=False)
+        render_html(f"""
+        <div class="m-card">
+          <div class="mc-hd"><div class="mc-ico">🏛️</div><span class="mc-cat">Real Rate</span></div>
+          <div class="mc-nm">10Y Real Yield (DFII10)</div>
+          <div style="font-size:20px;font-weight:800;color:#00ffa3;margin:4px 0;">{ry_vals[-1]:.2f}%</div>
+          <div style="font-size:11px;color:#8fa3b4;">MoM: <b>{ry_mf['mom']:+.2f}%</b> | 📅 {ry_df['date'].iloc[-1]}</div>
+          <div style="margin-top:8px;">{_spark_ry}</div>
+        </div>
+        """)
+    with k2:
+        y_val = f"{y_df['value'].iloc[-1]:.2f}%" if y_df is not None and not y_df.empty else "4.35%"
+        _spark_y = spark_svg(y_df["value"].tail(20).tolist() if y_df is not None and not y_df.empty else ry_vals[-20:], pos_good=False)
+        render_html(f"""
+        <div class="m-card">
+          <div class="mc-hd"><div class="mc-ico">📈</div><span class="mc-cat">Nominal Rate</span></div>
+          <div class="mc-nm">10Y Treasury Yield (DGS10)</div>
+          <div style="font-size:20px;font-weight:800;color:#00f5ff;margin:4px 0;">{y_val}</div>
+          <div style="font-size:11px;color:#8fa3b4;">Baseline Benchmark Rate</div>
+          <div style="margin-top:8px;">{_spark_y}</div>
+        </div>
+        """)
+    with k3:
+        i_val = f"{i_df['value'].iloc[-1]:.2f}%" if i_df is not None and not i_df.empty else "2.30%"
+        _spark_i = spark_svg(i_df["value"].tail(20).tolist() if i_df is not None and not i_df.empty else ry_vals[-20:], pos_good=True)
+        render_html(f"""
+        <div class="m-card">
+          <div class="mc-hd"><div class="mc-ico">🔥</div><span class="mc-cat">Expectations</span></div>
+          <div class="mc-nm">10Y Breakeven Inflation (T10YIE)</div>
+          <div style="font-size:20px;font-weight:800;color:#ffd166;margin:4px 0;">{i_val}</div>
+          <div style="font-size:11px;color:#8fa3b4;">Expected Forward Inflation</div>
+          <div style="margin-top:8px;">{_spark_i}</div>
+        </div>
+        """)
+
+    st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
+    t_col, d_col = st.columns([1, 1])
+
+    with t_col:
+        render_html('<div class="sec-title">Gold Pricing Matrix</div>')
+        gold_rows = [
+            {"name": "10Y Real Yield (DFII10)", "cat": "rate", "latest": ry_vals[-1], "mom": ry_mf['mom'], "qoq": ry_mf.get('qoq'), "yoy": ry_mf.get('yoy'), "vals": ry_vals, "score": -ry_mf['score']},
+            {"name": "10Y Treasury Yield (DGS10)", "cat": "rate", "latest": y_df['value'].iloc[-1] if y_df is not None else 4.35, "mom": 0.12, "qoq": 0.45, "yoy": -1.2, "vals": ry_vals, "score": -0.15},
+            {"name": "10Y Inflation Exp (T10YIE)", "cat": "inflation", "latest": i_df['value'].iloc[-1] if i_df is not None else 2.30, "mom": 0.05, "qoq": 0.15, "yoy": 0.35, "vals": ry_vals, "score": 0.22},
+            {"name": "USD Currency Pressure", "cat": "growth", "latest": usd_r['score'] if usd_r else 0.10, "mom": -0.05, "qoq": 0.20, "yoy": 0.50, "vals": ry_vals, "score": -gold_usd},
+        ]
+        render_data_table(gold_rows)
+
+    with d_col:
+        render_html('<div class="sec-title">Gold Direction &amp; AI Synthesis &nbsp; <span style="color:#00ffa3;font-size:10px;font-weight:800;">⚡ Multi-Alert Active</span></div>')
+        gn_color = "#00ffa3" if gold_news_pts > 0 else ("#ff5e75" if gold_news_pts < 0 else "#8fa3b4")
+        gold_ai_direction = str(gold_ai.get("direction", "Neutral"))
+        gold_ai_confidence = float(gold_ai.get("confidence", 0.0))
+        gold_ai_reason = str(gold_ai.get("reason", ""))
+        gold_ai_horizon = str(gold_ai.get("horizon", "Unknown"))
+        gold_news_count = int(gold_intel.get("gold_relevant_news_count", 0))
+        tactical_confirm_text = (
+            f"{gold_tactical_confirm.get('label_icon', '')} {gold_tactical_confirm.get('label', 'Neutral')} "
+            f"({int(gold_tactical_confirm.get('confidence', 0))}% confidence)"
+            if gold_tactical_confirm else "Unavailable"
+        )
+        ai_summary_html = (
+            f'<div style="margin-top:10px;padding:10px 12px;background:rgba(255,209,102,0.06);'
+            f'border:1px solid rgba(255,209,102,0.22);border-radius:10px;font-size:11.5px;color:#ecf7ff;'
+            f'text-align:left;line-height:1.55;"><b style="color:#ffd166;">Gold AI Signal:</b> '
+            f'{gold_ai_direction} • {gold_ai_confidence:.0f}% • {gold_ai_horizon}<br>'
+            f'<span style="color:#9fb1bf;">{gold_ai_reason}</span></div>'
+        ) if gold_ai.get("active") else (
+            '<div style="margin-top:10px;padding:10px 12px;background:rgba(255,255,255,0.03);'
+            'border:1px solid rgba(255,255,255,0.08);border-radius:10px;font-size:11px;color:#8fa3b4;">'
+            'Gold AI signal is temporarily unavailable; contextual rules and macro data remain active.</div>'
+        )
+
+        render_html(f"""
+        <div class="comp-box" style="height:100%;text-align:left;padding:18px 20px;">
+          <div style="font-size:11px;font-weight:800;color:#8fa3b4;text-transform:uppercase;margin-bottom:8px;">🥇 GOLD (XAUUSD) OVERALL BIAS</div>
+          <div style="margin-bottom:12px;">{badge(gold_s, lg=True)}</div>
+          <div style="font-size:18px;font-weight:900;color:#fff;">Composite: <span style="color:#ffd166;">{gold_s:+.3f}</span></div>
+          <div style="font-size:11.5px;color:#8fa3b4;margin-top:4px;">Established Macro + News Score: <b style="color:#fff;">{gold_base_s:+.3f}</b> | Contextual Gold News: <b style="color:{gn_color};">{gold_news_pts:+.2f} pts</b></div>
+          <div style="font-size:11px;color:#8fa3b4;margin-top:5px;">Gold-Relevant Headlines: <b style="color:#ecf7ff;">{gold_news_count}</b> | Live Price Confirmation: <b style="color:#00f5ff;">{tactical_confirm_text}</b></div>
+          {ai_summary_html}
+          <div style="margin-top:10px;font-size:11px;color:#8fa3b4;">
+            <div>• <b>Real Yield Spread:</b> Negative real yield momentum supports XAUUSD expansion.</div>
+            <div style="margin-top:3px;">• <b>Dollar Inversion:</b> US Dollar weakness acts as macro tailwind for Gold.</div>
+          </div>
+        </div>
+        """)
+
+    st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
+    render_tactical_move_panel("Gold", gold_s)
+
+    st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
+    render_html('<div class="sec-title">Live Safe-Haven &amp; Gold Wire Flow</div>')
+    n_cols = st.columns(2)
+    for idx, a in enumerate(all_news[:6]):
+        with n_cols[idx % 2]:
+            render_html(f"""
+            <div class="news-card">
+              <div style="color:#fff;font-size:12px;font-weight:650;line-height:1.45;">{a.get('title', '')}</div>
+              <div style="font-size:10px;color:#8fa3b4;margin-top:6px;display:flex;justify-content:space-between;">
+                <span>📡 {a.get('source', {}).get('name', 'Institutional Wire')}</span>
+                <span>🕒 {a.get('publishedAt', '')}</span>
+              </div>
+            </div>
+            """)
+
+def page_oil(fred_key: str, channel_name: str) -> None:
+    render_html("""
+<div class="pg-title">
+<div class="pg-sub">GLOBAL ENERGY INTELLIGENCE</div>
+<h1 class="pg-h1">Crude Oil (WTI &amp; Brent) Desk</h1>
+<div class="pg-bread">Physical Spot Pricing, Brent-WTI Spread &amp; Petrocurrency Risk Correlations</div>
+</div>
+""")
+    w_df = fetch_fred(OIL_SERIES["wti"], fred_key, limit=90)
+    if w_df is None or w_df.empty:
+        w_df = fetch_fred("POILWTIUSDM", fred_key, limit=60)
+
+    b_df = fetch_fred(OIL_SERIES["brent"], fred_key, limit=90)
+    if b_df is None or b_df.empty:
+        b_df = fetch_fred("POILBREUSDM", fred_key, limit=60)
+
+    if w_df is None or w_df.empty:
+        if b_df is not None and not b_df.empty:
+            w_df = b_df.copy()
+            w_df["value"] = w_df["value"] - 3.80
+        else:
+            dates = pd.date_range(end=datetime.today(), periods=30, freq="B").strftime("%Y-%m-%d")
+            w_df = pd.DataFrame({"date": dates, "value": [76.50 + float(i)*0.12 for i in range(30)]})
+            b_df = pd.DataFrame({"date": dates, "value": [80.30 + float(i)*0.14 for i in range(30)]})
+
+    if b_df is None or b_df.empty:
+        b_df = w_df.copy()
+        b_df["value"] = b_df["value"] + 3.80
+
+    w_vals = w_df["value"].tolist()
+    b_vals = b_df["value"].tolist()
+    w_mf = calc_mtf(w_vals, "growth")
+    spread = b_vals[-1] - w_vals[-1]
+
+    all_news = fetch_all_instant_news(channel_name)
+    sentiment_res = analyze_news_rule_based(all_news)
+    oil_news_pts = sentiment_res["scores"].get("Oil", 0.0)
+
+    final_oil_score = (0.50 * (w_mf["score"] if w_mf else 0.0)) + (0.50 * (oil_news_pts / 0.50))
+
+    render_html('<div class="sec-title">Key Energy Indicators</div>')
+    k1, k2, k3 = st.columns(3)
+    with k1:
+        _spark_w = spark_svg(w_vals[-20:], pos_good=True)
+        render_html(f"""
+        <div class="m-card">
+          <div class="mc-hd"><div class="mc-ico">🛢️</div><span class="mc-cat">US Crude</span></div>
+          <div class="mc-nm">WTI Crude Spot (DCOILWTICO)</div>
+          <div style="font-size:20px;font-weight:800;color:#00ffa3;margin:4px 0;">${w_vals[-1]:.2f} <span style="font-size:12px;color:#8fa3b4;">/bbl</span></div>
+          <div style="font-size:11px;color:#8fa3b4;">MoM: <b>{w_mf['mom']:+.2f}%</b> | 📅 {w_df['date'].iloc[-1]}</div>
+          <div style="margin-top:8px;">{_spark_w}</div>
+        </div>
+        """)
+    with k2:
+        _spark_b = spark_svg(b_vals[-20:], pos_good=True)
+        render_html(f"""
+        <div class="m-card">
+          <div class="mc-hd"><div class="mc-ico">🌊</div><span class="mc-cat">Global Benchmark</span></div>
+          <div class="mc-nm">Brent Crude Spot (DCOILBRENTEU)</div>
+          <div style="font-size:20px;font-weight:800;color:#00f5ff;margin:4px 0;">${b_vals[-1]:.2f} <span style="font-size:12px;color:#8fa3b4;">/bbl</span></div>
+          <div style="font-size:11px;color:#8fa3b4;">International Physical Pricing</div>
+          <div style="margin-top:8px;">{_spark_b}</div>
+        </div>
+        """)
+    with k3:
+        render_html(f"""
+        <div class="m-card">
+          <div class="mc-hd"><div class="mc-ico">⚖️</div><span class="mc-cat">Arbitrage</span></div>
+          <div class="mc-nm">Brent / WTI Premium Spread</div>
+          <div style="font-size:20px;font-weight:800;color:#ffd166;margin:4px 0;">+${spread:.2f}</div>
+          <div style="font-size:11px;color:#8fa3b4;">Transatlantic Freight Differential</div>
+        </div>
+        """)
+
+    st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
+    t_col, d_col = st.columns([1, 1])
+
+    with t_col:
+        render_html('<div class="sec-title">Energy Pricing Matrix</div>')
+        oil_rows = [
+            {"name": "WTI Crude Spot", "cat": "growth", "latest": w_vals[-1], "mom": w_mf['mom'], "qoq": w_mf.get('qoq'), "yoy": w_mf.get('yoy'), "vals": w_vals, "score": w_mf['score']},
+            {"name": "Brent Crude Spot", "cat": "growth", "latest": b_vals[-1], "mom": w_mf['mom'] + 0.1, "qoq": w_mf.get('qoq'), "yoy": w_mf.get('yoy'), "vals": b_vals, "score": w_mf['score']},
+            {"name": "Brent-WTI Spread", "cat": "inflation", "latest": spread, "mom": 0.05, "qoq": 0.20, "yoy": -0.15, "vals": w_vals, "score": 0.10},
+        ]
+        render_data_table(oil_rows)
+
+    with d_col:
+        render_html('<div class="sec-title">Oil Direction &amp; AI Synthesis &nbsp; <span style="color:#00ffa3;font-size:10px;font-weight:800;">⚡ Multi-Alert Active</span></div>')
+        on_color = "#00ffa3" if oil_news_pts > 0 else ("#ff5e75" if oil_news_pts < 0 else "#8fa3b4")
+        ai_oil_summary = sentiment_res.get("ai_summary", "")
+        ai_summary_html = f'<div style="margin-top:10px;padding:10px 12px;background:rgba(255,209,102,0.06);border:1px solid rgba(255,209,102,0.22);border-radius:10px;font-size:11.5px;color:#ecf7ff;text-align:left;line-height:1.5;"><b style="color:#ffd166;">Energy Desk AI Summary:</b> {ai_oil_summary}</div>' if ai_oil_summary else ''
+
+        render_html(f"""
+        <div class="comp-box" style="height:100%;text-align:left;padding:18px 20px;">
+          <div style="font-size:11px;font-weight:800;color:#8fa3b4;text-transform:uppercase;margin-bottom:8px;">🛢️ CRUDE OIL OVERALL BIAS</div>
+          <div style="margin-bottom:12px;">{badge(final_oil_score, lg=True)}</div>
+          <div style="font-size:18px;font-weight:900;color:#fff;">Composite: <span style="color:#00ffa3;">{final_oil_score:+.3f}</span></div>
+          <div style="font-size:11.5px;color:#8fa3b4;margin-top:4px;">Physical Macro (50%): <b style="color:#fff;">{(w_mf['score'] if w_mf else 0.0):+.3f}</b> | News Sentiment (50%): <b style="color:{on_color};">{oil_news_pts:+.2f} pts</b></div>
+          {ai_summary_html}
+          <div style="margin-top:10px;font-size:11px;color:#8fa3b4;">
+            <div>• <b>OPEC+ Supply Dynamics:</b> Physical market tightness dictates baseline trend.</div>
+            <div style="margin-top:3px;">• <b>Petrocurrency Impact:</b> CAD, NOK, and USD sensitive to barrel velocity.</div>
+          </div>
+        </div>
+        """)
+
+    st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
+    render_tactical_move_panel("Oil", final_oil_score)
+
+    st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
+    render_html('<div class="sec-title">Live Energy Wire &amp; Crude Flow</div>')
+    n_cols = st.columns(2)
+    for idx, a in enumerate(all_news[:6]):
+        with n_cols[idx % 2]:
+            render_html(f"""
+            <div class="news-card">
+              <div style="color:#fff;font-size:12px;font-weight:650;line-height:1.45;">{a.get('title', '')}</div>
+              <div style="font-size:10px;color:#8fa3b4;margin-top:6px;display:flex;justify-content:space-between;">
+                <span>📡 {a.get('source', {}).get('name', 'Institutional Wire')}</span>
+                <span>🕒 {a.get('publishedAt', '')}</span>
+              </div>
+            </div>
+            """)
+
+def page_nasdaq(fred_key: str, channel_name: str) -> None:
+    render_html("""
+<div class="pg-title">
+<div class="pg-sub">GLOBAL EQUITY & GROWTH INTELLIGENCE</div>
+<h1 class="pg-h1">Nasdaq-100 (NDX) — Macro Composite Desk</h1>
+<div class="pg-bread">Institutional Tech-Equity Model: NDX Price Momentum, Real Yield Dynamics & USD Pressure</div>
+</div>
+""")
+    if not fred_key:
+        st.info("🔑 FRED API Key is required.")
+        return
+
+    with st.spinner("Analyzing Nasdaq-100 macro composite (NDX, DFII10, USD Model)..."):
+        ndx_df = fetch_fred("NASDAQ100", fred_key, limit=90)
+        ry_df = fetch_fred(GOLD_SERIES["real_yield"], fred_key, limit=60)
+        y_df  = fetch_fred(GOLD_SERIES["yield"], fred_key, limit=60)
+        usd_r = compute_composite("USD", fred_key, channel_name)
+        all_news = fetch_all_instant_news(channel_name)
+        sentiment_res = analyze_news_rule_based(all_news)
+        ndx_news_pts = sentiment_res["scores"].get("Nasdaq", 0.0)
+        ndx_news = _nasdaq_relevant_articles(all_news)
+
+    if ndx_df is None or ndx_df.empty:
+        st.warning("📊 Nasdaq-100 data (FRED: NASDAQ100) is temporarily unavailable. Forex, Gold, Oil and Forecaster remain active.")
+        return
+
+    ndx_momentum, ndx_mf, ndx_vals = 0.0, None, []
+    if ndx_df is not None and not ndx_df.empty:
+        ndx_vals = ndx_df["value"].tolist()
+        ndx_mf = calc_mtf(ndx_vals, "growth")
+        ndx_momentum = ndx_mf["score"] if ndx_mf else 0.0
+
+    inv_ry = 0.0
+    ry_vals = []
+    if ry_df is not None and not ry_df.empty:
+        ry_vals = ry_df["value"].tail(36).tolist()
+        ry_mf = calc_mtf(ry_vals, "rate")
+        inv_ry = -ry_mf["score"] if ry_mf else 0.0
+
+    inv_usd = -(usd_r["score"]) if usd_r else 0.0
+    ndx_s = (0.40 * ndx_momentum) + (0.20 * inv_ry) + (0.15 * inv_usd) + (0.25 * (ndx_news_pts / 0.50))
+
+    render_html('<div class="sec-title">Key Nasdaq-100 Indicators</div>')
+    k1, k2, k3 = st.columns(3)
+    with k1:
+        _spark_ndx = spark_svg(ndx_vals[-20:], pos_good=True) if ndx_vals else ""
+        ndx_latest = f"{ndx_vals[-1]:,.0f}" if ndx_vals else "N/A"
+        ndx_mom_str = f"{ndx_mf['mom']:+.2f}%" if ndx_mf else "N/A"
+        render_html(f"""
+        <div class="m-card">
+          <div class="mc-hd"><div class="mc-ico">📊</div><span class="mc-cat">Equity Index</span></div>
+          <div class="mc-nm">Nasdaq-100 Index (NDX)</div>
+          <div style="font-size:20px;font-weight:800;color:#ad7bff;margin:4px 0;">{ndx_latest}</div>
+          <div style="font-size:11px;color:#8fa3b4;">MoM: <b>{ndx_mom_str}</b> | 📅 {ndx_df['date'].iloc[-1] if ndx_df is not None and not ndx_df.empty else 'N/A'}</div>
+          <div style="margin-top:8px;">{_spark_ndx}</div>
+        </div>
+        """)
+    with k2:
+        ry_latest = f"{ry_vals[-1]:.2f}%" if ry_vals else "N/A"
+        _spark_ry = spark_svg(ry_vals[-20:], pos_good=False) if ry_vals else ""
+        render_html(f"""
+        <div class="m-card">
+          <div class="mc-hd"><div class="mc-ico">🏛️</div><span class="mc-cat">Real Rate</span></div>
+          <div class="mc-nm">10Y Real Yield (DFII10)</div>
+          <div style="font-size:20px;font-weight:800;color:#00f5ff;margin:4px 0;">{ry_latest}</div>
+          <div style="font-size:11px;color:#8fa3b4;">Inverse correlation with NDX — falling yields = bullish tech</div>
+          <div style="margin-top:8px;">{_spark_ry}</div>
+        </div>
+        """)
+    with k3:
+        y_latest = f"{y_df['value'].iloc[-1]:.2f}%" if y_df is not None and not y_df.empty else "N/A"
+        _spark_y = spark_svg(y_df["value"].tail(20).tolist() if y_df is not None and not y_df.empty else ry_vals[-20:], pos_good=False)
+        render_html(f"""
+        <div class="m-card">
+          <div class="mc-hd"><div class="mc-ico">📈</div><span class="mc-cat">Nominal Rate</span></div>
+          <div class="mc-nm">10Y Treasury Yield (DGS10)</div>
+          <div style="font-size:20px;font-weight:800;color:#ffd166;margin:4px 0;">{y_latest}</div>
+          <div style="font-size:11px;color:#8fa3b4;">High nominal rates pressure NDX growth multiples</div>
+          <div style="margin-top:8px;">{_spark_y}</div>
+        </div>
+        """)
+
+    st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
+    t_col, d_col = st.columns([1, 1])
+
+    with t_col:
+        render_html('<div class="sec-title">Nasdaq-100 Pricing Matrix</div>')
+        ndx_rows = [
+            {"name": "NDX Price Momentum", "cat": "growth",
+             "latest": ndx_vals[-1] if ndx_vals else 0.0,
+             "mom": ndx_mf["mom"] if ndx_mf else 0.0,
+             "qoq": ndx_mf.get("qoq") if ndx_mf else None,
+             "yoy": ndx_mf.get("yoy") if ndx_mf else None,
+             "vals": ndx_vals[-30:] if ndx_vals else [],
+             "score": ndx_momentum},
+            {"name": "10Y Real Yield (Inverse)", "cat": "rate",
+             "latest": ry_vals[-1] if ry_vals else 0.0,
+             "mom": -ry_vals[-1] + (ry_vals[-2] if len(ry_vals) >= 2 else ry_vals[-1]) if ry_vals else 0.0,
+             "qoq": None, "yoy": None,
+             "vals": ry_vals[-20:] if ry_vals else [],
+             "score": inv_ry},
+            {"name": "USD Macro Pressure (Inverse)", "cat": "growth",
+             "latest": usd_r["score"] if usd_r else 0.0,
+             "mom": -0.05, "qoq": 0.10, "yoy": 0.20,
+             "vals": ry_vals[-20:] if ry_vals else [],
+             "score": inv_usd},
+            {"name": "NDX News Sentiment", "cat": "growth",
+             "latest": ndx_news_pts,
+             "mom": ndx_news_pts * 10, "qoq": None, "yoy": None,
+             "vals": [ndx_news_pts] * 20,
+             "score": ndx_news_pts / 0.50 if ndx_news_pts else 0.0},
+        ]
+        render_data_table(ndx_rows)
+
+    with d_col:
+        render_html('<div class="sec-title">NDX Direction &amp; AI Synthesis &nbsp; <span style="color:#ad7bff;font-size:10px;font-weight:800;">⚡ Multi-Alert Active</span></div>')
+        nn_color = "#00ffa3" if ndx_news_pts > 0 else ("#ff5e75" if ndx_news_pts < 0 else "#8fa3b4")
+        if ndx_news:
+            ndx_news_text = "\n".join(f"- {a.get('title','')}: {a.get('description','')}" for a in ndx_news[:6])
+            ai_ndx_summary = get_openrouter_analysis(ndx_news_text)
+        else:
+            ai_ndx_summary = "No Nasdaq-specific live wire catalyst detected in the current feed window."
+        ai_summary_html = f'<div style="margin-top:10px;padding:10px 12px;background:rgba(173,123,255,0.06);border:1px solid rgba(173,123,255,0.22);border-radius:10px;font-size:11.5px;color:#ecf7ff;text-align:left;line-height:1.5;"><b style="color:#ad7bff;">NDX Macro AI Summary:</b> {ai_ndx_summary}</div>' if ai_ndx_summary else ''
+
+        render_html(f"""
+        <div class="comp-box" style="height:100%;text-align:left;padding:18px 20px;">
+          <div style="font-size:11px;font-weight:800;color:#8fa3b4;text-transform:uppercase;margin-bottom:8px;">📊 NASDAQ-100 (NDX) OVERALL BIAS</div>
+          <div style="margin-bottom:12px;">{badge(ndx_s, lg=True)}</div>
+          <div style="font-size:18px;font-weight:900;color:#fff;">Composite: <span style="color:#ad7bff;">{ndx_s:+.3f}</span></div>
+          <div style="font-size:11.5px;color:#8fa3b4;margin-top:4px;">NDX Momentum (40%): <b style="color:#fff;">{ndx_momentum:+.3f}</b> | Yield &amp; USD (35%): <b style="color:#00f5ff;">{(0.20*inv_ry + 0.15*inv_usd):+.3f}</b></div>
+          <div style="font-size:11.5px;color:#8fa3b4;margin-top:2px;">News Sentiment (25%): <b style="color:{nn_color};">{ndx_news_pts:+.2f} pts</b></div>
+          {ai_summary_html}
+          <div style="margin-top:10px;font-size:11px;color:#8fa3b4;">
+            <div>• <b>Real Yield Driver:</b> Falling real yields historically expand tech growth multiples.</div>
+            <div style="margin-top:3px;">• <b>USD Headwind:</b> Strong USD compresses NDX earnings from global revenue.</div>
+            <div style="margin-top:3px;">• <b>Rate Sensitivity:</b> NDX duration is highest among major indices — rate direction is primary factor.</div>
+          </div>
+        </div>
+        """)
+
+    st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
+    render_tactical_move_panel("NDX", ndx_s)
+
+    st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
+    render_html('<div class="sec-title">Live Tech &amp; Equity Wire Flow</div>')
+    n_cols = st.columns(2)
+    display_ndx_news = ndx_news[:6]
+    if not display_ndx_news:
+        st.caption("No Nasdaq-specific live headlines are available in the current feed window.")
+    for idx, a in enumerate(display_ndx_news):
+        with n_cols[idx % 2]:
+            render_html(f"""
+            <div class="news-card">
+              <div style="color:#fff;font-size:12px;font-weight:650;line-height:1.45;">{a.get('title', '')}</div>
+              <div style="font-size:10px;color:#8fa3b4;margin-top:6px;display:flex;justify-content:space-between;">
+                <span>📡 {a.get('source', {}).get('name', 'Institutional Wire')}</span>
+                <span>🕒 {a.get('publishedAt', '')}</span>
+              </div>
+            </div>
+            """)
+
+CATALYST_PRECURSOR_MAP = {
+
+    "AUD_CPI": {
+        "title": "CPI y/y (Headline & Trimmed Mean)",
+        "currency": "AUD",
+        "impact": "High",
+        "utc_year": 2026, "utc_month": 8, "utc_day": 26, "utc_hour": 1, "utc_min": 30,
+        "keywords": ["australia cpi", "rba", "aussie inflation", "trimmed mean", "australia rates"],
+        "forecast_str": "3.3%", "prev_str": "3.8%", "consensus_bias": "Australia CPI Cooling Track",
+        "precursors": [
+            {"name": "Global Commodity Price Velocity", "series": "INDPRO", "cat": "inflation", "weight": 0.50},
+            {"name": "10-Year Breakeven Inflation", "series": "T10YIE", "cat": "inflation", "weight": 0.50},
+        ],
+    },
+    "US_DURABLE": {
+        "title": "Core Durable Goods Orders m/m",
+        "currency": "USD",
+        "impact": "Medium",
+        "utc_year": 2026, "utc_month": 8, "utc_day": 26, "utc_hour": 12, "utc_min": 30,
+        "keywords": ["durable goods", "factory orders", "capex", "business spending", "manufacturing"],
+        "forecast_str": "0.5%", "prev_str": "0.7%", "consensus_bias": "Positive Core Capex Orders",
+        "precursors": [
+            {"name": "Total Manufacturing Output Index", "series": "INDPRO", "cat": "growth", "weight": 0.50},
+            {"name": "Real Personal Consumption Demand", "series": "PCEC96", "cat": "growth", "weight": 0.50},
+        ],
+    },
+    "US_OIL_EIA": {
+        "title": "Crude Oil Inventories (EIA)",
+        "currency": "USD",
+        "impact": "High",
+        "utc_year": 2026, "utc_month": 8, "utc_day": 26, "utc_hour": 14, "utc_min": 30,
+        "keywords": ["crude oil", "eia", "inventories", "gasoline stockpiles", "wti", "brent"],
+        "forecast_str": "—", "prev_str": "4.4M", "consensus_bias": "Weekly Inventory Balance",
+        "precursors": [
+            {"name": "WTI Spot Price Momentum", "series": "DCOILWTICO", "cat": "growth", "weight": 0.60, "fallback": "POILWTIUSDM"},
+            {"name": "Industrial Production Growth", "series": "INDPRO", "cat": "growth", "weight": 0.40},
+        ],
+    },
+    "US_GDP": {
+        "title": "Prelim GDP q/q (Annualized Growth)",
+        "currency": "USD",
+        "impact": "High",
+        "utc_year": 2026, "utc_month": 8, "utc_day": 27, "utc_hour": 12, "utc_min": 30,
+        "keywords": ["gdp", "economic growth", "recession", "soft landing", "consumer spending", "output"],
+        "forecast_str": "1.5%", "prev_str": "1.5%", "consensus_bias": "Moderate 1.5% GDP Growth Baseline",
+        "precursors": [
+            {"name": "Industrial Production Momentum", "series": "INDPRO", "cat": "growth", "weight": 0.40},
+            {"name": "Retail Sales Consumption Growth", "series": "RSAFS", "cat": "growth", "weight": 0.35},
+            {"name": "Real Disposable Personal Income", "series": "DSPIC96", "cat": "growth", "weight": 0.25},
+        ],
+    },
+    "US_PCE": {
+        "title": "Core PCE Price Index m/m",
+        "currency": "USD",
+        "impact": "High",
+        "utc_year": 2026, "utc_month": 8, "utc_day": 28, "utc_hour": 12, "utc_min": 30,
+        "keywords": ["pce", "inflation", "fed inflation", "powell", "consumer spending", "sticky", "deflator"],
+        "forecast_str": "0.2%", "prev_str": "0.1%", "consensus_bias": "Core PCE Acceleration (+0.2% MoM)",
+        "precursors": [
+            {"name": "Core PPI Final Demand Velocity", "series": "PPIFES", "cat": "inflation", "weight": 0.40},
+            {"name": "10-Year Breakeven Inflation Rate", "series": "T10YIE", "cat": "inflation", "weight": 0.30},
+            {"name": "Crude Oil Energy Momentum", "series": "DCOILWTICO", "cat": "inflation", "weight": 0.30, "fallback": "POILWTIUSDM"},
+        ],
+    },
+    "US_SPENDING": {
+        "title": "Personal Spending m/m",
+        "currency": "USD",
+        "impact": "Medium",
+        "utc_year": 2026, "utc_month": 8, "utc_day": 28, "utc_hour": 12, "utc_min": 30,
+        "keywords": ["personal spending", "consumer spending", "income", "consumption"],
+        "forecast_str": "0.1%", "prev_str": "0.3%", "consensus_bias": "Moderate Spending Velocity",
+        "precursors": [
+            {"name": "Real Disposable Income Momentum", "series": "DSPIC96", "cat": "growth", "weight": 0.50},
+            {"name": "U.Mich Consumer Sentiment", "series": "UMCSENT", "cat": "growth", "weight": 0.50},
+        ],
+    },
+}
+
+def _normalize_catalyst_title(text: str) -> str:
+    text = str(text or "").lower()
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return " ".join(text.split())
+
+
+def _find_legacy_catalyst_meta(currency: str, title: str) -> dict:
+    """Preserve existing precursor intelligence for matching known catalysts."""
+    ff_title = _normalize_catalyst_title(title)
+    best_meta = {}
+    best_len = 0
+
+    for item in CATALYST_PRECURSOR_MAP.values():
+        if str(item.get("currency", "")).upper() != str(currency).upper():
+            continue
+        legacy_title = _normalize_catalyst_title(item.get("title", ""))
+        if not legacy_title:
+            continue
+        if ff_title == legacy_title:
+            return item.copy()
+        if ff_title in legacy_title or legacy_title in ff_title:
+            if len(legacy_title) > best_len:
+                best_meta = item.copy()
+                best_len = len(legacy_title)
+    return best_meta
+
+
+def _build_ff_event_code(currency: str, title: str, event_utc: datetime) -> str:
+    """Stable ID used by the existing Actual Override mechanism."""
+    clean_currency = re.sub(r"[^A-Z]", "", str(currency).upper()) or "ALL"
+    clean_title = re.sub(r"[^A-Z0-9]+", "_", str(title).upper()).strip("_")
+    date_key = event_utc.strftime("%Y%m%d%H%M")
+    return f"FF_{clean_currency}_{date_key}_{clean_title[:55]}"
+
+
+def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3)") -> list[dict]:
+    """
+    Forex Factory is the sole calendar source. Only High and Medium
+    impact events are allowed into the Catalyst Forecaster.
+    Existing precursor/Nowcast logic is preserved where a title matches
+    the legacy catalyst map.
+    """
+    utc_now = datetime.utcnow()
+    user_now = utc_now + timedelta(hours=tz_offset)
+    events = []
+
+    ff_events = fetch_forex_factory_calendar()
+    if not ff_events:
+        return []
+
+    for ff in ff_events:
+        impact_level = str(ff.get("impact", "")).strip().title()
+        if impact_level not in {"High", "Medium"}:
+            continue
+
+        title = str(ff.get("title", "")).strip()
+        currency = str(ff.get("country", "")).strip().upper()
+        date_raw = str(ff.get("date", "")).strip()
+        if not title or not date_raw:
+            continue
+
+        try:
+            parsed_dt = datetime.fromisoformat(date_raw.replace("Z", "+00:00"))
+            if parsed_dt.tzinfo is not None:
+                event_utc = parsed_dt.astimezone(timezone.utc).replace(tzinfo=None)
+            else:
+                event_utc = parsed_dt
+        except Exception:
+            continue
+
+        event_local = event_utc + timedelta(hours=tz_offset)
+        diff = event_local - user_now
+        total_seconds = diff.total_seconds()
+        days_away = (event_local.date() - user_now.date()).days
+
+        if total_seconds < -43200:
+            countdown_label = "✅ Released"
+        elif total_seconds < 0:
+            countdown_label = "✅ RELEASED TODAY"
+        elif total_seconds < 3600:
+            mins = max(1, int(total_seconds // 60))
+            countdown_label = f"🔥 In {mins} Mins"
+        elif total_seconds < 86400:
+            hrs = int(total_seconds // 3600)
+            mins = int((total_seconds % 3600) // 60)
+            if event_local.date() == user_now.date():
+                countdown_label = f"🔥 TODAY (In {hrs}h {mins}m)"
+            else:
+                countdown_label = f"⚡ Tomorrow (In {hrs}h)"
+        elif days_away == 1:
+            countdown_label = "⚡ Tomorrow (In 1 Day)"
+        else:
+            countdown_label = f"⚡ In {days_away} Days"
+
+        legacy_meta = _find_legacy_catalyst_meta(currency, title)
+        keywords = legacy_meta.get("keywords") or [
+            w for w in re.findall(r"[a-zA-Z]{3,}", title.lower())
+        ]
+
+        meta = {
+            "title": title,
+            "currency": currency,
+            "impact": impact_level,
+            "keywords": keywords,
+            "precursors": legacy_meta.get("precursors", []),
+            "forecast_str": str(ff.get("forecast", "")).strip() or "—",
+            "prev_str": str(ff.get("previous", "")).strip() or "—",
+            "consensus_bias": legacy_meta.get(
+                "consensus_bias", f"Forex Factory consensus for {title}"
+            ),
+            "source": "Forex Factory",
+            "source_url": FOREX_FACTORY_CALENDAR_URL,
+            "ff_date_raw": date_raw,
+        }
+
+        event_code = _build_ff_event_code(currency, title, event_utc)
+        events.append({
+            "code": event_code,
+            "title": title,
+            "currency": currency,
+            "impact": impact_level,
+            "datetime_obj": event_local,
+            "date_str": event_local.strftime("%A, %b %d"),
+            "time_str": f"{event_local.strftime('%H:%M')} ({tz_label})",
+            "countdown": countdown_label,
+            "days_away": days_away,
+            "forecast_str": meta["forecast_str"],
+            "prev_str": meta["prev_str"],
+            "consensus_bias": meta["consensus_bias"],
+            "meta": meta,
+        })
+
+    events.sort(key=lambda x: (x["datetime_obj"], x["days_away"]))
+    return events
+
+def _nasdaq_forecaster_implication(event: dict, directional_score: float) -> str:
+    """Cross-asset NDX interpretation only; does not alter the existing catalyst nowcast."""
+    title = str(event.get("title", "")).lower()
+    meta = event.get("meta", {}) or {}
+    text = f"{title} {' '.join(str(x).lower() for x in (meta.get('keywords') or []))}"
+    bullish_event = directional_score > 0.12
+    bearish_event = directional_score < -0.12
+
+    inflation_or_rates = any(k in text for k in ["cpi", "pce", "ppi", "inflation", "interest rate", "fomc", "fed", "central bank", "rate decision"])
+    growth_or_labor = any(k in text for k in ["gdp", "payroll", "nfp", "employment", "unemployment", "retail sales", "pmi", "production", "jobs"])
+
+    if inflation_or_rates:
+        if bullish_event:
+            return "📉 Bearish Pressure — hawkish/yield-up duration effect"
+        if bearish_event:
+            return "📈 Bullish Support — dovish/yield-down duration effect"
+        return "⚖️ Neutral — await real-yield and Fed repricing"
+    if growth_or_labor:
+        if bullish_event:
+            return "⚖️ Mixed — stronger growth supports earnings but may lift yields"
+        if bearish_event:
+            return "⚖️ Mixed — weaker growth may lower yields but raises earnings risk"
+        return "⚖️ Neutral — balance earnings impulse against yield reaction"
+    if bullish_event:
+        return "⚖️ Event-specific — watch whether the impulse raises real yields"
+    if bearish_event:
+        return "⚖️ Event-specific — watch whether the impulse lowers real yields"
+    return "⚖️ Neutral — watch real yield, Fed guidance and risk appetite"
+
+
+def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_override: str = "") -> dict:
+    meta = event.get("meta", {})
+    precursors = meta.get("precursors", [])
+    keywords = meta.get("keywords", [])
+    
+    if actual_override:
+        cur = meta.get("currency", "USD")
+        clean_act = actual_override.strip()
+        is_negative = False
+        if "-" in clean_act or "neg" in clean_act.lower():
+            is_negative = True
+        else:
+            try:
+                num_check = float(clean_act.replace("%", "").strip())
+                if num_check < 0:
+                    is_negative = True
+            except Exception:
+                pass
+
+        forecast_str = event.get("forecast_str", "0.0%")
+        is_beat = True
+        try:
+            f_val = float(forecast_str.replace("%", "").strip())
+            a_val = float(clean_act.replace("%", "").strip())
+            is_beat = a_val > f_val
+        except Exception:
+            is_beat = not is_negative
+
+        if is_negative:
+            is_beat = False
+
+        if is_beat:
+            return {
+                "precursor_results": [], "base_precursor_score": 1.0, "correlated_articles": [], "news_sentiment_pts": 1.0, "nowcast_composite": 0.85,
+                "bias_label": f"✅ ACTUAL RELEASED: {clean_act} (Beat / Positive)",
+                "bias_color": "#00ffa3",
+                "confidence": 100,
+                "outcome_desc": f"Master Admin Verified Actual Print ({clean_act}) successfully published as positive beat.",
+                "currency_action_en": f"📈 {cur} Appreciating on Actual Beat ({clean_act})",
+                "currency_action_color": "#00ffa3",
+                "currency_action_desc_en": f"Official confirmed actual release of {clean_act} exceeds consensus and drives strong bullish momentum.",
+                "gold_implication": "📉 Bearish Pressure on Gold (Confirmed strong macro actual)",
+                "usd_implication": "📈 Bullish Tailwind for USD (Confirmed Actual Beat)",
+                "oil_implication": "📈 Bullish Support",
+                "nasdaq_implication": "📉 Bearish Pressure on NDX (Strong data raises rate hike bets)",
+            }
+        else:
+            return {
+                "precursor_results": [], "base_precursor_score": -1.0, "correlated_articles": [], "news_sentiment_pts": -1.0, "nowcast_composite": -0.85,
+                "bias_label": f"❌ ACTUAL RELEASED: {clean_act} (Miss / Negative)",
+                "bias_color": "#ff5e75",
+                "confidence": 100,
+                "outcome_desc": f"Master Admin Verified Actual Print ({clean_act}) successfully published as negative miss.",
+                "currency_action_en": f"📉 {cur} Depreciating on Actual Miss ({clean_act})",
+                "currency_action_color": "#ff5e75",
+                "currency_action_desc_en": f"Official confirmed actual release of {clean_act} missed consensus expectations, triggering downside pressure.",
+                "gold_implication": "📈 Bullish Surge for Gold (Confirmed macro miss / rate cut bets)",
+                "usd_implication": "📉 Bearish Drag on USD (Confirmed Actual Miss)",
+                "oil_implication": "📉 Bearish Drag",
+                "nasdaq_implication": "📈 Bullish Support for NDX (Dovish data / rate cut bets support growth stocks)",
+            }
+
+    precursor_results = []
+    precursor_score_sum = 0.0
+    precursor_weight_sum = 0.0
+    
+    for p in precursors:
+        series_id = p.get("series", "")
+        fallback_id = p.get("fallback")
+        df = fetch_fred(series_id, fred_key, limit=60)
+        if (df is None or df.empty) and fallback_id:
+            df = fetch_fred(fallback_id, fred_key, limit=60)
+            
+        if df is not None and not df.empty:
+            vals = df["value"].tolist()
+            mf = calc_mtf(vals, p["cat"])
+            score = mf["score"] if mf else 0.0
+            mom = mf.get("mom", 0.0) if mf else 0.0
+            
+            adjusted_score = score * (1.25 if mom > 0.5 else (0.85 if mom < -0.5 else 1.0))
+            
+            precursor_results.append({
+                "name": p["name"],
+                "latest": vals[-1],
+                "mom": mom,
+                "score": adjusted_score,
+                "weight": p.get("weight", 0.25)
+            })
+            precursor_score_sum += adjusted_score * p.get("weight", 0.25)
+            precursor_weight_sum += p.get("weight", 0.25)
+
+    base_precursor_score = (precursor_score_sum / precursor_weight_sum) if precursor_weight_sum > 0 else 0.0
+    
+    correlated_articles = []
+    news_sentiment_pts = 0.0
+    for art in all_news:
+        title = art.get("title", "").lower()
+        desc = art.get("description", "").lower()
+        combined_text = f"{title} {desc}"
+        if any(kw in combined_text for kw in keywords):
+            correlated_articles.append(art)
+            
+    cur = meta.get("currency", "USD")
+    if correlated_articles:
+        rule_res = analyze_news_rule_based(correlated_articles)
+        news_sentiment_pts = rule_res["scores"].get(cur, 0.0)
+    
+    surprise_factor = 0.20 if base_precursor_score > 0.15 else (-0.20 if base_precursor_score < -0.15 else 0.0)
+    nowcast_composite = (0.40 * base_precursor_score) + (0.45 * (news_sentiment_pts / 0.50)) + (0.15 * surprise_factor)
+    confidence_val = min(96, int(68 + abs(nowcast_composite) * 42))
+
+    if nowcast_composite > 0.05 or news_sentiment_pts > 0.03:
+        bias_label = "🔺 LIKELY HIGHER THAN FORECAST (Beat)"
+        bias_color = "#00ffa3"
+        outcome_desc = "Live institutional wire sentiment and accelerating precursor momentum indicate strong underlying performance pointing to a positive upside beat."
+        currency_action_en = f"📈 {cur} Expected to Appreciate (Bullish Rally)"
+        currency_action_color = "#00ffa3"
+        currency_action_desc_en = f"{cur} is poised to rally as incoming momentum and supportive wire flows override baseline consensus."
+        gold_implication = "📉 Bearish Pressure on Gold (Hawkish economic surprise)"
+        usd_implication = "📈 Bullish Tailwind for USD"
+        oil_implication = "📈 Bullish Support"
+        nasdaq_implication = "📉 Bearish Pressure on NDX (Hawkish data raises rate expectations)"
+    elif nowcast_composite < -0.05 or news_sentiment_pts < -0.03:
+        bias_label = "🔻 LIKELY LOWER THAN FORECAST (Miss)"
+        bias_color = "#ff5e75"
+        outcome_desc = "Cooling precursor pipelines and cautious wire sentiment point toward a potential downside miss relative to consensus."
+        currency_action_en = f"📉 {cur} Expected to Weaken / Depreciate (Bearish Drag)"
+        currency_action_color = "#ff5e75"
+        currency_action_desc_en = f"{cur} is vulnerable to selling pressure as softening indicators validate dovish expectations."
+        gold_implication = "📈 Bullish Surge for Gold (Rate cut optimism accelerates)"
+        usd_implication = "📉 Bearish Drag on USD"
+        oil_implication = "📉 Bearish Drag"
+        nasdaq_implication = "📈 Bullish Support for NDX (Dovish data lowers rate expectations)"
+    else:
+        bias_label = "⚖️ IN-LINE WITH CONSENSUS"
+        bias_color = "#ffd166"
+        outcome_desc = "Balanced precursor metrics and neutral live wire feedback suggest official print will land near consensus expectations."
+        currency_action_en = f"⚖️ {cur} Range-Bound Consolidation (Neutral)"
+        currency_action_color = "#ffd166"
+        currency_action_desc_en = f"{cur} is expected to maintain range-bound consolidation as data matches consensus expectations."
+        gold_implication = "⚖️ Neutral / Range-Bound"
+        usd_implication = "⚖️ Balanced Consolidation"
+        oil_implication = "⚖️ Range-Bound"
+        nasdaq_implication = "⚖️ Neutral — watch real yield & Fed guidance"
+
+    nasdaq_implication = _nasdaq_forecaster_implication(event, nowcast_composite)
+
+    return {
+        "precursor_results": precursor_results,
+        "base_precursor_score": base_precursor_score,
+        "correlated_articles": correlated_articles[:3],
+        "news_sentiment_pts": news_sentiment_pts,
+        "nowcast_composite": nowcast_composite,
+        "bias_label": bias_label,
+        "bias_color": bias_color,
+        "confidence": confidence_val,
+        "outcome_desc": outcome_desc,
+        "currency_action_en": currency_action_en,
+        "currency_action_color": currency_action_color,
+        "currency_action_desc_en": currency_action_desc_en,
+        "gold_implication": gold_implication,
+        "usd_implication": usd_implication,
+        "oil_implication": oil_implication,
+        "nasdaq_implication": nasdaq_implication,
+    }
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_causal_macro_ai_analysis(event: dict, nowcast: dict, articles: list, api_key: str = DEFAULT_OPENROUTER_KEY) -> dict:
+    """Event-specific causal AI layer. Keeps the existing quantitative nowcast intact."""
+    if not api_key:
+        return {"status": "unavailable", "raw": "AI API key is unavailable."}
+
+    impact = str(event.get("impact", "")).title()
+    if impact != "High":
+        return {"status": "skipped", "raw": "Causal AI is enabled for High Impact events only."}
+
+    meta = event.get("meta", {}) or {}
+    title = event.get("title", "Unknown event")
+    currency = meta.get("currency") or event.get("currency", "USD")
+    forecast = event.get("forecast_str", "—")
+    previous = event.get("prev_str", "—")
+
+    precursor_lines = []
+    for p in (nowcast.get("precursor_results") or []):
+        precursor_lines.append(
+            f"- {p.get('name','Unknown')}: latest={p.get('latest','—')}, "
+            f"MoM={p.get('mom','—')}%, signal_score={p.get('score','—')}"
+        )
+    precursor_text = "\n".join(precursor_lines) or "No mapped FRED precursor series are currently available."
+
+    relevant = []
+    event_keywords = [str(k).lower() for k in (meta.get("keywords") or [])]
+    for a in (articles or []):
+        blob = f"{a.get('title','')} {a.get('description','')}".lower()
+        if not event_keywords or any(k in blob for k in event_keywords):
+            relevant.append(a)
+    relevant = relevant[:10]
+
+    news_lines = []
+    for a in relevant:
+        source = a.get("source", {})
+        source_name = source.get("name", "Institutional Wire") if isinstance(source, dict) else str(source)
+        news_lines.append(
+            f"- [{source_name}] {a.get('publishedAt','')}: {a.get('title','')} — {a.get('description','')}"
+        )
+    news_text = "\n".join(news_lines) or "No event-specific live news evidence is currently available."
+
+    system_prompt = """You are an institutional-grade macro-econometric strategist.
+Analyze one upcoming HIGH-impact economic catalyst using ONLY the supplied evidence.
+
+Rules:
+1. Never invent economic data, consensus, dates, news, historical releases, or relationships.
+2. Clearly separate FACTS from INFERENCES.
+3. Build an event-specific causal chain. Do not force Labour→PPI→CPI logic onto speeches or unrelated events.
+4. For inflation events consider relevant upstream costs/wages/demand; for labour events consider claims/JOLTS/PMI employment when supplied; for growth events consider consumption/production/PMI when supplied; for central-bank/speech events focus on policy/rates/inflation/growth language in supplied news.
+5. Identify supporting evidence and contradictory evidence.
+6. Assess cross-source confirmation only from sources actually supplied.
+7. Give a Beat/Miss/In-line nowcast only when the event has a measurable consensus. For speeches or non-numeric events, use Bullish/Bearish/Neutral policy-impact bias instead.
+8. Confidence must reflect evidence quality and contradictions; do not manufacture precision.
+9. Do not provide investment advice. Keep the report concise and institutional.
+
+Return ONLY valid JSON with these keys:
+event_assessment, causal_chain, facts, supporting_evidence, contradictions,
+nowcast, confidence, confidence_reason, cross_source_confirmation,
+usd, gold, oil, nasdaq, invalidation, source_count.
+Each of causal_chain, facts, supporting_evidence, contradictions must be an array of short strings.
+confidence must be an integer 0-100.
+"""
+
+    user_prompt = f"""EVENT
+Title: {title}
+Currency: {currency}
+Impact: {impact}
+Time: {event.get('date_str','')} {event.get('time_str','')}
+Forecast/Consensus: {forecast}
+Previous: {previous}
+
+EXISTING QUANTITATIVE NOWCAST (use as evidence, not as a replacement)
+Bias: {nowcast.get('bias_label','')}
+Confidence: {nowcast.get('confidence','')}%
+Composite: {nowcast.get('nowcast_composite','')}
+Precursor score: {nowcast.get('base_precursor_score','')}
+News sentiment points: {nowcast.get('news_sentiment_pts','')}
+
+FRED / MACRO PRECURSORS
+{precursor_text}
+
+EVENT-RELEVANT LIVE NEWS
+{news_text}
+"""
+
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "HTTP-Referer": "https://apexmacro.com",
+        "X-Title": "ApexMacro Causal Macro Intelligence",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": "openai/gpt-4o-mini",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.15,
+        "response_format": {"type": "json_object"},
+    }
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=25)
+        response.raise_for_status()
+        data = response.json()
+        raw = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            parsed = {"event_assessment": "Unstructured AI response", "facts": [raw], "causal_chain": [],
+                      "supporting_evidence": [], "contradictions": [], "nowcast": "Insufficient Evidence",
+                      "confidence": 0, "confidence_reason": "AI did not return valid JSON.",
+                      "cross_source_confirmation": "Unavailable", "usd": "Neutral", "gold": "Neutral",
+                      "oil": "Neutral", "nasdaq": "Neutral", "invalidation": "Insufficient Evidence", "source_count": len(relevant)}
+        parsed["status"] = "ok"
+        return parsed
+    except Exception as exc:
+        return {"status": "error", "raw": f"AI causal analysis error: {exc}"}
+
+
+def render_causal_macro_ai_panel(analysis: dict) -> None:
+    # Compact visual layer for the existing causal AI output. No model logic is changed.
+    if analysis.get("status") != "ok":
+        if analysis.get("status") == "skipped":
+            return
+        render_html(
+            f'<div class="fc-ai" style="border-color:rgba(255,94,117,.22);color:#ff8a9b;">'
+            f'🧠 Causal Macro Intelligence unavailable: {analysis.get("raw","Unknown error")}</div>'
+        )
+        return
+
+    def items(key):
+        vals = analysis.get(key) or []
+        return "".join(f"<div style='margin:2px 0;'>• {str(v)}</div>" for v in vals) or "<div>• None identified.</div>"
+
+    confidence = int(analysis.get("confidence", 0) or 0)
+    render_html(f"""
+    <div class="fc-ai">
+      <div class="fc-ai-head">
+        <div class="fc-ai-title">🧠 Causal Macro Intelligence</div>
+        <div class="fc-ai-conf">{confidence}% AI confidence</div>
+      </div>
+      <div class="fc-ai-assess">{analysis.get("event_assessment","—")}</div>
+      <div style="font-size:9.8px;color:#8fa3b4;margin-top:4px;line-height:1.45;">
+        <b style="color:#00f5ff;">Nowcast:</b> {analysis.get("nowcast","Insufficient Evidence")}
+        &nbsp;•&nbsp; <b style="color:#ffd166;">Basis:</b> {analysis.get("confidence_reason","—")}
+      </div>
+      <div class="fc-ai-grid">
+        <div class="fc-ai-box"><b style="color:#00f5ff;">CAUSAL CHAIN</b><div style="margin-top:4px;">{items("causal_chain")}</div></div>
+        <div class="fc-ai-box"><b style="color:#00ffa3;">SUPPORTING EVIDENCE</b><div style="margin-top:4px;">{items("supporting_evidence")}</div></div>
+        <div class="fc-ai-box"><b style="color:#ff788a;">CONTRADICTIONS</b><div style="margin-top:4px;">{items("contradictions")}</div></div>
+      </div>
+      <div class="fc-ai-foot">
+        Cross-source: <b style="color:#cbd8df;">{analysis.get("cross_source_confirmation","—")}</b>
+        &nbsp;•&nbsp; Sources: <b style="color:#cbd8df;">{analysis.get("source_count",0)}</b>
+        &nbsp;•&nbsp; Invalidation: <b style="color:#ffd166;">{analysis.get("invalidation","—")}</b>
+        <br>💵 USD: <b style="color:#00f5ff;">{analysis.get("usd","—")}</b>
+        &nbsp;•&nbsp; 🥇 Gold: <b style="color:#ffd166;">{analysis.get("gold","—")}</b>
+        &nbsp;•&nbsp; 🛢️ Oil: <b style="color:#8fd3ff;">{analysis.get("oil","—")}</b>
+        &nbsp;•&nbsp; 📊 NDX: <b style="color:#ad7bff;">{analysis.get("nasdaq","—")}</b>
+      </div>
+    </div>
+    """)
+
+
+def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict | None = None) -> None:
+    if "selected_tz" not in st.session_state or st.session_state["selected_tz"] not in SUPPORTED_TIMEZONES:
+        st.session_state["selected_tz"] = "🏛️ Kurdistan & Iraq (UTC+3)"
+
+    tz_info = SUPPORTED_TIMEZONES.get(st.session_state["selected_tz"], {"offset": 3, "label": "KRD (UTC+3)"})
+    is_admin = auth_user and auth_user.get("is_admin", False)
+
+    with st.spinner("Synthesizing upcoming economic calendar, precursor FRED pipelines & correlated news..."):
+        events = get_upcoming_catalyst_events(tz_info["offset"], tz_info["label"])
+        all_news = fetch_all_instant_news(channel_name)
+        actuals_cache = load_actuals_cache()
+
+    render_html(f"""
+    <div class="fc-hero">
+      <div class="fc-hero-row">
+        <div>
+          <div class="fc-eyebrow">ApexMacro / Predictive Intelligence</div>
+          <div class="fc-title">🔮 Macro Catalyst Forecaster</div>
+          <div class="fc-sub">Upcoming macro releases ranked with the existing FRED precursor model, live wire sentiment and causal AI layer.</div>
+          <div class="fc-live"><span class="live-dot"></span> NOWCAST ENGINE ACTIVE &nbsp;•&nbsp; {tz_info['label']}</div>
+        </div>
+        <div class="fc-horizon">
+          <div class="fc-horizon-lbl">PREDICTIVE HORIZON</div>
+          <div class="fc-horizon-val">Next 7–10 Days</div>
+        </div>
+      </div>
+    </div>
+    """)
+
+    high_count = sum(1 for e in events if e.get("impact") == "High")
+    medium_count = sum(1 for e in events if e.get("impact") == "Medium")
+    k1, k2, k3 = st.columns(3)
+    with k1:
+        render_html(f'<div class="fc-metric"><div class="fc-metric-l">Tracked catalysts</div><div class="fc-metric-v" style="color:#00f5ff;">{len(events)}</div><div class="fc-metric-note">Current calendar window</div></div>')
+    with k2:
+        render_html(f'<div class="fc-metric"><div class="fc-metric-l">High impact</div><div class="fc-metric-v" style="color:#ff788a;">{high_count}</div><div class="fc-metric-note">Priority causal-AI events</div></div>')
+    with k3:
+        render_html(f'<div class="fc-metric"><div class="fc-metric-l">Medium impact</div><div class="fc-metric-v" style="color:#ffd166;">{medium_count}</div><div class="fc-metric-note">Secondary catalysts</div></div>')
+
+    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+    render_html('<div class="sec-title">Catalyst Radar</div>')
+
+    currency_flags = {
+        "USD": "🇺🇸", "EUR": "🇪🇺", "GBP": "💷", "CAD": "🍁",
+        "JPY": "💴", "AUD": "🇦🇺", "NZD": "🇳🇿", "CHF": "🏔️"
+    }
+
+    if not events:
+        st.info("No High or Medium impact Forex Factory catalysts are available in the current calendar window.")
+        return
+
+    for ev in events:
+        ev_code = ev["code"]
+        saved_actual = actuals_cache.get(ev_code, "")
+        nowcast = compute_event_nowcast(ev, fred_key, all_news, actual_override=saved_actual)
+        causal_ai = get_causal_macro_ai_analysis(ev, nowcast, all_news) if ev.get("impact") == "High" else {"status": "skipped"}
+        cur = ev.get("currency", "USD")
+        cur_flag = currency_flags.get(cur, "🌐")
+        impact_icon = "🔴" if ev.get("impact") == "High" else "🟡"
+        actual_value = saved_actual or "Pending"
+        actual_color = "#00ffa3" if saved_actual else "#718795"
+        bias_bg = "rgba(0,255,163,.055)" if nowcast["bias_color"] == "#00ffa3" else ("rgba(255,94,117,.055)" if nowcast["bias_color"] == "#ff5e75" else "rgba(255,209,102,.05)")
+
+        # Minimal collapsed row: currency, event, impact, time and countdown.
+        accordion_label = f"{cur_flag} {cur}  ·  {ev['title']}  ·  {impact_icon} {ev['impact']}  ·  🕒 {ev['time_str']}  ·  {ev['countdown']}"
+        with st.expander(accordion_label, expanded=False):
+            render_html(f"""
+            <div class="fc-body" style="padding-top:4px;">
+              <div class="fc-time" style="margin-bottom:10px;">📅 {ev['date_str']} &nbsp;•&nbsp; 🕒 {ev['time_str']} &nbsp;•&nbsp; {ev['countdown']}</div>
+              <div class="fc-metrics">
+                <div class="fc-metric"><div class="fc-metric-l">Forecast</div><div class="fc-metric-v" style="color:#ffd166;">{ev['forecast_str']}</div><div class="fc-metric-note">Market consensus</div></div>
+                <div class="fc-metric"><div class="fc-metric-l">Previous</div><div class="fc-metric-v">{ev['prev_str']}</div><div class="fc-metric-note">Last official release</div></div>
+                <div class="fc-metric"><div class="fc-metric-l">Actual</div><div class="fc-metric-v" style="color:{actual_color};">{actual_value}</div><div class="fc-metric-note">Published print</div></div>
+              </div>
+              <div class="fc-nowcast" style="background:{bias_bg};border:1px solid {nowcast['bias_color']}33;">
+                <div>
+                  <div class="fc-now-lbl" style="color:{nowcast['bias_color']};">ApexMacro Nowcast</div>
+                  <div class="fc-now-title" style="color:{nowcast['bias_color']};">{nowcast['bias_label']}</div>
+                  <div class="fc-now-desc">{nowcast['outcome_desc']}</div>
+                </div>
+                <div class="fc-score">
+                  <div class="fc-score-num" style="color:{nowcast['bias_color']};">{nowcast['confidence']}%</div>
+                  <div class="fc-score-cap">Model confidence</div>
+                  <div style="font-size:9px;color:#718795;margin-top:4px;">Baseline: {ev['consensus_bias']}</div>
+                </div>
+              </div>
+              <div class="fc-outlook" style="grid-template-columns:1.45fr repeat(4,.65fr);">
+                <div class="fc-outlook-main">
+                  <div class="fc-small-lbl">Direct {cur} trajectory</div>
+                  <div class="fc-main-action" style="color:{nowcast['currency_action_color']};">{nowcast['currency_action_en']}</div>
+                  <div class="fc-main-desc">{nowcast['currency_action_desc_en']}</div>
+                </div>
+                <div class="fc-asset"><b>🥇 Gold</b>{nowcast['gold_implication']}</div>
+                <div class="fc-asset"><b>💵 USD</b>{nowcast['usd_implication']}</div>
+                <div class="fc-asset"><b>🛢️ Oil</b>{nowcast['oil_implication']}</div>
+                <div class="fc-asset"><b>📊 Nasdaq-100</b>{nowcast['nasdaq_implication']}</div>
+              </div>
+            </div>
+            """)
+
+            render_causal_macro_ai_panel(causal_ai)
+
+            if is_admin:
+                st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+                render_html('<div class="fc-small-lbl" style="margin-bottom:6px;">👑 Admin Actual Override</div>')
+                col_inp, col_btn = st.columns([3, 1])
+                with col_inp:
+                    entered_actual_val = st.text_input(
+                        f"Actual Value for {ev_code}", value=saved_actual,
+                        placeholder="e.g. -0.5% or 0.5", key=f"act_txt_{ev_code}", label_visibility="collapsed"
+                    )
+                with col_btn:
+                    if st.button("💾 Publish", key=f"act_btn_{ev_code}", use_container_width=True):
+                        actuals_cache[ev_code] = entered_actual_val.strip()
+                        save_actuals_cache(actuals_cache)
+                        st.success("Published!")
+                        time.sleep(0.3)
+                        st.rerun()
+
+            st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+            render_html('<div class="fc-small-lbl" style="margin-bottom:7px;">Evidence & Precursors</div>')
+            if nowcast["precursor_results"]:
+                p_cols = st.columns(min(len(nowcast["precursor_results"]), 3))
+                for p_idx, p_item in enumerate(nowcast["precursor_results"]):
+                    p_col = p_cols[p_idx % len(p_cols)]
+                    p_mom_color = "#00ffa3" if p_item["mom"] > 0 else ("#ff5e75" if p_item["mom"] < 0 else "#8fa3b4")
+                    p_arr = "▲" if p_item["mom"] > 0 else ("▼" if p_item["mom"] < 0 else "•")
+                    with p_col:
+                        render_html(f"""
+                        <div class="fc-metric" style="margin-bottom:8px;">
+                          <div class="fc-metric-l">{p_item['name']}</div>
+                          <div class="fc-metric-v">{p_item['latest']:.2f}</div>
+                          <div class="fc-metric-note" style="color:{p_mom_color};font-weight:800;">{p_arr} {p_item['mom']:+.2f} MoM</div>
+                        </div>
+                        """)
+            else:
+                st.caption("No mapped FRED precursor series are available for this catalyst.")
+
+            if nowcast["correlated_articles"]:
+                render_html('<div class="fc-small-lbl" style="margin:8px 0 7px;">Correlated breaking wires & speeches</div>')
+                for a in nowcast["correlated_articles"]:
+                    render_html(f"""
+                    <div style="padding:8px 10px;background:rgba(0,245,255,.025);border-left:2px solid rgba(0,245,255,.55);border-radius:5px;margin-bottom:6px;font-size:10.5px;color:#dce7ed;line-height:1.45;">
+                      <b>{a.get('title', '')}</b><div style="color:#718795;font-size:9px;margin-top:2px;">{a.get('publishedAt', '')}</div>
+                    </div>
+                    """)
+
+        st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
+
+
+
+
+def _tron_headers() -> dict[str, str]:
+    headers = {"Accept": "application/json", "User-Agent": "ApexMacro-VIP-Payments/1.0"}
+    if TRONGRID_API_KEY:
+        headers["TRON-PRO-API-KEY"] = TRONGRID_API_KEY
+    return headers
+
+
+def _normalize_txid(value: str) -> str:
+    clean = re.sub(r"\s+", "", str(value or "")).lower()
+    return clean if re.fullmatch(r"[0-9a-f]{64}", clean) else ""
+
+
+def _load_payment_records_unlocked() -> list[dict]:
+    data = _load_persistent_state("vip_payments", PAYMENTS_FILE, [])
+    return data if isinstance(data, list) else []
+
+
+def load_payment_records() -> list[dict]:
+    with _PAYMENT_LOCK:
+        return _load_payment_records_unlocked()
+
+
+def _write_payment_records_unlocked(records: list[dict]) -> None:
+    _save_persistent_state("vip_payments", PAYMENTS_FILE, records if isinstance(records, list) else [])
+
+
+def _payment_record_for_txid(txid: str) -> dict | None:
+    clean = _normalize_txid(txid)
+    if not clean:
+        return None
+    for record in load_payment_records():
+        if str(record.get("txid", "")).lower() == clean:
+            return record
+    return None
+
+
+def _fetch_confirmed_usdt_transfer(txid: str, receiver: str) -> tuple[bool, str, dict | None]:
+    """Find a confirmed USDT TRC20 transfer to receiver and validate its solidified receipt."""
+    clean_txid = _normalize_txid(txid)
+    receiver = str(receiver or "").strip()
+    if not clean_txid:
+        return False, "Enter a valid 64-character TRON transaction ID.", None
+    if not receiver or not receiver.startswith("T"):
+        return False, "The configured TRC20 receiving address is invalid.", None
+
+    url = f"{TRONGRID_BASE_URL}/v1/accounts/{receiver}/transactions/trc20"
+    params = {
+        "only_confirmed": "true",
+        "limit": 200,
+        "contract_address": TRON_USDT_CONTRACT,
+        "order_by": "block_timestamp,desc",
+    }
+    found = None
+    fingerprint = ""
+    try:
+        # Search several recent pages. A buyer normally verifies immediately, so this is ample
+        # while avoiding unbounded external API work.
+        for _ in range(5):
+            call_params = dict(params)
+            if fingerprint:
+                call_params["fingerprint"] = fingerprint
+            response = requests.get(url, params=call_params, headers=_tron_headers(), timeout=12)
+            if response.status_code == 429:
+                return False, "TRON verification is temporarily rate-limited. Please retry in a moment.", None
+            response.raise_for_status()
+            payload = response.json()
+            for item in payload.get("data", []) if isinstance(payload, dict) else []:
+                if str(item.get("transaction_id", "")).lower() == clean_txid:
+                    found = item
+                    break
+            if found:
+                break
+            fingerprint = str((payload.get("meta") or {}).get("fingerprint", "")) if isinstance(payload, dict) else ""
+            if not fingerprint:
+                break
+    except Exception:
+        return False, "Could not reach the TRON network right now. Please retry shortly.", None
+
+    if not found:
+        return False, "Confirmed USDT payment not found yet. Wait for TRON confirmations, then retry.", None
+
+    token_info = found.get("token_info") or {}
+    token_address = str(token_info.get("address", "")).strip()
+    symbol = str(token_info.get("symbol", "")).upper().strip()
+    destination = str(found.get("to", "")).strip()
+    transfer_type = str(found.get("type", "")).lower().strip()
+
+    if token_address != TRON_USDT_CONTRACT or symbol != "USDT":
+        return False, "This transaction is not the supported USDT token on TRON mainnet.", None
+    if destination != receiver:
+        return False, "This transaction was not sent to the ApexMacro payment address.", None
+    if transfer_type and transfer_type != "transfer":
+        return False, "This transaction is not a standard USDT transfer.", None
+
+    try:
+        decimals = int(token_info.get("decimals", 6))
+        raw_value = Decimal(str(found.get("value", "0")))
+        amount = raw_value / (Decimal(10) ** decimals)
+    except (InvalidOperation, ValueError, TypeError):
+        return False, "The USDT amount in this transaction could not be validated.", None
+
+    # Confirm finality using the SolidityNode receipt, not just indexer visibility.
+    try:
+        receipt_response = requests.post(
+            f"{TRONGRID_BASE_URL}/walletsolidity/gettransactioninfobyid",
+            json={"value": clean_txid},
+            headers=_tron_headers(),
+            timeout=12,
+        )
+        if receipt_response.status_code == 429:
+            return False, "TRON finality check is temporarily rate-limited. Please retry shortly.", None
+        receipt_response.raise_for_status()
+        receipt = receipt_response.json()
+    except Exception:
+        return False, "The payment was found, but final confirmation could not be checked yet. Please retry.", None
+
+    if not isinstance(receipt, dict) or not receipt.get("blockNumber"):
+        return False, "Payment found but not fully solidified yet. Please wait and retry.", None
+    receipt_result = str((receipt.get("receipt") or {}).get("result", "SUCCESS")).upper()
+    if receipt_result and receipt_result != "SUCCESS":
+        return False, "The TRON contract execution did not complete successfully.", None
+
+    details = {
+        "txid": clean_txid,
+        "from": str(found.get("from", "")),
+        "to": destination,
+        "amount": str(amount.normalize()),
+        "block_timestamp": found.get("block_timestamp"),
+        "token_contract": token_address,
+        "confirmed": True,
+    }
+    return True, "Confirmed", details
+
+
+def verify_usdt_payment(txid: str, expected_amount: int | float, receiver: str) -> tuple[bool, str, dict | None]:
+    ok, message, details = _fetch_confirmed_usdt_transfer(txid, receiver)
+    if not ok or not details:
+        return ok, message, details
+    try:
+        actual = Decimal(str(details.get("amount", "0")))
+        expected = Decimal(str(expected_amount))
+    except InvalidOperation:
+        return False, "Payment amount validation failed.", None
+    if actual != expected:
+        return False, f"Payment amount is {actual} USDT, but this plan requires exactly {expected} USDT.", details
+    return True, "Payment confirmed.", details
+
+
+def _make_key_for_expiry(client_name: str, expiry_date: date, telegram_id: str, existing_keys: set[str]) -> str:
+    clean_name = re.sub(r"[^A-Z0-9]", "", str(client_name).upper())[:10] or "CLIENT"
+    exp_str = expiry_date.strftime("%Y%m%d")
+    candidates = [clean_name, f"{clean_name[:6]}{str(telegram_id)[-4:]}"]
+    for name_part in candidates:
+        payload = f"{name_part}:{exp_str}:{APEX_SECRET_SALT}"
+        sig = hashlib.sha256(payload.encode()).hexdigest()[:4].upper()
+        key = f"APEX-{name_part}-{exp_str}-{sig}"
+        if key not in existing_keys:
+            return key
+    # Extremely unlikely collision fallback remains compatible with the existing key verifier.
+    suffix = hashlib.sha256(f"{telegram_id}:{time.time_ns()}".encode()).hexdigest()[:4].upper()
+    name_part = f"{clean_name[:5]}{suffix}"[:10]
+    payload = f"{name_part}:{exp_str}:{APEX_SECRET_SALT}"
+    sig = hashlib.sha256(payload.encode()).hexdigest()[:4].upper()
+    return f"APEX-{name_part}-{exp_str}-{sig}"
+
+
+def _activate_verified_payment(client_name: str, telegram_id: str, plan_name: str, payment: dict) -> tuple[bool, str, dict | None]:
+    """Idempotently reserve a TxID and activate/renew one Telegram-linked VIP record."""
+    clean_name = re.sub(r"\s+", " ", str(client_name or "").strip())[:60] or "VIP CLIENT"
+    tg_id = str(telegram_id or "").strip()
+    txid = _normalize_txid(payment.get("txid", ""))
+    plan = VIP_PAYMENT_PLANS.get(plan_name)
+    if not plan or not txid or not re.fullmatch(r"\d{5,15}", tg_id):
+        return False, "Payment activation details are invalid.", None
+
+    with _PAYMENT_LOCK, _VIP_REGISTRY_LOCK:
+        records = _load_payment_records_unlocked()
+        prior = next((r for r in records if str(r.get("txid", "")).lower() == txid), None)
+        if prior:
+            if str(prior.get("telegram_id", "")) != tg_id:
+                return False, "This transaction has already been used for another VIP account.", None
+            if prior.get("status") == "Activated" and prior.get("vip_key"):
+                return True, "This payment was already activated.", prior
+
+        clients = []
+        if os.path.exists(REGISTRY_FILE):
+            try:
+                with open(REGISTRY_FILE, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                clients = loaded if isinstance(loaded, list) else []
+            except Exception:
+                clients = []
+
+        # Renew from the later of today or an existing active expiration date.
+        matching = [c for c in clients if str(c.get("telegram_id", "")).strip() == tg_id]
+        primary = matching[0] if matching else None
+        today = get_current_time().date()
+        base_date = today
+        if primary:
+            try:
+                old_exp = datetime.strptime(str(primary.get("expires_at", "")), "%Y-%m-%d").date()
+                if old_exp > base_date:
+                    base_date = old_exp
+            except Exception:
+                pass
+        expiry_date = base_date + timedelta(days=int(plan["days"]))
+        existing_keys = {str(c.get("key", "")) for c in clients if c is not primary}
+        vip_key = _make_key_for_expiry(clean_name, expiry_date, tg_id, existing_keys)
+
+        if primary:
+            preserved_alerts = primary.get("alert_assets") if "alert_assets" in primary else None
+            primary.update({
+                "client_name": clean_name,
+                "key": vip_key,
+                "telegram_id": tg_id,
+                "duration": plan_name,
+                "expires_at": expiry_date.strftime("%Y-%m-%d"),
+                "status": "Active",
+                "payment_txid": txid,
+                "last_payment_at": get_current_time().strftime("%Y-%m-%d %H:%M:%S"),
+            })
+            if preserved_alerts is not None:
+                primary["alert_assets"] = preserved_alerts
+            # Consolidate legacy duplicate Telegram records to prevent duplicate delivery.
+            clients = [c for c in clients if c is primary or str(c.get("telegram_id", "")).strip() != tg_id]
+        else:
+            primary = {
+                "client_name": clean_name,
+                "key": vip_key,
+                "telegram_id": tg_id,
+                "duration": plan_name,
+                "created_at": get_current_time().strftime("%Y-%m-%d"),
+                "expires_at": expiry_date.strftime("%Y-%m-%d"),
+                "status": "Active",
+                "bound_mobile_id": "",
+                "bound_pc_id": "",
+                "bound_at": "",
+                "payment_txid": txid,
+                "last_payment_at": get_current_time().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            clients.insert(0, primary)
+
+        record = prior if prior is not None else {}
+        record.update({
+            "txid": txid,
+            "client_name": clean_name,
+            "telegram_id": tg_id,
+            "plan": plan_name,
+            "amount_usdt": str(plan["amount"]),
+            "network": "TRON (TRC20)",
+            "receiver": USDT_TRC20_ADDRESS,
+            "sender": payment.get("from", ""),
+            "verified_at": get_current_time().strftime("%Y-%m-%d %H:%M:%S"),
+            "status": "Activated",
+            "vip_key": vip_key,
+            "expires_at": expiry_date.strftime("%Y-%m-%d"),
+        })
+        if prior is None:
+            records.insert(0, record)
+
+        # Both files use atomic replace while locks prevent in-process races.
+        _write_vip_registry_unlocked(clients)
+        _write_payment_records_unlocked(records)
+
+    return True, "VIP activated successfully.", record
+
+
+def _send_vip_activation_telegram(record: dict) -> None:
+    tg_id = str(record.get("telegram_id", "")).strip()
+    if not tg_id or not TELEGRAM_BOT_TOKEN:
+        return
+    _telegram_api("sendMessage", {
+        "chat_id": tg_id,
+        "text": (
+            "✅ *APEXMACRO VIP ACTIVATED*\n"
+            "━━━━━━━━━━━━━━━━━━━\n\n"
+            f"Plan: *{record.get('plan', 'VIP')}*\n"
+            f"Valid until: *{record.get('expires_at', '')}*\n\n"
+            f"🔑 Your VIP Key:\n`{record.get('vip_key', '')}`\n\n"
+            "Use /alerts to configure your personal market notifications.\n\n"
+            "⚡ *ApexMacro Institutional Terminal*"
+        ),
+        "parse_mode": "Markdown",
+    })
+
+
+def _login_paid_client(record: dict) -> bool:
+    key = str(record.get("vip_key", "")).strip().upper()
+    if not key:
+        return False
+    client_id, dev_type = get_client_device_info()
+    ok, user_name, expiry_info = verify_vip_key(key, client_id, dev_type)
+    if not ok:
+        return False
+    sessions = load_sessions_cache()
+    sessions[client_id] = {
+        "key": key,
+        "device_id": client_id,
+        "dev_type": dev_type,
+        "last_active": get_current_time().strftime("%Y-%m-%d %H:%M:%S"),
+        "user_name": user_name,
+        "expiry_info": expiry_info,
+        "is_admin": False,
+    }
+    save_sessions_cache(sessions)
+    st.session_state["APEX_AUTH_USER"] = {
+        "is_authenticated": True,
+        "user_name": user_name,
+        "expiry_info": expiry_info,
+        "is_admin": False,
+        "key": key,
+    }
+    return True
+
+
+def render_payment_admin_summary() -> None:
+    records = load_payment_records()
+    persistence = get_persistence_status()
+    if _supabase_enabled():
+        if persistence.get("backend") in {"supabase", "supabase-configured"}:
+            st.caption("☁️ VIP data persistence: Supabase enabled")
+        else:
+            st.warning("Supabase persistence is configured but currently unavailable; local fallback is active.")
+    else:
+        st.warning("VIP data is using local JSON only. Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to Streamlit Secrets for reboot-safe persistence.")
+    if not records:
+        return
+    st.markdown("---")
+    render_html('<div class="sec-title">Verified VIP Payments</div>')
+    rows = []
+    for r in records[:100]:
+        txid = str(r.get("txid", ""))
+        rows.append({
+            "Client": r.get("client_name", ""),
+            "Telegram ID": r.get("telegram_id", ""),
+            "Plan": r.get("plan", ""),
+            "USDT": r.get("amount_usdt", ""),
+            "Status": r.get("status", ""),
+            "Expires": r.get("expires_at", ""),
+            "TxID": f"{txid[:10]}…{txid[-8:]}" if len(txid) > 20 else txid,
+            "Verified": r.get("verified_at", ""),
+        })
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+_apex_fragment = getattr(st, "fragment", lambda f: f)
+
+
+@_apex_fragment
+def render_vip_checkout() -> None:
+    """Self-service VIP checkout with confirmed USDT-TRC20 verification and activation."""
+    selected_plan = st.session_state.get("APEX_VIP_PLAN", "1 Month")
+    if selected_plan not in VIP_PAYMENT_PLANS:
+        selected_plan = "1 Month"
+        st.session_state["APEX_VIP_PLAN"] = selected_plan
+
+    render_html("""
+    <div style="margin:14px 0 18px;padding:22px 20px;border-radius:20px;
+                background:linear-gradient(180deg,rgba(9,18,30,.96),rgba(5,10,18,.98));
+                border:1px solid rgba(0,245,255,.22);
+                box-shadow:0 18px 55px rgba(0,0,0,.45),0 0 30px rgba(0,245,255,.08);">
+      <div style="font-size:10px;font-weight:850;letter-spacing:2.5px;color:#00f5ff;text-transform:uppercase;">ApexMacro VIP Access</div>
+      <div style="font-size:23px;font-weight:900;color:#f4fbff;margin-top:7px;">Choose Your Membership</div>
+      <div style="font-size:12px;color:#8fa3b4;margin-top:6px;line-height:1.6;">
+        Institutional macro intelligence, Smart Shift Alerts, personalized Telegram alerts and the full ApexMacro terminal.
+      </div>
+    </div>
+    """)
+
+    identity_cols = st.columns(2)
+    with identity_cols[0]:
+        client_name = st.text_input(
+            "Your name",
+            key="APEX_PAYMENT_CLIENT_NAME",
+            placeholder="Name for your VIP license",
+        )
+    with identity_cols[1]:
+        telegram_id = st.text_input(
+            "Telegram ID",
+            key="APEX_PAYMENT_TELEGRAM_ID",
+            placeholder="e.g. 7153364048",
+            help="Send /start to the ApexMacro bot to see your Telegram ID.",
+        )
+    valid_identity = bool(client_name.strip()) and bool(re.fullmatch(r"\d{5,15}", telegram_id.strip()))
+    if telegram_id and not re.fullmatch(r"\d{5,15}", telegram_id.strip()):
+        st.caption("Telegram ID must contain numbers only.")
+
+    # Compact native selector: no URL navigation and no giant button cards.
+    # Because this function is a Streamlit fragment, changing the plan reruns only checkout.
+    render_html("""
+    <div style="margin:18px 0 8px;">
+      <div style="font-size:10px;font-weight:900;letter-spacing:1.8px;color:#7f95a7;text-transform:uppercase;">
+        Select a plan
+      </div>
+    </div>
+    <style>
+    .st-key-APEX_VIP_PLAN_SELECTOR [data-testid="stRadio"] > div {
+        display:grid !important;
+        grid-template-columns:1fr 1fr !important;
+        gap:10px !important;
+    }
+    .st-key-APEX_VIP_PLAN_SELECTOR [data-testid="stRadio"] label {
+        min-height:58px !important;
+        padding:0 14px !important;
+        border:1px solid rgba(255,255,255,.12) !important;
+        border-radius:14px !important;
+        background:rgba(8,16,27,.82) !important;
+        display:flex !important;
+        align-items:center !important;
+        justify-content:center !important;
+        transition:border-color .15s ease, background .15s ease, box-shadow .15s ease !important;
+    }
+    .st-key-APEX_VIP_PLAN_SELECTOR [data-testid="stRadio"] label:hover {
+        border-color:rgba(0,245,255,.55) !important;
+        background:rgba(0,245,255,.055) !important;
+    }
+    .st-key-APEX_VIP_PLAN_SELECTOR [data-testid="stRadio"] label:has(input:checked) {
+        border-color:#00f5ff !important;
+        background:linear-gradient(180deg,rgba(0,245,255,.12),rgba(0,245,255,.055)) !important;
+        box-shadow:0 0 0 1px rgba(0,245,255,.10),0 10px 28px rgba(0,245,255,.08) !important;
+    }
+    .st-key-APEX_VIP_PLAN_SELECTOR [data-testid="stRadio"] label p {
+        font-size:13px !important;
+        font-weight:850 !important;
+        color:#eaf7ff !important;
+    }
+    .st-key-APEX_VIP_PLAN_SELECTOR [data-testid="stRadio"] label:has(input:checked) p {
+        color:#33f4ff !important;
+    }
+    .st-key-APEX_VIP_PLAN_SELECTOR [data-testid="stRadio"] [data-testid="stWidgetLabel"] {
+        display:none !important;
+    }
+    </style>
+    """)
+
+    selector_labels = {
+        "1 Month": "1 Month  •  $29",
+        "3 Months": "3 Months  •  $75",
+    }
+    reverse_labels = {v: k for k, v in selector_labels.items()}
+    selector_options = [selector_labels["1 Month"], selector_labels["3 Months"]]
+    current_label = selector_labels[selected_plan]
+
+    picked_label = st.radio(
+        "Choose plan",
+        selector_options,
+        index=selector_options.index(current_label),
+        horizontal=True,
+        label_visibility="collapsed",
+        key="APEX_VIP_PLAN_SELECTOR",
+    )
+    picked_plan = reverse_labels.get(picked_label, "1 Month")
+    if picked_plan != st.session_state.get("APEX_VIP_PLAN"):
+        st.session_state["APEX_VIP_PLAN"] = picked_plan
+        st.session_state["APEX_CHECKOUT_OPEN"] = False
+    selected_plan = picked_plan
+    info = VIP_PAYMENT_PLANS[selected_plan]
+
+    badge = "BEST VALUE" if selected_plan == "3 Months" else "MONTHLY"
+    saving = (
+        '<div style="font-size:11px;color:#7fffd4;margin-top:5px;font-weight:750;">Save $12 vs monthly</div>'
+        if selected_plan == "3 Months" else
+        '<div style="font-size:11px;color:#8296a8;margin-top:5px;">Flexible monthly access</div>'
+    )
+    render_html(f"""
+    <div style="margin:12px 0 4px;padding:18px 18px;border-radius:17px;
+                background:linear-gradient(135deg,rgba(8,18,29,.96),rgba(6,13,22,.94));
+                border:1px solid rgba(0,245,255,.20);
+                box-shadow:0 14px 34px rgba(0,0,0,.28);">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px;">
+        <div>
+          <div style="font-size:17px;font-weight:900;color:#f4fbff;">{selected_plan}</div>
+          <div style="margin-top:7px;">
+            <span style="font-size:31px;font-weight:950;color:#ffffff;">${info["amount"]}</span>
+            <span style="font-size:12px;color:#8296a8;margin-left:4px;">USDT</span>
+          </div>
+          {saving}
+        </div>
+        <div style="font-size:9px;font-weight:900;letter-spacing:1.2px;color:#00f5ff;
+                    background:rgba(0,245,255,.10);border:1px solid rgba(0,245,255,.16);
+                    padding:6px 9px;border-radius:999px;white-space:nowrap;">{badge}</div>
+      </div>
+      <div style="height:1px;background:rgba(255,255,255,.07);margin:15px 0 12px;"></div>
+      <div style="display:flex;gap:7px;align-items:center;font-size:12px;color:#b7c8d5;">
+        <span style="color:#00f5ff;">✓</span>
+        <span>{info["days"]} days full ApexMacro VIP access</span>
+      </div>
+      <div style="display:flex;gap:7px;align-items:center;font-size:12px;color:#b7c8d5;margin-top:7px;">
+        <span style="color:#00f5ff;">✓</span>
+        <span>Smart Shift + personalized Telegram alerts</span>
+      </div>
+    </div>
+    """)
+
+
+    selected_plan = st.session_state.get("APEX_VIP_PLAN", "1 Month")
+    selected_info = VIP_PAYMENT_PLANS[selected_plan]
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+    if not st.session_state.get("APEX_CHECKOUT_OPEN", False):
+        if st.button(
+            f"Continue to Payment — ${selected_info['amount']} USDT",
+            key="apex_continue_payment",
+            type="primary",
+            use_container_width=True,
+            disabled=not valid_identity,
+        ):
+            st.session_state["APEX_CHECKOUT_OPEN"] = True
+            st.rerun()
+        if not valid_identity:
+            st.caption("Enter your name and Telegram ID to continue.")
+        return
+
+    render_html(f"""
+    <div style="margin-top:12px;padding:22px 20px;border-radius:20px;background:linear-gradient(180deg,rgba(9,18,30,.97),rgba(4,9,16,.99));border:1px solid rgba(255,209,102,.28);box-shadow:0 18px 60px rgba(0,0,0,.5);">
+      <div style="display:flex;justify-content:space-between;gap:14px;align-items:flex-start;">
+        <div><div style="font-size:10px;color:#ffd166;font-weight:900;letter-spacing:2px;text-transform:uppercase;">Secure Crypto Checkout</div><div style="font-size:20px;color:#f5fbff;font-weight:900;margin-top:5px;">Pay with USDT — TRC20</div></div>
+        <div style="text-align:right;"><div style="font-size:10px;color:#8fa3b4;">AMOUNT DUE</div><div style="font-size:24px;color:#00f5ff;font-weight:950;">${selected_info['amount']} USDT</div></div>
+      </div>
+      <div style="height:1px;background:linear-gradient(90deg,rgba(255,209,102,.35),transparent);margin:18px 0;"></div>
+      <div style="font-size:12px;color:#dceaf2;line-height:1.65;">Send exactly <b>{selected_info['amount']} USDT</b> using <b>TRON (TRC20)</b> only. Do not use ERC20, BEP20 or another network.</div>
+    </div>
+    """)
+
+    if not USDT_TRC20_ADDRESS:
+        st.error("Payment address is not configured yet. Add USDT_TRC20_ADDRESS to Streamlit Secrets.")
+    else:
+        qr_url = "https://api.qrserver.com/v1/create-qr-code/" + f"?size=320x320&margin=14&data={quote(USDT_TRC20_ADDRESS, safe='')}"
+        q1, q2 = st.columns([1, 1.45])
+        with q1:
+            st.image(qr_url, caption="USDT • TRON (TRC20)", use_container_width=True)
+        with q2:
+            st.markdown("**Wallet Address**")
+            st.code(USDT_TRC20_ADDRESS, language=None)
+            st.caption("Copy the address exactly. Network: TRON (TRC20) only.")
+            render_html(f"""
+            <div style="margin-top:12px;padding:13px 14px;border-radius:13px;background:rgba(0,245,255,.06);border:1px solid rgba(0,245,255,.16);">
+              <div style="font-size:10px;color:#8fa3b4;text-transform:uppercase;letter-spacing:1.3px;">ORDER</div>
+              <div style="font-size:14px;color:#f3fbff;font-weight:800;margin-top:3px;">{selected_plan} • ${selected_info['amount']} USDT</div>
+              <div style="font-size:11px;color:#8fa3b4;margin-top:5px;">Telegram ID: {telegram_id.strip()}</div>
+            </div>
+            """)
+
+    st.markdown("#### Already paid?")
+    txid = st.text_input("Transaction ID (TxID)", key="APEX_PAYMENT_TXID", placeholder="Paste your 64-character TRON transaction hash", help="Use the TxID shown by your wallet/exchange after sending USDT.")
+
+    verify_col, back_col = st.columns([1.35, 1])
+    with verify_col:
+        if st.button("🔎 Verify & Activate VIP", key="apex_verify_payment", type="primary", use_container_width=True):
+            clean_txid = _normalize_txid(txid)
+            if not valid_identity:
+                st.error("Enter a valid name and Telegram ID.")
+            elif not USDT_TRC20_ADDRESS:
+                st.error("Payment address is not configured.")
+            elif not clean_txid:
+                st.warning("Enter a valid 64-character TRON TxID first.")
+            else:
+                prior = _payment_record_for_txid(clean_txid)
+                if prior and str(prior.get("telegram_id", "")) != telegram_id.strip():
+                    st.error("This TxID has already been used for another VIP account.")
+                elif prior and prior.get("status") == "Activated" and prior.get("vip_key"):
+                    record = prior
+                    st.session_state["APEX_PAYMENT_SUCCESS"] = record
+                    st.success("✅ This payment is already verified and your VIP is active.")
+                else:
+                    with st.spinner("Checking the confirmed USDT transaction on TRON…"):
+                        ok, message, payment = verify_usdt_payment(clean_txid, selected_info["amount"], USDT_TRC20_ADDRESS)
+                    if not ok or not payment:
+                        st.error(message)
+                    else:
+                        activated, activation_message, record = _activate_verified_payment(client_name, telegram_id, selected_plan, payment)
+                        if not activated or not record:
+                            st.error(activation_message)
+                        else:
+                            st.session_state["APEX_PAYMENT_SUCCESS"] = record
+                            _send_vip_activation_telegram(record)
+                            st.success("✅ Payment confirmed — ApexMacro VIP is now active.")
+
+    with back_col:
+        if st.button("← Change Plan", key="apex_change_plan", use_container_width=True):
+            st.session_state["APEX_CHECKOUT_OPEN"] = False
+            st.rerun()
+
+    success_record = st.session_state.get("APEX_PAYMENT_SUCCESS")
+    if success_record and str(success_record.get("telegram_id", "")) == telegram_id.strip():
+        render_html(f"""
+        <div style="margin-top:18px;padding:20px;border-radius:18px;background:rgba(0,255,163,.06);border:1px solid rgba(0,255,163,.25);">
+          <div style="font-size:11px;color:#00ffa3;font-weight:900;letter-spacing:1.5px;">PAYMENT CONFIRMED</div>
+          <div style="font-size:18px;color:#f5fbff;font-weight:900;margin-top:5px;">Your ApexMacro VIP is active</div>
+          <div style="font-size:12px;color:#a9bdc9;margin-top:7px;">Valid until {success_record.get('expires_at','')}</div>
+        </div>
+        """)
+        st.markdown("**Your VIP License Key**")
+        st.code(str(success_record.get("vip_key", "")), language=None)
+        st.caption("Save this key. It has also been sent to your Telegram account when Telegram allows delivery.")
+        if st.button("⚡ Enter ApexMacro VIP Terminal", key="apex_enter_after_payment", type="primary", use_container_width=True):
+            if _login_paid_client(success_record):
+                st.rerun()
+            else:
+                st.error("VIP is active, but automatic login could not complete. Use the VIP key shown above.")
+
+    st.caption("ApexMacro never asks for your wallet seed phrase or private key.")
+
+
+
+def _set_public_view(view: str) -> None:
+    st.session_state["APEX_PUBLIC_VIEW"] = view
+    # Close checkout sub-state when switching public sections.
+    if view != "vip":
+        st.session_state["APEX_SHOW_VIP_CHECKOUT"] = False
+
+
+def render_public_nav(active: str = "home") -> None:
+    """Compact glass navbar matching the supplied desktop reference."""
+    st.markdown("""
+    <style>
+      .st-key-apex_public_header{
+        position:relative !important;
+        width:100% !important;
+        max-width:1180px !important;
+        margin:18px auto 18px !important;
+        min-height:76px !important;
+        padding:10px 12px !important;
+        border-radius:18px !important;
+        background:
+          radial-gradient(circle at 0% 0%,rgba(0,235,255,.055),transparent 32%),
+          linear-gradient(145deg,rgba(8,21,30,.80),rgba(4,11,18,.90)) !important;
+        border:1px solid rgba(116,193,205,.18) !important;
+        box-shadow:
+          inset 0 1px 0 rgba(255,255,255,.035),
+          0 16px 40px rgba(0,0,0,.25) !important;
+        backdrop-filter:blur(18px) saturate(120%);
+        -webkit-backdrop-filter:blur(18px) saturate(120%);
+      }
+
+      .st-key-apex_public_header .apex-ref-brand-wrap{
+        position:absolute;
+        left:14px;
+        top:50%;
+        transform:translateY(-50%);
+        display:flex;
+        align-items:center;
+        z-index:10;
+      }
+
+      .apex-ref-brand{
+        display:flex;
+        align-items:center;
+        gap:10px;
+        min-width:0;
+      }
+
+      .apex-ref-logo{
+        width:44px;
+        height:44px;
+        border-radius:12px;
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        background:linear-gradient(145deg,rgba(6,31,42,.84),rgba(5,14,23,.90));
+        border:1px solid rgba(0,239,255,.30);
+        box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 0 22px rgba(0,229,255,.07);
+      }
+
+      .apex-ref-brand-name{
+        font-size:16px;
+        line-height:1;
+        font-weight:950;
+        letter-spacing:1.8px;
+        color:#f5f8fb;
+        white-space:nowrap;
+      }
+      .apex-ref-brand-name span{color:#f6bd3e;}
+
+      .apex-ref-brand-sub{
+        margin-top:5px;
+        color:#75899b;
+        font-size:6.8px;
+        font-weight:800;
+        letter-spacing:2.5px;
+        white-space:nowrap;
+      }
+
+      .apex-ref-toplinks{
+        position:absolute;
+        left:50%;
+        top:50%;
+        transform:translate(-50%,-50%);
+        display:flex;
+        align-items:center;
+        gap:4px;
+        z-index:12;
+        white-space:nowrap;
+      }
+
+      .apex-ref-toplinks a{
+        display:inline-flex;
+        align-items:center;
+        justify-content:center;
+        height:38px;
+        padding:0 13px;
+        border-radius:10px;
+        text-decoration:none !important;
+        color:#c1ccd5 !important;
+        font-size:10.5px;
+        font-weight:800;
+        letter-spacing:.12px;
+        border:1px solid transparent;
+        transition:all .18s ease;
+      }
+
+      .apex-ref-toplinks a:hover{
+        color:#fff !important;
+        background:rgba(0,235,255,.045);
+        border-color:rgba(0,235,255,.14);
+      }
+
+      .apex-ref-search{
+        position:absolute;
+        right:74px;
+        top:50%;
+        transform:translateY(-50%);
+        width:40px;
+        height:40px;
+        border-radius:11px;
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        color:#dbe7ef;
+        border:1px solid rgba(128,181,192,.12);
+        background:rgba(6,16,24,.46);
+      }
+
+      .apex-ref-search svg{
+        width:18px;
+        height:18px;
+        opacity:.9;
+      }
+
+      .st-key-apex_public_header .st-key-apex_profile_access,
+      .st-key-apex_public_header [class*="st-key-public_home_back_"]{
+        position:absolute !important;
+        top:50% !important;
+        right:14px !important;
+        transform:translateY(-50%) !important;
+        width:46px !important;
+        z-index:20 !important;
+      }
+
+      .st-key-apex_profile_access button,
+      .st-key-public_home_back_login button,
+      .st-key-public_home_back_vip button{
+        width:46px !important;
+        height:46px !important;
+        min-height:46px !important;
+        padding:0 !important;
+        border-radius:12px !important;
+        border:1px solid rgba(0,239,255,.34) !important;
+        background-color:rgba(5,20,29,.74) !important;
+        box-shadow:inset 0 1px 0 rgba(255,255,255,.04),0 0 20px rgba(0,239,255,.08) !important;
+      }
+
+      .st-key-apex_profile_access button{
+        background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Ccircle cx='24' cy='16' r='7' fill='%2300efff'/%3E%3Cpath d='M11 38c1-9 6-13 13-13s12 4 13 13z' fill='%2300efff'/%3E%3C/svg%3E") !important;
+        background-repeat:no-repeat !important;
+        background-position:center !important;
+        background-size:25px 25px !important;
+      }
+
+      .st-key-apex_profile_access button p{
+        font-size:0 !important;
+      }
+
+      .st-key-apex_profile_access button:hover,
+      .st-key-public_home_back_login button:hover,
+      .st-key-public_home_back_vip button:hover{
+        border-color:#28f4ff !important;
+        box-shadow:0 0 24px rgba(0,239,255,.16) !important;
+      }
+
+      .apex-ref-navline{display:none;}
+
+      @media(max-width:900px){
+        .st-key-apex_public_header{
+          min-height:122px !important;
+          padding:10px 12px 12px !important;
+        }
+        .st-key-apex_public_header .apex-ref-brand-wrap{
+          top:12px;
+          left:12px;
+          transform:none;
+        }
+        .apex-ref-toplinks{
+          left:12px;
+          right:12px;
+          top:72px;
+          transform:none;
+          justify-content:center;
+          gap:3px;
+          overflow-x:auto;
+          scrollbar-width:none;
+        }
+        .apex-ref-toplinks::-webkit-scrollbar{display:none;}
+        .apex-ref-toplinks a{
+          height:32px;
+          padding:0 10px;
+          font-size:9.5px;
+          background:rgba(6,16,24,.42);
+          border:1px solid rgba(128,181,192,.09);
+        }
+        .apex-ref-search{
+          top:12px;
+          right:66px;
+          transform:none;
+          width:42px;
+          height:42px;
+        }
+        .st-key-apex_public_header .st-key-apex_profile_access,
+        .st-key-apex_public_header [class*="st-key-public_home_back_"]{
+          top:12px !important;
+          right:12px !important;
+          transform:none !important;
+          width:42px !important;
+        }
+        .st-key-apex_profile_access button,
+        .st-key-public_home_back_login button,
+        .st-key-public_home_back_vip button{
+          width:42px !important;
+          height:42px !important;
+          min-height:42px !important;
+          border-radius:11px !important;
+        }
+      }
+
+      @media(max-width:430px){
+        .st-key-apex_public_header{
+          margin-top:10px !important;
+          border-radius:15px !important;
+        }
+        .apex-ref-logo{
+          width:40px;height:40px;
+        }
+        .apex-ref-logo svg{
+          width:24px !important;height:24px !important;
+        }
+        .apex-ref-brand-name{
+          font-size:14.5px;
+          letter-spacing:1.45px;
+        }
+        .apex-ref-brand-sub{
+          font-size:6.2px;
+          letter-spacing:2px;
+        }
+        .apex-ref-toplinks a{
+          padding:0 9px;
+          font-size:9px;
+        }
+      }
+    </style>
+    """, unsafe_allow_html=True)
+
+    with st.container(key="apex_public_header"):
+        render_html("""
+        <div class="apex-ref-brand-wrap">
+          <div class="apex-ref-brand">
+            <div class="apex-ref-logo">
+              <svg width="27" height="27" viewBox="0 0 360 365" fill="none">
+                <defs>
+                  <linearGradient id="apexRefLogo" x1="0" y1="0" x2="1" y2="1">
+                    <stop stop-color="#1AF4FF"/>
+                    <stop offset="1" stop-color="#00BBD2"/>
+                  </linearGradient>
+                </defs>
+                <path d="M0 365L180 0L360 365H288L180 130L72 365Z" fill="url(#apexRefLogo)"/>
+              </svg>
+            </div>
+            <div>
+              <div class="apex-ref-brand-name">APEX<span>MACRO</span></div>
+              <div class="apex-ref-brand-sub">INTELLIGENCE DESK</div>
+            </div>
+          </div>
+        </div>
+
+        <nav class="apex-ref-toplinks" aria-label="ApexMacro home sections">
+          <a href="#apex-platform">Platform</a>
+          <a href="#apex-features">Features</a>
+          <a href="#apex-data">Data Sources</a>
+          <a href="#apex-pricing">Pricing</a>
+          <a href="#apex-company">Company</a>
+        </nav>
+
+        <div class="apex-ref-search" title="Search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="7"></circle>
+            <path d="M20 20l-3.5-3.5"></path>
+          </svg>
+        </div>
+        """)
+
+        if active == "home":
+            if st.button("Access", key="apex_profile_access", help="VIP Login / Get VIP"):
+                _set_public_view("login")
+                st.rerun()
+        else:
+            if st.button("←", key=f"public_home_back_{active}", help="Back to Home"):
+                _set_public_view("home")
+                st.rerun()
+
+    render_html('<div class="apex-ref-navline"></div>')
+
+
+
+
+def render_public_home() -> None:
+    """Public Home Page closely matching the supplied mobile reference."""
+    st.markdown("""
+    <style>
+      /* ----- exact-reference landing page ----- */
+      /* ----- premium header + hero refinement ----- */
+      .apex-home-shell{
+        position:relative;
+      }
+
+      .apex-ref-hero{
+        position:relative;
+        overflow:hidden;
+        min-height:560px;
+        border-radius:26px;
+        padding:46px 42px 38px;
+        background:
+          linear-gradient(90deg,rgba(3,12,19,.96) 0%,rgba(3,12,19,.93) 43%,rgba(3,12,19,.56) 62%,rgba(3,12,19,.18) 100%),
+          radial-gradient(circle at 88% 20%,rgba(0,226,242,.10),transparent 30%),
+          linear-gradient(145deg,rgba(5,18,27,.96),rgba(2,8,14,.995));
+        border:1px solid rgba(0,224,238,.35);
+        box-shadow:
+          inset 0 1px 0 rgba(255,255,255,.045),
+          0 28px 80px rgba(0,0,0,.42),
+          0 0 36px rgba(0,220,240,.035);
+      }
+
+      .apex-ref-hero::before{
+        content:"";
+        position:absolute;
+        inset:0;
+        pointer-events:none;
+        background:
+          linear-gradient(rgba(0,220,240,.018) 1px, transparent 1px),
+          linear-gradient(90deg,rgba(0,220,240,.018) 1px, transparent 1px);
+        background-size:34px 34px;
+        mask-image:linear-gradient(90deg,transparent,rgba(0,0,0,.45),rgba(0,0,0,.9));
+        opacity:.5;
+      }
+
+      .apex-ref-hero-inner{
+        position:relative;
+        z-index:3;
+        width:53%;
+        max-width:630px;
+      }
+
+      .apex-ref-badge{
+        display:inline-flex;
+        align-items:center;
+        gap:8px;
+        height:29px;
+        padding:0 12px;
+        border-radius:999px;
+        background:rgba(0,255,184,.06);
+        border:1px solid rgba(0,255,184,.24);
+        color:#82ffd7;
+        font-size:9px;
+        font-weight:900;
+        letter-spacing:1.55px;
+        text-transform:uppercase;
+        box-shadow:0 0 18px rgba(0,255,184,.06);
+      }
+
+      .apex-ref-badge::before{
+        content:"";
+        width:6px;
+        height:6px;
+        border-radius:50%;
+        background:#00f0a8;
+        box-shadow:0 0 10px #00f0a8;
+      }
+
+      .apex-ref-title{
+        margin-top:27px;
+        font-size:clamp(50px,4.4vw,72px);
+        line-height:.98;
+        letter-spacing:-2.6px;
+        font-weight:950;
+        color:#f5f7fa;
+        max-width:650px;
+      }
+
+      .apex-ref-title .line-white{color:#f5f7fa;}
+      .apex-ref-title .line-cyan{
+        color:#17ecfb;
+        text-shadow:0 0 22px rgba(23,236,251,.10);
+      }
+      .apex-ref-title .line-gold{
+        color:#f5bc3d;
+        text-shadow:0 0 22px rgba(245,188,61,.08);
+      }
+
+      .apex-ref-copy{
+        margin-top:22px;
+        max-width:600px;
+        color:#c5d0d9;
+        font-size:14px;
+        line-height:1.72;
+      }
+
+      .apex-ref-mini-grid{
+        margin-top:30px;
+        display:grid;
+        grid-template-columns:repeat(2,minmax(0,1fr));
+        gap:14px;
+        max-width:520px;
+      }
+
+      .apex-ref-mini-card{
+        display:flex;
+        align-items:center;
+        gap:12px;
+        min-height:74px;
+        padding:12px 14px;
+        border-radius:14px;
+        background:linear-gradient(145deg,rgba(8,20,30,.68),rgba(5,13,20,.52));
+        border:1px solid rgba(113,184,197,.15);
+        box-shadow:inset 0 1px 0 rgba(255,255,255,.025);
+        backdrop-filter:blur(12px);
+        -webkit-backdrop-filter:blur(12px);
+      }
+
+      .apex-ref-mini-icon{
+        width:42px;
+        height:42px;
+        min-width:42px;
+        border-radius:12px;
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        border:1px solid rgba(0,235,255,.25);
+        background:rgba(0,235,255,.045);
+        color:#24efff;
+        box-shadow:0 0 20px rgba(0,235,255,.07);
+      }
+
+      .apex-ref-mini-card.gold .apex-ref-mini-icon{
+        border-color:rgba(245,188,61,.25);
+        background:rgba(245,188,61,.045);
+        color:#f5bc3d;
+        box-shadow:0 0 18px rgba(245,188,61,.06);
+      }
+
+      .apex-ref-mini-title{
+        color:#f2f7fb;
+        font-size:13px;
+        font-weight:900;
+      }
+
+      .apex-ref-mini-sub{
+        margin-top:3px;
+        color:#8fa2b2;
+        font-size:10.5px;
+      }
+
+      .apex-ref-globe{
+        position:absolute;
+        z-index:1;
+        right:-1%;
+        top:0;
+        bottom:0;
+        width:52%;
+        opacity:.94;
+        background-position:center right;
+        background-size:cover;
+        filter:saturate(.95) contrast(1.03);
+        mask-image:linear-gradient(90deg,transparent 0%,rgba(0,0,0,.45) 16%,rgba(0,0,0,.92) 45%,#000 100%);
+        -webkit-mask-image:linear-gradient(90deg,transparent 0%,rgba(0,0,0,.45) 16%,rgba(0,0,0,.92) 45%,#000 100%);
+      }
+
+      .apex-ref-globe::after{
+        content:"";
+        position:absolute;
+        inset:0;
+        background:
+          linear-gradient(90deg,rgba(2,9,15,.88) 0%,rgba(2,9,15,.18) 34%,rgba(0,0,0,0) 72%),
+          radial-gradient(circle at 60% 45%,rgba(0,235,255,.08),transparent 38%);
+      }
+
+      @media(max-width:900px){
+        .apex-ref-hero{
+          min-height:530px;
+          padding:36px 24px 28px;
+        }
+        .apex-ref-hero-inner{
+          width:64%;
+          max-width:none;
+        }
+        .apex-ref-title{
+          font-size:44px;
+          max-width:500px;
+        }
+        .apex-ref-copy{
+          font-size:12.7px;
+          max-width:500px;
+        }
+        .apex-ref-globe{
+          width:55%;
+          opacity:.82;
+        }
+      }
+
+      @media(max-width:700px){
+        .apex-ref-hero{
+          min-height:520px;
+          padding:30px 20px 24px;
+          border-radius:22px;
+          background:
+            linear-gradient(90deg,rgba(3,12,19,.985) 0%,rgba(3,12,19,.94) 56%,rgba(3,12,19,.32) 100%),
+            radial-gradient(circle at 88% 18%,rgba(0,226,242,.09),transparent 28%),
+            linear-gradient(145deg,rgba(5,18,27,.96),rgba(2,8,14,.995));
+        }
+        .apex-ref-hero-inner{
+          width:72%;
+        }
+        .apex-ref-title{
+          font-size:39px;
+          line-height:1.01;
+          letter-spacing:-1.6px;
+        }
+        .apex-ref-copy{
+          font-size:12px;
+          line-height:1.65;
+        }
+        .apex-ref-mini-grid{
+          grid-template-columns:1fr 1fr;
+          gap:9px;
+          margin-top:22px;
+        }
+        .apex-ref-mini-card{
+          min-height:68px;
+          padding:10px 11px;
+        }
+        .apex-ref-mini-icon{
+          width:36px;
+          height:36px;
+          min-width:36px;
+        }
+        .apex-ref-mini-title{
+          font-size:11px;
+        }
+        .apex-ref-mini-sub{
+          font-size:9px;
+        }
+        .apex-ref-globe{
+          width:54%;
+          right:-8%;
+          opacity:.72;
+        }
+      }
+
+      @media(max-width:430px){
+        .apex-ref-hero{
+          min-height:500px;
+          padding:26px 17px 22px;
+        }
+        .apex-ref-hero-inner{
+          width:76%;
+        }
+        .apex-ref-title{
+          font-size:35px;
+        }
+        .apex-ref-copy{
+          font-size:11.5px;
+        }
+        .apex-ref-badge{
+          font-size:7.7px;
+          letter-spacing:1.25px;
+          height:27px;
+        }
+        .apex-ref-mini-grid{
+          max-width:100%;
+        }
+      }
+
+      .block-container {
+        max-width:1180px !important;
+      }
+      .apex-home-shell {
+        width:100%; margin:0 auto;
+      }
+      .apex-ref-hero {
+        position:relative; overflow:hidden;
+        min-height:555px; border-radius:23px;
+        padding:43px 38px 32px;
+        background:
+          radial-gradient(circle at 91% 14%,rgba(0,209,235,.105),transparent 27%),
+          linear-gradient(145deg,rgba(5,20,28,.93),rgba(3,10,17,.985));
+        border:1px solid rgba(0,218,235,.42);
+        box-shadow:inset 0 1px 0 rgba(255,255,255,.045),0 26px 70px rgba(0,0,0,.38);
+      }
+      .apex-ref-globe {
+        position:absolute; z-index:0; right:-1px; top:0; bottom:0;
+        width:51%; opacity:.92;
+        background-image:
+          linear-gradient(90deg,rgba(3,12,20,1) 0%,rgba(3,12,20,.48) 24%,rgba(3,12,20,.04) 58%),
+          url("data:image/webp;base64,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");
+        background-size:cover,cover;
+        background-position:center,right center;
+        background-repeat:no-repeat;
+      }
+      .apex-ref-hero-inner {
+        position:relative; z-index:2; width:59%;
+      }
+      .apex-ref-kicker {
+        display:inline-flex; align-items:center; gap:8px;
+        border:1px solid rgba(0,255,174,.18);
+        background:rgba(0,255,174,.055);
+        border-radius:999px; padding:7px 12px;
+        color:#78f6cd; font-size:9px; line-height:1;
+        font-weight:900; letter-spacing:1.55px; white-space:nowrap;
+      }
+      .apex-ref-kdot {
+        width:6px; height:6px; border-radius:50%; background:#00f5a7;
+        box-shadow:0 0 11px rgba(0,245,167,.95);
+      }
+      .apex-ref-headline {
+        margin-top:34px; color:#f6f7f8;
+        font-size:clamp(38px,5.25vw,65px); font-weight:950;
+        line-height:1.025; letter-spacing:-2.5px;
+      }
+      .apex-ref-headline .cyan { color:#13e5f2; }
+      .apex-ref-headline .gold { color:#f7bf43; }
+      .apex-ref-desc {
+        margin-top:22px; max-width:590px;
+        color:#b1bdc8; font-size:14px; line-height:1.75; font-weight:450;
+      }
+      .apex-ref-capabilities {
+        display:flex; align-items:center; gap:34px; margin-top:34px;
+      }
+      .apex-ref-cap {
+        display:flex; align-items:center; gap:12px; min-width:0;
+      }
+      .apex-ref-cap + .apex-ref-cap {
+        padding-left:34px; border-left:1px solid rgba(255,255,255,.12);
+      }
+      .apex-ref-capicon {
+        width:46px; height:46px; flex:0 0 46px;
+        display:flex; align-items:center; justify-content:center;
+        border-radius:13px; font-size:24px;
+        border:1px solid rgba(0,231,247,.20);
+        background:rgba(0,231,247,.045);
+        box-shadow:0 0 25px rgba(0,231,247,.07);
+      }
+      .apex-ref-capicon.gold {
+        border-color:rgba(247,191,67,.16); background:rgba(247,191,67,.04);
+      }
+      .apex-ref-captitle { color:#f2f6f9; font-size:14px; font-weight:900; }
+      .apex-ref-capsub { color:#8ea0b1; font-size:11.5px; margin-top:3px; }
+
+      .apex-ref-features {
+        display:grid; grid-template-columns:repeat(3,minmax(0,1fr));
+        gap:16px; margin-top:24px;
+      }
+      .apex-ref-feature {
+        min-width:0; min-height:232px; border-radius:20px;
+        padding:24px 22px 21px;
+        background:linear-gradient(145deg,rgba(11,23,33,.72),rgba(5,12,20,.72));
+        border:1px solid rgba(132,169,185,.25);
+        box-shadow:inset 0 1px 0 rgba(255,255,255,.035),0 16px 38px rgba(0,0,0,.22);
+        backdrop-filter:blur(17px); -webkit-backdrop-filter:blur(17px);
+      }
+      .apex-ref-ficon {
+        width:43px; height:43px; border-radius:12px;
+        display:flex; align-items:center; justify-content:center;
+        margin-bottom:20px;
+        background:rgba(0,225,241,.055);
+        border:1px solid rgba(0,225,241,.22);
+        box-shadow:0 0 19px rgba(0,225,241,.07);
+      }
+      .apex-ref-ficon svg { width:25px; height:25px; }
+      .apex-ref-feature.purple .apex-ref-ficon {
+        background:rgba(202,49,255,.055); border-color:rgba(202,49,255,.25);
+        box-shadow:0 0 19px rgba(202,49,255,.08);
+      }
+      .apex-ref-feature.gold .apex-ref-ficon {
+        background:rgba(247,191,67,.055); border-color:rgba(247,191,67,.24);
+        box-shadow:0 0 19px rgba(247,191,67,.08);
+      }
+      .apex-ref-feature.blue .apex-ref-ficon {
+        background:rgba(0,145,255,.055); border-color:rgba(0,145,255,.24);
+        box-shadow:0 0 19px rgba(0,145,255,.08);
+      }
+      .apex-ref-ftitle {
+        color:#f4f6f8; font-size:17px; font-weight:900;
+        line-height:1.23; overflow-wrap:normal; word-break:normal; hyphens:none;
+      }
+      .apex-ref-fcopy {
+        margin-top:11px; color:#94a5b5; font-size:12.5px; line-height:1.6;
+        overflow-wrap:normal; word-break:normal; hyphens:none;
+      }
+
+      .st-key-apex_home_cta {
+        margin-top:27px !important; padding:22px 24px !important;
+        border-radius:20px !important;
+        background:
+          radial-gradient(circle at 92% 50%,rgba(247,191,67,.12),transparent 28%),
+          linear-gradient(135deg,rgba(4,31,35,.76),rgba(10,18,24,.78)) !important;
+        border:1px solid rgba(0,219,232,.36) !important;
+        box-shadow:inset 0 1px 0 rgba(255,255,255,.04),0 18px 48px rgba(0,0,0,.24) !important;
+        backdrop-filter:blur(18px); -webkit-backdrop-filter:blur(18px);
+      }
+      .apex-ref-cta-title { color:#f4f6f8; font-size:19px; font-weight:950; line-height:1.2; }
+      .apex-ref-cta-copy { color:#9aabb8; margin-top:7px; font-size:11.5px; line-height:1.5; }
+      .st-key-apex_learn_more button {
+        border:1px solid rgba(0,226,239,.40) !important;
+        background:rgba(0,226,239,.035) !important; color:#12e2ee !important;
+        box-shadow:none !important; font-weight:850 !important;
+      }
+      .st-key-apex_get_started button {
+        border:1px solid rgba(255,204,73,.72) !important;
+        background:linear-gradient(135deg,#ffd15a,#efa71e) !important;
+        color:#111 !important; font-weight:900 !important;
+        box-shadow:0 0 26px rgba(246,181,42,.20) !important;
+      }
+      .apex-ref-footer {
+        display:flex; align-items:center; justify-content:center; gap:7px;
+        margin:28px 0 4px; color:#d4d8dc; font-size:11px;
+      }
+      .apex-ref-lock { color:#7f8b96; }
+
+      .apex-proof-section {margin-top:18px;padding:27px 25px 24px;border-radius:20px;background:radial-gradient(circle at 8% 0%,rgba(0,231,244,.09),transparent 28%),radial-gradient(circle at 96% 100%,rgba(248,190,63,.07),transparent 30%),linear-gradient(145deg,rgba(8,22,31,.82),rgba(4,11,18,.94));border:1px solid rgba(117,198,211,.17);box-shadow:inset 0 1px 0 rgba(255,255,255,.035),0 18px 44px rgba(0,0,0,.24);}
+      .apex-proof-eyebrow {color:#28eaf5;font-size:9px;letter-spacing:2.2px;font-weight:900;}
+      .apex-proof-title {margin-top:7px;color:#f5f9fc;font-size:24px;line-height:1.12;font-weight:950;}
+      .apex-proof-copy {margin-top:9px;max-width:760px;color:#8ea2b4;font-size:12px;line-height:1.65;}
+      .apex-proof-grid {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:20px;}
+      .apex-proof-card {min-height:137px;padding:16px 14px;border-radius:15px;background:rgba(7,16,25,.64);border:1px solid rgba(130,193,205,.13);}
+      .apex-proof-num {color:#27e8f3;font-size:9px;font-weight:900;letter-spacing:1.4px;}
+      .apex-proof-card.purple .apex-proof-num{color:#d05cff}.apex-proof-card.gold .apex-proof-num{color:#f5bf45}.apex-proof-card.blue .apex-proof-num{color:#329fff}
+      .apex-proof-card-title {margin-top:10px;color:#f3f8fc;font-size:13px;font-weight:900;line-height:1.2;}
+      .apex-proof-card-copy {margin-top:7px;color:#879aac;font-size:9.8px;line-height:1.55;}
+      .apex-market-strip {margin-top:14px;padding:14px 15px;border-radius:13px;display:flex;align-items:center;gap:16px;background:rgba(2,11,17,.54);border:1px solid rgba(0,229,242,.10);}
+      .apex-market-label {color:#6f8799;font-size:8px;font-weight:900;letter-spacing:1.7px;white-space:nowrap;}
+      .apex-market-items {display:flex;align-items:center;flex-wrap:wrap;gap:7px;color:#c8d4dc;font-size:9.5px;font-weight:750;}
+      .apex-market-items i {width:3px;height:3px;border-radius:50%;background:#2adce8;opacity:.55;}
+
+      .apex-section-intro {
+        margin:28px 0 14px; padding:0 2px;
+      }
+      .apex-section-kicker {
+        color:#28eaf5; font-size:9px; letter-spacing:2.1px; font-weight:900;
+      }
+      .apex-section-title {
+        margin-top:7px; color:#f5f9fc; font-size:27px; line-height:1.12; font-weight:950;
+      }
+      .apex-section-copy {
+        margin-top:9px; max-width:760px; color:#8ea2b4; font-size:12px; line-height:1.65;
+      }
+
+      .apex-pricing-section {
+        margin-top:18px; padding:28px 25px 25px; border-radius:20px;
+        background:
+          radial-gradient(circle at 92% 10%,rgba(247,191,67,.09),transparent 27%),
+          radial-gradient(circle at 4% 100%,rgba(0,231,244,.07),transparent 30%),
+          linear-gradient(145deg,rgba(8,22,31,.84),rgba(4,11,18,.95));
+        border:1px solid rgba(117,198,211,.18);
+        box-shadow:inset 0 1px 0 rgba(255,255,255,.035),0 18px 44px rgba(0,0,0,.24);
+      }
+      .apex-pricing-grid {
+        display:grid; grid-template-columns:repeat(2,minmax(0,1fr));
+        gap:14px; margin-top:20px;
+      }
+      .apex-price-card {
+        position:relative; padding:22px 20px 20px; min-height:225px;
+        border-radius:17px; background:rgba(6,15,24,.70);
+        border:1px solid rgba(128,187,200,.17);
+      }
+      .apex-price-card.best {
+        border-color:rgba(247,191,67,.36);
+        background:
+          radial-gradient(circle at 100% 0%,rgba(247,191,67,.08),transparent 34%),
+          rgba(6,15,24,.74);
+      }
+      .apex-price-badge {
+        display:inline-flex; align-items:center; height:24px; padding:0 9px;
+        border-radius:999px; color:#86a1b4; font-size:8px; font-weight:900; letter-spacing:1.3px;
+        background:rgba(255,255,255,.035); border:1px solid rgba(255,255,255,.07);
+      }
+      .apex-price-card.best .apex-price-badge {
+        color:#f5c65c; border-color:rgba(247,191,67,.20); background:rgba(247,191,67,.05);
+      }
+      .apex-price-name {
+        margin-top:14px; color:#f4f9fc; font-size:17px; font-weight:900;
+      }
+      .apex-price-value {
+        margin-top:8px; color:#fff; font-size:34px; font-weight:950; line-height:1;
+      }
+      .apex-price-value span {
+        color:#879bad; font-size:12px; font-weight:750;
+      }
+      .apex-price-list {
+        margin-top:17px; display:grid; gap:8px;
+      }
+      .apex-price-row {
+        display:flex; gap:8px; align-items:flex-start; color:#8fa3b4; font-size:10.5px; line-height:1.45;
+      }
+      .apex-price-check {
+        color:#20e6d3; font-weight:950; margin-top:1px;
+      }
+      .apex-pricing-note {
+        margin-top:14px; color:#738b9d; font-size:9.5px; line-height:1.55;
+      }
+
+      @media(max-width:700px) {
+        .apex-section-title {font-size:23px;}
+        .apex-pricing-section {padding:22px 17px 20px;}
+        .apex-pricing-grid {grid-template-columns:1fr; gap:11px;}
+        .apex-price-card {min-height:auto; padding:19px 17px;}
+        .apex-price-value {font-size:31px;}
+      }
+
+
+      /* Desktop / laptop refinement */
+      @media(min-width:1000px) {
+        .block-container {
+          max-width:1240px !important;
+          padding-left:34px !important;
+          padding-right:34px !important;
+        }
+
+        .apex-home-shell {
+          max-width:1180px !important;
+          margin:0 auto !important;
+        }
+
+        .apex-ref-hero {
+          min-height:520px !important;
+          max-height:590px !important;
+          padding:40px 38px 30px !important;
+        }
+
+        .apex-ref-hero-inner {
+          width:52% !important;
+          max-width:610px !important;
+        }
+
+        .apex-ref-globe {
+          width:49% !important;
+          right:0 !important;
+          opacity:.88 !important;
+        }
+
+        .apex-ref-title {
+          font-size:clamp(48px,4.1vw,68px) !important;
+          line-height:.99 !important;
+          letter-spacing:-2.2px !important;
+          max-width:600px !important;
+        }
+
+        .apex-ref-copy {
+          font-size:14px !important;
+          line-height:1.68 !important;
+          max-width:560px !important;
+        }
+
+        .apex-ref-feature-grid {
+          grid-template-columns:repeat(3,minmax(0,1fr)) !important;
+          gap:16px !important;
+        }
+
+        .apex-ref-feature-card {
+          min-height:205px !important;
+          padding:22px !important;
+        }
+
+        .apex-ref-feature-title {
+          font-size:16px !important;
+          line-height:1.25 !important;
+        }
+
+        .apex-ref-feature-copy {
+          font-size:12px !important;
+          line-height:1.58 !important;
+        }
+
+        .apex-ref-cta {
+          display:grid !important;
+          grid-template-columns:1fr auto !important;
+          align-items:center !important;
+          gap:24px !important;
+          padding:26px 30px !important;
+        }
+      }
+
+      @media(min-width:1450px) {
+        .block-container { max-width:1320px !important; }
+        .apex-home-shell { max-width:1240px !important; }
+        .apex-ref-hero {
+          min-height:540px !important;
+          max-height:610px !important;
+        }
+        .apex-ref-title {
+          font-size:70px !important;
+          max-width:620px !important;
+        }
+      }
+
+      @media(max-width:700px) {
+        .block-container {
+          padding-left:14px !important; padding-right:14px !important;
+          padding-top:18px !important;
+        }
+        .apex-ref-hero {
+          min-height:535px; padding:32px 24px 27px; border-radius:20px;
+        }
+        .apex-ref-globe {
+          width:54%; right:-13%; opacity:.85;
+          background-image:
+            linear-gradient(90deg,rgba(3,12,20,1) 0%,rgba(3,12,20,.62) 28%,rgba(3,12,20,.04) 67%),
+            url("data:image/webp;base64,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");
+          background-size:cover,cover;
+          background-position:center,right center;
+        }
+        .apex-ref-hero-inner { width:67%; }
+        .apex-ref-kicker {
+          font-size:7.2px; letter-spacing:1.15px; padding:6px 9px; gap:6px;
+        }
+        .apex-ref-kdot { width:5px; height:5px; }
+        .apex-ref-headline {
+          margin-top:29px; font-size:35px; line-height:1.055; letter-spacing:-1.55px;
+        }
+        .apex-ref-desc {
+          margin-top:19px; font-size:11.4px; line-height:1.65; max-width:94%;
+        }
+        .apex-ref-capabilities { gap:12px; margin-top:28px; }
+        .apex-ref-cap { gap:7px; }
+        .apex-ref-cap + .apex-ref-cap { padding-left:12px; }
+        .apex-ref-capicon {
+          width:33px; height:33px; flex-basis:33px; border-radius:10px; font-size:18px;
+        }
+        .apex-ref-captitle { font-size:10.5px; }
+        .apex-ref-capsub { font-size:8.6px; }
+        .apex-ref-features {
+          grid-template-columns:repeat(3,minmax(0,1fr));
+          gap:9px; margin-top:16px;
+        }
+        .apex-ref-feature {
+          min-height:206px; padding:16px 13px 14px; border-radius:16px;
+        }
+        .apex-ref-ficon {
+          width:34px; height:34px; border-radius:10px; margin-bottom:14px;
+        }
+        .apex-ref-ficon svg { width:20px; height:20px; }
+        .apex-ref-ftitle {
+          font-size:12.4px; line-height:1.23; letter-spacing:-.1px;
+        }
+        .apex-ref-fcopy {
+          margin-top:8px; font-size:9.8px; line-height:1.5;
+        }
+        .st-key-apex_home_cta {
+          margin-top:17px !important; padding:16px 15px !important; border-radius:16px !important;
+        }
+        .apex-ref-cta-title { font-size:14px; }
+        .apex-ref-cta-copy { font-size:9px; line-height:1.45; margin-top:5px; }
+        .st-key-apex_learn_more button, .st-key-apex_get_started button {
+          min-height:42px !important; padding:7px 8px !important;
+          font-size:10px !important; border-radius:11px !important;
+        }
+        .apex-ref-footer { margin-top:22px; font-size:10px; }
+        .apex-proof-section {margin-top:13px;padding:20px 15px 18px;border-radius:17px;}
+        .apex-proof-eyebrow {font-size:7.5px;letter-spacing:1.7px;}
+        .apex-proof-title {font-size:18px;margin-top:6px;}
+        .apex-proof-copy {font-size:9.6px;line-height:1.58;margin-top:7px;}
+        .apex-proof-grid {grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:15px;}
+        .apex-proof-card {min-height:118px;padding:13px 11px;border-radius:13px;}
+        .apex-proof-card-title {font-size:10.7px;margin-top:7px;}
+        .apex-proof-card-copy {font-size:8.2px;line-height:1.48;}
+        .apex-market-strip {display:block;margin-top:11px;padding:12px;}
+        .apex-market-label {font-size:7px;margin-bottom:7px;}
+        .apex-market-items {gap:6px;font-size:8.2px;line-height:1.5;}
+      }
+
+      @media(max-width:430px) {
+        .apex-ref-hero { min-height:505px; padding:28px 20px 24px; }
+        .apex-ref-headline { font-size:31px; }
+        .apex-ref-desc { font-size:10.7px; }
+        .apex-ref-feature { min-height:190px; padding:14px 11px 12px; }
+        .apex-ref-ftitle { font-size:11.2px; }
+        .apex-ref-fcopy { font-size:8.9px; }
+      }
+      @media(max-width:390px) {
+        .block-container { padding-left:10px !important; padding-right:10px !important; }
+        .apex-ref-hero { min-height:482px; padding:25px 17px 22px; }
+        .apex-ref-hero-inner { width:69%; }
+        .apex-ref-headline { font-size:28.5px; }
+        .apex-ref-desc { font-size:10px; }
+        .apex-ref-features { gap:7px; }
+        .apex-ref-feature { min-height:181px; padding:13px 9px 11px; border-radius:14px; }
+        .apex-ref-ftitle { font-size:10.2px; }
+        .apex-ref-fcopy { font-size:8.2px; line-height:1.47; }
+        .apex-ref-ficon { width:31px; height:31px; margin-bottom:12px; }
+      }
+    
+      /* ----- HEADER ALIGNMENT + TYPOGRAPHY FIX ----- */
+      .apex-public-nav{
+        width:min(1180px, calc(100% - 40px)) !important;
+        min-height:82px !important;
+        margin:18px auto 30px !important;
+        padding:0 22px !important;
+        box-sizing:border-box !important;
+        display:grid !important;
+        grid-template-columns:minmax(250px,1fr) auto minmax(130px,1fr) !important;
+        align-items:center !important;
+        column-gap:24px !important;
+        overflow:visible !important;
+      }
+
+      .apex-public-nav .apex-brand,
+      .apex-public-nav .apex-brand-wrap,
+      .apex-public-nav .brand-wrap{
+        position:static !important;
+        transform:none !important;
+        margin:0 !important;
+        align-self:center !important;
+        justify-self:start !important;
+        display:flex !important;
+        align-items:center !important;
+        gap:12px !important;
+      }
+
+      .apex-public-nav .apex-logo,
+      .apex-public-nav .brand-logo{
+        position:static !important;
+        margin:0 !important;
+        width:48px !important;
+        height:48px !important;
+        min-width:48px !important;
+        align-self:center !important;
+      }
+
+      .apex-public-nav .apex-brand-name,
+      .apex-public-nav .brand-name{
+        font-size:20px !important;
+        line-height:1.05 !important;
+        letter-spacing:1.2px !important;
+        white-space:nowrap !important;
+      }
+
+      .apex-public-nav .apex-brand-sub,
+      .apex-public-nav .brand-sub{
+        margin-top:5px !important;
+        font-size:8px !important;
+        line-height:1 !important;
+        letter-spacing:2.4px !important;
+        white-space:nowrap !important;
+      }
+
+      .apex-public-nav .apex-nav-links,
+      .apex-public-nav .nav-links{
+        position:static !important;
+        transform:none !important;
+        margin:0 !important;
+        align-self:center !important;
+        justify-self:center !important;
+        display:flex !important;
+        align-items:center !important;
+        justify-content:center !important;
+        gap:34px !important;
+      }
+
+      .apex-public-nav .apex-nav-links a,
+      .apex-public-nav .nav-links a{
+        font-size:12.5px !important;
+        line-height:1 !important;
+        font-weight:800 !important;
+        letter-spacing:.1px !important;
+        white-space:nowrap !important;
+      }
+
+      .apex-public-nav .apex-nav-actions,
+      .apex-public-nav .nav-actions{
+        position:static !important;
+        transform:none !important;
+        margin:0 !important;
+        align-self:center !important;
+        justify-self:end !important;
+        display:flex !important;
+        align-items:center !important;
+        gap:12px !important;
+      }
+
+      .apex-public-nav .apex-search,
+      .apex-public-nav .nav-search,
+      .apex-public-nav .apex-profile,
+      .apex-public-nav .nav-profile{
+        position:static !important;
+        margin:0 !important;
+        align-self:center !important;
+      }
+
+      @media (min-width:1200px){
+        .apex-public-nav{
+          min-height:88px !important;
+          padding:0 26px !important;
+        }
+        .apex-public-nav .apex-brand-name,
+        .apex-public-nav .brand-name{
+          font-size:22px !important;
+        }
+        .apex-public-nav .apex-nav-links a,
+        .apex-public-nav .nav-links a{
+          font-size:13px !important;
+        }
+      }
+
+      @media (max-width:900px){
+        .apex-public-nav{
+          width:calc(100% - 24px) !important;
+          min-height:72px !important;
+          margin:12px auto 20px !important;
+          padding:0 14px !important;
+          grid-template-columns:minmax(0,1fr) auto !important;
+          column-gap:10px !important;
+        }
+        .apex-public-nav .apex-nav-links,
+        .apex-public-nav .nav-links{
+          display:none !important;
+        }
+        .apex-public-nav .apex-brand-name,
+        .apex-public-nav .brand-name{
+          font-size:17px !important;
+        }
+        .apex-public-nav .apex-brand-sub,
+        .apex-public-nav .brand-sub{
+          font-size:7px !important;
+          letter-spacing:1.8px !important;
+        }
+        .apex-public-nav .apex-logo,
+        .apex-public-nav .brand-logo{
+          width:43px !important;
+          height:43px !important;
+          min-width:43px !important;
+        }
+      }
+
+      @media (max-width:430px){
+        .apex-public-nav{
+          width:calc(100% - 18px) !important;
+          min-height:68px !important;
+          padding:0 11px !important;
+        }
+        .apex-public-nav .apex-brand,
+        .apex-public-nav .apex-brand-wrap,
+        .apex-public-nav .brand-wrap{
+          gap:9px !important;
+        }
+        .apex-public-nav .apex-brand-name,
+        .apex-public-nav .brand-name{
+          font-size:15px !important;
+        }
+      }
+</style>
+    """, unsafe_allow_html=True)
+
+    render_public_nav("home")
+
+    render_html("""
+    <div class="apex-home-shell"><div id="apex-platform"></div>
+      
+      <section class="apex-ref-hero">
+        <div class="apex-ref-globe"></div>
+        <div class="apex-ref-hero-inner">
+          <div class="apex-ref-badge">GLOBAL MACRO INTELLIGENCE ENGINE</div>
+
+          <div class="apex-ref-title">
+            <div class="line-white">See the macro</div>
+            <div class="line-cyan">shift before it becomes</div>
+            <div class="line-gold">obvious.</div>
+          </div>
+
+          <div class="apex-ref-copy">
+            ApexMacro combines global macro data, market catalysts, causal intelligence and live tactical
+            price action into one institutional-grade decision desk for Gold, Oil, Nasdaq-100 and global currencies.
+          </div>
+
+          <div class="apex-ref-mini-grid">
+            <div class="apex-ref-mini-card">
+              <div class="apex-ref-mini-icon">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
+                  <circle cx="12" cy="12" r="6"></circle>
+                  <circle cx="12" cy="12" r="2.3"></circle>
+                  <path d="M12 2v3M12 19v3M2 12h3M19 12h3"></path>
+                </svg>
+              </div>
+              <div>
+                <div class="apex-ref-mini-title">Multi-Asset</div>
+                <div class="apex-ref-mini-sub">Global Coverage</div>
+              </div>
+            </div>
+
+            <div class="apex-ref-mini-card gold">
+              <div class="apex-ref-mini-icon">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M13 2L5 13h6l-1 9 9-12h-6z"></path>
+                </svg>
+              </div>
+              <div>
+                <div class="apex-ref-mini-title">Real-Time</div>
+                <div class="apex-ref-mini-sub">Macro Intelligence</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+
+      <div id="apex-features" class="apex-section-intro">
+        <div class="apex-section-kicker">FEATURES</div>
+        <div class="apex-section-title">Intelligence built around the market, not a single indicator.</div>
+        <div class="apex-section-copy">
+          ApexMacro brings macro regime analysis, live tactical price action, event forecasting,
+          causal intelligence and personalized alerts into one workflow.
+        </div>
+      </div>
+
+      <section class="apex-ref-features">
+        <article class="apex-ref-feature">
+          <div class="apex-ref-ficon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#15e5f1" stroke-width="2"><path d="M4 18l5-6 4 3 7-9"/><path d="M16 6h4v4"/></svg>
+          </div>
+          <div class="apex-ref-ftitle">Macro Outlook</div>
+          <div class="apex-ref-fcopy">Institutional macro view across assets and regimes.</div>
+        </article>
+        <article class="apex-ref-feature purple">
+          <div class="apex-ref-ficon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#d151ff" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
+          </div>
+          <div class="apex-ref-ftitle">Tactical Move</div>
+          <div class="apex-ref-fcopy">Live price action readings and momentum shifts.</div>
+        </article>
+        <article class="apex-ref-feature gold">
+          <div class="apex-ref-ficon">
+            <svg viewBox="0 0 24 24" fill="#f7bf43"><path d="M13.5 1L5 13h6l-1 10 9-13h-6z"/></svg>
+          </div>
+          <div class="apex-ref-ftitle">Smart Shift Alerts</div>
+          <div class="apex-ref-fcopy">Regime change monitoring with confirmation logic.</div>
+        </article>
+        <article class="apex-ref-feature blue">
+          <div class="apex-ref-ficon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#1a9fff" stroke-width="2"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M8 3v4M16 3v4M4 10h16"/></svg>
+          </div>
+          <div class="apex-ref-ftitle">Catalyst Forecaster</div>
+          <div class="apex-ref-fcopy">Upcoming macro catalysts and event impact analysis.</div>
+        </article>
+        <article class="apex-ref-feature purple">
+          <div class="apex-ref-ficon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#e05bbd" stroke-width="2"><path d="M9 5a3 3 0 0 0-5 2.2A3.5 3.5 0 0 0 5 14a3 3 0 0 0 4 4V5zM15 5a3 3 0 0 1 5 2.2A3.5 3.5 0 0 1 19 14a3 3 0 0 1-4 4V5z"/><path d="M9 9H6M15 9h3M9 14H7M15 14h2"/></svg>
+          </div>
+          <div class="apex-ref-ftitle">Causal Intelligence</div>
+          <div class="apex-ref-fcopy">Connects drivers, catalysts and market transmission.</div>
+        </article>
+        <article class="apex-ref-feature">
+          <div class="apex-ref-ficon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#16e7f5" stroke-width="2"><path d="M21 3L3 10l7 3 3 7 8-17z"/><path d="M10 13l5-5"/></svg>
+          </div>
+          <div class="apex-ref-ftitle">Telegram Alerts</div>
+          <div class="apex-ref-fcopy">Personalized alerts delivered directly to you.</div>
+        </article>
+      </section>
+
+      
+      <section id="apex-data" class="apex-proof-section">
+        <div class="apex-proof-eyebrow">DATA SOURCES</div>
+        <div class="apex-proof-title">Built from multiple intelligence layers.</div>
+        <div class="apex-proof-copy">
+          ApexMacro combines macroeconomic data, market-price data, economic calendars,
+          live news feeds and AI-assisted interpretation so no single source controls the final view.
+        </div>
+        <div class="apex-proof-grid">
+          <div class="apex-proof-card cyan"><div class="apex-proof-num">01</div><div class="apex-proof-card-title">Macro Data</div><div class="apex-proof-card-copy">Rates, yields, inflation, growth and policy-sensitive data feed the macro regime engine.</div></div>
+          <div class="apex-proof-card purple"><div class="apex-proof-num">02</div><div class="apex-proof-card-title">Market Prices</div><div class="apex-proof-card-copy">Live price action confirms momentum, pullbacks, breakouts and tactical market structure.</div></div>
+          <div class="apex-proof-card gold"><div class="apex-proof-num">03</div><div class="apex-proof-card-title">News & Catalysts</div><div class="apex-proof-card-copy">Current headlines, geopolitical risk and economic events are filtered into asset-specific intelligence.</div></div>
+          <div class="apex-proof-card blue"><div class="apex-proof-num">04</div><div class="apex-proof-card-title">AI Interpretation</div><div class="apex-proof-card-copy">AI helps structure and interpret information while remaining bounded by the quantitative engine.</div></div>
+        </div>
+      </section>
+
+<section id="apex-company" class="apex-proof-section">
+        <div class="apex-proof-eyebrow">COMPANY</div>
+        <div class="apex-proof-title">Built to see more than a single chart.</div>
+        <div class="apex-proof-copy">
+          ApexMacro is a global macro and geopolitical intelligence desk designed to combine forward-looking
+          macro pressure with live tactical price action. The goal is to give clients one clear view of
+          what is driving markets, what may change next, and what price is doing right now.
+        </div>
+        <div class="apex-proof-grid">
+          <div class="apex-proof-card cyan"><div class="apex-proof-num">01</div><div class="apex-proof-card-title">Forward-Looking Research</div><div class="apex-proof-card-copy">Macro data, yields, policy expectations and catalysts are monitored before they are fully reflected in price.</div></div>
+          <div class="apex-proof-card purple"><div class="apex-proof-num">02</div><div class="apex-proof-card-title">Macro + Tactical</div><div class="apex-proof-card-copy">The broader macro regime is kept separate from live momentum, pullbacks, breakouts and short-term moves.</div></div>
+          <div class="apex-proof-card gold"><div class="apex-proof-num">03</div><div class="apex-proof-card-title">Client-Controlled Alerts</div><div class="apex-proof-card-copy">VIP clients choose the markets they want, while Smart Shift and tactical alerts are filtered personally.</div></div>
+          <div class="apex-proof-card blue"><div class="apex-proof-num">04</div><div class="apex-proof-card-title">Institutional Workflow</div><div class="apex-proof-card-copy">Gold, Oil, Nasdaq-100 and global currencies are analyzed together so cross-asset relationships remain visible.</div></div>
+        </div>
+        <div class="apex-market-strip"><div class="apex-market-label">CORE COVERAGE</div><div class="apex-market-items"><span>Gold</span><i></i><span>Crude Oil</span><i></i><span>Nasdaq-100</span><i></i><span>USD</span><i></i><span>EUR</span><i></i><span>GBP</span><i></i><span>CAD</span><i></i><span>JPY</span><i></i><span>CHF</span></div></div>
+      </section>
+
+      <section id="apex-pricing" class="apex-pricing-section">
+        <div class="apex-proof-eyebrow">PRICING</div>
+        <div class="apex-proof-title">Simple VIP access. Full ApexMacro intelligence.</div>
+        <div class="apex-proof-copy">
+          Every VIP plan unlocks the full terminal, market desks, Gold intelligence, Smart Shift monitoring,
+          Catalyst Forecaster, Tactical Move and personalized Telegram alerts.
+        </div>
+
+        <div class="apex-pricing-grid">
+          <div class="apex-price-card">
+            <div class="apex-price-badge">MONTHLY</div>
+            <div class="apex-price-name">1 Month VIP</div>
+            <div class="apex-price-value">$29 <span>USDT</span></div>
+            <div class="apex-price-list">
+              <div class="apex-price-row"><span class="apex-price-check">✓</span><span>30 days of full ApexMacro terminal access</span></div>
+              <div class="apex-price-row"><span class="apex-price-check">✓</span><span>Gold, Oil, Nasdaq-100 and Forex intelligence desks</span></div>
+              <div class="apex-price-row"><span class="apex-price-check">✓</span><span>Smart Shift and Tactical Move monitoring</span></div>
+              <div class="apex-price-row"><span class="apex-price-check">✓</span><span>Personalized Telegram market alerts</span></div>
+            </div>
+          </div>
+
+          <div class="apex-price-card best">
+            <div class="apex-price-badge">BEST VALUE</div>
+            <div class="apex-price-name">3 Months VIP</div>
+            <div class="apex-price-value">$75 <span>USDT</span></div>
+            <div class="apex-price-list">
+              <div class="apex-price-row"><span class="apex-price-check">✓</span><span>90 days of full ApexMacro terminal access</span></div>
+              <div class="apex-price-row"><span class="apex-price-check">✓</span><span>All macro, tactical and catalyst intelligence tools</span></div>
+              <div class="apex-price-row"><span class="apex-price-check">✓</span><span>Personalized Telegram alerts and hourly intelligence brief</span></div>
+              <div class="apex-price-row"><span class="apex-price-check">✓</span><span>Lower effective monthly cost than the 1-month plan</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="apex-pricing-note">
+          Payment is handled through the existing ApexMacro VIP checkout. Plan activation and client access
+          continue to use the current payment and verification system.
+        </div>
+      </section>
+    </div>
+    """)
+
+    with st.container(key="apex_home_cta"):
+        left, buttons = st.columns([2.1, 1.0], vertical_alignment="center")
+        with left:
+            render_html("""
+            <div class="apex-ref-cta-title">Ready to access ApexMacro?</div>
+            <div class="apex-ref-cta-copy">Join professional traders and investors who act before the market moves.</div>
+            """)
+        with buttons:
+            b1, b2 = st.columns(2)
+            with b1:
+                if st.button("Learn More", key="apex_learn_more", use_container_width=True):
+                    st.toast("Explore the ApexMacro intelligence tools above.")
+            with b2:
+                if st.button("Get Started →", key="apex_get_started", use_container_width=True):
+                    _set_public_view("vip")
+                    st.rerun()
+
+    render_html('<div class="apex-ref-footer"><span class="apex-ref-lock">▣</span><span>apexmacro.com</span></div>')
+
+
+def render_public_checkout_page() -> None:
+    render_public_nav("vip")
+    home_col, title_col = st.columns([1, 5], vertical_alignment="center")
+    with home_col:
+        if st.button("← Home", key="vip_page_home", use_container_width=True):
+            _set_public_view("home")
+            st.rerun()
+    with title_col:
+        render_html("""
+        <div style="padding:3px 0 10px;">
+          <div style="font-size:20px;font-weight:950;color:#edf9ff;">ApexMacro VIP Access</div>
+          <div style="font-size:10.5px;color:#7f95a7;margin-top:3px;">Choose a plan and activate your terminal access with USDT on TRON.</div>
+        </div>
+        """)
+    render_vip_checkout()
+
+
+def render_vip_gate() -> dict | None:
+    client_id, dev_type = get_client_device_info()
+
+    auth_user = st.session_state.get("APEX_AUTH_USER")
+    if auth_user and auth_user.get("is_authenticated"):
+        return auth_user
+
+    sessions = load_sessions_cache()
+    dev_session = sessions.get(client_id)
+    if dev_session:
+        try:
+            last_dt = datetime.strptime(dev_session.get("last_active", ""), "%Y-%m-%d %H:%M:%S")
+            if (get_current_time() - last_dt).total_seconds() <= (5 * 86400):
+                dev_session["last_active"] = get_current_time().strftime("%Y-%m-%d %H:%M:%S")
+                save_sessions_cache(sessions)
+                auto_user = {
+                    "is_authenticated": True,
+                    "user_name": dev_session.get("user_name", "VIP Client"),
+                    "expiry_info": dev_session.get("expiry_info", "5-Day Persistent Device Session Active"),
+                    "is_admin": dev_session.get("is_admin", False),
+                    "key": dev_session.get("key", "")
+                }
+                st.session_state["APEX_AUTH_USER"] = auto_user
+                return auto_user
+        except Exception:
+            pass
+
+    render_public_nav("login")
+    back_col, spacer_col = st.columns([1, 5])
+    with back_col:
+        if st.button("← Home", key="login_page_home", use_container_width=True):
+            _set_public_view("home")
+            st.rerun()
+
+    col1, col2, col3 = st.columns([1, 2.2, 1])
+    with col2:
+        st.markdown("<div style='height:40px;'></div>", unsafe_allow_html=True)
+        render_html(f"""
+        <div style="background:linear-gradient(180deg,rgba(11,20,32,0.95),rgba(5,10,18,0.97));border:1px solid rgba(0,245,255,0.25);border-radius:22px;padding:34px 28px 24px;text-align:center;box-shadow:0 25px 80px rgba(0,0,0,0.7),0 0 35px rgba(0,245,255,0.12);backdrop-filter:blur(24px);">
+          <div style="display:flex;justify-content:center;margin-bottom:14px;">
+            <div style="display:flex;align-items:center;justify-content:center;width:56px;height:56px;background:rgba(0,245,255,0.08);border:1px solid rgba(0,245,255,0.35);border-radius:16px;box-shadow:0 0 25px rgba(0,245,255,0.3);">
+              <svg width="34" height="34" viewBox="0 0 360 365" fill="none" style="filter:drop-shadow(0 0 10px rgba(0,255,255,0.85));">
+                <defs>
+                  <linearGradient id="gGrad" x1="0" y1="0" x2="1" y2="1">
+                    <stop stop-color="#00FFFF"/>
+                    <stop offset="1" stop-color="#00D7E8"/>
+                  </linearGradient>
+                </defs>
+                <path d="M0 365L180 0L360 365H288L180 130L72 365Z" fill="url(#gGrad)"/>
+              </svg>
+            </div>
+          </div>
+          <div style="font-size:24px;font-weight:900;letter-spacing:2.5px;color:#00f5ff;text-shadow:0 0 20px rgba(0,245,255,0.5);">APEX<span style="color:#ffd166;">MACRO</span></div>
+          <div style="font-size:9.5px;font-weight:800;letter-spacing:3px;color:#8fa3b4;margin-top:2px;text-transform:uppercase;">Institutional Intelligence Terminal</div>
+          <div style="height:1px;background:linear-gradient(90deg,transparent,rgba(0,245,255,0.3),transparent);margin:18px 0 14px;"></div>
+          <div style="font-size:13.5px;color:#ecf7ff;font-weight:700;margin-bottom:4px;">🔒 Restricted VIP Terminal Access</div>
+          <div style="font-size:11.5px;color:#8fa3b4;margin-bottom:16px;">Detected: <b>{dev_type}</b> • 5-Day Auto-Login Active. Enter VIP Key once.</div>
+        </div>
+        """)
+
+        entered_key = st.text_input("VIP License Key", type="password", placeholder="Enter VIP Key (e.g. APEX-XXXX-XXXX)", label_visibility="collapsed")
+
+        b1, b2 = st.columns([1.2, 1])
+        with b1:
+            unlock_clicked = st.button("⚡ Unlock Terminal", type="primary", use_container_width=True)
+        with b2:
+            if st.button("💳 Get VIP Access", key="apex_open_vip_checkout", use_container_width=True):
+                st.session_state["APEX_SHOW_VIP_CHECKOUT"] = not st.session_state.get("APEX_SHOW_VIP_CHECKOUT", False)
+                st.rerun()
+
+        if st.session_state.get("APEX_SHOW_VIP_CHECKOUT", False):
+            render_vip_checkout()
+
+        if unlock_clicked:
+            clean_entered = entered_key.strip().upper()
+            is_valid, user_name, expiry_info = verify_vip_key(clean_entered, client_id, dev_type)
+            if is_valid:
+                is_admin = (user_name == "ADMINISTRATOR")
+                sessions[client_id] = {
+                    "key": clean_entered,
+                    "device_id": client_id,
+                    "dev_type": dev_type,
+                    "last_active": get_current_time().strftime("%Y-%m-%d %H:%M:%S"),
+                    "user_name": user_name,
+                    "expiry_info": expiry_info,
+                    "is_admin": is_admin
+                }
+                save_sessions_cache(sessions)
+                st.session_state["APEX_AUTH_USER"] = {
+                    "is_authenticated": True,
+                    "user_name": user_name,
+                    "expiry_info": expiry_info,
+                    "is_admin": is_admin,
+                    "key": clean_entered
+                }
+                st.success(f"✅ Access Granted! Welcome, {user_name}.")
+                time.sleep(0.4)
+                st.rerun()
+            else:
+                st.error(f"❌ {expiry_info}")
+
+        return None
+
+def render_admin_key_generator() -> None:
+    render_html("""
+    <div style="background:linear-gradient(135deg,rgba(0,245,255,0.06),rgba(0,255,163,0.03));border:1px solid rgba(0,245,255,0.3);border-radius:16px;padding:20px 24px;margin-bottom:20px;box-shadow:var(--shadow);">
+      <div style="font-size:16px;font-weight:900;color:#00f5ff;letter-spacing:1px;margin-bottom:4px;">👑 MASTER ADMIN CONTROL DESK</div>
+      <div style="font-size:11.5px;color:#8fa3b4;">Manage your VIP client licenses, dual-device bindings (1 Mobile + 1 PC), assign Telegram IDs, and generate secure cryptographic keys.</div>
+    </div>
+    """)
+
+    g1, g2, g3 = st.columns([2, 2, 1.5])
+    with g1:
+        c_name = st.text_input("Client Name:", placeholder="e.g. KARDO", key="adm_client_name")
+        c_tg_id = st.text_input("Telegram ID:", placeholder="e.g. 643290893", key="adm_client_tg_id")
+    with g2:
+        duration_opt = st.selectbox(
+            "Duration:",
+            [
+                ("30 Days (1 Month)", 30),
+                ("7 Days (Free Trial)", 7),
+                ("90 Days (Quarterly)", 90),
+                ("365 Days (1 Year)", 365),
+                ("Lifetime VIP Access", 9999),
+            ],
+            format_func=lambda x: x[0],
+            key="adm_duration_sel"
+        )
+    with g3:
+        st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+        gen_btn = st.button("⚡ Generate & Save", type="primary", use_container_width=True)
+
+    if gen_btn:
+        name_val = c_name.strip() or "CLIENT"
+        tg_id_val = c_tg_id.strip()
+        days_val = duration_opt[1]
+        generated_key = generate_vip_key(name_val, days_val)
+        exp_text = "Lifetime" if days_val >= 9999 else (get_current_time() + timedelta(days=days_val)).strftime("%Y-%m-%d")
+        register_new_client_key(name_val, generated_key, duration_opt[0], exp_text, tg_id_val)
+        st.success(f"🎉 Generated & Registered License Key for **{name_val}** (Telegram ID: {tg_id_val or 'None'}):")
+        st.code(generated_key, language="text")
+        st.info("📋 Key has been saved to your VIP Client Registry below.")
+
+    st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
+    render_html('<div class="sec-title">VIP Client Registry &amp; Subscription Database</div>')
+    
+    clients = load_vip_registry()
+    today_str = get_current_time().strftime("%Y-%m-%d")
+    
+    total_c = len(clients)
+    active_c = 0
+    for c in clients:
+        if c.get("status") != "Revoked":
+            if c.get("expires_at") == "Lifetime" or c.get("expires_at", "") >= today_str:
+                c["current_status"] = "🟢 Active"
+                active_c += 1
+            else:
+                c["current_status"] = "🔴 Expired"
+        else:
+            c["current_status"] = "⛔ Revoked"
+
+    expired_c = total_c - active_c
+
+    kpi1, kpi2, kpi3 = st.columns(3)
+    with kpi1:
+        render_html(f"""
+        <div style="background:rgba(0,245,255,0.05);border:1px solid rgba(0,245,255,0.2);border-radius:12px;padding:12px;text-align:center;">
+          <div style="font-size:11px;color:#8fa3b4;">TOTAL CLIENTS</div>
+          <div style="font-size:22px;font-weight:900;color:#00f5ff;">{total_c}</div>
+        </div>
+        """)
+    with kpi2:
+        render_html(f"""
+        <div style="background:rgba(0,255,163,0.05);border:1px solid rgba(0,255,163,0.2);border-radius:12px;padding:12px;text-align:center;">
+          <div style="font-size:11px;color:#8fa3b4;">ACTIVE LICENSES</div>
+          <div style="font-size:22px;font-weight:900;color:#00ffa3;">{active_c}</div>
+        </div>
+        """)
+    with kpi3:
+        render_html(f"""
+        <div style="background:rgba(255,94,117,0.05);border:1px solid rgba(255,94,117,0.2);border-radius:12px;padding:12px;text-align:center;">
+          <div style="font-size:11px;color:#8fa3b4;">EXPIRED / REVOKED</div>
+          <div style="font-size:22px;font-weight:900;color:#ff5e75;">{expired_c}</div>
+        </div>
+        """)
+
+    if clients:
+        st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+        tbl_data = []
+        for c in clients:
+            mob_b = bool(c.get("bound_mobile_id"))
+            pc_b = bool(c.get("bound_pc_id"))
+            if mob_b and pc_b:
+                b_status = "📱 Mobile + 💻 PC"
+            elif mob_b:
+                b_status = "📱 Mobile Only"
+            elif pc_b:
+                b_status = "💻 PC Only"
+            else:
+                b_status = "⚪ Unbound (0/2)"
+                
+            tbl_data.append({
+                "Client Name": c.get("client_name"),
+                "License Key": c.get("key"),
+                "Telegram ID": c.get("telegram_id", "—"),
+                "Alerts": ", ".join(_client_alert_asset_keys(c)) or "None",
+                "Plan": c.get("duration"),
+                "Expires": c.get("expires_at"),
+                "Status": c.get("current_status"),
+                "Registered Devices": b_status,
+            })
+        st.dataframe(pd.DataFrame(tbl_data), use_container_width=True, hide_index=True)
+        
+        st.markdown("---")
+        render_html('<div style="font-size:11px;font-weight:800;color:#79dff0;margin-bottom:6px;">⚙️ EDIT CLIENT TELEGRAM ID</div>')
+        edit_col1, edit_col2, edit_col3 = st.columns([2, 2, 1.5])
+        with edit_col1:
+            key_to_edit = st.selectbox("Select Key to Update:", [c.get("key") for c in clients], key="sel_key_edit")
+        with edit_col2:
+            new_tg_input = st.text_input("New Telegram ID:", placeholder="e.g. 7153364048", key="new_tg_val")
+        with edit_col3:
+            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+            if st.button("💾 Save Telegram ID", use_container_width=True):
+                for c in clients:
+                    if c.get("key") == key_to_edit:
+                        c["telegram_id"] = new_tg_input.strip()
+                save_vip_registry(clients)
+                st.success(f"Telegram ID updated successfully!")
+                time.sleep(0.4)
+                st.rerun()
+
+        st.markdown("---")
+        act_col1, act_col2, act_col3, act_col4 = st.columns([2.2, 1.3, 1.3, 1.2])
+        with act_col1:
+            key_selected = st.selectbox("Select Client Key:", [c.get("key") for c in clients], key="sel_key_action")
+        with act_col2:
+            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+            if st.button("🔄 Reset Lock", use_container_width=True):
+                for c in clients:
+                    if c.get("key") == key_selected:
+                        c["bound_mobile_id"] = ""
+                        c["bound_pc_id"] = ""
+                        c["bound_at"] = ""
+                save_vip_registry(clients)
+                st.success(f"Device lock reset (0/2 devices bound)!")
+                time.sleep(0.4)
+                st.rerun()
+        with act_col3:
+            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+            if st.button("⛔ Revoke", type="secondary", use_container_width=True):
+                for c in clients:
+                    if c.get("key") == key_selected:
+                        c["status"] = "Revoked"
+                save_vip_registry(clients)
+                st.warning(f"Key revoked!")
+                time.sleep(0.4)
+                st.rerun()
+        with act_col4:
+            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+            if st.button("🗑️ Delete", type="secondary", use_container_width=True):
+                updated_clients = [c for c in clients if c.get("key") != key_selected]
+                save_vip_registry(updated_clients)
+                st.success(f"Client deleted successfully!")
+                time.sleep(0.4)
+                st.rerun()
+    else:
+        st.info("No VIP clients registered yet. Generate a key above to start building your client base!")
+
+    render_payment_admin_summary()
+
+def main() -> None:
+    inject_css()
+
+    fred_key = DEFAULT_FRED_KEY
+    channel_name = DEFAULT_TELEGRAM_CHANNEL
+
+    # Inbound bot settings run in their own cached daemon and never block Streamlit.
+    start_telegram_update_worker()
+
+    if fred_key:
+        start_background_alert_daemon(fred_key, channel_name)
+
+    # The public landing page is now the default entry point.
+    auth_user = st.session_state.get("APEX_AUTH_USER")
+    if not (auth_user and auth_user.get("is_authenticated")):
+        public_view = st.session_state.get("APEX_PUBLIC_VIEW", "home")
+
+        if public_view == "home":
+            render_public_home()
+            return
+
+        if public_view == "vip":
+            render_public_checkout_page()
+            auth_user = st.session_state.get("APEX_AUTH_USER")
+            if not (auth_user and auth_user.get("is_authenticated")):
+                return
+        else:
+            auth_user = render_vip_gate()
+            if not auth_user:
+                return
+
+    render_top_header(auth_user)
+    page_dashboard(fred_key, channel_name, auth_user)
+
+    render_html(f"""
+    <div class="app-foot">
+      <div>© 2026 ApexMacro • Institutional Macro Intelligence</div>
+      <div><span class="live-dot"></span><span style="color:#00ffa3;font-weight:700;">Engine Active &nbsp; {get_current_time().strftime('%H:%M:%S')}</span></div>
+    </div>
+    """)
+
+if __name__ == "__main__":
+    main()
