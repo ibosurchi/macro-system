@@ -554,11 +554,35 @@ def _handle_telegram_update(update: dict) -> None:
     if message:
         text = str(message.get("text", "")).strip()
         command = text.split()[0].split("@", 1)[0].lower() if text else ""
-        if command == "/alerts":
-            from_user = message.get("from") or {}
-            chat = message.get("chat") or {}
-            user_id = str(from_user.get("id", "")).strip()
-            chat_id = str(chat.get("id", "")).strip()
+        from_user = message.get("from") or {}
+        chat = message.get("chat") or {}
+        user_id = str(from_user.get("id", "")).strip()
+        chat_id = str(chat.get("id", "")).strip()
+
+        if command == "/start":
+            client = _find_authorized_telegram_client(user_id)
+            if client and chat_id:
+                _telegram_api("sendMessage", {
+                    "chat_id": chat_id,
+                    "text": (
+                        "🏛️ *Welcome to ApexMacro*\n\n"
+                        "Your Telegram account is connected to an active ApexMacro client.\n\n"
+                        "Use /alerts to choose which market Shift Alerts and personalized hourly market reports you receive.\n\n"
+                        "⚡ *ApexMacro Institutional Terminal*"
+                    ),
+                    "parse_mode": "Markdown",
+                })
+            elif chat_id:
+                _telegram_api("sendMessage", {
+                    "chat_id": chat_id,
+                    "text": (
+                        "🏛️ *ApexMacro*\n\n"
+                        "This Telegram account is not linked to an active ApexMacro client.\n"
+                        "Please register this Telegram ID through your existing ApexMacro client account first."
+                    ),
+                    "parse_mode": "Markdown",
+                })
+        elif command == "/alerts":
             client = _find_authorized_telegram_client(user_id)
             if client and chat_id:
                 _send_alert_settings_menu(chat_id, client)
@@ -641,12 +665,27 @@ def _handle_telegram_update(update: dict) -> None:
         _edit_alert_settings_menu(chat_id, int(message_id), selected)
 
 
+def _telegram_bot_fingerprint(token: str | None = None) -> str:
+    """Non-secret fingerprint used only to separate persisted getUpdates offsets per bot."""
+    raw = str(token if token is not None else TELEGRAM_BOT_TOKEN).strip()
+    if not raw:
+        return ""
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
 def _load_telegram_update_offset() -> int:
+    """Load an offset only when it belongs to the currently configured Telegram bot."""
     try:
         if os.path.exists(TELEGRAM_UPDATE_STATE_FILE):
             with open(TELEGRAM_UPDATE_STATE_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            return max(0, int(data.get("offset", 0))) if isinstance(data, dict) else 0
+            if not isinstance(data, dict):
+                return 0
+            saved_fingerprint = str(data.get("bot_fingerprint", "")).strip()
+            current_fingerprint = _telegram_bot_fingerprint()
+            if not saved_fingerprint or saved_fingerprint != current_fingerprint:
+                return 0
+            return max(0, int(data.get("offset", 0)))
     except Exception:
         pass
     return 0
@@ -656,7 +695,10 @@ def _save_telegram_update_offset(offset: int) -> None:
     try:
         tmp_path = TELEGRAM_UPDATE_STATE_FILE + ".tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump({"offset": int(offset)}, f, indent=2)
+            json.dump({
+                "offset": int(offset),
+                "bot_fingerprint": _telegram_bot_fingerprint(),
+            }, f, indent=2)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, TELEGRAM_UPDATE_STATE_FILE)
@@ -684,12 +726,37 @@ def start_telegram_update_worker() -> None:
         ctrl["running"] = True
 
     def _poll_updates() -> None:
+        token = TELEGRAM_BOT_TOKEN
+        if not token:
+            return
+
+        # getUpdates cannot operate while a webhook is configured.
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{token}/deleteWebhook",
+                json={"drop_pending_updates": False},
+                timeout=10,
+            )
+        except Exception:
+            pass
+
+        # Register the commands in Telegram's command menu.
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{token}/setMyCommands",
+                json={
+                    "commands": [
+                        {"command": "start", "description": "Open ApexMacro bot"},
+                        {"command": "alerts", "description": "Configure market alert subscriptions"},
+                    ]
+                },
+                timeout=10,
+            )
+        except Exception:
+            pass
+
         while True:
             try:
-                token = TELEGRAM_BOT_TOKEN
-                if not token:
-                    time.sleep(5)
-                    continue
                 response = requests.get(
                     f"https://api.telegram.org/bot{token}/getUpdates",
                     params={
@@ -699,10 +766,15 @@ def start_telegram_update_worker() -> None:
                     },
                     timeout=25,
                 )
-                data = response.json()
-                if not data.get("ok"):
-                    time.sleep(2)
+                try:
+                    data = response.json()
+                except Exception:
+                    data = {"ok": False}
+
+                if not response.ok or not data.get("ok"):
+                    time.sleep(3)
                     continue
+
                 for update in data.get("result", []):
                     update_id = int(update.get("update_id", -1))
                     try:
@@ -712,7 +784,7 @@ def start_telegram_update_worker() -> None:
                             ctrl["offset"] = max(int(ctrl["offset"]), update_id + 1)
                             _save_telegram_update_offset(int(ctrl["offset"]))
             except Exception:
-                time.sleep(2)
+                time.sleep(3)
 
     threading.Thread(
         target=_poll_updates,
