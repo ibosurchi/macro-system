@@ -4540,26 +4540,26 @@ def render_causal_macro_ai_panel(analysis: dict) -> None:
 
 @st.fragment(run_every=30)
 def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict | None = None) -> None:
+    """Fast Catalyst Radar: render the full calendar first, analyze only the selected event."""
     if "selected_tz" not in st.session_state or st.session_state["selected_tz"] not in SUPPORTED_TIMEZONES:
         st.session_state["selected_tz"] = "🏛️ Kurdistan & Iraq (UTC+3)"
 
     tz_info = SUPPORTED_TIMEZONES.get(st.session_state["selected_tz"], {"offset": 3, "label": "KRD (UTC+3)"})
     is_admin = auth_user and auth_user.get("is_admin", False)
 
-    with st.spinner("Loading catalyst calendar..."):
-        events = get_upcoming_catalyst_events(tz_info["offset"], tz_info["label"])
-        actuals_cache = load_actuals_cache()
+    # FAST PATH: calendar + published Actuals only. No FRED/news/AI work is done here.
+    events = get_upcoming_catalyst_events(tz_info["offset"], tz_info["label"])
+    actuals_cache = load_actuals_cache()
 
-        # Fast path: synchronize published Actual values without running any heavy analysis.
-        actuals_changed = False
-        for event in events:
-            event_code = str(event.get("code", "")).strip()
-            published_actual = _normalize_forex_factory_actual(event.get("actual_str", ""))
-            if event_code and published_actual and not str(actuals_cache.get(event_code, "")).strip():
-                actuals_cache[event_code] = published_actual
-                actuals_changed = True
-        if actuals_changed:
-            save_actuals_cache(actuals_cache)
+    actuals_changed = False
+    for event in events:
+        event_code = str(event.get("code", "")).strip()
+        published_actual = _normalize_forex_factory_actual(event.get("actual_str", ""))
+        if event_code and published_actual and not str(actuals_cache.get(event_code, "")).strip():
+            actuals_cache[event_code] = published_actual
+            actuals_changed = True
+    if actuals_changed:
+        save_actuals_cache(actuals_cache)
 
     render_html(f"""
     <div class="fc-hero">
@@ -4607,190 +4607,1817 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
         f'</div>'
     )
 
+    if not events:
+        st.info("No High or Medium impact Forex Factory catalysts are available in the current calendar window.")
+        return
+
     currency_flags = {
         "USD": "🇺🇸", "EUR": "🇪🇺", "GBP": "💷", "CAD": "🍁",
         "JPY": "💴", "AUD": "🇦🇺", "NZD": "🇳🇿", "CHF": "🏔️"
     }
 
-    if not events:
-        st.info("No High or Medium impact Forex Factory catalysts are available in the current calendar window.")
-        return
+    # Render ALL event rows first. These buttons are intentionally lightweight.
+    selected_key = "APEX_FORECASTER_SELECTED_EVENT"
+    selected_code = st.session_state.get(selected_key, "")
 
-    # FAST RADAR: render every calendar row first, before any heavy FRED/news/AI work.
-    # This keeps the full event list visible immediately instead of loading one event at a time.
-    if "fc_selected_event_code" not in st.session_state:
-        st.session_state["fc_selected_event_code"] = ""
-
-    event_by_code = {str(e.get("code", "")): e for e in events if str(e.get("code", ""))}
-
-    render_html(
-        '<div style="margin:0 0 10px;color:#718795;font-size:10px;">'
-        'Tap a catalyst to load its full Nowcast, precursors, news and causal-AI analysis.'
-        '</div>'
-    )
-
-    # Pass 1: lightweight rows only. No news, FRED or AI calls happen in this loop.
     for ev in events:
-        ev_code = str(ev.get("code", "")).strip()
         cur = ev.get("currency", "USD")
         cur_flag = currency_flags.get(cur, "🌐")
         impact_icon = "🔴" if ev.get("impact") == "High" else "🟡"
-        saved_actual = str(actuals_cache.get(ev_code, "")).strip()
-        published_actual = _normalize_forex_factory_actual(ev.get("actual_str", ""))
-        effective_actual = saved_actual or published_actual
-        actual_tag = f"  ·  ✅ Actual {effective_actual}" if effective_actual else ""
-        row_label = (
-            f"{cur_flag} {cur}  ·  {ev['title']}  ·  {impact_icon} {ev['impact']}  ·  "
-            f"🕒 {ev['time_str']}  ·  {ev['countdown']}{actual_tag}"
-        )
-        if st.button(
-            row_label,
-            key=f"fc_fast_row_{ev_code}",
-            use_container_width=True,
-        ):
-            st.session_state["fc_selected_event_code"] = ev_code
+        label = f"{cur_flag} {cur} · {ev['title']} · {impact_icon} {ev['impact']} · 🕒 {ev['time_str']} · {ev['countdown']}"
+        if st.button(label, key=f"fc_select_{ev['code']}", use_container_width=True):
+            st.session_state[selected_key] = ev["code"]
+            selected_code = ev["code"]
 
-    selected_code = str(st.session_state.get("fc_selected_event_code", "")).strip()
-    selected_event = event_by_code.get(selected_code)
+    if not selected_code:
+        st.caption("Select a catalyst above to load its full Nowcast, evidence and Causal AI analysis.")
+        return
 
-    # Pass 2: only the selected catalyst performs expensive work.
-    if selected_event:
-        st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
-        render_html('<div class="sec-title">Selected Catalyst Analysis</div>')
+    ev = next((item for item in events if item.get("code") == selected_code), None)
+    if ev is None:
+        st.session_state.pop(selected_key, None)
+        return
 
-        ev = selected_event
-        ev_code = str(ev.get("code", "")).strip()
-        saved_actual = str(actuals_cache.get(ev_code, "")).strip()
-        published_actual = _normalize_forex_factory_actual(ev.get("actual_str", ""))
-        effective_actual = saved_actual or published_actual
-
-        # Fetch shared news only when a catalyst is actually opened.
+    # HEAVY PATH: only the selected event gets news, FRED, Nowcast and AI analysis.
+    with st.spinner(f"Analyzing {ev.get('title','selected catalyst')}..."):
         all_news = fetch_all_instant_news(channel_name)
+        ev_code = ev["code"]
+        saved_actual = str(actuals_cache.get(ev_code, "")).strip()
+        published_actual = _normalize_forex_factory_actual(ev.get("actual_str", ""))
+        effective_actual = saved_actual or published_actual
         nowcast = compute_event_nowcast(ev, fred_key, all_news, actual_override=effective_actual)
-        causal_ai = (
-            get_causal_macro_ai_analysis(
-                ev,
-                nowcast,
-                all_news,
-                DEFAULT_AI_KEY,
-                DEFAULT_AI_PROVIDER,
-                DEFAULT_AI_MODEL,
-                AI_CACHE_VERSION,
-            )
-            if ev.get("impact") == "High"
-            else {"status": "skipped"}
-        )
 
-        # Preserve the learning/backtesting trail, but only after the selected event is analyzed.
+        # Preserve learning/backtesting without precomputing every event during page load.
         try:
-            if effective_actual:
-                _record_forecaster_snapshot(ev, nowcast, actual=effective_actual)
-            else:
-                _record_forecaster_snapshot(ev, nowcast, actual="")
+            _record_forecaster_snapshot(ev, nowcast, actual=effective_actual)
         except Exception:
             pass
 
-        cur = ev.get("currency", "USD")
-        cur_flag = currency_flags.get(cur, "🌐")
-        impact_icon = "🔴" if ev.get("impact") == "High" else "🟡"
-        actual_value = effective_actual or "Pending"
-        actual_color = "#00ffa3" if effective_actual else "#718795"
-        bias_bg = (
-            "rgba(0,255,163,.055)"
-            if nowcast["bias_color"] == "#00ffa3"
-            else (
-                "rgba(255,94,117,.055)"
-                if nowcast["bias_color"] == "#ff5e75"
-                else "rgba(255,209,102,.05)"
+        causal_ai = (
+            get_causal_macro_ai_analysis(
+                ev, nowcast, all_news,
+                DEFAULT_AI_KEY, DEFAULT_AI_PROVIDER, DEFAULT_AI_MODEL, AI_CACHE_VERSION
             )
+            if ev.get("impact") == "High" else {"status": "skipped"}
         )
 
+    cur = ev.get("currency", "USD")
+    cur_flag = currency_flags.get(cur, "🌐")
+    actual_value = effective_actual or "Pending"
+    actual_color = "#00ffa3" if effective_actual else "#718795"
+    bias_bg = "rgba(0,255,163,.055)" if nowcast["bias_color"] == "#00ffa3" else ("rgba(255,94,117,.055)" if nowcast["bias_color"] == "#ff5e75" else "rgba(255,209,102,.05)")
+
+    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+    render_html(f'<div class="sec-title">Selected Catalyst — {cur_flag} {cur} · {ev["title"]}</div>')
+
+    render_html(f"""
+    <div class="fc-body" style="padding-top:4px;">
+      <div class="fc-time" style="margin-bottom:10px;">📅 {ev['date_str']} &nbsp;•&nbsp; 🕒 {ev['time_str']} &nbsp;•&nbsp; {ev['countdown']}</div>
+      <div class="fc-metrics">
+        <div class="fc-metric"><div class="fc-metric-l">Forecast</div><div class="fc-metric-v" style="color:#ffd166;">{ev['forecast_str']}</div><div class="fc-metric-note">Market consensus</div></div>
+        <div class="fc-metric"><div class="fc-metric-l">Previous</div><div class="fc-metric-v">{ev['prev_str']}</div><div class="fc-metric-note">Last official release</div></div>
+        <div class="fc-metric"><div class="fc-metric-l">Actual</div><div class="fc-metric-v" style="color:{actual_color};">{actual_value}</div><div class="fc-metric-note">Published print</div></div>
+      </div>
+      <div class="fc-nowcast" style="background:{bias_bg};border:1px solid {nowcast['bias_color']}33;">
+        <div>
+          <div class="fc-now-lbl" style="color:{nowcast['bias_color']};">ApexMacro Nowcast</div>
+          <div class="fc-now-title" style="color:{nowcast['bias_color']};">{nowcast['bias_label']}</div>
+          <div class="fc-now-desc">{nowcast['outcome_desc']}</div>
+          <div style="font-size:9.5px;color:#8fa3b4;margin-top:7px;">Beat <b style="color:#00ffa3;">{nowcast.get('probabilities',{}).get('beat',0):.1f}%</b> &nbsp;•&nbsp; In-line <b style="color:#ffd166;">{nowcast.get('probabilities',{}).get('inline',0):.1f}%</b> &nbsp;•&nbsp; Miss <b style="color:#ff788a;">{nowcast.get('probabilities',{}).get('miss',0):.1f}%</b></div>
+          <div style="font-size:8.8px;color:#718795;margin-top:3px;">Conflict {nowcast.get('conflict_score',0)*100:.0f}% • Evidence quality {nowcast.get('evidence_quality',0)*100:.0f}% • Model: {nowcast.get('event_family','general').title()}</div>
+        </div>
+        <div class="fc-score">
+          <div class="fc-score-num" style="color:{nowcast['bias_color']};">{nowcast['confidence']}%</div>
+          <div class="fc-score-cap">Model confidence</div>
+          <div style="font-size:9px;color:#718795;margin-top:4px;">Baseline: {ev['consensus_bias']}</div>
+        </div>
+      </div>
+      <div class="fc-outlook" style="grid-template-columns:1.45fr repeat(4,.65fr);">
+        <div class="fc-outlook-main">
+          <div class="fc-small-lbl">Direct {cur} trajectory</div>
+          <div class="fc-main-action" style="color:{nowcast['currency_action_color']};">{nowcast['currency_action_en']}</div>
+          <div class="fc-main-desc">{nowcast['currency_action_desc_en']}</div>
+        </div>
+        <div class="fc-asset"><b>🥇 Gold</b>{nowcast['gold_implication']}</div>
+        <div class="fc-asset"><b>💵 USD</b>{nowcast['usd_implication']}</div>
+        <div class="fc-asset"><b>🛢️ Oil</b>{nowcast['oil_implication']}</div>
+        <div class="fc-asset"><b>📊 Nasdaq-100</b>{nowcast['nasdaq_implication']}</div>
+      </div>
+    </div>
+    """)
+
+    render_causal_macro_ai_panel(causal_ai)
+
+    if is_admin:
+        st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+        render_html('<div class="fc-small-lbl" style="margin-bottom:6px;">👑 Admin Actual Override</div>')
+        col_inp, col_btn = st.columns([3, 1])
+        with col_inp:
+            entered_actual_val = st.text_input(
+                f"Actual Value for {ev_code}", value=effective_actual,
+                placeholder="e.g. -0.5% or 0.5", key=f"act_txt_{ev_code}", label_visibility="collapsed"
+            )
+        with col_btn:
+            if st.button("💾 Publish", key=f"act_btn_{ev_code}", use_container_width=True):
+                actuals_cache[ev_code] = entered_actual_val.strip()
+                save_actuals_cache(actuals_cache)
+                st.success("Published!")
+                time.sleep(0.3)
+                st.rerun()
+
+    st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+    render_html('<div class="fc-small-lbl" style="margin-bottom:7px;">Evidence & Precursors</div>')
+    if nowcast["precursor_results"]:
+        p_cols = st.columns(min(len(nowcast["precursor_results"]), 3))
+        for p_idx, p_item in enumerate(nowcast["precursor_results"]):
+            p_col = p_cols[p_idx % len(p_cols)]
+            p_mom_color = "#00ffa3" if p_item["mom"] > 0 else ("#ff5e75" if p_item["mom"] < 0 else "#8fa3b4")
+            p_arr = "▲" if p_item["mom"] > 0 else ("▼" if p_item["mom"] < 0 else "•")
+            with p_col:
+                render_html(f"""
+                <div class="fc-metric" style="margin-bottom:8px;">
+                  <div class="fc-metric-l">{p_item['name']}</div>
+                  <div class="fc-metric-v">{p_item['latest']:.2f}</div>
+                  <div class="fc-metric-note" style="color:{p_mom_color};font-weight:800;">{p_arr} {p_item['mom']:+.2f} MoM</div>
+                </div>
+                """)
+    else:
+        st.caption("No mapped FRED precursor series are available for this catalyst.")
+
+    if nowcast["correlated_articles"]:
+        render_html('<div class="fc-small-lbl" style="margin:8px 0 7px;">Correlated breaking wires & speeches</div>')
+        for a in nowcast["correlated_articles"]:
+            render_html(f"""
+            <div style="padding:8px 10px;background:rgba(0,245,255,.025);border-left:2px solid rgba(0,245,255,.55);border-radius:5px;margin-bottom:6px;font-size:10.5px;color:#dce7ed;line-height:1.45;">
+              <b>{a.get('title', '')}</b><div style="color:#718795;font-size:9px;margin-top:2px;">{a.get('publishedAt', '')}</div>
+            </div>
+            """)
+
+
+def _tron_headers() -> dict[str, str]:
+    headers = {"Accept": "application/json", "User-Agent": "ApexMacro-VIP-Payments/1.0"}
+    if TRONGRID_API_KEY:
+        headers["TRON-PRO-API-KEY"] = TRONGRID_API_KEY
+    return headers
+
+
+def _normalize_txid(value: str) -> str:
+    clean = re.sub(r"\s+", "", str(value or "")).lower()
+    return clean if re.fullmatch(r"[0-9a-f]{64}", clean) else ""
+
+
+def _load_payment_records_unlocked() -> list[dict]:
+    data = _load_persistent_state("vip_payments", PAYMENTS_FILE, [])
+    return data if isinstance(data, list) else []
+
+
+def load_payment_records() -> list[dict]:
+    with _PAYMENT_LOCK:
+        return _load_payment_records_unlocked()
+
+
+def _write_payment_records_unlocked(records: list[dict]) -> None:
+    _save_persistent_state("vip_payments", PAYMENTS_FILE, records if isinstance(records, list) else [])
+
+
+def _payment_record_for_txid(txid: str) -> dict | None:
+    clean = _normalize_txid(txid)
+    if not clean:
+        return None
+    for record in load_payment_records():
+        if str(record.get("txid", "")).lower() == clean:
+            return record
+    return None
+
+
+def _fetch_confirmed_usdt_transfer(txid: str, receiver: str) -> tuple[bool, str, dict | None]:
+    """Find a confirmed USDT TRC20 transfer to receiver and validate its solidified receipt."""
+    clean_txid = _normalize_txid(txid)
+    receiver = str(receiver or "").strip()
+    if not clean_txid:
+        return False, "Enter a valid 64-character TRON transaction ID.", None
+    if not receiver or not receiver.startswith("T"):
+        return False, "The configured TRC20 receiving address is invalid.", None
+
+    url = f"{TRONGRID_BASE_URL}/v1/accounts/{receiver}/transactions/trc20"
+    params = {
+        "only_confirmed": "true",
+        "limit": 200,
+        "contract_address": TRON_USDT_CONTRACT,
+        "order_by": "block_timestamp,desc",
+    }
+    found = None
+    fingerprint = ""
+    try:
+        # Search several recent pages. A buyer normally verifies immediately, so this is ample
+        # while avoiding unbounded external API work.
+        for _ in range(5):
+            call_params = dict(params)
+            if fingerprint:
+                call_params["fingerprint"] = fingerprint
+            response = requests.get(url, params=call_params, headers=_tron_headers(), timeout=12)
+            if response.status_code == 429:
+                return False, "TRON verification is temporarily rate-limited. Please retry in a moment.", None
+            response.raise_for_status()
+            payload = response.json()
+            for item in payload.get("data", []) if isinstance(payload, dict) else []:
+                if str(item.get("transaction_id", "")).lower() == clean_txid:
+                    found = item
+                    break
+            if found:
+                break
+            fingerprint = str((payload.get("meta") or {}).get("fingerprint", "")) if isinstance(payload, dict) else ""
+            if not fingerprint:
+                break
+    except Exception:
+        return False, "Could not reach the TRON network right now. Please retry shortly.", None
+
+    if not found:
+        return False, "Confirmed USDT payment not found yet. Wait for TRON confirmations, then retry.", None
+
+    token_info = found.get("token_info") or {}
+    token_address = str(token_info.get("address", "")).strip()
+    symbol = str(token_info.get("symbol", "")).upper().strip()
+    destination = str(found.get("to", "")).strip()
+    transfer_type = str(found.get("type", "")).lower().strip()
+
+    if token_address != TRON_USDT_CONTRACT or symbol != "USDT":
+        return False, "This transaction is not the supported USDT token on TRON mainnet.", None
+    if destination != receiver:
+        return False, "This transaction was not sent to the ApexMacro payment address.", None
+    if transfer_type and transfer_type != "transfer":
+        return False, "This transaction is not a standard USDT transfer.", None
+
+    try:
+        decimals = int(token_info.get("decimals", 6))
+        raw_value = Decimal(str(found.get("value", "0")))
+        amount = raw_value / (Decimal(10) ** decimals)
+    except (InvalidOperation, ValueError, TypeError):
+        return False, "The USDT amount in this transaction could not be validated.", None
+
+    # Confirm finality using the SolidityNode receipt, not just indexer visibility.
+    try:
+        receipt_response = requests.post(
+            f"{TRONGRID_BASE_URL}/walletsolidity/gettransactioninfobyid",
+            json={"value": clean_txid},
+            headers=_tron_headers(),
+            timeout=12,
+        )
+        if receipt_response.status_code == 429:
+            return False, "TRON finality check is temporarily rate-limited. Please retry shortly.", None
+        receipt_response.raise_for_status()
+        receipt = receipt_response.json()
+    except Exception:
+        return False, "The payment was found, but final confirmation could not be checked yet. Please retry.", None
+
+    if not isinstance(receipt, dict) or not receipt.get("blockNumber"):
+        return False, "Payment found but not fully solidified yet. Please wait and retry.", None
+    receipt_result = str((receipt.get("receipt") or {}).get("result", "SUCCESS")).upper()
+    if receipt_result and receipt_result != "SUCCESS":
+        return False, "The TRON contract execution did not complete successfully.", None
+
+    details = {
+        "txid": clean_txid,
+        "from": str(found.get("from", "")),
+        "to": destination,
+        "amount": str(amount.normalize()),
+        "block_timestamp": found.get("block_timestamp"),
+        "token_contract": token_address,
+        "confirmed": True,
+    }
+    return True, "Confirmed", details
+
+
+def verify_usdt_payment(txid: str, expected_amount: int | float, receiver: str) -> tuple[bool, str, dict | None]:
+    ok, message, details = _fetch_confirmed_usdt_transfer(txid, receiver)
+    if not ok or not details:
+        return ok, message, details
+    try:
+        actual = Decimal(str(details.get("amount", "0")))
+        expected = Decimal(str(expected_amount))
+    except InvalidOperation:
+        return False, "Payment amount validation failed.", None
+    if actual != expected:
+        return False, f"Payment amount is {actual} USDT, but this plan requires exactly {expected} USDT.", details
+    return True, "Payment confirmed.", details
+
+
+def _make_key_for_expiry(client_name: str, expiry_date: date, telegram_id: str, existing_keys: set[str]) -> str:
+    clean_name = re.sub(r"[^A-Z0-9]", "", str(client_name).upper())[:10] or "CLIENT"
+    exp_str = expiry_date.strftime("%Y%m%d")
+    candidates = [clean_name, f"{clean_name[:6]}{str(telegram_id)[-4:]}"]
+    for name_part in candidates:
+        payload = f"{name_part}:{exp_str}:{APEX_SECRET_SALT}"
+        sig = hashlib.sha256(payload.encode()).hexdigest()[:4].upper()
+        key = f"APEX-{name_part}-{exp_str}-{sig}"
+        if key not in existing_keys:
+            return key
+    # Extremely unlikely collision fallback remains compatible with the existing key verifier.
+    suffix = hashlib.sha256(f"{telegram_id}:{time.time_ns()}".encode()).hexdigest()[:4].upper()
+    name_part = f"{clean_name[:5]}{suffix}"[:10]
+    payload = f"{name_part}:{exp_str}:{APEX_SECRET_SALT}"
+    sig = hashlib.sha256(payload.encode()).hexdigest()[:4].upper()
+    return f"APEX-{name_part}-{exp_str}-{sig}"
+
+
+def _activate_verified_payment(client_name: str, telegram_id: str, plan_name: str, payment: dict) -> tuple[bool, str, dict | None]:
+    """Idempotently reserve a TxID and activate/renew one Telegram-linked VIP record."""
+    clean_name = re.sub(r"\s+", " ", str(client_name or "").strip())[:60] or "VIP CLIENT"
+    tg_id = str(telegram_id or "").strip()
+    txid = _normalize_txid(payment.get("txid", ""))
+    plan = VIP_PAYMENT_PLANS.get(plan_name)
+    if not plan or not txid or not re.fullmatch(r"\d{5,15}", tg_id):
+        return False, "Payment activation details are invalid.", None
+
+    with _PAYMENT_LOCK, _VIP_REGISTRY_LOCK:
+        records = _load_payment_records_unlocked()
+        prior = next((r for r in records if str(r.get("txid", "")).lower() == txid), None)
+        if prior:
+            if str(prior.get("telegram_id", "")) != tg_id:
+                return False, "This transaction has already been used for another VIP account.", None
+            if prior.get("status") == "Activated" and prior.get("vip_key"):
+                return True, "This payment was already activated.", prior
+
+        clients = []
+        if os.path.exists(REGISTRY_FILE):
+            try:
+                with open(REGISTRY_FILE, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                clients = loaded if isinstance(loaded, list) else []
+            except Exception:
+                clients = []
+
+        # Renew from the later of today or an existing active expiration date.
+        matching = [c for c in clients if str(c.get("telegram_id", "")).strip() == tg_id]
+        primary = matching[0] if matching else None
+        today = get_current_time().date()
+        base_date = today
+        if primary:
+            try:
+                old_exp = datetime.strptime(str(primary.get("expires_at", "")), "%Y-%m-%d").date()
+                if old_exp > base_date:
+                    base_date = old_exp
+            except Exception:
+                pass
+        expiry_date = base_date + timedelta(days=int(plan["days"]))
+        existing_keys = {str(c.get("key", "")) for c in clients if c is not primary}
+        vip_key = _make_key_for_expiry(clean_name, expiry_date, tg_id, existing_keys)
+
+        if primary:
+            preserved_alerts = primary.get("alert_assets") if "alert_assets" in primary else None
+            primary.update({
+                "client_name": clean_name,
+                "key": vip_key,
+                "telegram_id": tg_id,
+                "duration": plan_name,
+                "expires_at": expiry_date.strftime("%Y-%m-%d"),
+                "status": "Active",
+                "payment_txid": txid,
+                "last_payment_at": get_current_time().strftime("%Y-%m-%d %H:%M:%S"),
+            })
+            if preserved_alerts is not None:
+                primary["alert_assets"] = preserved_alerts
+            # Consolidate legacy duplicate Telegram records to prevent duplicate delivery.
+            clients = [c for c in clients if c is primary or str(c.get("telegram_id", "")).strip() != tg_id]
+        else:
+            primary = {
+                "client_name": clean_name,
+                "key": vip_key,
+                "telegram_id": tg_id,
+                "duration": plan_name,
+                "created_at": get_current_time().strftime("%Y-%m-%d"),
+                "expires_at": expiry_date.strftime("%Y-%m-%d"),
+                "status": "Active",
+                "bound_mobile_id": "",
+                "bound_pc_id": "",
+                "bound_at": "",
+                "payment_txid": txid,
+                "last_payment_at": get_current_time().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            clients.insert(0, primary)
+
+        record = prior if prior is not None else {}
+        record.update({
+            "txid": txid,
+            "client_name": clean_name,
+            "telegram_id": tg_id,
+            "plan": plan_name,
+            "amount_usdt": str(plan["amount"]),
+            "network": "TRON (TRC20)",
+            "receiver": USDT_TRC20_ADDRESS,
+            "sender": payment.get("from", ""),
+            "verified_at": get_current_time().strftime("%Y-%m-%d %H:%M:%S"),
+            "status": "Activated",
+            "vip_key": vip_key,
+            "expires_at": expiry_date.strftime("%Y-%m-%d"),
+        })
+        if prior is None:
+            records.insert(0, record)
+
+        # Both files use atomic replace while locks prevent in-process races.
+        _write_vip_registry_unlocked(clients)
+        _write_payment_records_unlocked(records)
+
+    return True, "VIP activated successfully.", record
+
+
+def _send_vip_activation_telegram(record: dict) -> None:
+    tg_id = str(record.get("telegram_id", "")).strip()
+    if not tg_id or not TELEGRAM_BOT_TOKEN:
+        return
+    _telegram_api("sendMessage", {
+        "chat_id": tg_id,
+        "text": (
+            "✅ *APEXMACRO VIP ACTIVATED*\n"
+            "━━━━━━━━━━━━━━━━━━━\n\n"
+            f"Plan: *{record.get('plan', 'VIP')}*\n"
+            f"Valid until: *{record.get('expires_at', '')}*\n\n"
+            f"🔑 Your VIP Key:\n`{record.get('vip_key', '')}`\n\n"
+            "Use /alerts to configure your personal market notifications.\n\n"
+            "⚡ *ApexMacro Institutional Terminal*"
+        ),
+        "parse_mode": "Markdown",
+    })
+
+
+def _login_paid_client(record: dict) -> bool:
+    key = str(record.get("vip_key", "")).strip().upper()
+    if not key:
+        return False
+    client_id, dev_type = get_client_device_info()
+    ok, user_name, expiry_info = verify_vip_key(key, client_id, dev_type)
+    if not ok:
+        return False
+    sessions = load_sessions_cache()
+    sessions[client_id] = {
+        "key": key,
+        "device_id": client_id,
+        "dev_type": dev_type,
+        "last_active": get_current_time().strftime("%Y-%m-%d %H:%M:%S"),
+        "user_name": user_name,
+        "expiry_info": expiry_info,
+        "is_admin": False,
+    }
+    save_sessions_cache(sessions)
+    st.session_state["APEX_AUTH_USER"] = {
+        "is_authenticated": True,
+        "user_name": user_name,
+        "expiry_info": expiry_info,
+        "is_admin": False,
+        "key": key,
+    }
+    return True
+
+
+def render_payment_admin_summary() -> None:
+    records = load_payment_records()
+    persistence = get_persistence_status()
+    if _supabase_enabled():
+        if persistence.get("backend") in {"supabase", "supabase-configured"}:
+            st.caption("☁️ VIP data persistence: Supabase enabled")
+        else:
+            st.warning("Supabase persistence is configured but currently unavailable; local fallback is active.")
+    else:
+        st.warning("VIP data is using local JSON only. Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to Streamlit Secrets for reboot-safe persistence.")
+    if not records:
+        return
+    st.markdown("---")
+    render_html('<div class="sec-title">Verified VIP Payments</div>')
+    rows = []
+    for r in records[:100]:
+        txid = str(r.get("txid", ""))
+        rows.append({
+            "Client": r.get("client_name", ""),
+            "Telegram ID": r.get("telegram_id", ""),
+            "Plan": r.get("plan", ""),
+            "USDT": r.get("amount_usdt", ""),
+            "Status": r.get("status", ""),
+            "Expires": r.get("expires_at", ""),
+            "TxID": f"{txid[:10]}…{txid[-8:]}" if len(txid) > 20 else txid,
+            "Verified": r.get("verified_at", ""),
+        })
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+_apex_fragment = getattr(st, "fragment", lambda f: f)
+
+
+@_apex_fragment
+def render_vip_checkout() -> None:
+    """Self-service VIP checkout with confirmed USDT-TRC20 verification and activation."""
+    selected_plan = st.session_state.get("APEX_VIP_PLAN", "1 Month")
+    if selected_plan not in VIP_PAYMENT_PLANS:
+        selected_plan = "1 Month"
+        st.session_state["APEX_VIP_PLAN"] = selected_plan
+
+    render_html("""
+    <div style="margin:14px 0 18px;padding:22px 20px;border-radius:20px;
+                background:linear-gradient(180deg,rgba(9,18,30,.96),rgba(5,10,18,.98));
+                border:1px solid rgba(0,245,255,.22);
+                box-shadow:0 18px 55px rgba(0,0,0,.45),0 0 30px rgba(0,245,255,.08);">
+      <div style="font-size:10px;font-weight:850;letter-spacing:2.5px;color:#00f5ff;text-transform:uppercase;">ApexMacro VIP Access</div>
+      <div style="font-size:23px;font-weight:900;color:#f4fbff;margin-top:7px;">Choose Your Membership</div>
+      <div style="font-size:12px;color:#8fa3b4;margin-top:6px;line-height:1.6;">
+        Institutional macro intelligence, Smart Shift Alerts, personalized Telegram alerts and the full ApexMacro terminal.
+      </div>
+    </div>
+    """)
+
+    identity_cols = st.columns(2)
+    with identity_cols[0]:
+        client_name = st.text_input(
+            "Your name",
+            key="APEX_PAYMENT_CLIENT_NAME",
+            placeholder="Name for your VIP license",
+        )
+    with identity_cols[1]:
+        telegram_id = st.text_input(
+            "Telegram ID",
+            key="APEX_PAYMENT_TELEGRAM_ID",
+            placeholder="e.g. 7153364048",
+            help="Send /start to the ApexMacro bot to see your Telegram ID.",
+        )
+    valid_identity = bool(client_name.strip()) and bool(re.fullmatch(r"\d{5,15}", telegram_id.strip()))
+    if telegram_id and not re.fullmatch(r"\d{5,15}", telegram_id.strip()):
+        st.caption("Telegram ID must contain numbers only.")
+
+    # Compact native selector: no URL navigation and no giant button cards.
+    # Because this function is a Streamlit fragment, changing the plan reruns only checkout.
+    render_html("""
+    <div style="margin:18px 0 8px;">
+      <div style="font-size:10px;font-weight:900;letter-spacing:1.8px;color:#7f95a7;text-transform:uppercase;">
+        Select a plan
+      </div>
+    </div>
+    <style>
+    .st-key-APEX_VIP_PLAN_SELECTOR [data-testid="stRadio"] > div {
+        display:grid !important;
+        grid-template-columns:1fr 1fr !important;
+        gap:10px !important;
+    }
+    .st-key-APEX_VIP_PLAN_SELECTOR [data-testid="stRadio"] label {
+        min-height:58px !important;
+        padding:0 14px !important;
+        border:1px solid rgba(255,255,255,.12) !important;
+        border-radius:14px !important;
+        background:rgba(8,16,27,.82) !important;
+        display:flex !important;
+        align-items:center !important;
+        justify-content:center !important;
+        transition:border-color .15s ease, background .15s ease, box-shadow .15s ease !important;
+    }
+    .st-key-APEX_VIP_PLAN_SELECTOR [data-testid="stRadio"] label:hover {
+        border-color:rgba(0,245,255,.55) !important;
+        background:rgba(0,245,255,.055) !important;
+    }
+    .st-key-APEX_VIP_PLAN_SELECTOR [data-testid="stRadio"] label:has(input:checked) {
+        border-color:#00f5ff !important;
+        background:linear-gradient(180deg,rgba(0,245,255,.12),rgba(0,245,255,.055)) !important;
+        box-shadow:0 0 0 1px rgba(0,245,255,.10),0 10px 28px rgba(0,245,255,.08) !important;
+    }
+    .st-key-APEX_VIP_PLAN_SELECTOR [data-testid="stRadio"] label p {
+        font-size:13px !important;
+        font-weight:850 !important;
+        color:#eaf7ff !important;
+    }
+    .st-key-APEX_VIP_PLAN_SELECTOR [data-testid="stRadio"] label:has(input:checked) p {
+        color:#33f4ff !important;
+    }
+    .st-key-APEX_VIP_PLAN_SELECTOR [data-testid="stRadio"] [data-testid="stWidgetLabel"] {
+        display:none !important;
+    }
+    </style>
+    """)
+
+    selector_labels = {
+        "1 Month": "1 Month  •  $29",
+        "3 Months": "3 Months  •  $75",
+    }
+    reverse_labels = {v: k for k, v in selector_labels.items()}
+    selector_options = [selector_labels["1 Month"], selector_labels["3 Months"]]
+    current_label = selector_labels[selected_plan]
+
+    picked_label = st.radio(
+        "Choose plan",
+        selector_options,
+        index=selector_options.index(current_label),
+        horizontal=True,
+        label_visibility="collapsed",
+        key="APEX_VIP_PLAN_SELECTOR",
+    )
+    picked_plan = reverse_labels.get(picked_label, "1 Month")
+    if picked_plan != st.session_state.get("APEX_VIP_PLAN"):
+        st.session_state["APEX_VIP_PLAN"] = picked_plan
+        st.session_state["APEX_CHECKOUT_OPEN"] = False
+    selected_plan = picked_plan
+    info = VIP_PAYMENT_PLANS[selected_plan]
+
+    badge = "BEST VALUE" if selected_plan == "3 Months" else "MONTHLY"
+    saving = (
+        '<div style="font-size:11px;color:#7fffd4;margin-top:5px;font-weight:750;">Save $12 vs monthly</div>'
+        if selected_plan == "3 Months" else
+        '<div style="font-size:11px;color:#8296a8;margin-top:5px;">Flexible monthly access</div>'
+    )
+    render_html(f"""
+    <div style="margin:12px 0 4px;padding:18px 18px;border-radius:17px;
+                background:linear-gradient(135deg,rgba(8,18,29,.96),rgba(6,13,22,.94));
+                border:1px solid rgba(0,245,255,.20);
+                box-shadow:0 14px 34px rgba(0,0,0,.28);">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px;">
+        <div>
+          <div style="font-size:17px;font-weight:900;color:#f4fbff;">{selected_plan}</div>
+          <div style="margin-top:7px;">
+            <span style="font-size:31px;font-weight:950;color:#ffffff;">${info["amount"]}</span>
+            <span style="font-size:12px;color:#8296a8;margin-left:4px;">USDT</span>
+          </div>
+          {saving}
+        </div>
+        <div style="font-size:9px;font-weight:900;letter-spacing:1.2px;color:#00f5ff;
+                    background:rgba(0,245,255,.10);border:1px solid rgba(0,245,255,.16);
+                    padding:6px 9px;border-radius:999px;white-space:nowrap;">{badge}</div>
+      </div>
+      <div style="height:1px;background:rgba(255,255,255,.07);margin:15px 0 12px;"></div>
+      <div style="display:flex;gap:7px;align-items:center;font-size:12px;color:#b7c8d5;">
+        <span style="color:#00f5ff;">✓</span>
+        <span>{info["days"]} days full ApexMacro VIP access</span>
+      </div>
+      <div style="display:flex;gap:7px;align-items:center;font-size:12px;color:#b7c8d5;margin-top:7px;">
+        <span style="color:#00f5ff;">✓</span>
+        <span>Smart Shift + personalized Telegram alerts</span>
+      </div>
+    </div>
+    """)
+
+
+    selected_plan = st.session_state.get("APEX_VIP_PLAN", "1 Month")
+    selected_info = VIP_PAYMENT_PLANS[selected_plan]
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+    if not st.session_state.get("APEX_CHECKOUT_OPEN", False):
+        if st.button(
+            f"Continue to Payment — ${selected_info['amount']} USDT",
+            key="apex_continue_payment",
+            type="primary",
+            use_container_width=True,
+            disabled=not valid_identity,
+        ):
+            st.session_state["APEX_CHECKOUT_OPEN"] = True
+            st.rerun()
+        if not valid_identity:
+            st.caption("Enter your name and Telegram ID to continue.")
+        return
+
+    render_html(f"""
+    <div style="margin-top:12px;padding:22px 20px;border-radius:20px;background:linear-gradient(180deg,rgba(9,18,30,.97),rgba(4,9,16,.99));border:1px solid rgba(255,209,102,.28);box-shadow:0 18px 60px rgba(0,0,0,.5);">
+      <div style="display:flex;justify-content:space-between;gap:14px;align-items:flex-start;">
+        <div><div style="font-size:10px;color:#ffd166;font-weight:900;letter-spacing:2px;text-transform:uppercase;">Secure Crypto Checkout</div><div style="font-size:20px;color:#f5fbff;font-weight:900;margin-top:5px;">Pay with USDT — TRC20</div></div>
+        <div style="text-align:right;"><div style="font-size:10px;color:#8fa3b4;">AMOUNT DUE</div><div style="font-size:24px;color:#00f5ff;font-weight:950;">${selected_info['amount']} USDT</div></div>
+      </div>
+      <div style="height:1px;background:linear-gradient(90deg,rgba(255,209,102,.35),transparent);margin:18px 0;"></div>
+      <div style="font-size:12px;color:#dceaf2;line-height:1.65;">Send exactly <b>{selected_info['amount']} USDT</b> using <b>TRON (TRC20)</b> only. Do not use ERC20, BEP20 or another network.</div>
+    </div>
+    """)
+
+    if not USDT_TRC20_ADDRESS:
+        st.error("Payment address is not configured yet. Add USDT_TRC20_ADDRESS to Streamlit Secrets.")
+    else:
+        qr_url = "https://api.qrserver.com/v1/create-qr-code/" + f"?size=320x320&margin=14&data={quote(USDT_TRC20_ADDRESS, safe='')}"
+        q1, q2 = st.columns([1, 1.45])
+        with q1:
+            st.image(qr_url, caption="USDT • TRON (TRC20)", use_container_width=True)
+        with q2:
+            st.markdown("**Wallet Address**")
+            st.code(USDT_TRC20_ADDRESS, language=None)
+            st.caption("Copy the address exactly. Network: TRON (TRC20) only.")
+            render_html(f"""
+            <div style="margin-top:12px;padding:13px 14px;border-radius:13px;background:rgba(0,245,255,.06);border:1px solid rgba(0,245,255,.16);">
+              <div style="font-size:10px;color:#8fa3b4;text-transform:uppercase;letter-spacing:1.3px;">ORDER</div>
+              <div style="font-size:14px;color:#f3fbff;font-weight:800;margin-top:3px;">{selected_plan} • ${selected_info['amount']} USDT</div>
+              <div style="font-size:11px;color:#8fa3b4;margin-top:5px;">Telegram ID: {telegram_id.strip()}</div>
+            </div>
+            """)
+
+    st.markdown("#### Already paid?")
+    txid = st.text_input("Transaction ID (TxID)", key="APEX_PAYMENT_TXID", placeholder="Paste your 64-character TRON transaction hash", help="Use the TxID shown by your wallet/exchange after sending USDT.")
+
+    verify_col, back_col = st.columns([1.35, 1])
+    with verify_col:
+        if st.button("🔎 Verify & Activate VIP", key="apex_verify_payment", type="primary", use_container_width=True):
+            clean_txid = _normalize_txid(txid)
+            if not valid_identity:
+                st.error("Enter a valid name and Telegram ID.")
+            elif not USDT_TRC20_ADDRESS:
+                st.error("Payment address is not configured.")
+            elif not clean_txid:
+                st.warning("Enter a valid 64-character TRON TxID first.")
+            else:
+                prior = _payment_record_for_txid(clean_txid)
+                if prior and str(prior.get("telegram_id", "")) != telegram_id.strip():
+                    st.error("This TxID has already been used for another VIP account.")
+                elif prior and prior.get("status") == "Activated" and prior.get("vip_key"):
+                    record = prior
+                    st.session_state["APEX_PAYMENT_SUCCESS"] = record
+                    st.success("✅ This payment is already verified and your VIP is active.")
+                else:
+                    with st.spinner("Checking the confirmed USDT transaction on TRON…"):
+                        ok, message, payment = verify_usdt_payment(clean_txid, selected_info["amount"], USDT_TRC20_ADDRESS)
+                    if not ok or not payment:
+                        st.error(message)
+                    else:
+                        activated, activation_message, record = _activate_verified_payment(client_name, telegram_id, selected_plan, payment)
+                        if not activated or not record:
+                            st.error(activation_message)
+                        else:
+                            st.session_state["APEX_PAYMENT_SUCCESS"] = record
+                            _send_vip_activation_telegram(record)
+                            st.success("✅ Payment confirmed — ApexMacro VIP is now active.")
+
+    with back_col:
+        if st.button("← Change Plan", key="apex_change_plan", use_container_width=True):
+            st.session_state["APEX_CHECKOUT_OPEN"] = False
+            st.rerun()
+
+    success_record = st.session_state.get("APEX_PAYMENT_SUCCESS")
+    if success_record and str(success_record.get("telegram_id", "")) == telegram_id.strip():
         render_html(f"""
-        <div class="fc-body" style="padding-top:4px;">
-          <div class="fc-time" style="margin-bottom:10px;">{cur_flag} {cur} &nbsp;•&nbsp; {impact_icon} {ev['impact']} &nbsp;•&nbsp; 📅 {ev['date_str']} &nbsp;•&nbsp; 🕒 {ev['time_str']} &nbsp;•&nbsp; {ev['countdown']}</div>
-          <div class="fc-metrics">
-            <div class="fc-metric"><div class="fc-metric-l">Forecast</div><div class="fc-metric-v" style="color:#ffd166;">{ev['forecast_str']}</div><div class="fc-metric-note">Market consensus</div></div>
-            <div class="fc-metric"><div class="fc-metric-l">Previous</div><div class="fc-metric-v">{ev['prev_str']}</div><div class="fc-metric-note">Last official release</div></div>
-            <div class="fc-metric"><div class="fc-metric-l">Actual</div><div class="fc-metric-v" style="color:{actual_color};">{actual_value}</div><div class="fc-metric-note">Published print</div></div>
-          </div>
-          <div class="fc-nowcast" style="background:{bias_bg};border:1px solid {nowcast['bias_color']}33;">
+        <div style="margin-top:18px;padding:20px;border-radius:18px;background:rgba(0,255,163,.06);border:1px solid rgba(0,255,163,.25);">
+          <div style="font-size:11px;color:#00ffa3;font-weight:900;letter-spacing:1.5px;">PAYMENT CONFIRMED</div>
+          <div style="font-size:18px;color:#f5fbff;font-weight:900;margin-top:5px;">Your ApexMacro VIP is active</div>
+          <div style="font-size:12px;color:#a9bdc9;margin-top:7px;">Valid until {success_record.get('expires_at','')}</div>
+        </div>
+        """)
+        st.markdown("**Your VIP License Key**")
+        st.code(str(success_record.get("vip_key", "")), language=None)
+        st.caption("Save this key. It has also been sent to your Telegram account when Telegram allows delivery.")
+        if st.button("⚡ Enter ApexMacro VIP Terminal", key="apex_enter_after_payment", type="primary", use_container_width=True):
+            if _login_paid_client(success_record):
+                st.rerun()
+            else:
+                st.error("VIP is active, but automatic login could not complete. Use the VIP key shown above.")
+
+    st.caption("ApexMacro never asks for your wallet seed phrase or private key.")
+
+
+
+def _set_public_view(view: str) -> None:
+    """Compatibility state + real Streamlit route navigation."""
+    clean_view = str(view or "home").strip().lower()
+    st.session_state["APEX_PUBLIC_VIEW"] = clean_view
+    route_map = {
+        "home": "pages/home.py",
+        "login": "pages/login.py",
+        "vip": "pages/vip.py",
+    }
+    target = route_map.get(clean_view)
+    if target:
+        st.switch_page(target)
+
+
+def render_public_nav(active: str = "home") -> None:
+    """Premium public navigation matching the supplied ApexMacro reference."""
+    st.markdown("""
+    <style>
+      .st-key-apex_public_header{
+        position:relative !important;
+        width:min(1500px, calc(100% - 56px)) !important;
+        max-width:1500px !important;
+        min-height:106px !important;
+        margin:28px auto 42px !important;
+        padding:0 28px !important;
+        border-radius:30px !important;
+        overflow:visible !important;
+        background:
+          radial-gradient(circle at 4% 0%,rgba(0,239,255,.065),transparent 25%),
+          linear-gradient(180deg,rgba(6,18,27,.90),rgba(4,12,19,.94)) !important;
+        border:1px solid rgba(22,224,238,.38) !important;
+        box-shadow:
+          inset 0 1px 0 rgba(255,255,255,.055),
+          0 0 0 1px rgba(0,229,246,.025),
+          0 18px 48px rgba(0,0,0,.30),
+          0 0 24px rgba(0,232,247,.045) !important;
+        backdrop-filter:blur(22px) saturate(130%) !important;
+        -webkit-backdrop-filter:blur(22px) saturate(130%) !important;
+      }
+
+      .st-key-apex_public_header::after{
+        content:"";
+        position:absolute;
+        left:24px; right:24px; bottom:-1px;
+        height:1px;
+        background:linear-gradient(90deg,transparent,rgba(0,245,255,.72),transparent);
+        filter:blur(.2px);
+        pointer-events:none;
+      }
+
+      .st-key-apex_public_header .apex-ref-brand-wrap{
+        position:absolute !important;
+        left:44px !important;
+        top:50% !important;
+        transform:translateY(-50%) !important;
+        display:flex !important;
+        align-items:center !important;
+        margin:0 !important;
+        z-index:10 !important;
+      }
+
+      .apex-ref-brand{
+        display:flex !important;
+        align-items:center !important;
+        gap:20px !important;
+      }
+
+      .apex-ref-logo{
+        width:76px !important;
+        height:76px !important;
+        min-width:76px !important;
+        border-radius:22px !important;
+        display:flex !important;
+        align-items:center !important;
+        justify-content:center !important;
+        background:linear-gradient(145deg,rgba(5,30,41,.92),rgba(4,13,22,.95)) !important;
+        border:1px solid rgba(0,239,255,.58) !important;
+        box-shadow:
+          inset 0 1px 0 rgba(255,255,255,.05),
+          0 0 26px rgba(0,234,255,.08) !important;
+      }
+      .apex-ref-logo svg{
+        width:48px !important;
+        height:48px !important;
+      }
+
+      .apex-ref-brand-name{
+        color:#f6f8fb !important;
+        font-size:29px !important;
+        line-height:1 !important;
+        font-weight:950 !important;
+        letter-spacing:2.6px !important;
+        white-space:nowrap !important;
+      }
+      .apex-ref-brand-name span{color:#f6b934 !important;}
+
+      .apex-ref-brand-sub{
+        margin-top:9px !important;
+        color:#9ba9b5 !important;
+        font-size:10.5px !important;
+        line-height:1 !important;
+        font-weight:750 !important;
+        letter-spacing:5px !important;
+        white-space:nowrap !important;
+      }
+
+      .apex-ref-toplinks{
+        position:absolute !important;
+        left:55% !important;
+        top:50% !important;
+        transform:translate(-50%,-50%) !important;
+        display:flex !important;
+        align-items:center !important;
+        gap:48px !important;
+        z-index:12 !important;
+        white-space:nowrap !important;
+      }
+
+      .apex-ref-toplinks a{
+        display:inline-flex !important;
+        align-items:center !important;
+        justify-content:center !important;
+        min-height:40px !important;
+        padding:0 !important;
+        border:0 !important;
+        border-radius:0 !important;
+        background:transparent !important;
+        color:#f0f4f7 !important;
+        text-decoration:none !important;
+        font-size:18px !important;
+        line-height:1 !important;
+        font-weight:800 !important;
+        letter-spacing:-.15px !important;
+        text-shadow:0 0 14px rgba(255,255,255,.025);
+        transition:.18s ease !important;
+      }
+
+      .apex-ref-toplinks a:hover{
+        color:#20effb !important;
+        text-shadow:0 0 14px rgba(0,239,255,.18) !important;
+      }
+
+
+      .st-key-apex_public_header .st-key-apex_profile_access,
+      .st-key-apex_public_header [class*="st-key-public_home_back_"]{
+        position:absolute !important;
+        top:50% !important;
+        right:34px !important;
+        transform:translateY(-50%) !important;
+        width:68px !important;
+        height:68px !important;
+        margin:0 !important;
+        z-index:20 !important;
+      }
+
+      .st-key-apex_profile_access button,
+      .st-key-public_home_back_login button,
+      .st-key-public_home_back_vip button{
+        width:68px !important;
+        height:68px !important;
+        min-height:68px !important;
+        padding:0 !important;
+        margin:0 !important;
+        border-radius:22px !important;
+        border:1px solid rgba(0,239,255,.68) !important;
+        background:#031019 !important;
+        box-shadow:
+          inset 0 1px 0 rgba(255,255,255,.04),
+          0 0 22px rgba(0,239,255,.065) !important;
+      }
+
+      .st-key-apex_profile_access button{
+        background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Ccircle cx='24' cy='16' r='7' fill='%2300efff'/%3E%3Cpath d='M11 38c1-9 6-13 13-13s12 4 13 13z' fill='%2300efff'/%3E%3C/svg%3E") !important;
+        background-repeat:no-repeat !important;
+        background-position:center !important;
+        background-size:34px 34px !important;
+      }
+      .st-key-apex_profile_access button p{font-size:0 !important;}
+
+      .st-key-apex_profile_access button:hover{
+        border-color:#28f4ff !important;
+        box-shadow:0 0 28px rgba(0,239,255,.16) !important;
+      }
+
+      .apex-ref-navline{display:none !important;}
+
+      @media(max-width:1250px){
+        .st-key-apex_public_header{
+          width:calc(100% - 34px) !important;
+          min-height:94px !important;
+          padding:0 20px !important;
+        }
+        .st-key-apex_public_header .apex-ref-brand-wrap{left:26px !important;}
+        .apex-ref-logo{width:62px !important;height:62px !important;min-width:62px !important;border-radius:18px !important;}
+        .apex-ref-logo svg{width:39px !important;height:39px !important;}
+        .apex-ref-brand{gap:14px !important;}
+        .apex-ref-brand-name{font-size:23px !important;}
+        .apex-ref-brand-sub{font-size:8.5px !important;letter-spacing:3.8px !important;}
+        .apex-ref-toplinks{left:55% !important;gap:25px !important;}
+        .apex-ref-toplinks a{font-size:14px !important;}
+        .st-key-apex_public_header .st-key-apex_profile_access{right:24px !important;width:58px !important;height:58px !important;}
+        .st-key-apex_profile_access button{width:58px !important;height:58px !important;min-height:58px !important;border-radius:18px !important;}
+      }
+
+      @media(max-width:900px){
+        .st-key-apex_public_header{
+          width:calc(100% - 22px) !important;
+          min-height:122px !important;
+          margin:12px auto 20px !important;
+          border-radius:22px !important;
+        }
+        .st-key-apex_public_header .apex-ref-brand-wrap{
+          left:18px !important;
+          top:17px !important;
+          transform:none !important;
+        }
+        .apex-ref-logo{width:48px !important;height:48px !important;min-width:48px !important;border-radius:14px !important;}
+        .apex-ref-logo svg{width:29px !important;height:29px !important;}
+        .apex-ref-brand{gap:10px !important;}
+        .apex-ref-brand-name{font-size:18px !important;letter-spacing:1.6px !important;}
+        .apex-ref-brand-sub{margin-top:6px !important;font-size:7px !important;letter-spacing:2.5px !important;}
+        .apex-ref-toplinks{
+          left:16px !important;
+          right:16px !important;
+          top:78px !important;
+          transform:none !important;
+          justify-content:center !important;
+          gap:18px !important;
+          overflow-x:auto !important;
+          scrollbar-width:none !important;
+        }
+        .apex-ref-toplinks::-webkit-scrollbar{display:none !important;}
+        .apex-ref-toplinks a{font-size:10px !important;min-height:28px !important;}
+        .st-key-apex_profile_access button{
+          width:44px !important;height:44px !important;min-height:44px !important;border-radius:13px !important;
+          background-size:25px 25px !important;
+        }
+      }
+
+      @media(max-width:430px){
+        .apex-ref-toplinks{gap:13px !important;}
+        .apex-ref-toplinks a{font-size:9px !important;}
+      }
+    </style>
+    """, unsafe_allow_html=True)
+
+    with st.container(key="apex_public_header"):
+        render_html("""
+        <div class="apex-ref-brand-wrap">
+          <div class="apex-ref-brand">
+            <div class="apex-ref-logo">
+              <svg viewBox="0 0 360 365" fill="none">
+                <defs>
+                  <linearGradient id="apexRefLogo" x1="0" y1="0" x2="1" y2="1">
+                    <stop stop-color="#1AF4FF"/>
+                    <stop offset="1" stop-color="#00BBD2"/>
+                  </linearGradient>
+                </defs>
+                <path d="M0 365L180 0L360 365H288L180 130L72 365Z" fill="url(#apexRefLogo)"/>
+              </svg>
+            </div>
             <div>
-              <div class="fc-now-lbl" style="color:{nowcast['bias_color']};">ApexMacro Nowcast</div>
-              <div class="fc-now-title" style="color:{nowcast['bias_color']};">{nowcast['bias_label']}</div>
-              <div class="fc-now-desc">{nowcast['outcome_desc']}</div>
-              <div style="font-size:9.5px;color:#8fa3b4;margin-top:7px;">Beat <b style="color:#00ffa3;">{nowcast.get('probabilities',{}).get('beat',0):.1f}%</b> &nbsp;•&nbsp; In-line <b style="color:#ffd166;">{nowcast.get('probabilities',{}).get('inline',0):.1f}%</b> &nbsp;•&nbsp; Miss <b style="color:#ff788a;">{nowcast.get('probabilities',{}).get('miss',0):.1f}%</b></div>
-              <div style="font-size:8.8px;color:#718795;margin-top:3px;">Conflict {nowcast.get('conflict_score',0)*100:.0f}% • Evidence quality {nowcast.get('evidence_quality',0)*100:.0f}% • Model: {nowcast.get('event_family','general').title()}</div>
-            </div>
-            <div class="fc-score">
-              <div class="fc-score-num" style="color:{nowcast['bias_color']};">{nowcast['confidence']}%</div>
-              <div class="fc-score-cap">Model confidence</div>
-              <div style="font-size:9px;color:#718795;margin-top:4px;">Baseline: {ev['consensus_bias']}</div>
+              <div class="apex-ref-brand-name">APEX<span>MACRO</span></div>
+              <div class="apex-ref-brand-sub">INTELLIGENCE DESK</div>
             </div>
           </div>
-          <div class="fc-outlook" style="grid-template-columns:1.45fr repeat(4,.65fr);">
-            <div class="fc-outlook-main">
-              <div class="fc-small-lbl">Direct {cur} trajectory</div>
-              <div class="fc-main-action" style="color:{nowcast['currency_action_color']};">{nowcast['currency_action_en']}</div>
-              <div class="fc-main-desc">{nowcast['currency_action_desc_en']}</div>
-            </div>
-            <div class="fc-asset"><b>🥇 Gold</b>{nowcast['gold_implication']}</div>
-            <div class="fc-asset"><b>💵 USD</b>{nowcast['usd_implication']}</div>
-            <div class="fc-asset"><b>🛢️ Oil</b>{nowcast['oil_implication']}</div>
-            <div class="fc-asset"><b>📊 Nasdaq-100</b>{nowcast['nasdaq_implication']}</div>
+        </div>
+
+        <nav class="apex-ref-toplinks" aria-label="ApexMacro home sections">
+          <a href="/#apex-platform">Platform</a>
+          <a href="/#apex-features">Features</a>
+          <a href="/#apex-data">Data Sources</a>
+          <a href="/vip">Pricing</a>
+          <a href="/#apex-company">Company</a>
+        </nav>
+
+        """)
+
+        if active == "home":
+            if st.button("Access", key="apex_profile_access", help="VIP Login / Get VIP"):
+                _set_public_view("login")
+                st.rerun()
+        else:
+            if st.button("←", key=f"public_home_back_{active}", help="Back to Home"):
+                _set_public_view("home")
+                st.rerun()
+
+    render_html('<div class="apex-ref-navline"></div>')
+
+
+
+
+
+
+def render_public_home() -> None:
+    """Public ApexMacro landing page matching the supplied premium reference."""
+    st.markdown("""
+    <style>
+      .block-container{
+        max-width:1600px !important;
+        padding-top:18px !important;
+        padding-left:28px !important;
+        padding-right:28px !important;
+      }
+      .apex-home-shell{
+        width:100%;
+        max-width:1500px;
+        margin:0 auto;
+      }
+
+      .apex-ref-hero{
+        position:relative;
+        overflow:hidden;
+        min-height:650px;
+        padding:58px 52px 44px;
+        border-radius:30px;
+        background:
+          radial-gradient(circle at 55% 10%,rgba(0,238,255,.035),transparent 25%),
+          linear-gradient(90deg,#031019 0%,#031019 44%,rgba(3,16,25,.66) 59%,rgba(2,10,16,.08) 100%);
+        border:1px solid rgba(0,227,242,.53);
+        box-shadow:
+          inset 0 1px 0 rgba(255,255,255,.035),
+          0 30px 80px rgba(0,0,0,.38),
+          0 0 22px rgba(0,231,246,.035);
+      }
+
+      .apex-ref-hero::before{
+        content:"";
+        position:absolute;
+        inset:0;
+        z-index:1;
+        pointer-events:none;
+        background:
+          radial-gradient(circle at 53% 45%,rgba(0,228,246,.055),transparent 30%),
+          linear-gradient(90deg,rgba(2,11,18,.98) 0%,rgba(2,11,18,.90) 42%,rgba(2,11,18,.40) 56%,transparent 72%);
+      }
+
+      .apex-ref-globe{
+        position:absolute;
+        z-index:0;
+        right:0;
+        top:0;
+        bottom:0;
+        width:58%;
+        background-image:url("data:image/webp;base64,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");
+        background-position:center right;
+        background-size:cover;
+        background-repeat:no-repeat;
+        opacity:.98;
+        filter:saturate(1.08) contrast(1.04);
+        mask-image:linear-gradient(90deg,transparent 0%,rgba(0,0,0,.38) 15%,#000 35%);
+        -webkit-mask-image:linear-gradient(90deg,transparent 0%,rgba(0,0,0,.38) 15%,#000 35%);
+      }
+
+      .apex-ref-hero-inner{
+        position:relative;
+        z-index:3;
+        width:50%;
+        max-width:690px;
+      }
+
+      .apex-ref-badge{
+        display:inline-flex;
+        align-items:center;
+        gap:11px;
+        height:42px;
+        padding:0 18px;
+        border-radius:999px;
+        background:rgba(0,255,185,.045);
+        border:1px solid rgba(0,255,185,.34);
+        color:#83ffe0;
+        font-size:13px;
+        font-weight:900;
+        letter-spacing:1.8px;
+        text-transform:uppercase;
+        box-shadow:0 0 18px rgba(0,255,185,.045);
+      }
+      .apex-ref-badge::before{
+        content:"";
+        width:8px;height:8px;border-radius:50%;
+        background:#00f0b0;
+        box-shadow:0 0 12px #00f0b0;
+      }
+
+      .apex-ref-title{
+        margin-top:32px;
+        max-width:700px;
+        font-size:clamp(66px,4.9vw,88px);
+        line-height:.93;
+        letter-spacing:-4.1px;
+        font-weight:950;
+      }
+      .apex-ref-title .line-white{color:#f5f7f9;}
+      .apex-ref-title .line-cyan{
+        color:#18e6f5;
+        text-shadow:0 0 18px rgba(24,230,245,.07);
+      }
+      .apex-ref-title .line-gold{
+        color:#f3b638;
+        text-shadow:0 0 18px rgba(243,182,56,.06);
+      }
+
+      .apex-ref-copy{
+        margin-top:25px;
+        max-width:630px;
+        color:#d3dce3;
+        font-size:18px;
+        line-height:1.58;
+        font-weight:450;
+      }
+
+      .apex-ref-mini-grid{
+        margin-top:28px;
+        display:grid;
+        grid-template-columns:repeat(2,minmax(0,1fr));
+        gap:20px;
+        max-width:650px;
+      }
+      .apex-ref-mini-card{
+        min-height:108px;
+        display:flex;
+        align-items:center;
+        gap:20px;
+        padding:15px 18px;
+        border-radius:20px;
+        background:linear-gradient(180deg,rgba(4,13,21,.66),rgba(2,8,13,.80));
+        border:1px solid rgba(117,178,192,.20);
+        box-shadow:inset 0 1px 0 rgba(255,255,255,.025);
+        backdrop-filter:blur(12px);
+      }
+      .apex-ref-mini-icon{
+        width:66px;height:66px;min-width:66px;
+        border-radius:50%;
+        display:flex;align-items:center;justify-content:center;
+        color:#1defff;
+        border:1px solid rgba(0,237,255,.47);
+        background:rgba(0,237,255,.035);
+        box-shadow:0 0 18px rgba(0,237,255,.055);
+      }
+      .apex-ref-mini-card.gold .apex-ref-mini-icon{
+        color:#24edff;
+        border-color:rgba(0,237,255,.47);
+        background:rgba(0,237,255,.035);
+      }
+      .apex-ref-mini-title{
+        color:#f6f8fa;
+        font-size:20px;
+        font-weight:900;
+        line-height:1.1;
+      }
+      .apex-ref-mini-sub{
+        margin-top:8px;
+        color:#aebac4;
+        font-size:15px;
+        line-height:1.2;
+      }
+
+      /* Preserve and polish the lower reference sections */
+      /* Public Features section — isolated from authenticated terminal UI. */
+      .apex-features-shell{width:100%;max-width:1500px;margin:32px auto;padding:48px 52px;box-sizing:border-box;border-radius:24px;background:radial-gradient(circle at 10% 20%,rgba(0,220,255,.05),transparent 34%),radial-gradient(circle at 90% 70%,rgba(246,190,70,.035),transparent 30%),linear-gradient(145deg,#06111a 0%,#050b12 100%);border:1px solid rgba(0,205,220,.38);box-shadow:0 18px 55px rgba(0,0,0,.30),inset 0 1px 0 rgba(255,255,255,.02);overflow:hidden;}
+      .apex-features-eyebrow{margin:0 0 18px;color:#27e5ee;font-size:13px;font-weight:800;line-height:1;letter-spacing:2px;text-transform:uppercase;}
+      .apex-features-title{max-width:950px;margin:0 0 20px;color:#f4f7fa;font-size:clamp(42px,4.5vw,68px);line-height:1.06;font-weight:800;letter-spacing:-1.8px;}
+      .apex-features-intro{max-width:760px;margin:0 0 38px;color:#97a6b7;font-size:17px;line-height:1.65;}
+      .apex-feature-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:28px;width:100%;}
+      .apex-feature-card{min-width:0;min-height:300px;padding:34px 30px 24px;box-sizing:border-box;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;position:relative;overflow:hidden;border-radius:20px;background:linear-gradient(145deg,rgba(8,22,34,.92),rgba(4,13,22,.96));border:1px solid rgba(95,140,170,.30);box-shadow:inset 0 1px 0 rgba(255,255,255,.025),0 10px 28px rgba(0,0,0,.18);}
+      .apex-feature-icon{width:80px;height:80px;flex:0 0 80px;display:flex;align-items:center;justify-content:center;margin:0 0 24px;border-radius:22px;background:rgba(32,221,234,.035);border:1px solid rgba(32,221,234,.20);color:#20ddea;}
+      .apex-feature-icon svg,.apex-feature-icon img{display:block;width:70px;height:70px;max-width:100%;max-height:100%;}
+      .apex-feature-card.cyan .apex-feature-icon{filter:drop-shadow(0 0 10px rgba(32,221,234,.28));}
+      .apex-feature-card.purple .apex-feature-icon{color:#c648f0;background:rgba(198,72,240,.035);border-color:rgba(198,72,240,.20);filter:drop-shadow(0 0 10px rgba(198,72,240,.22));}
+      .apex-feature-card.gold .apex-feature-icon{color:#f8bf43;background:rgba(248,191,67,.035);border-color:rgba(248,191,67,.20);filter:drop-shadow(0 0 10px rgba(248,191,67,.22));}
+      .apex-feature-name{margin:0 0 12px;color:#f5f7fa;font-size:23px;font-weight:750;line-height:1.2;}
+      .apex-feature-copy{max-width:280px;margin:0 auto;color:#98a7b8;font-size:16px;line-height:1.55;}
+      .apex-card-accent{width:64px;height:3px;margin-top:30px;border-radius:100px;background:#20ddea;}
+      .apex-feature-card.purple .apex-card-accent{background:#c648f0;}
+      .apex-feature-card.gold .apex-card-accent{background:#f8bf43;}
+      .apex-feature-secondary-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:18px;}
+      .apex-feature-secondary{min-width:0;padding:16px 18px;display:grid;grid-template-columns:42px 1fr;gap:13px;align-items:center;border-radius:15px;background:rgba(4,13,21,.55);border:1px solid rgba(95,140,170,.16);}
+      .apex-feature-secondary .apex-feature-icon{width:42px;height:42px;flex:0 0 42px;margin:0;border-radius:12px;}
+      .apex-feature-secondary .apex-feature-icon svg{width:30px;height:30px;}
+      .apex-feature-secondary .apex-feature-name{font-size:14px;margin:0 0 4px;text-align:left;}
+      .apex-feature-secondary .apex-feature-copy{font-size:11px;line-height:1.45;text-align:left;margin:0;max-width:none;}
+      .apex-proof-section,.apex-pricing-section{margin-top:30px;padding:28px 26px;border-radius:22px;background:linear-gradient(145deg,rgba(7,20,29,.82),rgba(3,10,16,.94));border:1px solid rgba(109,176,190,.19);box-shadow:inset 0 1px 0 rgba(255,255,255,.025);}
+      .apex-proof-eyebrow{font-size:9px;font-weight:900;letter-spacing:2px;color:#26e9f5;}
+      .apex-proof-title{font-size:28px;font-weight:950;color:#f5f9fc;margin-top:8px;}
+      .apex-proof-copy{font-size:12.5px;color:#8ea2b4;line-height:1.65;margin-top:8px;max-width:900px;}
+      .apex-proof-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:20px;}
+      .apex-proof-card{min-height:170px;padding:18px;border-radius:16px;background:rgba(4,13,20,.72);border:1px solid rgba(112,166,180,.14);}
+      .apex-proof-num{font-size:9px;font-weight:900;letter-spacing:1.5px;color:#22ecf7;}
+      .apex-proof-card-title{font-size:14px;font-weight:900;color:#f2f7fa;margin-top:12px;}
+      .apex-proof-card-copy{font-size:10.5px;color:#8da2b3;line-height:1.55;margin-top:8px;}
+      .apex-market-strip{margin-top:16px;padding:14px 16px;border-radius:14px;border:1px solid rgba(99,170,184,.14);background:rgba(2,10,16,.55);}
+      .apex-market-items{display:flex;align-items:center;gap:8px;flex-wrap:wrap;color:#d8e3e9;font-size:10px;font-weight:800;}
+      .apex-pricing-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:20px;}
+      .apex-price-card{padding:22px 20px;border-radius:17px;background:rgba(6,15,24,.70);border:1px solid rgba(128,187,200,.17);}
+      .apex-price-card.best{border-color:rgba(247,191,67,.36);}
+      .apex-price-badge{display:inline-flex;height:24px;align-items:center;padding:0 9px;border-radius:999px;color:#86a1b4;font-size:8px;font-weight:900;letter-spacing:1.3px;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.07);}
+      .apex-price-name{margin-top:14px;color:#f4f9fc;font-size:17px;font-weight:900;}
+      .apex-price-value{margin-top:8px;color:#fff;font-size:34px;font-weight:950;}
+      .apex-price-value span{color:#879bad;font-size:12px;}
+      .apex-price-list{margin-top:17px;display:grid;gap:8px;}
+      .apex-price-row{display:flex;gap:8px;color:#8fa3b4;font-size:10.5px;}
+      .apex-price-check{color:#20e6d3;font-weight:950;}
+
+      @media(max-width:1100px){
+        .block-container{padding-left:18px !important;padding-right:18px !important;}
+        .apex-ref-hero{min-height:590px;padding:44px 34px 34px;}
+        .apex-ref-hero-inner{width:58%;}
+        .apex-ref-globe{width:55%;}
+        .apex-ref-title{font-size:58px;}
+        .apex-ref-copy{font-size:15px;}
+      }
+
+
+      @media(min-width:769px) and (max-width:1100px){
+        .apex-features-shell{padding:36px 32px;}
+        .apex-features-title{font-size:clamp(38px,5vw,52px);}
+        .apex-features-intro{font-size:15px;margin-bottom:30px;}
+        .apex-feature-grid{gap:16px;}
+        .apex-feature-card{min-height:265px;padding:28px 20px 22px;}
+        .apex-feature-icon{width:68px;height:68px;flex-basis:68px;margin-bottom:20px;}
+        .apex-feature-icon svg,.apex-feature-icon img{width:58px;height:58px;}
+        .apex-feature-name{font-size:19px;}
+        .apex-feature-copy{font-size:14px;}
+      }
+      @media(max-width:390px){
+        .apex-features-shell{width:calc(100% - 16px);padding:18px 12px;}
+        .apex-features-title{font-size:28px;}
+        .apex-feature-card{padding:17px 14px;grid-template-columns:52px 1fr;column-gap:12px;}
+      }
+      @media(max-width:700px){
+        .block-container{padding:10px 10px 24px !important;}
+        .apex-home-shell{max-width:none;}
+        .apex-ref-hero{
+          min-height:550px;
+          padding:28px 18px 22px;
+          border-radius:22px;
+          background:linear-gradient(90deg,#031019 0%,#031019 59%,rgba(3,16,25,.50) 100%);
+        }
+        .apex-ref-hero-inner{width:72%;max-width:none;}
+        .apex-ref-globe{width:58%;right:-12%;opacity:.76;}
+        .apex-ref-badge{height:29px;padding:0 11px;font-size:7.8px;letter-spacing:1.2px;}
+        .apex-ref-title{margin-top:26px;font-size:39px;line-height:.98;letter-spacing:-1.8px;}
+        .apex-ref-copy{margin-top:20px;font-size:11.5px;line-height:1.62;}
+        .apex-ref-mini-grid{margin-top:21px;gap:8px;max-width:100%;}
+        .apex-ref-mini-card{min-height:72px;padding:10px 10px;gap:9px;border-radius:14px;}
+        .apex-ref-mini-icon{width:38px;height:38px;min-width:38px;}
+        .apex-ref-mini-title{font-size:11px;}
+        .apex-ref-mini-sub{margin-top:4px;font-size:8.7px;}
+        .apex-features-shell{width:calc(100% - 24px);margin:16px auto;padding:22px 14px;border-radius:18px;}
+        .apex-features-eyebrow{font-size:10px;margin-bottom:12px;}
+        .apex-features-title{font-size:clamp(29px,8vw,40px);line-height:1.1;letter-spacing:-.7px;margin-bottom:14px;}
+        .apex-features-intro{font-size:14px;line-height:1.6;margin-bottom:22px;}
+        .apex-feature-grid{grid-template-columns:1fr;gap:14px;}
+        .apex-feature-card{min-height:auto;padding:20px 18px;border-radius:16px;display:grid;grid-template-columns:58px 1fr;grid-template-areas:"icon name" "icon copy" "accent accent";column-gap:16px;row-gap:4px;text-align:left;align-items:center;justify-content:stretch;}
+        .apex-feature-icon{grid-area:icon;width:48px;height:48px;flex:0 0 48px;margin:0;border-radius:14px;}
+        .apex-feature-icon svg,.apex-feature-icon img{width:44px;height:44px;}
+        .apex-feature-name{grid-area:name;font-size:17px;margin:0 0 5px;text-align:left;}
+        .apex-feature-copy{grid-area:copy;font-size:13px;line-height:1.5;max-width:none;margin:0;text-align:left;}
+        .apex-card-accent{grid-area:accent;width:48px;height:2px;margin:12px 0 0;}
+        .apex-feature-secondary-grid{grid-template-columns:1fr;gap:9px;margin-top:12px;}
+        .apex-feature-secondary{padding:13px 14px;}
+        .apex-proof-grid{grid-template-columns:1fr 1fr;}
+        .apex-pricing-grid{grid-template-columns:1fr;}
+      }
+
+      @media(max-width:430px){
+        .apex-ref-hero-inner{width:76%;}
+        .apex-ref-title{font-size:35px;}
+      }
+    </style>
+    """, unsafe_allow_html=True)
+
+    render_public_nav("home")
+
+    render_html("""
+    <div class="apex-home-shell">
+      <div id="apex-platform"></div>
+      <section class="apex-ref-hero">
+        <div class="apex-ref-globe"></div>
+        <div class="apex-ref-hero-inner">
+          <div class="apex-ref-badge">GLOBAL MACRO INTELLIGENCE ENGINE</div>
+
+          <div class="apex-ref-title">
+            <div class="line-white">See the macro</div>
+            <div class="line-cyan">shift before it</div>
+            <div class="line-gold">becomes obvious.</div>
           </div>
+
+          <div class="apex-ref-copy">
+            ApexMacro combines global macro data, market catalysts, causal intelligence and live tactical price action
+            into one institutional-grade decision desk for Gold, Oil, Nasdaq-100 and global currencies.
+          </div>
+
+          <div class="apex-ref-mini-grid">
+            <div class="apex-ref-mini-card">
+              <div class="apex-ref-mini-icon">
+                <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
+                  <circle cx="12" cy="12" r="6"></circle>
+                  <circle cx="12" cy="12" r="2.3"></circle>
+                  <path d="M12 2v3M12 19v3M2 12h3M19 12h3"></path>
+                </svg>
+              </div>
+              <div>
+                <div class="apex-ref-mini-title">Multi-Asset</div>
+                <div class="apex-ref-mini-sub">Global Coverage</div>
+              </div>
+            </div>
+
+            <div class="apex-ref-mini-card gold">
+              <div class="apex-ref-mini-icon">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M13 2L5 13h6l-1 9 9-12h-6z"></path>
+                </svg>
+              </div>
+              <div>
+                <div class="apex-ref-mini-title">Real-Time</div>
+                <div class="apex-ref-mini-sub">Macro Intelligence</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="apex-features" class="apex-features-shell">
+        <div class="apex-features-eyebrow">FEATURES</div>
+        <div class="apex-features-title">Intelligence built around the market, not a single indicator.</div>
+        <div class="apex-features-intro">
+          ApexMacro brings macro regime analysis, live tactical price action, event forecasting, causal intelligence and personalized alerts into one workflow.
+        </div>
+        <div class="apex-feature-grid">
+          <article class="apex-feature-card cyan">
+            <div class="apex-feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 18l5-6 4 3 7-9"/><path d="M16 6h4v4"/></svg></div>
+            <div class="apex-feature-name">Macro Outlook</div>
+            <div class="apex-feature-copy">Institutional macro view across assets and regimes.</div>
+            <div class="apex-card-accent"></div>
+          </article>
+          <article class="apex-feature-card purple">
+            <div class="apex-feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg></div>
+            <div class="apex-feature-name">Tactical Move</div>
+            <div class="apex-feature-copy">Live price action readings and momentum shifts.</div>
+            <div class="apex-card-accent"></div>
+          </article>
+          <article class="apex-feature-card gold">
+            <div class="apex-feature-icon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M13.5 1L5 13h6l-1 10 9-13h-6z"/></svg></div>
+            <div class="apex-feature-name">Smart Shift Alerts</div>
+            <div class="apex-feature-copy">Regime change monitoring with confirmation logic.</div>
+            <div class="apex-card-accent"></div>
+          </article>
+        </div>
+        <div class="apex-feature-secondary-grid" aria-label="Additional ApexMacro intelligence features">
+          <article class="apex-feature-secondary">
+            <div class="apex-feature-icon" style="color:#1a9fff;border-color:rgba(26,159,255,.20);background:rgba(26,159,255,.035);"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M8 3v4M16 3v4M4 10h16"/></svg></div>
+            <div><div class="apex-feature-name">Catalyst Forecaster</div><div class="apex-feature-copy">Upcoming macro catalysts and event impact analysis.</div></div>
+          </article>
+          <article class="apex-feature-secondary">
+            <div class="apex-feature-icon" style="color:#e05bbd;border-color:rgba(224,91,189,.20);background:rgba(224,91,189,.035);"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 5a3 3 0 0 0-5 2.2A3.5 3.5 0 0 0 5 14a3 3 0 0 0 4 4V5zM15 5a3 3 0 0 1 5 2.2A3.5 3.5 0 0 1 19 14a3 3 0 0 1-4 4V5z"/><path d="M9 9H6M15 9h3M9 14H7M15 14h2"/></svg></div>
+            <div><div class="apex-feature-name">Causal Intelligence</div><div class="apex-feature-copy">Connects drivers, catalysts and market transmission.</div></div>
+          </article>
+          <article class="apex-feature-secondary">
+            <div class="apex-feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 3L3 10l7 3 3 7 8-17z"/><path d="M10 13l5-5"/></svg></div>
+            <div><div class="apex-feature-name">Telegram Alerts</div><div class="apex-feature-copy">Personalized alerts delivered directly to you.</div></div>
+          </article>
+        </div>
+      </section>
+
+      <section id="apex-data" class="apex-proof-section">
+        <div class="apex-proof-eyebrow">DATA SOURCES</div>
+        <div class="apex-proof-title">Built from multiple intelligence layers.</div>
+        <div class="apex-proof-copy">
+          ApexMacro combines macroeconomic data, market-price data, economic calendars,
+          live news feeds and AI-assisted interpretation so no single source controls the final view.
+        </div>
+        <div class="apex-proof-grid">
+          <div class="apex-proof-card cyan"><div class="apex-proof-num">01</div><div class="apex-proof-card-title">Macro Data</div><div class="apex-proof-card-copy">Rates, yields, inflation, growth and policy-sensitive data feed the macro regime engine.</div></div>
+          <div class="apex-proof-card purple"><div class="apex-proof-num">02</div><div class="apex-proof-card-title">Market Prices</div><div class="apex-proof-card-copy">Live price action confirms momentum, pullbacks, breakouts and tactical market structure.</div></div>
+          <div class="apex-proof-card gold"><div class="apex-proof-num">03</div><div class="apex-proof-card-title">News & Catalysts</div><div class="apex-proof-card-copy">Current headlines, geopolitical risk and economic events are filtered into asset-specific intelligence.</div></div>
+          <div class="apex-proof-card blue"><div class="apex-proof-num">04</div><div class="apex-proof-card-title">AI Interpretation</div><div class="apex-proof-card-copy">AI helps structure and interpret information while remaining bounded by the quantitative engine.</div></div>
+        </div>
+      </section>
+
+<section id="apex-company" class="apex-proof-section">
+        <div class="apex-proof-eyebrow">COMPANY</div>
+        <div class="apex-proof-title">Built to see more than a single chart.</div>
+        <div class="apex-proof-copy">
+          ApexMacro is a global macro and geopolitical intelligence desk designed to combine forward-looking
+          macro pressure with live tactical price action. The goal is to give clients one clear view of
+          what is driving markets, what may change next, and what price is doing right now.
+        </div>
+        <div class="apex-proof-grid">
+          <div class="apex-proof-card cyan"><div class="apex-proof-num">01</div><div class="apex-proof-card-title">Forward-Looking Research</div><div class="apex-proof-card-copy">Macro data, yields, policy expectations and catalysts are monitored before they are fully reflected in price.</div></div>
+          <div class="apex-proof-card purple"><div class="apex-proof-num">02</div><div class="apex-proof-card-title">Macro + Tactical</div><div class="apex-proof-card-copy">The broader macro regime is kept separate from live momentum, pullbacks, breakouts and short-term moves.</div></div>
+          <div class="apex-proof-card gold"><div class="apex-proof-num">03</div><div class="apex-proof-card-title">Client-Controlled Alerts</div><div class="apex-proof-card-copy">VIP clients choose the markets they want, while Smart Shift and tactical alerts are filtered personally.</div></div>
+          <div class="apex-proof-card blue"><div class="apex-proof-num">04</div><div class="apex-proof-card-title">Institutional Workflow</div><div class="apex-proof-card-copy">Gold, Oil, Nasdaq-100 and global currencies are analyzed together so cross-asset relationships remain visible.</div></div>
+        </div>
+        <div class="apex-market-strip"><div class="apex-market-label">CORE COVERAGE</div><div class="apex-market-items"><span>Gold</span><i></i><span>Crude Oil</span><i></i><span>Nasdaq-100</span><i></i><span>USD</span><i></i><span>EUR</span><i></i><span>GBP</span><i></i><span>CAD</span><i></i><span>JPY</span><i></i><span>CHF</span></div></div>
+      </section>
+
+      <section id="apex-pricing" class="apex-pricing-section">
+        <div class="apex-proof-eyebrow">PRICING</div>
+        <div class="apex-proof-title">Simple VIP access. Full ApexMacro intelligence.</div>
+        <div class="apex-proof-copy">
+          Every VIP plan unlocks the full terminal, market desks, Gold intelligence, Smart Shift monitoring,
+          Catalyst Forecaster, Tactical Move and personalized Telegram alerts.
+        </div>
+
+        <div class="apex-pricing-grid">
+          <div class="apex-price-card">
+            <div class="apex-price-badge">MONTHLY</div>
+            <div class="apex-price-name">1 Month VIP</div>
+            <div class="apex-price-value">$29 <span>USDT</span></div>
+            <div class="apex-price-list">
+              <div class="apex-price-row"><span class="apex-price-check">✓</span><span>30 days of full ApexMacro terminal access</span></div>
+              <div class="apex-price-row"><span class="apex-price-check">✓</span><span>Gold, Oil, Nasdaq-100 and Forex intelligence desks</span></div>
+              <div class="apex-price-row"><span class="apex-price-check">✓</span><span>Smart Shift and Tactical Move monitoring</span></div>
+              <div class="apex-price-row"><span class="apex-price-check">✓</span><span>Personalized Telegram market alerts</span></div>
+            </div>
+          </div>
+
+          <div class="apex-price-card best">
+            <div class="apex-price-badge">BEST VALUE</div>
+            <div class="apex-price-name">3 Months VIP</div>
+            <div class="apex-price-value">$75 <span>USDT</span></div>
+            <div class="apex-price-list">
+              <div class="apex-price-row"><span class="apex-price-check">✓</span><span>90 days of full ApexMacro terminal access</span></div>
+              <div class="apex-price-row"><span class="apex-price-check">✓</span><span>All macro, tactical and catalyst intelligence tools</span></div>
+              <div class="apex-price-row"><span class="apex-price-check">✓</span><span>Personalized Telegram alerts and hourly intelligence brief</span></div>
+              <div class="apex-price-row"><span class="apex-price-check">✓</span><span>Lower effective monthly cost than the 1-month plan</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="apex-pricing-note">
+          Payment is handled through the existing ApexMacro VIP checkout. Plan activation and client access
+          continue to use the current payment and verification system.
+        </div>
+      </section>
+    </div>
+
+    """)
+
+    with st.container(key="apex_home_cta"):
+        left, buttons = st.columns([2.1, 1.0], vertical_alignment="center")
+        with left:
+            render_html("""
+            <div class="apex-ref-cta-title">Ready to access ApexMacro?</div>
+            <div class="apex-ref-cta-copy">Join professional traders and investors who act before the market moves.</div>
+            """)
+        with buttons:
+            b1, b2 = st.columns(2)
+            with b1:
+                if st.button("Learn More", key="apex_learn_more", use_container_width=True):
+                    st.toast("Explore the ApexMacro intelligence tools above.")
+            with b2:
+                if st.button("Get Started →", key="apex_get_started", use_container_width=True):
+                    _set_public_view("vip")
+                    st.rerun()
+
+    render_html('<div class="apex-ref-footer"><span class="apex-ref-lock">▣</span><span>apexmacro.com</span></div>')
+
+
+
+
+
+def render_public_checkout_page() -> None:
+    render_public_nav("vip")
+    home_col, title_col = st.columns([1, 5], vertical_alignment="center")
+    with home_col:
+        if st.button("← Home", key="vip_page_home", use_container_width=True):
+            _set_public_view("home")
+            st.rerun()
+    with title_col:
+        render_html("""
+        <div style="padding:3px 0 10px;">
+          <div style="font-size:20px;font-weight:950;color:#edf9ff;">ApexMacro VIP Access</div>
+          <div style="font-size:10.5px;color:#7f95a7;margin-top:3px;">Choose a plan and activate your terminal access with USDT on TRON.</div>
+        </div>
+        """)
+    render_vip_checkout()
+
+
+
+def restore_authenticated_session() -> dict | None:
+    """Restore the existing in-memory or persisted five-day device session without rendering login UI."""
+    auth_user = st.session_state.get("APEX_AUTH_USER")
+    if auth_user and auth_user.get("is_authenticated"):
+        return auth_user
+
+    client_id, dev_type = get_client_device_info()
+    sessions = load_sessions_cache()
+    dev_session = sessions.get(client_id)
+    if not dev_session:
+        return None
+
+    try:
+        last_dt = datetime.strptime(dev_session.get("last_active", ""), "%Y-%m-%d %H:%M:%S")
+        if (get_current_time() - last_dt).total_seconds() > (5 * 86400):
+            return None
+        dev_session["last_active"] = get_current_time().strftime("%Y-%m-%d %H:%M:%S")
+        save_sessions_cache(sessions)
+        auto_user = {
+            "is_authenticated": True,
+            "user_name": dev_session.get("user_name", "VIP Client"),
+            "expiry_info": dev_session.get("expiry_info", "5-Day Persistent Device Session Active"),
+            "is_admin": dev_session.get("is_admin", False),
+            "key": dev_session.get("key", ""),
+        }
+        st.session_state["APEX_AUTH_USER"] = auto_user
+        return auto_user
+    except Exception:
+        return None
+
+
+def render_vip_gate() -> dict | None:
+    client_id, dev_type = get_client_device_info()
+
+    auth_user = restore_authenticated_session()
+    if auth_user:
+        return auth_user
+
+    sessions = load_sessions_cache()
+
+    render_public_nav("login")
+    back_col, spacer_col = st.columns([1, 5])
+    with back_col:
+        if st.button("← Home", key="login_page_home", use_container_width=True):
+            _set_public_view("home")
+            st.rerun()
+
+    col1, col2, col3 = st.columns([1, 2.2, 1])
+    with col2:
+        st.markdown("<div style='height:40px;'></div>", unsafe_allow_html=True)
+        render_html(f"""
+        <div style="background:linear-gradient(180deg,rgba(11,20,32,0.95),rgba(5,10,18,0.97));border:1px solid rgba(0,245,255,0.25);border-radius:22px;padding:34px 28px 24px;text-align:center;box-shadow:0 25px 80px rgba(0,0,0,0.7),0 0 35px rgba(0,245,255,0.12);backdrop-filter:blur(24px);">
+          <div style="display:flex;justify-content:center;margin-bottom:14px;">
+            <div style="display:flex;align-items:center;justify-content:center;width:56px;height:56px;background:rgba(0,245,255,0.08);border:1px solid rgba(0,245,255,0.35);border-radius:16px;box-shadow:0 0 25px rgba(0,245,255,0.3);">
+              <svg width="34" height="34" viewBox="0 0 360 365" fill="none" style="filter:drop-shadow(0 0 10px rgba(0,255,255,0.85));">
+                <defs>
+                  <linearGradient id="gGrad" x1="0" y1="0" x2="1" y2="1">
+                    <stop stop-color="#00FFFF"/>
+                    <stop offset="1" stop-color="#00D7E8"/>
+                  </linearGradient>
+                </defs>
+                <path d="M0 365L180 0L360 365H288L180 130L72 365Z" fill="url(#gGrad)"/>
+              </svg>
+            </div>
+          </div>
+          <div style="font-size:24px;font-weight:900;letter-spacing:2.5px;color:#00f5ff;text-shadow:0 0 20px rgba(0,245,255,0.5);">APEX<span style="color:#ffd166;">MACRO</span></div>
+          <div style="font-size:9.5px;font-weight:800;letter-spacing:3px;color:#8fa3b4;margin-top:2px;text-transform:uppercase;">Institutional Intelligence Terminal</div>
+          <div style="height:1px;background:linear-gradient(90deg,transparent,rgba(0,245,255,0.3),transparent);margin:18px 0 14px;"></div>
+          <div style="font-size:13.5px;color:#ecf7ff;font-weight:700;margin-bottom:4px;">🔒 Restricted VIP Terminal Access</div>
+          <div style="font-size:11.5px;color:#8fa3b4;margin-bottom:16px;">Detected: <b>{dev_type}</b> • 5-Day Auto-Login Active. Enter VIP Key once.</div>
         </div>
         """)
 
-        render_causal_macro_ai_panel(causal_ai)
+        entered_key = st.text_input("VIP License Key", type="password", placeholder="Enter VIP Key (e.g. APEX-XXXX-XXXX)", label_visibility="collapsed")
 
-        if is_admin:
-            st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
-            render_html('<div class="fc-small-lbl" style="margin-bottom:6px;">👑 Admin Actual Override</div>')
-            col_inp, col_btn = st.columns([3, 1])
-            with col_inp:
-                entered_actual_val = st.text_input(
-                    f"Actual Value for {ev_code}",
-                    value=effective_actual,
-                    placeholder="e.g. -0.5% or 0.5",
-                    key=f"act_txt_{ev_code}",
-                    label_visibility="collapsed",
-                )
-            with col_btn:
-                if st.button("💾 Publish", key=f"act_btn_{ev_code}", use_container_width=True):
-                    actuals_cache[ev_code] = entered_actual_val.strip()
-                    save_actuals_cache(actuals_cache)
-                    st.success("Published!")
-                    time.sleep(0.3)
-                    st.rerun()
+        b1, b2 = st.columns([1.2, 1])
+        with b1:
+            unlock_clicked = st.button("⚡ Unlock Terminal", type="primary", use_container_width=True)
+        with b2:
+            if st.button("💳 Get VIP Access", key="apex_open_vip_checkout", use_container_width=True):
+                st.session_state["APEX_SHOW_VIP_CHECKOUT"] = True
+                st.switch_page("pages/vip.py")
 
-        st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
-        render_html('<div class="fc-small-lbl" style="margin-bottom:7px;">Evidence & Precursors</div>')
-        if nowcast["precursor_results"]:
-            p_cols = st.columns(min(len(nowcast["precursor_results"]), 3))
-            for p_idx, p_item in enumerate(nowcast["precursor_results"]):
-                p_col = p_cols[p_idx % len(p_cols)]
-                p_mom_color = "#00ffa3" if p_item["mom"] > 0 else ("#ff5e75" if p_item["mom"] < 0 else "#8fa3b4")
-                p_arr = "▲" if p_item["mom"] > 0 else ("▼" if p_item["mom"] < 0 else "•")
-                with p_col:
-                    render_html(f"""
-                    <div class="fc-metric" style="margin-bottom:8px;">
-                      <div class="fc-metric-l">{p_item['name']}</div>
-                      <div class="fc-metric-v">{p_item['latest']:.2f}</div>
-                      <div class="fc-metric-note" style="color:{p_mom_color};font-weight:800;">{p_arr} {p_item['mom']:+.2f} MoM</div>
-                    </div>
-                    """)
+        if unlock_clicked:
+            clean_entered = entered_key.strip().upper()
+            is_valid, user_name, expiry_info = verify_vip_key(clean_entered, client_id, dev_type)
+            if is_valid:
+                is_admin = (user_name == "ADMINISTRATOR")
+                sessions[client_id] = {
+                    "key": clean_entered,
+                    "device_id": client_id,
+                    "dev_type": dev_type,
+                    "last_active": get_current_time().strftime("%Y-%m-%d %H:%M:%S"),
+                    "user_name": user_name,
+                    "expiry_info": expiry_info,
+                    "is_admin": is_admin
+                }
+                save_sessions_cache(sessions)
+                st.session_state["APEX_AUTH_USER"] = {
+                    "is_authenticated": True,
+                    "user_name": user_name,
+                    "expiry_info": expiry_info,
+                    "is_admin": is_admin,
+                    "key": clean_entered
+                }
+                st.success(f"✅ Access Granted! Welcome, {user_name}.")
+                time.sleep(0.4)
+                st.rerun()
+            else:
+                st.error(f"❌ {expiry_info}")
+
+        return None
+
+def render_admin_key_generator() -> None:
+    render_html("""
+    <div style="background:linear-gradient(135deg,rgba(0,245,255,0.06),rgba(0,255,163,0.03));border:1px solid rgba(0,245,255,0.3);border-radius:16px;padding:20px 24px;margin-bottom:20px;box-shadow:var(--shadow);">
+      <div style="font-size:16px;font-weight:900;color:#00f5ff;letter-spacing:1px;margin-bottom:4px;">👑 MASTER ADMIN CONTROL DESK</div>
+      <div style="font-size:11.5px;color:#8fa3b4;">Manage your VIP client licenses, dual-device bindings (1 Mobile + 1 PC), assign Telegram IDs, and generate secure cryptographic keys.</div>
+    </div>
+    """)
+
+    g1, g2, g3 = st.columns([2, 2, 1.5])
+    with g1:
+        c_name = st.text_input("Client Name:", placeholder="e.g. KARDO", key="adm_client_name")
+        c_tg_id = st.text_input("Telegram ID:", placeholder="e.g. 643290893", key="adm_client_tg_id")
+    with g2:
+        duration_opt = st.selectbox(
+            "Duration:",
+            [
+                ("30 Days (1 Month)", 30),
+                ("7 Days (Free Trial)", 7),
+                ("90 Days (Quarterly)", 90),
+                ("365 Days (1 Year)", 365),
+                ("Lifetime VIP Access", 9999),
+            ],
+            format_func=lambda x: x[0],
+            key="adm_duration_sel"
+        )
+    with g3:
+        st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+        gen_btn = st.button("⚡ Generate & Save", type="primary", use_container_width=True)
+
+    if gen_btn:
+        name_val = c_name.strip() or "CLIENT"
+        tg_id_val = c_tg_id.strip()
+        days_val = duration_opt[1]
+        generated_key = generate_vip_key(name_val, days_val)
+        exp_text = "Lifetime" if days_val >= 9999 else (get_current_time() + timedelta(days=days_val)).strftime("%Y-%m-%d")
+        register_new_client_key(name_val, generated_key, duration_opt[0], exp_text, tg_id_val)
+        st.success(f"🎉 Generated & Registered License Key for **{name_val}** (Telegram ID: {tg_id_val or 'None'}):")
+        st.code(generated_key, language="text")
+        st.info("📋 Key has been saved to your VIP Client Registry below.")
+
+    st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
+    render_html('<div class="sec-title">VIP Client Registry &amp; Subscription Database</div>')
+    
+    clients = load_vip_registry()
+    today_str = get_current_time().strftime("%Y-%m-%d")
+    
+    total_c = len(clients)
+    active_c = 0
+    for c in clients:
+        if c.get("status") != "Revoked":
+            if c.get("expires_at") == "Lifetime" or c.get("expires_at", "") >= today_str:
+                c["current_status"] = "🟢 Active"
+                active_c += 1
+            else:
+                c["current_status"] = "🔴 Expired"
         else:
-            st.caption("No mapped FRED precursor series are available for this catalyst.")
+            c["current_status"] = "⛔ Revoked"
 
-        if nowcast["correlated_articles"]:
-            render_html('<div class="fc-small-lbl" style="margin:8px 0 7px;">Correlated breaking wires & speeches</div>')
-            for a in nowcast["correlated_articles"]:
-                render_html(f"""
-                <div style="padding:8px 10px;background:rgba(0,245,255,.025);border-left:2px solid rgba(0,245,255,.55);border-radius:5px;margin-bottom:6px;font-size:10.5px;color:#dce7ed;line-height:1.45;">
-                  <b>{a.get('title', '')}</b><div style="color:#718795;font-size:9px;margin-top:2px;">{a.get('publishedAt', '')}</div>
-                </div>
-                """)
+    expired_c = total_c - active_c
 
+    kpi1, kpi2, kpi3 = st.columns(3)
+    with kpi1:
+        render_html(f"""
+        <div style="background:rgba(0,245,255,0.05);border:1px solid rgba(0,245,255,0.2);border-radius:12px;padding:12px;text-align:center;">
+          <div style="font-size:11px;color:#8fa3b4;">TOTAL CLIENTS</div>
+          <div style="font-size:22px;font-weight:900;color:#00f5ff;">{total_c}</div>
+        </div>
+        """)
+    with kpi2:
+        render_html(f"""
+        <div style="background:rgba(0,255,163,0.05);border:1px solid rgba(0,255,163,0.2);border-radius:12px;padding:12px;text-align:center;">
+          <div style="font-size:11px;color:#8fa3b4;">ACTIVE LICENSES</div>
+          <div style="font-size:22px;font-weight:900;color:#00ffa3;">{active_c}</div>
+        </div>
+        """)
+    with kpi3:
+        render_html(f"""
+        <div style="background:rgba(255,94,117,0.05);border:1px solid rgba(255,94,117,0.2);border-radius:12px;padding:12px;text-align:center;">
+          <div style="font-size:11px;color:#8fa3b4;">EXPIRED / REVOKED</div>
+          <div style="font-size:22px;font-weight:900;color:#ff5e75;">{expired_c}</div>
+        </div>
+        """)
+
+    if clients:
+        st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+        tbl_data = []
+        for c in clients:
+            mob_b = bool(c.get("bound_mobile_id"))
+            pc_b = bool(c.get("bound_pc_id"))
+            if mob_b and pc_b:
+                b_status = "📱 Mobile + 💻 PC"
+            elif mob_b:
+                b_status = "📱 Mobile Only"
+            elif pc_b:
+                b_status = "💻 PC Only"
+            else:
+                b_status = "⚪ Unbound (0/2)"
+                
+            tbl_data.append({
+                "Client Name": c.get("client_name"),
+                "License Key": c.get("key"),
+                "Telegram ID": c.get("telegram_id", "—"),
+                "Alerts": ", ".join(_client_alert_asset_keys(c)) or "None",
+                "Plan": c.get("duration"),
+                "Expires": c.get("expires_at"),
+                "Status": c.get("current_status"),
+                "Registered Devices": b_status,
+            })
+        st.dataframe(pd.DataFrame(tbl_data), use_container_width=True, hide_index=True)
+        
+        st.markdown("---")
+        render_html('<div style="font-size:11px;font-weight:800;color:#79dff0;margin-bottom:6px;">⚙️ EDIT CLIENT TELEGRAM ID</div>')
+        edit_col1, edit_col2, edit_col3 = st.columns([2, 2, 1.5])
+        with edit_col1:
+            key_to_edit = st.selectbox("Select Key to Update:", [c.get("key") for c in clients], key="sel_key_edit")
+        with edit_col2:
+            new_tg_input = st.text_input("New Telegram ID:", placeholder="e.g. 7153364048", key="new_tg_val")
+        with edit_col3:
+            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+            if st.button("💾 Save Telegram ID", use_container_width=True):
+                for c in clients:
+                    if c.get("key") == key_to_edit:
+                        c["telegram_id"] = new_tg_input.strip()
+                save_vip_registry(clients)
+                st.success(f"Telegram ID updated successfully!")
+                time.sleep(0.4)
+                st.rerun()
+
+        st.markdown("---")
+        act_col1, act_col2, act_col3, act_col4 = st.columns([2.2, 1.3, 1.3, 1.2])
+        with act_col1:
+            key_selected = st.selectbox("Select Client Key:", [c.get("key") for c in clients], key="sel_key_action")
+        with act_col2:
+            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+            if st.button("🔄 Reset Lock", use_container_width=True):
+                for c in clients:
+                    if c.get("key") == key_selected:
+                        c["bound_mobile_id"] = ""
+                        c["bound_pc_id"] = ""
+                        c["bound_at"] = ""
+                save_vip_registry(clients)
+                st.success(f"Device lock reset (0/2 devices bound)!")
+                time.sleep(0.4)
+                st.rerun()
+        with act_col3:
+            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+            if st.button("⛔ Revoke", type="secondary", use_container_width=True):
+                for c in clients:
+                    if c.get("key") == key_selected:
+                        c["status"] = "Revoked"
+                save_vip_registry(clients)
+                st.warning(f"Key revoked!")
+                time.sleep(0.4)
+                st.rerun()
+        with act_col4:
+            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+            if st.button("🗑️ Delete", type="secondary", use_container_width=True):
+                updated_clients = [c for c in clients if c.get("key") != key_selected]
+                save_vip_registry(updated_clients)
+                st.success(f"Client deleted successfully!")
+                time.sleep(0.4)
+                st.rerun()
     else:
-        st.caption("Select a catalyst above to load its full analysis.")
+        st.info("No VIP clients registered yet. Generate a key above to start building your client base!")
+
+    render_payment_admin_summary()
+
 
