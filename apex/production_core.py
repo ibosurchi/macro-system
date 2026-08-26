@@ -259,6 +259,117 @@ def _ai_message_content(response_json: dict) -> str:
         return ""
 
 
+def _extract_json_object(raw_text: str) -> dict | None:
+    """Parse strict/fenced/embedded JSON without changing model semantics."""
+    raw = str(raw_text or "").strip()
+    if not raw:
+        return None
+
+    # 1) Direct JSON.
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        pass
+
+    # 2) Markdown fenced JSON.
+    cleaned = re.sub(
+        r"^\s*```(?:json)?\s*|\s*```\s*$",
+        "",
+        raw,
+        flags=re.I | re.S,
+    ).strip()
+    try:
+        parsed = json.loads(cleaned)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        pass
+
+    # 3) Extract the first balanced {...} object even if the model adds prose.
+    start = cleaned.find("{")
+    if start < 0:
+        return None
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for i in range(start, len(cleaned)):
+        ch = cleaned[i]
+
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                candidate = cleaned[start:i + 1]
+                try:
+                    parsed = json.loads(candidate)
+                    return parsed if isinstance(parsed, dict) else None
+                except Exception:
+                    return None
+
+    return None
+
+
+def _normalize_causal_ai_payload(parsed: dict, source_count: int) -> dict:
+    """Normalize only schema/typing; do not invent analytical content."""
+    if not isinstance(parsed, dict):
+        return {}
+
+    result = dict(parsed)
+
+    list_fields = [
+        "causal_chain",
+        "facts",
+        "supporting_evidence",
+        "contradictions",
+    ]
+    for field in list_fields:
+        value = result.get(field, [])
+        if isinstance(value, str):
+            value = [value] if value.strip() else []
+        elif not isinstance(value, list):
+            value = []
+        result[field] = [str(v).strip() for v in value if str(v).strip()][:12]
+
+    try:
+        result["confidence"] = int(max(0, min(100, round(float(result.get("confidence", 0))))))
+    except Exception:
+        result["confidence"] = 0
+
+    for field, default in {
+        "event_assessment": "Insufficient Evidence",
+        "nowcast": "Insufficient Evidence",
+        "confidence_reason": "Insufficient structured AI evidence.",
+        "cross_source_confirmation": "Unavailable",
+        "usd": "Neutral",
+        "gold": "Neutral",
+        "oil": "Neutral",
+        "nasdaq": "Neutral",
+        "invalidation": "Insufficient Evidence",
+    }.items():
+        value = str(result.get(field, "") or "").strip()
+        result[field] = value if value else default
+
+    try:
+        result["source_count"] = int(result.get("source_count", source_count))
+    except Exception:
+        result["source_count"] = int(source_count)
+
+    return result
+
+
 @st.cache_data(ttl=30, show_spinner=False)
 def fetch_forex_factory_calendar() -> list[dict]:
     """Fetch the Forex Factory weekly calendar and keep only High/Medium events."""
@@ -4183,6 +4294,7 @@ nowcast, confidence, confidence_reason, cross_source_confirmation,
 usd, gold, oil, nasdaq, invalidation, source_count.
 Each of causal_chain, facts, supporting_evidence, contradictions must be an array of short strings.
 confidence must be an integer 0-100.
+Your entire response MUST begin with { and end with }. Do not use markdown fences and do not add any text outside the JSON object.
 """
 
     user_prompt = f"""EVENT
@@ -4225,14 +4337,42 @@ EVENT-RELEVANT LIVE NEWS
         )
         data = response.json()
         raw = _ai_message_content(data)
-        try:
-            parsed = json.loads(raw)
-        except Exception:
-            parsed = {"event_assessment": "Unstructured AI response", "facts": [raw], "causal_chain": [],
-                      "supporting_evidence": [], "contradictions": [], "nowcast": "Insufficient Evidence",
-                      "confidence": 0, "confidence_reason": "AI did not return valid JSON.",
-                      "cross_source_confirmation": "Unavailable", "usd": "Neutral", "gold": "Neutral",
-                      "oil": "Neutral", "nasdaq": "Neutral", "invalidation": "Insufficient Evidence", "source_count": len(relevant)}
+        parsed = _extract_json_object(raw)
+
+        # Claude-compatible gateways may occasionally wrap JSON in prose.
+        # If no JSON object can be recovered, make ONE compact repair request.
+        if parsed is None and raw:
+            repair_system = (
+                "Convert the supplied model output into ONE valid JSON object only. "
+                "Do not add facts, commentary, markdown, or explanation. "
+                "Preserve only information already present in the supplied output. "
+                "Required keys: event_assessment, causal_chain, facts, supporting_evidence, "
+                "contradictions, nowcast, confidence, confidence_reason, cross_source_confirmation, "
+                "usd, gold, oil, nasdaq, invalidation, source_count."
+            )
+            repair_response = _post_ai_chat(
+                provider=provider,
+                url=url,
+                headers=headers,
+                model=model,
+                system_prompt=repair_system,
+                user_prompt=raw[:8000],
+                temperature=0.0,
+                timeout=45,
+            )
+            repair_raw = _ai_message_content(repair_response.json())
+            parsed = _extract_json_object(repair_raw)
+
+        if parsed is None:
+            return {
+                "status": "error",
+                "raw": (
+                    f"{provider} returned a response that could not be converted to structured JSON. "
+                    "The quantitative nowcast remains active."
+                ),
+            }
+
+        parsed = _normalize_causal_ai_payload(parsed, len(relevant))
         parsed["status"] = "ok"
         return parsed
     except Exception as exc:
