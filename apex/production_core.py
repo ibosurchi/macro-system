@@ -5153,12 +5153,16 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
         _forecaster_radar_refresh_tick()
 
     # Preserve the existing event snapshot behavior while a modal event is selected.
+    # IMPORTANT: a transient empty Forex Factory response must not blank the calendar.
     if selected_code and st.session_state.get(snapshot_key):
         events = st.session_state[snapshot_key]
     else:
-        events = get_upcoming_catalyst_events(tz_info["offset"], tz_info["label"])
-        if events:
-            st.session_state[snapshot_key] = events
+        fresh_events = get_upcoming_catalyst_events(tz_info["offset"], tz_info["label"])
+        if fresh_events:
+            events = fresh_events
+            st.session_state[snapshot_key] = fresh_events
+        else:
+            events = list(st.session_state.get(snapshot_key, []) or [])
 
     actuals_cache = load_actuals_cache()
     actuals_changed = False
@@ -5176,7 +5180,6 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
 
     local_now = datetime.utcnow() + timedelta(hours=tz_info["offset"])
     today = local_now.date()
-    display_year, display_month = today.year, today.month
 
     # Presentation-only date grouping. Event dictionaries and identifiers are untouched.
     events_by_date: dict[date, list[dict]] = {}
@@ -5186,6 +5189,22 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
             events_by_date.setdefault(dt.date(), []).append(event)
     for day_events in events_by_date.values():
         day_events.sort(key=lambda item: item.get("datetime_obj") or datetime.max)
+
+    # Keep the current month when it contains tracked catalysts. Near a month boundary,
+    # if the current month has none but the existing Forecaster horizon contains events
+    # in the next month, show the nearest event month instead of an apparently empty calendar.
+    current_month_dates = sorted(
+        d for d in events_by_date
+        if d.year == today.year and d.month == today.month
+    )
+    if current_month_dates or not events_by_date:
+        display_year, display_month = today.year, today.month
+    else:
+        nearest_event_date = min(
+            events_by_date,
+            key=lambda d: (abs((d - today).days), d)
+        )
+        display_year, display_month = nearest_event_date.year, nearest_event_date.month
 
     current_month_event_dates = sorted(
         d for d in events_by_date
@@ -5199,11 +5218,13 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
         selected_date = None
 
     if selected_date is None or selected_date.year != display_year or selected_date.month != display_month:
-        if today in events_by_date:
+        if today.year == display_year and today.month == display_month and today in events_by_date:
             selected_date = today
-        else:
+        elif current_month_event_dates:
             upcoming = [d for d in current_month_event_dates if d >= today]
-            selected_date = upcoming[0] if upcoming else today
+            selected_date = upcoming[0] if upcoming else current_month_event_dates[-1]
+        else:
+            selected_date = today if (today.year == display_year and today.month == display_month) else date(display_year, display_month, 1)
         st.session_state[selected_date_key] = selected_date.isoformat()
 
     # Dynamic selected/today styles are scoped to exact keyed calendar cells.
@@ -5226,7 +5247,7 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
             </div>
             <div class="apex-calendar-header-icon" aria-hidden="true">▣</div>
           </div>
-          <div class="apex-current-month">{local_now.strftime('%B %Y')}</div>
+          <div class="apex-current-month">{date(display_year, display_month, 1).strftime('%B %Y')}</div>
           <div class="apex-calendar-weekdays">
             <div class="apex-calendar-weekday">MON</div><div class="apex-calendar-weekday">TUE</div><div class="apex-calendar-weekday">WED</div><div class="apex-calendar-weekday">THU</div><div class="apex-calendar-weekday">FRI</div><div class="apex-calendar-weekday">SAT</div><div class="apex-calendar-weekday">SUN</div>
           </div>
@@ -5287,6 +5308,12 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
           <span>Key <b>{ai_key_state}</b></span>
         </div>
         ''')
+
+    if not events:
+        render_html(
+            '<div class="apex-no-catalysts">Live calendar is temporarily unavailable. '
+            'ApexMacro will keep the last valid calendar snapshot when one is available.</div>'
+        )
 
     selected_events = list(events_by_date.get(selected_date, []))
     render_html(f'''
