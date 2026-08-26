@@ -4607,6 +4607,142 @@ def render_causal_macro_ai_panel(analysis: dict) -> None:
     """)
 
 
+# ============================================================
+# FORECASTER BACKGROUND PRE-COMPUTE CACHE
+# ============================================================
+# Process-level cache: Streamlit reruns reuse completed analysis instead of
+# waiting for FRED/news/RUAPI after a user clicks a catalyst.
+_FORECASTER_BG_LOCK = threading.RLock()
+_FORECASTER_BG_CACHE: dict[str, dict] = {}
+_FORECASTER_BG_INFLIGHT: set[str] = set()
+_FORECASTER_BG_WORKER_RUNNING = False
+_FORECASTER_BG_TTL_SECONDS = 300
+
+
+def _forecaster_bg_signature(event: dict, actual: str = "") -> str:
+    payload = {
+        "code": event.get("code", ""),
+        "forecast": event.get("forecast_str", ""),
+        "previous": event.get("prev_str", ""),
+        "actual": actual or event.get("actual_str", ""),
+        "impact": event.get("impact", ""),
+        "ai_model": DEFAULT_AI_MODEL,
+        "ai_cache": AI_CACHE_VERSION,
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def _forecaster_bg_get(event: dict, actual: str = "") -> dict | None:
+    code = str(event.get("code", "")).strip()
+    if not code:
+        return None
+    sig = _forecaster_bg_signature(event, actual)
+    now_ts = time.time()
+    with _FORECASTER_BG_LOCK:
+        item = _FORECASTER_BG_CACHE.get(code)
+        if not item or item.get("signature") != sig:
+            return None
+        if now_ts - float(item.get("updated_at", 0)) > _FORECASTER_BG_TTL_SECONDS:
+            return None
+        return item
+
+
+def _forecaster_background_worker(events: list[dict], fred_key: str, channel_name: str, actuals_snapshot: dict) -> None:
+    """Precompute event Nowcasts and High-impact causal AI away from the click path."""
+    global _FORECASTER_BG_WORKER_RUNNING
+    try:
+        # One news fetch is shared by the whole batch.
+        all_news = fetch_all_instant_news(channel_name)
+        ordered = sorted(
+            list(events or []),
+            key=lambda e: (0 if str(e.get("impact", "")).title() == "High" else 1, e.get("datetime_obj") or datetime.max),
+        )
+        for ev in ordered:
+            code = str(ev.get("code", "")).strip()
+            if not code:
+                continue
+            saved_actual = str((actuals_snapshot or {}).get(code, "")).strip()
+            published_actual = _normalize_forex_factory_actual(ev.get("actual_str", ""))
+            effective_actual = saved_actual or published_actual
+            signature = _forecaster_bg_signature(ev, effective_actual)
+
+            with _FORECASTER_BG_LOCK:
+                existing = _FORECASTER_BG_CACHE.get(code)
+                fresh = (
+                    existing
+                    and existing.get("signature") == signature
+                    and time.time() - float(existing.get("updated_at", 0)) <= _FORECASTER_BG_TTL_SECONDS
+                )
+                if fresh or code in _FORECASTER_BG_INFLIGHT:
+                    continue
+                _FORECASTER_BG_INFLIGHT.add(code)
+
+            try:
+                nowcast = compute_event_nowcast(ev, fred_key, all_news, actual_override=effective_actual)
+                causal_ai = (
+                    get_causal_macro_ai_analysis(
+                        ev, nowcast, all_news,
+                        DEFAULT_AI_KEY, DEFAULT_AI_PROVIDER, DEFAULT_AI_MODEL, AI_CACHE_VERSION
+                    )
+                    if str(ev.get("impact", "")).title() == "High"
+                    else {"status": "skipped"}
+                )
+                with _FORECASTER_BG_LOCK:
+                    _FORECASTER_BG_CACHE[code] = {
+                        "signature": signature,
+                        "updated_at": time.time(),
+                        "nowcast": nowcast,
+                        "causal_ai": causal_ai,
+                        "all_news": all_news,
+                        "effective_actual": effective_actual,
+                    }
+            except Exception as exc:
+                # Never let one failed event stop the remaining batch.
+                with _FORECASTER_BG_LOCK:
+                    _FORECASTER_BG_CACHE[code] = {
+                        "signature": signature,
+                        "updated_at": time.time() - (_FORECASTER_BG_TTL_SECONDS - 30),
+                        "error": str(exc)[:300],
+                    }
+            finally:
+                with _FORECASTER_BG_LOCK:
+                    _FORECASTER_BG_INFLIGHT.discard(code)
+    finally:
+        with _FORECASTER_BG_LOCK:
+            _FORECASTER_BG_WORKER_RUNNING = False
+
+
+def _ensure_forecaster_background_worker(events: list[dict], fred_key: str, channel_name: str, actuals_cache: dict) -> None:
+    """Start at most one daemon worker per process; reruns do not duplicate RUAPI calls."""
+    global _FORECASTER_BG_WORKER_RUNNING
+    if not events:
+        return
+
+    # Start only when at least one event is missing/stale.
+    needs_work = False
+    for ev in events:
+        code = str(ev.get("code", "")).strip()
+        saved = str((actuals_cache or {}).get(code, "")).strip()
+        published = _normalize_forex_factory_actual(ev.get("actual_str", ""))
+        if _forecaster_bg_get(ev, saved or published) is None:
+            needs_work = True
+            break
+    if not needs_work:
+        return
+
+    with _FORECASTER_BG_LOCK:
+        if _FORECASTER_BG_WORKER_RUNNING:
+            return
+        _FORECASTER_BG_WORKER_RUNNING = True
+
+    threading.Thread(
+        target=_forecaster_background_worker,
+        args=(list(events), fred_key, channel_name, dict(actuals_cache or {})),
+        daemon=True,
+        name="ApexMacroForecasterPrecompute",
+    ).start()
+
+
 @st.fragment(run_every=30)
 def _forecaster_radar_refresh_tick() -> None:
     """Trigger periodic radar refresh without running while a catalyst is selected."""
@@ -4650,6 +4786,10 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
             actuals_changed = True
     if actuals_changed:
         save_actuals_cache(actuals_cache)
+
+    # Start pre-computation immediately after the lightweight calendar arrives.
+    # The worker survives Streamlit reruns and warms Nowcast + RUAPI results before clicks.
+    _ensure_forecaster_background_worker(events, fred_key, channel_name, actuals_cache)
 
     render_html(f"""
     <div class="fc-hero">
@@ -4762,28 +4902,45 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
         f'</div>'
     )
 
-    # HEAVY PATH: only the selected event gets news, FRED, Nowcast and AI analysis.
-    with st.spinner(f"Analyzing {ev.get('title','selected catalyst')}..."):
-        all_news = fetch_all_instant_news(channel_name)
-        ev_code = ev["code"]
-        saved_actual = str(actuals_cache.get(ev_code, "")).strip()
-        published_actual = _normalize_forex_factory_actual(ev.get("actual_str", ""))
-        effective_actual = saved_actual or published_actual
-        nowcast = compute_event_nowcast(ev, fred_key, all_news, actual_override=effective_actual)
+    # INSTANT PATH: use the background-precomputed result whenever available.
+    ev_code = ev["code"]
+    saved_actual = str(actuals_cache.get(ev_code, "")).strip()
+    published_actual = _normalize_forex_factory_actual(ev.get("actual_str", ""))
+    effective_actual = saved_actual or published_actual
+    bg_result = _forecaster_bg_get(ev, effective_actual)
 
-        # Preserve learning/backtesting without precomputing every event during page load.
-        try:
-            _record_forecaster_snapshot(ev, nowcast, actual=effective_actual)
-        except Exception:
-            pass
-
-        causal_ai = (
-            get_causal_macro_ai_analysis(
-                ev, nowcast, all_news,
-                DEFAULT_AI_KEY, DEFAULT_AI_PROVIDER, DEFAULT_AI_MODEL, AI_CACHE_VERSION
+    if bg_result and bg_result.get("nowcast"):
+        nowcast = bg_result["nowcast"]
+        causal_ai = bg_result.get("causal_ai") or {"status": "skipped"}
+        all_news = bg_result.get("all_news") or []
+    else:
+        # First-ever cold click can still compute synchronously, while the daemon
+        # continues warming the rest of the radar. Subsequent clicks are instant.
+        with st.spinner(f"Preparing {ev.get('title','selected catalyst')}..."):
+            all_news = fetch_all_instant_news(channel_name)
+            nowcast = compute_event_nowcast(ev, fred_key, all_news, actual_override=effective_actual)
+            causal_ai = (
+                get_causal_macro_ai_analysis(
+                    ev, nowcast, all_news,
+                    DEFAULT_AI_KEY, DEFAULT_AI_PROVIDER, DEFAULT_AI_MODEL, AI_CACHE_VERSION
+                )
+                if ev.get("impact") == "High" else {"status": "skipped"}
             )
-            if ev.get("impact") == "High" else {"status": "skipped"}
-        )
+            with _FORECASTER_BG_LOCK:
+                _FORECASTER_BG_CACHE[ev_code] = {
+                    "signature": _forecaster_bg_signature(ev, effective_actual),
+                    "updated_at": time.time(),
+                    "nowcast": nowcast,
+                    "causal_ai": causal_ai,
+                    "all_news": all_news,
+                    "effective_actual": effective_actual,
+                }
+
+    # Preserve learning/backtesting with the result actually displayed.
+    try:
+        _record_forecaster_snapshot(ev, nowcast, actual=effective_actual)
+    except Exception:
+        pass
 
     cur = ev.get("currency", "USD")
     cur_flag = currency_flags.get(cur, "🌐")
