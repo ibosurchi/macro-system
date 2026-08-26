@@ -3981,71 +3981,112 @@ def _normalize_forex_factory_actual(value: object) -> str:
 
 def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3)") -> list[dict]:
     """
-    Return High/Medium impact Forex Factory catalysts.
-    Released events stay visible for 48 hours; future events stay visible for 10 days.
+    Forex Factory is the sole calendar source. Only High and Medium
+    impact events are allowed into the Catalyst Forecaster.
+    Existing precursor/Nowcast logic is preserved where a title matches
+    the legacy catalyst map.
     """
-    events = fetch_forex_factory_calendar()
-    if not events:
+    utc_now = datetime.utcnow()
+    user_now = utc_now + timedelta(hours=tz_offset)
+    events = []
+
+    ff_events = fetch_forex_factory_calendar()
+    if not ff_events:
         return []
 
-    try:
-        offset_hours = float(tz_offset)
-    except Exception:
-        offset_hours = 3.0
-
-    user_now = datetime.now(timezone.utc) + timedelta(hours=offset_hours)
-    selected = []
-
-    for event in events:
-        impact = str(event.get("impact", "") or "").strip().title()
-        if impact not in {"High", "Medium"}:
+    for ff in ff_events:
+        impact_level = str(ff.get("impact", "")).strip().title()
+        if impact_level not in {"High", "Medium"}:
             continue
 
-        raw_date = event.get("date")
-        if not raw_date:
+        title = str(ff.get("title", "")).strip()
+        currency = str(ff.get("country", "")).strip().upper()
+        date_raw = str(ff.get("date", "")).strip()
+        if not title or not date_raw:
             continue
 
         try:
-            raw = str(raw_date).strip()
-            event_utc = datetime.fromisoformat(
-                raw.replace("Z", "+00:00") if raw.endswith("Z") else raw
-            )
-            if event_utc.tzinfo is None:
-                event_utc = event_utc.replace(tzinfo=timezone.utc)
+            parsed_dt = datetime.fromisoformat(date_raw.replace("Z", "+00:00"))
+            if parsed_dt.tzinfo is not None:
+                event_utc = parsed_dt.astimezone(timezone.utc).replace(tzinfo=None)
             else:
-                event_utc = event_utc.astimezone(timezone.utc)
+                event_utc = parsed_dt
         except Exception:
             continue
 
-        event_local = event_utc + timedelta(hours=offset_hours)
-        total_seconds = (event_local - user_now).total_seconds()
+        event_local = event_utc + timedelta(hours=tz_offset)
+        diff = event_local - user_now
+        total_seconds = diff.total_seconds()
+        days_away = (event_local.date() - user_now.date()).days
+        if days_away > 10:
+            continue
 
+        # Keep a released catalyst on the live Forecaster radar for 48 hours only.
+        # Persisted Actual values remain stored for compatibility/history.
         if total_seconds < -(48 * 3600):
             continue
-        if total_seconds > 10 * 86400:
-            continue
 
-        actual_value = str(event.get("actual", "") or "").strip()
-        released = total_seconds <= 0 or bool(actual_value)
+        if total_seconds < -(48 * 3600):
+            countdown_label = "✅ Released"
+        elif total_seconds < 0:
+            countdown_label = "✅ RELEASED TODAY"
+        elif total_seconds < 3600:
+            mins = max(1, int(total_seconds // 60))
+            countdown_label = f"🔥 In {mins} Mins"
+        elif total_seconds < 86400:
+            hrs = int(total_seconds // 3600)
+            mins = int((total_seconds % 3600) // 60)
+            if event_local.date() == user_now.date():
+                countdown_label = f"🔥 TODAY (In {hrs}h {mins}m)"
+            else:
+                countdown_label = f"⚡ Tomorrow (In {hrs}h)"
+        elif days_away == 1:
+            countdown_label = "⚡ Tomorrow (In 1 Day)"
+        else:
+            countdown_label = f"⚡ In {days_away} Days"
 
-        enriched = dict(event)
-        enriched["event_utc"] = event_utc
-        enriched["event_local"] = event_local
-        enriched["released"] = released
-        enriched["status"] = "Released" if released else "Upcoming"
-        enriched["seconds_to_event"] = total_seconds
-        enriched["tz_label"] = tz_label
-        selected.append(enriched)
+        legacy_meta = _find_legacy_catalyst_meta(currency, title)
+        keywords = legacy_meta.get("keywords") or [
+            w for w in re.findall(r"[a-zA-Z]{3,}", title.lower())
+        ]
 
-    selected.sort(
-        key=lambda ev: (
-            0 if ev.get("released") else 1,
-            abs(float(ev.get("seconds_to_event", 0)))
-            if ev.get("released")
-            else float(ev.get("seconds_to_event", 0)),
-        )
-    )
-    return selected
+        meta = {
+            "title": title,
+            "currency": currency,
+            "impact": impact_level,
+            "keywords": keywords,
+            "precursors": legacy_meta.get("precursors", []),
+            "forecast_str": str(ff.get("forecast", "")).strip() or "—",
+            "prev_str": str(ff.get("previous", "")).strip() or "—",
+            "actual_str": _normalize_forex_factory_actual(ff.get("actual", "")),
+            "consensus_bias": legacy_meta.get(
+                "consensus_bias", f"Forex Factory consensus for {title}"
+            ),
+            "source": "Forex Factory",
+            "source_url": FOREX_FACTORY_CALENDAR_URL,
+            "ff_date_raw": date_raw,
+        }
+
+        event_code = _build_ff_event_code(currency, title, event_utc)
+        events.append({
+            "code": event_code,
+            "title": title,
+            "currency": currency,
+            "impact": impact_level,
+            "datetime_obj": event_local,
+            "date_str": event_local.strftime("%A, %b %d"),
+            "time_str": f"{event_local.strftime('%H:%M')} ({tz_label})",
+            "countdown": countdown_label,
+            "days_away": days_away,
+            "forecast_str": meta["forecast_str"],
+            "prev_str": meta["prev_str"],
+            "actual_str": meta["actual_str"],
+            "consensus_bias": meta["consensus_bias"],
+            "meta": meta,
+        })
+
+    events.sort(key=lambda x: (x["datetime_obj"], x["days_away"]))
+    return events
 
 def _nasdaq_forecaster_implication(event: dict, directional_score: float) -> str:
     """Cross-asset NDX interpretation only; does not alter the existing catalyst nowcast."""
