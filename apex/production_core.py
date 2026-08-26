@@ -371,64 +371,73 @@ def _normalize_causal_ai_payload(parsed: dict, source_count: int) -> dict:
 
 
 @st.cache_data(ttl=30, show_spinner=False)
-def fetch_forex_factory_calendar() -> list[dict]:
-    """Fetch the Forex Factory weekly calendar and keep only High/Medium events."""
-    try:
-        response = requests.get(
-            FOREX_FACTORY_CALENDAR_URL,
-            headers={"User-Agent": "Mozilla/5.0 ApexMacro/14.0"},
-            timeout=REQUEST_TIMEOUT,
-        )
-        response.raise_for_status()
-        data = response.json()
-        if not isinstance(data, list):
-            return []
-        return [
-            item for item in data
-            if str(item.get("impact", "")).strip().lower() in {"high", "medium"}
-        ]
-    except Exception:
+def fetch_forex_factory_calendar():
+    """Load and normalize the live Forex Factory / Faireconomy weekly calendar."""
+    urls = [
+        FOREX_FACTORY_CALENDAR_URL,
+        "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+        "https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.json",
+    ]
+
+    rows = None
+    for url in urls:
+        try:
+            r = requests.get(
+                url,
+                timeout=12,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (compatible; ApexMacro/1.0)",
+                    "Accept": "application/json,text/plain,*/*",
+                    "Cache-Control": "no-cache",
+                },
+            )
+            r.raise_for_status()
+            data = r.json()
+            if isinstance(data, list) and len(data) > 0:
+                rows = data
+                break
+        except Exception:
+            continue
+
+    if not rows:
         return []
 
-TELEGRAM_BOT_TOKEN = get_secret("TELEGRAM_BOT_TOKEN", "")
+    normalized = []
+    impact_alias = {
+        "Red": "High",
+        "Orange": "Medium",
+        "Yellow": "Low",
+        "High Impact": "High",
+        "Medium Impact": "Medium",
+        "Low Impact": "Low",
+    }
 
-APEX_MASTER_KEY = get_secret("APEX_MASTER_KEY", "")
-APEX_SECRET_SALT = "APEX_MACRO_SECRET_2026_SALT"
-REGISTRY_FILE = str(PROJECT_ROOT / "vip_registry.json")
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
 
-# VIP checkout configuration. Only public receiving/API values are used; no wallet private key is required.
-USDT_TRC20_ADDRESS = get_secret("USDT_TRC20_ADDRESS", "")
-TRONGRID_API_KEY = get_secret("TRONGRID_API_KEY", "")  # Optional; improves TronGrid rate limits.
-TRONGRID_BASE_URL = get_secret("TRONGRID_BASE_URL", "https://api.trongrid.io").rstrip("/")
-TRON_USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
-VIP_PAYMENT_PLANS = {
-    "1 Month": {"amount": 29, "days": 30, "badge": "MONTHLY"},
-    "3 Months": {"amount": 75, "days": 90, "badge": "BEST VALUE"},
-}
-PAYMENTS_FILE = str(PROJECT_ROOT / "vip_payments.json")
-_PAYMENT_LOCK = threading.RLock()
-SESSIONS_FILE = str(PROJECT_ROOT / "vip_sessions.json")
+        title = str(row.get("title") or row.get("event") or row.get("name") or "").strip()
+        country = str(row.get("country") or row.get("currency") or "").strip().upper()
+        raw_impact = str(row.get("impact") or "").strip()
+        impact = impact_alias.get(raw_impact.title(), raw_impact.title())
+        raw_date = row.get("date") or row.get("datetime") or row.get("time")
 
-# Persistent client storage. Supabase is optional at code level so the app can still
-# start locally, but production Streamlit should configure these secrets.
-SUPABASE_URL = get_secret("SUPABASE_URL", "").rstrip("/")
-SUPABASE_SERVICE_ROLE_KEY = get_secret("SUPABASE_SERVICE_ROLE_KEY", "")
-SUPABASE_STATE_TABLE = get_secret("SUPABASE_STATE_TABLE", "apexmacro_state") or "apexmacro_state"
-if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", SUPABASE_STATE_TABLE):
-    SUPABASE_STATE_TABLE = "apexmacro_state"
-_PERSISTENCE_LOCK = threading.RLock()
-_PERSISTENCE_STATUS = {"backend": "local", "last_error": ""}
-ACTUALS_FILE = str(PROJECT_ROOT / "actual_releases.json")
-ALERT_STATE_FILE = str(PROJECT_ROOT / "alert_regime_state.json")
-TELEGRAM_UPDATE_STATE_FILE = str(PROJECT_ROOT / "telegram_update_state.json")
-TELEGRAM_DAEMON_LOCK_FILE = str(PROJECT_ROOT / ".apexmacro_telegram_daemon.lock")
-TACTICAL_STATE_FILE = str(PROJECT_ROOT / "tactical_move_state.json")
-FORECAST_HISTORY_FILE = str(PROJECT_ROOT / "forecaster_history.json")
-_FORECAST_HISTORY_LOCK = threading.RLock()
-_TACTICAL_STATE_LOCK = threading.RLock()
+        if not title or not country or not raw_date:
+            continue
 
-# Synchronizes Streamlit/Admin and Telegram worker access to the shared VIP registry.
-_VIP_REGISTRY_LOCK = threading.RLock()
+        normalized.append({
+            **row,
+            "title": title,
+            "country": country,
+            "impact": impact,
+            "date": raw_date,
+            "forecast": row.get("forecast", ""),
+            "previous": row.get("previous", ""),
+            "actual": row.get("actual", ""),
+        })
+
+    return normalized
+
 
 def _supabase_enabled() -> bool:
     return bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY)
@@ -3933,110 +3942,82 @@ def _normalize_forex_factory_actual(value: object) -> str:
 
 def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3)") -> list[dict]:
     """
-    Forex Factory is the sole calendar source. Only High and Medium
-    impact events are allowed into the Catalyst Forecaster.
-    Existing precursor/Nowcast logic is preserved where a title matches
-    the legacy catalyst map.
+    Return live High/Medium impact Forex Factory catalysts.
+    Released events remain visible for 48 hours and future events remain visible up to 10 days.
     """
-    utc_now = datetime.utcnow()
-    user_now = utc_now + timedelta(hours=tz_offset)
-    events = []
-
-    ff_events = fetch_forex_factory_calendar()
-    if not ff_events:
+    events = fetch_forex_factory_calendar()
+    if not events:
         return []
 
-    for ff in ff_events:
-        impact_level = str(ff.get("impact", "")).strip().title()
-        if impact_level not in {"High", "Medium"}:
+    try:
+        offset_hours = float(tz_offset)
+    except Exception:
+        offset_hours = 3.0
+
+    user_now = datetime.now(timezone.utc) + timedelta(hours=offset_hours)
+    selected = []
+
+    for event in events:
+        impact = str(event.get("impact", "") or "").strip().title()
+        if impact not in {"High", "Medium"}:
             continue
 
-        title = str(ff.get("title", "")).strip()
-        currency = str(ff.get("country", "")).strip().upper()
-        date_raw = str(ff.get("date", "")).strip()
-        if not title or not date_raw:
+        raw_date = event.get("date")
+        if not raw_date:
             continue
 
+        event_utc = None
         try:
-            parsed_dt = datetime.fromisoformat(date_raw.replace("Z", "+00:00"))
-            if parsed_dt.tzinfo is not None:
-                event_utc = parsed_dt.astimezone(timezone.utc).replace(tzinfo=None)
+            raw = str(raw_date).strip()
+            if raw.endswith("Z"):
+                event_utc = datetime.fromisoformat(raw.replace("Z", "+00:00"))
             else:
-                event_utc = parsed_dt
+                event_utc = datetime.fromisoformat(raw)
+
+            if event_utc.tzinfo is None:
+                event_utc = event_utc.replace(tzinfo=timezone.utc)
+            else:
+                event_utc = event_utc.astimezone(timezone.utc)
         except Exception:
+            event_utc = None
+
+        if event_utc is None:
             continue
 
-        event_local = event_utc + timedelta(hours=tz_offset)
-        diff = event_local - user_now
-        total_seconds = diff.total_seconds()
-        days_away = (event_local.date() - user_now.date()).days
+        event_local = event_utc + timedelta(hours=offset_hours)
+        total_seconds = (event_local - user_now).total_seconds()
 
-        # Keep a released catalyst on the live Forecaster radar for 48 hours only.
-        # Persisted Actual values remain stored for compatibility/history.
+        # Hide released events only after 48 hours.
         if total_seconds < -(48 * 3600):
             continue
 
-        if total_seconds < -43200:
-            countdown_label = "✅ Released"
-        elif total_seconds < 0:
-            countdown_label = "✅ RELEASED TODAY"
-        elif total_seconds < 3600:
-            mins = max(1, int(total_seconds // 60))
-            countdown_label = f"🔥 In {mins} Mins"
-        elif total_seconds < 86400:
-            hrs = int(total_seconds // 3600)
-            mins = int((total_seconds % 3600) // 60)
-            if event_local.date() == user_now.date():
-                countdown_label = f"🔥 TODAY (In {hrs}h {mins}m)"
-            else:
-                countdown_label = f"⚡ Tomorrow (In {hrs}h)"
-        elif days_away == 1:
-            countdown_label = "⚡ Tomorrow (In 1 Day)"
-        else:
-            countdown_label = f"⚡ In {days_away} Days"
+        # Keep the predictive horizon compact.
+        if total_seconds > 10 * 86400:
+            continue
 
-        legacy_meta = _find_legacy_catalyst_meta(currency, title)
-        keywords = legacy_meta.get("keywords") or [
-            w for w in re.findall(r"[a-zA-Z]{3,}", title.lower())
-        ]
+        actual_value = str(event.get("actual", "") or "").strip()
+        released = total_seconds <= 0 or bool(actual_value)
 
-        meta = {
-            "title": title,
-            "currency": currency,
-            "impact": impact_level,
-            "keywords": keywords,
-            "precursors": legacy_meta.get("precursors", []),
-            "forecast_str": str(ff.get("forecast", "")).strip() or "—",
-            "prev_str": str(ff.get("previous", "")).strip() or "—",
-            "actual_str": _normalize_forex_factory_actual(ff.get("actual", "")),
-            "consensus_bias": legacy_meta.get(
-                "consensus_bias", f"Forex Factory consensus for {title}"
-            ),
-            "source": "Forex Factory",
-            "source_url": FOREX_FACTORY_CALENDAR_URL,
-            "ff_date_raw": date_raw,
-        }
+        enriched = dict(event)
+        enriched["event_utc"] = event_utc
+        enriched["event_local"] = event_local
+        enriched["released"] = released
+        enriched["status"] = "Released" if released else "Upcoming"
+        enriched["seconds_to_event"] = total_seconds
+        enriched["tz_label"] = tz_label
 
-        event_code = _build_ff_event_code(currency, title, event_utc)
-        events.append({
-            "code": event_code,
-            "title": title,
-            "currency": currency,
-            "impact": impact_level,
-            "datetime_obj": event_local,
-            "date_str": event_local.strftime("%A, %b %d"),
-            "time_str": f"{event_local.strftime('%H:%M')} ({tz_label})",
-            "countdown": countdown_label,
-            "days_away": days_away,
-            "forecast_str": meta["forecast_str"],
-            "prev_str": meta["prev_str"],
-            "actual_str": meta["actual_str"],
-            "consensus_bias": meta["consensus_bias"],
-            "meta": meta,
-        })
+        selected.append(enriched)
 
-    events.sort(key=lambda x: (x["datetime_obj"], x["days_away"]))
-    return events
+    selected.sort(
+        key=lambda ev: (
+            0 if ev.get("released") else 1,
+            abs(float(ev.get("seconds_to_event", 0)))
+            if ev.get("released")
+            else float(ev.get("seconds_to_event", 0)),
+        )
+    )
+    return selected
+
 
 def _nasdaq_forecaster_implication(event: dict, directional_score: float) -> str:
     """Cross-asset NDX interpretation only; does not alter the existing catalyst nowcast."""
@@ -4608,7 +4589,7 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     )
 
     if not events:
-        st.info("No High or Medium impact Forex Factory catalysts are available in the current calendar window.")
+        st.info("No High or Medium impact Forex Factory catalysts are available in the current calendar window. Live feed returned no matching events.")
         return
 
     currency_flags = {
