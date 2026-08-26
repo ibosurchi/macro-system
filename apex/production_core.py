@@ -142,9 +142,12 @@ def _post_ai_chat(
     timeout: int,
 ):
     """
-    Send an OpenAI-compatible chat request.
-    RUAPI fallback deliberately mirrors its documented minimal payload:
-    model + messages only.
+    Send an OpenAI-compatible chat request with bounded retry behavior.
+
+    RUAPI behavior:
+    - normal request first
+    - one minimal-payload retry on HTTP 400
+    - retry on read/connect timeout or transient 5xx
     """
     payload = {
         "model": model,
@@ -155,53 +158,79 @@ def _post_ai_chat(
         "temperature": temperature,
     }
 
-    response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+    max_attempts = 3 if str(provider).upper() == "RUAPI" else 2
+    last_error = None
 
-    # Some gateway/model combinations reject optional parameters or the system role.
-    # For RUAPI, retry once with the exact minimal OpenAI-compatible shape shown in its docs.
-    if str(provider).upper() == "RUAPI" and response.status_code == 400:
-        minimal_prompt = (
-            f"{system_prompt.strip()}\n\n"
-            f"USER REQUEST / EVIDENCE:\n{user_prompt.strip()}"
-        )
-        minimal_payload = {
-            "model": model,
-            "messages": [
-                {"role": "user", "content": minimal_prompt}
-            ],
-        }
-        response = requests.post(
-            url,
-            headers=headers,
-            json=minimal_payload,
-            timeout=timeout,
-        )
-
-    if not response.ok:
-        detail = ""
+    for attempt in range(max_attempts):
         try:
-            body = response.json()
-            if isinstance(body, dict):
-                err = body.get("error", body)
-                if isinstance(err, dict):
-                    detail = str(err.get("message") or err.get("detail") or err)
-                else:
-                    detail = str(err)
-            else:
-                detail = str(body)
-        except Exception:
-            detail = str(response.text or "").strip()
-
-        detail = re.sub(r"\s+", " ", detail)[:500]
-        provider_label = str(provider or "AI")
-        if detail:
-            raise RuntimeError(
-                f"{provider_label} HTTP {response.status_code}: {detail}"
+            response = requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=timeout,
             )
-        response.raise_for_status()
 
-    return response
+            # Some RUAPI/model combinations reject optional parameters or system role.
+            if str(provider).upper() == "RUAPI" and response.status_code == 400:
+                minimal_prompt = (
+                    f"{system_prompt.strip()}\n\n"
+                    f"USER REQUEST / EVIDENCE:\n{user_prompt.strip()}"
+                )
+                minimal_payload = {
+                    "model": model,
+                    "messages": [
+                        {"role": "user", "content": minimal_prompt}
+                    ],
+                }
+                response = requests.post(
+                    url,
+                    headers=headers,
+                    json=minimal_payload,
+                    timeout=timeout,
+                )
 
+            if response.ok:
+                return response
+
+            # Retry only transient gateway/server errors.
+            if response.status_code in {408, 425, 429, 500, 502, 503, 504} and attempt < max_attempts - 1:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+
+            detail = ""
+            try:
+                body = response.json()
+                if isinstance(body, dict):
+                    err = body.get("error", body)
+                    if isinstance(err, dict):
+                        detail = str(err.get("message") or err.get("detail") or err)
+                    else:
+                        detail = str(err)
+                else:
+                    detail = str(body)
+            except Exception:
+                detail = str(response.text or "").strip()
+
+            detail = re.sub(r"\s+", " ", detail)[:500]
+            provider_label = str(provider or "AI")
+            if detail:
+                raise RuntimeError(
+                    f"{provider_label} HTTP {response.status_code}: {detail}"
+                )
+            response.raise_for_status()
+
+        except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout, requests.exceptions.ConnectionError) as exc:
+            last_error = exc
+            if attempt < max_attempts - 1:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            raise RuntimeError(
+                f"{provider} temporarily unavailable after {max_attempts} attempts."
+            ) from exc
+
+    if last_error:
+        raise RuntimeError(f"{provider} temporarily unavailable.") from last_error
+    raise RuntimeError(f"{provider} request failed.")
 
 
 def _ai_message_content(response_json: dict) -> str:
@@ -2592,7 +2621,7 @@ def get_openrouter_analysis(
             system_prompt=system_prompt,
             user_prompt=news_text,
             temperature=0.2,
-            timeout=20,
+            timeout=45,
         )
         content = _ai_message_content(response.json())
         return content or "Could not generate AI analysis at the moment."
@@ -2744,7 +2773,7 @@ def get_openrouter_gold_signal(
             system_prompt=system_prompt,
             user_prompt=news_text,
             temperature=0.1,
-            timeout=20,
+            timeout=45,
         )
         content = _ai_message_content(response.json())
         content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.I | re.S).strip()
@@ -4093,7 +4122,7 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_ove
     }
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=180, show_spinner=False)
 def get_causal_macro_ai_analysis(event: dict, nowcast: dict, articles: list, api_key: str = DEFAULT_AI_KEY, provider_hint: str = DEFAULT_AI_PROVIDER, model_hint: str = DEFAULT_AI_MODEL, cache_version: str = AI_CACHE_VERSION) -> dict:
     """Event-specific causal AI layer. Keeps the existing quantitative nowcast intact."""
     if not api_key:
@@ -4192,7 +4221,7 @@ EVENT-RELEVANT LIVE NEWS
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             temperature=0.15,
-            timeout=25,
+            timeout=60,
         )
         data = response.json()
         raw = _ai_message_content(data)
@@ -4207,7 +4236,13 @@ EVENT-RELEVANT LIVE NEWS
         parsed["status"] = "ok"
         return parsed
     except Exception as exc:
-        return {"status": "error", "raw": f"{provider} causal analysis error: {exc}"}
+        err_text = str(exc)
+        if "temporarily unavailable" in err_text.lower() or "timed out" in err_text.lower():
+            return {
+                "status": "error",
+                "raw": f"{provider} is temporarily unavailable. The quantitative nowcast remains active and AI will retry automatically."
+            }
+        return {"status": "error", "raw": f"{provider} causal analysis error: {err_text[:300]}"}
 
 
 def render_causal_macro_ai_panel(analysis: dict) -> None:
