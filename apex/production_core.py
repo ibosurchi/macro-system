@@ -4666,27 +4666,60 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
         "JPY": "💴", "AUD": "🇦🇺", "NZD": "🇳🇿", "CHF": "🏔️"
     }
 
-    # Render ALL event rows first. These buttons are intentionally lightweight.
+    # Lightweight radar first. Clicking an event immediately switches the page
+    # into a selected-catalyst view instead of leaving the analysis below the full list.
     selected_key = "APEX_FORECASTER_SELECTED_EVENT"
     selected_code = st.session_state.get(selected_key, "")
+    selected_from_click = False
 
-    for ev in events:
-        cur = ev.get("currency", "USD")
-        cur_flag = currency_flags.get(cur, "🌐")
-        impact_icon = "🔴" if ev.get("impact") == "High" else "🟡"
-        label = f"{cur_flag} {cur} · {ev['title']} · {impact_icon} {ev['impact']} · 🕒 {ev['time_str']} · {ev['countdown']}"
-        if st.button(label, key=f"fc_select_{ev['code']}", use_container_width=True):
-            st.session_state[selected_key] = ev["code"]
-            selected_code = ev["code"]
+    # If an event is already selected, show a compact Back control and skip
+    # rendering the entire radar above the analysis on every rerun.
+    if selected_code:
+        if st.button("← Back to Catalyst Radar", key="fc_back_to_radar", use_container_width=True):
+            st.session_state.pop(selected_key, None)
+            st.rerun()
 
-    if not selected_code:
-        st.caption("Select a catalyst above to load its full Nowcast, evidence and Causal AI analysis.")
-        return
+        ev = next((item for item in events if item.get("code") == selected_code), None)
+        if ev is None:
+            st.session_state.pop(selected_key, None)
+            st.rerun()
+    else:
+        ev = None
+        for item in events:
+            cur = item.get("currency", "USD")
+            cur_flag = currency_flags.get(cur, "🌐")
+            impact_icon = "🔴" if item.get("impact") == "High" else "🟡"
+            label = (
+                f"{cur_flag} {cur} · {item['title']} · {impact_icon} {item['impact']} "
+                f"· 🕒 {item['time_str']} · {item['countdown']}"
+            )
+            if st.button(label, key=f"fc_select_{item['code']}", use_container_width=True):
+                st.session_state[selected_key] = item["code"]
+                selected_code = item["code"]
+                selected_from_click = True
+                break
 
-    ev = next((item for item in events if item.get("code") == selected_code), None)
-    if ev is None:
-        st.session_state.pop(selected_key, None)
-        return
+        if not selected_code:
+            st.caption("Select a catalyst above to load its full Nowcast, evidence and Causal AI analysis.")
+            return
+
+        ev = next((item for item in events if item.get("code") == selected_code), None)
+        if ev is None:
+            st.session_state.pop(selected_key, None)
+            return
+
+    # Show the selected catalyst immediately before any slow network/AI work.
+    cur = ev.get("currency", "USD")
+    cur_flag = currency_flags.get(cur, "🌐")
+    render_html(
+        f'<div class="sec-title">Selected Catalyst — {cur_flag} {cur} · {ev["title"]}</div>'
+    )
+    render_html(
+        f'<div style="margin:0 0 14px 0;padding:12px 14px;border:1px solid rgba(0,229,246,.18);'
+        f'border-radius:12px;background:rgba(4,14,22,.72);color:#b8c7d3;font-size:13px;">'
+        f'📅 {ev["date_str"]} &nbsp;•&nbsp; 🕒 {ev["time_str"]} &nbsp;•&nbsp; {ev["countdown"]}'
+        f'</div>'
+    )
 
     # HEAVY PATH: only the selected event gets news, FRED, Nowcast and AI analysis.
     with st.spinner(f"Analyzing {ev.get('title','selected catalyst')}..."):
@@ -4718,8 +4751,6 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     bias_bg = "rgba(0,255,163,.055)" if nowcast["bias_color"] == "#00ffa3" else ("rgba(255,94,117,.055)" if nowcast["bias_color"] == "#ff5e75" else "rgba(255,209,102,.05)")
 
     st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
-    render_html(f'<div class="sec-title">Selected Catalyst — {cur_flag} {cur} · {ev["title"]}</div>')
-
     render_html(f"""
     <div class="fc-body" style="padding-top:4px;">
       <div class="fc-time" style="margin-bottom:10px;">📅 {ev['date_str']} &nbsp;•&nbsp; 🕒 {ev['time_str']} &nbsp;•&nbsp; {ev['countdown']}</div>
