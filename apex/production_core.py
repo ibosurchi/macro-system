@@ -371,8 +371,8 @@ def _normalize_causal_ai_payload(parsed: dict, source_count: int) -> dict:
 
 
 @st.cache_data(ttl=30, show_spinner=False)
-def fetch_forex_factory_calendar():
-    """Load and normalize the live Forex Factory / Faireconomy weekly calendar."""
+def fetch_forex_factory_calendar() -> list[dict]:
+    """Load and normalize the live Forex Factory/Faireconomy weekly calendar."""
     urls = [
         FOREX_FACTORY_CALENDAR_URL,
         "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
@@ -382,7 +382,7 @@ def fetch_forex_factory_calendar():
     rows = None
     for url in urls:
         try:
-            r = requests.get(
+            response = requests.get(
                 url,
                 timeout=12,
                 headers={
@@ -391,9 +391,9 @@ def fetch_forex_factory_calendar():
                     "Cache-Control": "no-cache",
                 },
             )
-            r.raise_for_status()
-            data = r.json()
-            if isinstance(data, list) and len(data) > 0:
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, list) and data:
                 rows = data
                 break
         except Exception:
@@ -403,7 +403,7 @@ def fetch_forex_factory_calendar():
         return []
 
     normalized = []
-    impact_alias = {
+    aliases = {
         "Red": "High",
         "Orange": "Medium",
         "Yellow": "Low",
@@ -419,7 +419,7 @@ def fetch_forex_factory_calendar():
         title = str(row.get("title") or row.get("event") or row.get("name") or "").strip()
         country = str(row.get("country") or row.get("currency") or "").strip().upper()
         raw_impact = str(row.get("impact") or "").strip()
-        impact = impact_alias.get(raw_impact.title(), raw_impact.title())
+        impact = aliases.get(raw_impact.title(), raw_impact.title())
         raw_date = row.get("date") or row.get("datetime") or row.get("time")
 
         if not title or not country or not raw_date:
@@ -438,6 +438,45 @@ def fetch_forex_factory_calendar():
 
     return normalized
 
+TELEGRAM_BOT_TOKEN = get_secret("TELEGRAM_BOT_TOKEN", "")
+
+APEX_MASTER_KEY = get_secret("APEX_MASTER_KEY", "")
+APEX_SECRET_SALT = "APEX_MACRO_SECRET_2026_SALT"
+REGISTRY_FILE = str(PROJECT_ROOT / "vip_registry.json")
+
+# VIP checkout configuration. Only public receiving/API values are used; no wallet private key is required.
+USDT_TRC20_ADDRESS = get_secret("USDT_TRC20_ADDRESS", "")
+TRONGRID_API_KEY = get_secret("TRONGRID_API_KEY", "")  # Optional; improves TronGrid rate limits.
+TRONGRID_BASE_URL = get_secret("TRONGRID_BASE_URL", "https://api.trongrid.io").rstrip("/")
+TRON_USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+VIP_PAYMENT_PLANS = {
+    "1 Month": {"amount": 29, "days": 30, "badge": "MONTHLY"},
+    "3 Months": {"amount": 75, "days": 90, "badge": "BEST VALUE"},
+}
+PAYMENTS_FILE = str(PROJECT_ROOT / "vip_payments.json")
+_PAYMENT_LOCK = threading.RLock()
+SESSIONS_FILE = str(PROJECT_ROOT / "vip_sessions.json")
+
+# Persistent client storage. Supabase is optional at code level so the app can still
+# start locally, but production Streamlit should configure these secrets.
+SUPABASE_URL = get_secret("SUPABASE_URL", "").rstrip("/")
+SUPABASE_SERVICE_ROLE_KEY = get_secret("SUPABASE_SERVICE_ROLE_KEY", "")
+SUPABASE_STATE_TABLE = get_secret("SUPABASE_STATE_TABLE", "apexmacro_state") or "apexmacro_state"
+if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", SUPABASE_STATE_TABLE):
+    SUPABASE_STATE_TABLE = "apexmacro_state"
+_PERSISTENCE_LOCK = threading.RLock()
+_PERSISTENCE_STATUS = {"backend": "local", "last_error": ""}
+ACTUALS_FILE = str(PROJECT_ROOT / "actual_releases.json")
+ALERT_STATE_FILE = str(PROJECT_ROOT / "alert_regime_state.json")
+TELEGRAM_UPDATE_STATE_FILE = str(PROJECT_ROOT / "telegram_update_state.json")
+TELEGRAM_DAEMON_LOCK_FILE = str(PROJECT_ROOT / ".apexmacro_telegram_daemon.lock")
+TACTICAL_STATE_FILE = str(PROJECT_ROOT / "tactical_move_state.json")
+FORECAST_HISTORY_FILE = str(PROJECT_ROOT / "forecaster_history.json")
+_FORECAST_HISTORY_LOCK = threading.RLock()
+_TACTICAL_STATE_LOCK = threading.RLock()
+
+# Synchronizes Streamlit/Admin and Telegram worker access to the shared VIP registry.
+_VIP_REGISTRY_LOCK = threading.RLock()
 
 def _supabase_enabled() -> bool:
     return bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY)
@@ -3942,8 +3981,8 @@ def _normalize_forex_factory_actual(value: object) -> str:
 
 def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3)") -> list[dict]:
     """
-    Return live High/Medium impact Forex Factory catalysts.
-    Released events remain visible for 48 hours and future events remain visible up to 10 days.
+    Return High/Medium impact Forex Factory catalysts.
+    Released events stay visible for 48 hours; future events stay visible for 10 days.
     """
     events = fetch_forex_factory_calendar()
     if not events:
@@ -3966,32 +4005,23 @@ def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3
         if not raw_date:
             continue
 
-        event_utc = None
         try:
             raw = str(raw_date).strip()
-            if raw.endswith("Z"):
-                event_utc = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-            else:
-                event_utc = datetime.fromisoformat(raw)
-
+            event_utc = datetime.fromisoformat(
+                raw.replace("Z", "+00:00") if raw.endswith("Z") else raw
+            )
             if event_utc.tzinfo is None:
                 event_utc = event_utc.replace(tzinfo=timezone.utc)
             else:
                 event_utc = event_utc.astimezone(timezone.utc)
         except Exception:
-            event_utc = None
-
-        if event_utc is None:
             continue
 
         event_local = event_utc + timedelta(hours=offset_hours)
         total_seconds = (event_local - user_now).total_seconds()
 
-        # Hide released events only after 48 hours.
         if total_seconds < -(48 * 3600):
             continue
-
-        # Keep the predictive horizon compact.
         if total_seconds > 10 * 86400:
             continue
 
@@ -4005,7 +4035,6 @@ def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3
         enriched["status"] = "Released" if released else "Upcoming"
         enriched["seconds_to_event"] = total_seconds
         enriched["tz_label"] = tz_label
-
         selected.append(enriched)
 
     selected.sort(
@@ -4017,7 +4046,6 @@ def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3
         )
     )
     return selected
-
 
 def _nasdaq_forecaster_implication(event: dict, directional_score: float) -> str:
     """Cross-asset NDX interpretation only; does not alter the existing catalyst nowcast."""
@@ -4589,7 +4617,7 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     )
 
     if not events:
-        st.info("No High or Medium impact Forex Factory catalysts are available in the current calendar window. Live feed returned no matching events.")
+        st.info("No High or Medium impact Forex Factory catalysts are available in the current calendar window.")
         return
 
     currency_flags = {
