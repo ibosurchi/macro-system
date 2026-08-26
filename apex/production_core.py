@@ -1414,95 +1414,121 @@ div[data-testid="stPopover"] > button {
 @media(max-width:760px){.fc-hero-row,.fc-event-top{align-items:flex-start;flex-direction:column}.fc-horizon{text-align:left}.fc-event-name{white-space:normal;max-width:none}.fc-metrics{grid-template-columns:1fr 1fr}.fc-nowcast{grid-template-columns:1fr}.fc-score{text-align:left}.fc-outlook{grid-template-columns:1fr 1fr}.fc-outlook-main{grid-column:1/-1}.fc-ai-grid{grid-template-columns:1fr}.fc-body{padding:12px}.fc-event-top{padding:12px}.fc-title{font-size:19px}}
 
 
-/* ===== Catalyst Forecaster — Design A glass calendar (presentation only) ===== */
-.apex-forecaster-shell,.st-key-apex_forecaster_calendar{
-  width:100%;max-width:1180px;margin:24px auto 18px;padding:28px;box-sizing:border-box;
-  background:radial-gradient(circle at 12% 8%,rgba(24,220,230,.045),transparent 32%),linear-gradient(145deg,rgba(6,20,30,.88),rgba(3,11,18,.94));
-  border:1px solid rgba(20,205,220,.42);border-radius:24px;
+/* ===== Forecaster Design A v2 — calendar -> day events -> large modal ===== */
+.st-key-apex_forecaster_shell{
+  width:100%;max-width:1180px;margin:18px auto 22px;padding:24px 26px 22px;
+  background:
+    radial-gradient(circle at 12% 8%,rgba(24,220,230,.045),transparent 32%),
+    linear-gradient(145deg,rgba(6,20,30,.90),rgba(3,11,18,.96));
+  border:1px solid rgba(20,205,220,.42);border-radius:22px;
   backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
   box-shadow:0 22px 60px rgba(0,0,0,.28),inset 0 1px 0 rgba(255,255,255,.025);
 }
-.apex-forecaster-head{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:4px;}
-.apex-forecaster-label{color:#42e5ec;font-size:17px;font-weight:800;letter-spacing:.6px;}
-.apex-forecaster-subtitle{margin-top:4px;color:#b5c0cd;font-size:14px;line-height:1.5;}
-.apex-calendar-header-icon{width:44px;height:44px;flex:0 0 44px;display:flex;align-items:center;justify-content:center;border-radius:12px;border:1px solid rgba(90,145,170,.15);background:rgba(8,22,32,.65);color:#d8e5ed;}
-.apex-calendar-header-icon svg{width:20px;height:20px;display:block;}
-.apex-current-month{text-align:center;margin:22px 0 17px;color:#f2f6f8;font-size:15px;font-weight:850;letter-spacing:1.25px;text-transform:uppercase;}
-.apex-calendar-weekdays{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:10px;margin:0 0 10px;}
-.apex-calendar-weekday{text-align:center;font-size:11px;font-weight:700;letter-spacing:.8px;color:#a9b6c3;}
-.apex-calendar-empty-cell{min-height:112px;border-radius:12px;border:1px solid rgba(100,150,175,.04);background:rgba(8,20,28,.18);opacity:.28;}
-.apex-calendar-legend{display:flex;align-items:center;justify-content:center;gap:34px;margin-top:20px;color:#b5c0cb;font-size:12px;flex-wrap:wrap;}
-.apex-calendar-legend-item{display:inline-flex;align-items:center;gap:7px;white-space:nowrap;}
-.apex-calendar-legend-dot{width:7px;height:7px;border-radius:50%;display:inline-block;}
-.apex-calendar-legend-dot.high{background:#b84fe8;box-shadow:0 0 8px rgba(184,79,232,.25);}
-.apex-calendar-legend-dot.medium{background:#ffb82e;box-shadow:0 0 8px rgba(255,184,46,.20);}
-.apex-calendar-legend-dot.low{background:#4bc7d8;box-shadow:0 0 8px rgba(75,199,216,.20);}
-.apex-selected-date-head{max-width:1180px;margin:22px auto 10px;padding:0 2px;display:flex;align-items:flex-end;justify-content:space-between;gap:12px;}
-.apex-selected-date-title{color:#f2f6f8;font-size:19px;font-weight:850;letter-spacing:-.15px;}
-.apex-selected-date-meta{color:#8396a5;font-size:11px;margin-top:4px;}
-.apex-empty-day{max-width:1180px;margin:0 auto;padding:18px 20px;border-radius:14px;background:rgba(7,20,29,.58);border:1px solid rgba(95,145,170,.13);color:#8fa3b4;font-size:12px;}
-.apex-event-card{max-width:1180px;margin:0 auto 12px;padding:18px 20px;border-radius:14px;background:linear-gradient(145deg,rgba(10,27,38,.78),rgba(5,16,25,.90));border:1px solid rgba(95,145,170,.18);box-shadow:inset 0 1px 0 rgba(255,255,255,.02);}
-.apex-event-card.is-active{border-color:rgba(30,225,235,.56);box-shadow:0 0 0 1px rgba(30,225,235,.04),0 0 20px rgba(30,225,235,.06),inset 0 1px 0 rgba(255,255,255,.025);}
-.apex-event-topline{display:flex;align-items:center;justify-content:space-between;gap:14px;}
-.apex-event-kicker{font-size:9px;font-weight:850;letter-spacing:.9px;text-transform:uppercase;color:#8ea3b3;}
-.apex-event-time{font-size:10.5px;color:#a8b6c2;white-space:nowrap;}
-.apex-event-name{margin-top:7px;color:#f3f7fa;font-size:15px;font-weight:850;line-height:1.35;}
-.apex-event-impact-high{color:#b84fe8;}.apex-event-impact-medium{color:#ffb82e;}.apex-event-impact-low{color:#4bc7d8;}
-.apex-event-values{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:16px;}
-.apex-event-value{padding:12px;border-radius:10px;background:rgba(8,24,34,.65);border:1px solid rgba(100,150,170,.12);min-width:0;}
-.apex-event-value-label{font-size:8.5px;font-weight:850;color:#718795;text-transform:uppercase;letter-spacing:.75px;}
-.apex-event-value-number{font-size:14px;font-weight:900;color:#f2f6f8;margin-top:4px;overflow-wrap:anywhere;}
-.apex-event-value-number.actual{color:#42e5ec;}.apex-event-value-number.forecast{color:#ffb82e;}
-.apex-intelligence-shell{max-width:1180px;margin:16px auto 0;padding:20px;border-radius:18px;background:linear-gradient(145deg,rgba(7,20,29,.72),rgba(3,11,18,.90));border:1px solid rgba(30,205,218,.20);box-shadow:inset 0 1px 0 rgba(255,255,255,.02);}
+.apex-forecaster-header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:8px}
+.apex-forecaster-label{color:#42e5ec;font-size:17px;font-weight:900;letter-spacing:.7px}
+.apex-forecaster-subtitle{margin-top:4px;color:#a9b8c5;font-size:12px;line-height:1.5}
+.apex-calendar-header-icon{width:44px;height:44px;display:flex;align-items:center;justify-content:center;border-radius:12px;border:1px solid rgba(90,145,170,.15);background:rgba(8,22,32,.65);color:#d8e5ed;font-size:19px}
+.apex-current-month{text-align:center;margin:20px 0 18px;color:#f2f6f8;font-size:16px;font-weight:900;letter-spacing:.8px;text-transform:uppercase}
+.apex-calendar-weekdays{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px;margin-bottom:7px}
+.apex-calendar-weekday{text-align:center;font-size:9.5px;font-weight:850;letter-spacing:.8px;color:#9eafbd}
+.apex-calendar-dots{display:flex;align-items:center;justify-content:center;gap:4px;min-height:12px;margin-top:-18px;margin-bottom:7px;position:relative;z-index:3;pointer-events:none}
+.apex-calendar-dot{width:6px;height:6px;border-radius:50%;display:inline-block;box-shadow:0 0 8px rgba(255,255,255,.08)}
+.apex-calendar-dot.high{background:#a84de3}.apex-calendar-dot.medium{background:#ffbc26}.apex-calendar-dot.low{background:#38d4e4}
+.apex-calendar-more{font-size:8px;font-weight:850;color:#9fb2bf;margin-left:1px}
+.apex-calendar-empty-cell{height:76px;border-radius:9px;border:1px solid rgba(100,150,175,.045);background:rgba(8,20,28,.20);opacity:.22}
+.apex-calendar-legend{display:flex;align-items:center;justify-content:center;gap:30px;margin-top:18px;color:#aebbc6;font-size:10px;flex-wrap:wrap}
+.apex-calendar-legend-item{display:inline-flex;align-items:center;gap:6px}
+.apex-calendar-legend-item .apex-calendar-dot{width:7px;height:7px}
+.apex-forecaster-status{display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid rgba(90,145,165,.09);font-size:8.5px;color:#718795}.apex-forecaster-status b{color:#b9c8d2;font-weight:850}
 
-.apex-forecaster-status{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-top:18px;padding-top:15px;border-top:1px solid rgba(100,150,175,.10);}
-.apex-forecaster-status-left,.apex-forecaster-status-right{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
-.apex-forecaster-chip{display:inline-flex;align-items:center;gap:6px;min-height:28px;padding:5px 9px;border-radius:9px;background:rgba(8,24,34,.55);border:1px solid rgba(100,150,175,.10);color:#8fa3b4;font-size:9.5px;}
-.apex-forecaster-chip b{color:#dce7ed;font-weight:850}.apex-forecaster-chip .cyan{color:#42e5ec}.apex-forecaster-chip .purple{color:#b84fe8}.apex-forecaster-chip .gold{color:#ffb82e}.apex-forecaster-chip .green{color:#00ffa3}
+/* Calendar rows and cells are keyed Streamlit containers so the styles never leak. */
+[class*="st-key-apex_cal_row_"] [data-testid="stHorizontalBlock"]{gap:8px!important;align-items:stretch!important;flex-wrap:nowrap!important}
+[class*="st-key-apex_cal_row_"] [data-testid="stColumn"]{min-width:0!important;flex:1 1 0!important;width:0!important}
+[class*="st-key-apex_cal_cell_"],[class*="st-key-apex_cal_outside_"]{
+  min-height:76px;padding:5px 5px 0!important;border:1px solid rgba(110,155,175,.15);border-radius:9px;
+  background:linear-gradient(145deg,rgba(15,35,47,.78),rgba(6,20,29,.90));
+  transition:border-color 150ms ease,background 150ms ease,transform 150ms ease;overflow:hidden;
+}
+[class*="st-key-apex_cal_cell_"] .stButton,[class*="st-key-apex_cal_outside_"] .stButton{margin:0!important}
+[class*="st-key-apex_cal_cell_"] .stButton>button,
+[class*="st-key-apex_cal_cell_"] button[data-testid="stBaseButton-secondary"],
+[class*="st-key-apex_cal_outside_"] .stButton>button,
+[class*="st-key-apex_cal_outside_"] button[data-testid="stBaseButton-secondary"]{
+  width:100%!important;min-height:62px!important;padding:5px 2px 21px!important;margin:0!important;
+  border:0!important;border-radius:7px!important;background:transparent!important;box-shadow:none!important;
+  color:#f2f6f8!important;font-size:15px!important;font-weight:850!important;
+}
+[class*="st-key-apex_cal_cell_"] .stButton>button:hover{background:rgba(35,86,100,.18)!important;color:#fff!important}
+[class*="st-key-apex_cal_outside_"]{opacity:.26!important;background:rgba(8,20,28,.25)!important}
+[class*="st-key-apex_cal_outside_"] button{cursor:default!important;color:#7a8a95!important}
+.apex-selected-date-header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:22px 0 13px;padding:0 2px}
+.apex-selected-date-title{font-size:14px;font-weight:900;color:#edf7fb;text-transform:uppercase;letter-spacing:.55px}
+.apex-selected-date-count{font-size:9px;font-weight:900;color:#42e5ec;letter-spacing:.8px;text-transform:uppercase}
+.apex-no-catalysts{padding:17px 18px;border:1px solid rgba(90,145,165,.14);border-radius:12px;background:rgba(8,22,31,.62);color:#8fa3b4;font-size:11px}
 
-/* Calendar Streamlit buttons are scoped by the keyed calendar container. */
-.st-key-apex_forecaster_calendar [data-testid="stHorizontalBlock"]{gap:10px!important;margin-bottom:10px!important;}
-.st-key-apex_forecaster_calendar [data-testid="column"]{min-width:0!important;}
-.st-key-apex_forecaster_calendar .stButton>button{
-  position:relative;width:100%!important;min-width:0!important;min-height:112px!important;padding:12px!important;
-  display:flex!important;align-items:flex-start!important;justify-content:flex-start!important;
-  border-radius:12px!important;border:1px solid rgba(100,150,175,.12)!important;
-  background:linear-gradient(145deg,rgba(18,38,50,.72),rgba(7,20,30,.82))!important;
-  color:#f2f6f8!important;font-size:16px!important;font-weight:850!important;line-height:1!important;
-  text-align:left!important;overflow:hidden!important;
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.025)!important;transition:border-color 160ms ease,background 160ms ease,transform 160ms ease,box-shadow 160ms ease!important;
+[class*="st-key-apex_day_event_"]{
+  margin:0 0 10px!important;padding:14px 15px 12px!important;border-radius:12px!important;
+  background:linear-gradient(145deg,rgba(10,28,39,.82),rgba(5,17,26,.92))!important;
+  border:1px solid rgba(90,145,165,.18)!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.02)!important;
 }
-.st-key-apex_forecaster_calendar .stButton>button p{font-size:inherit!important;font-weight:inherit!important;line-height:1!important;color:inherit!important;margin:0!important;position:relative!important;z-index:2!important;}
-.st-key-apex_forecaster_calendar .stButton>button::before{
-  content:'';position:absolute;left:12px;right:10px;top:35px;z-index:1;
-  color:#aebdca;font-size:9.5px;font-weight:650;line-height:1.38;text-align:left;
-  white-space:pre-line;overflow:hidden;max-height:58px;letter-spacing:0;
-}
-.st-key-apex_forecaster_calendar .stButton>button .apex-calendar-event-summary{pointer-events:none;}
-.st-key-apex_forecaster_calendar .stButton>button[kind='primary']{
-  border-color:rgba(30,225,235,.90)!important;background:linear-gradient(145deg,rgba(10,65,75,.72),rgba(5,28,38,.88))!important;
-  box-shadow:0 0 0 1px rgba(30,225,235,.08),0 0 22px rgba(30,225,235,.13),inset 0 1px 0 rgba(255,255,255,.035)!important;color:#f4fbfc!important;
-}
-@media(hover:hover){.st-key-apex_forecaster_calendar .stButton>button:not([kind='primary']):hover{transform:translateY(-2px)!important;border-color:rgba(65,210,220,.42)!important;background:linear-gradient(145deg,rgba(17,45,57,.82),rgba(7,24,34,.90))!important;}}
-.st-key-apex_forecaster_event_list .stButton>button{margin-top:-4px;margin-bottom:12px;border-radius:10px!important;font-size:10.5px!important;min-height:36px!important;}
+.apex-day-event-top{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.apex-day-event-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:9.5px;color:#93a6b3;font-weight:750}
+.apex-day-event-time{color:#dce9ef;font-weight:850}.apex-day-event-currency{color:#42e5ec;font-weight:900}
+.apex-day-impact{display:inline-flex;align-items:center;gap:5px;text-transform:uppercase;font-size:8.5px;font-weight:900;letter-spacing:.55px}
+.apex-day-event-name{font-size:13px;font-weight:850;color:#f3f8fa;margin:7px 0 10px;line-height:1.35}
+.apex-event-mini-values{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
+.apex-event-mini-value{padding:7px 8px;border-radius:8px;background:rgba(8,24,34,.62);border:1px solid rgba(100,150,170,.10)}
+.apex-event-mini-label{font-size:7.5px;color:#718795;font-weight:900;letter-spacing:.65px;text-transform:uppercase}
+.apex-event-mini-number{font-size:11px;color:#eef7fb;font-weight:850;margin-top:2px;overflow-wrap:anywhere}
+[class*="st-key-apex_day_event_"] .stButton>button{margin-top:9px!important;min-height:34px!important;border-radius:8px!important;font-size:9.5px!important;padding:5px 10px!important}
 
+/* Fixed Streamlit-native modal: widgets stay interactive, background remains visible and blocked. */
+.apex-event-modal-overlay{position:fixed;inset:0;z-index:9998;background:rgba(1,7,12,.62);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);pointer-events:auto}
+.st-key-apex_forecaster_modal{
+  position:fixed!important;z-index:9999!important;left:50%!important;top:5vh!important;transform:translateX(-50%)!important;
+  width:min(980px,72vw)!important;max-width:calc(100vw - 36px)!important;max-height:90vh!important;overflow-y:auto!important;
+  padding:0 22px 24px!important;border-radius:16px!important;
+  background:linear-gradient(145deg,rgba(5,20,30,.99),rgba(3,13,21,.995))!important;
+  border:1px solid rgba(20,215,225,.72)!important;box-shadow:0 28px 90px rgba(0,0,0,.60),0 0 40px rgba(15,210,220,.05)!important;
+  scrollbar-width:thin;scrollbar-color:#1adbe5 rgba(6,18,27,.75);
+}
+.st-key-apex_forecaster_modal::-webkit-scrollbar{width:5px}.st-key-apex_forecaster_modal::-webkit-scrollbar-thumb{background:#1adbe5;border-radius:999px}
+.st-key-apex_forecaster_modal_header{position:sticky!important;top:0!important;z-index:20!important;margin:0 -22px 16px!important;padding:17px 22px 13px!important;background:rgba(5,20,30,.985)!important;border-bottom:1px solid rgba(95,145,165,.12)!important;backdrop-filter:blur(16px)}
+.apex-modal-kicker{font-size:16px;font-weight:900;color:#f2f6f8}.apex-modal-date{font-size:9.5px;color:#8fa3b4;margin-top:3px}
+.st-key-apex_forecaster_modal_close button{width:42px!important;height:42px!important;min-height:42px!important;padding:0!important;font-size:20px!important;border-radius:10px!important;background:rgba(8,24,34,.72)!important;border:1px solid rgba(90,145,165,.16)!important;color:#f0f5f8!important}
+.apex-modal-section{margin-top:13px;padding:14px;border-radius:12px;background:rgba(8,23,33,.62);border:1px solid rgba(90,145,165,.13)}
+.apex-modal-section-title{font-size:8.5px;font-weight:900;color:#71dfe8;text-transform:uppercase;letter-spacing:.9px;margin-bottom:9px}
+.apex-event-basic-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.apex-readonly-field{padding:10px 11px;border-radius:9px;background:rgba(8,27,38,.76);border:1px solid rgba(90,145,165,.16)}
+.apex-readonly-label{font-size:7.5px;font-weight:900;color:#718795;letter-spacing:.7px;text-transform:uppercase}.apex-readonly-value{font-size:11px;font-weight:800;color:#edf6fa;margin-top:3px;line-height:1.4;overflow-wrap:anywhere}
+.apex-modal-event-name{font-size:15px;font-weight:900;color:#fff;line-height:1.4}
+.apex-modal-values{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.apex-modal-value{padding:12px;border-radius:9px;background:rgba(8,27,38,.76);border:1px solid rgba(90,145,165,.18)}
+.apex-modal-value-label{font-size:7.5px;font-weight:900;color:#718795;letter-spacing:.7px;text-transform:uppercase}.apex-modal-value-number{font-size:17px;font-weight:900;color:#f4f8fa;margin-top:4px;overflow-wrap:anywhere}
+.apex-market-impact-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.apex-impact-box{padding:12px;border-radius:9px;background:rgba(8,27,38,.67);border:1px solid rgba(90,145,165,.13)}
+.apex-impact-box-title{font-size:8px;color:#718795;font-weight:900;text-transform:uppercase;letter-spacing:.7px}.apex-impact-box-value{font-size:11px;font-weight:850;margin-top:4px;color:#edf6fa;line-height:1.45}
+.apex-cross-asset-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.apex-cross-asset{padding:10px;border-radius:9px;background:rgba(7,21,31,.72);border:1px solid rgba(90,145,165,.12);font-size:9.5px;color:#dce7ed;line-height:1.45}.apex-cross-asset b{display:block;color:#fff;margin-bottom:4px}
+
+@media(hover:hover){[class*="st-key-apex_cal_cell_"]:not([class*="st-key-apex_cal_outside_"]):hover{transform:translateY(-2px);border-color:rgba(65,210,220,.42);background:linear-gradient(145deg,rgba(17,45,57,.82),rgba(7,24,34,.90))}}
 @media(max-width:768px){
-  .apex-forecaster-shell{width:calc(100% - 4px);margin:14px auto;padding:16px 12px;border-radius:18px;}
-  .apex-forecaster-label{font-size:15px}.apex-forecaster-subtitle{font-size:11.5px}.apex-calendar-header-icon{width:38px;height:38px;flex-basis:38px;border-radius:10px}
-  .apex-current-month{margin:17px 0 13px;font-size:12px}.apex-calendar-weekdays{gap:5px;margin-bottom:6px}.apex-calendar-weekday{font-size:9px;letter-spacing:.35px}.st-key-apex_forecaster_calendar [data-testid="stHorizontalBlock"]{gap:5px!important;margin-bottom:5px!important}
-  .apex-calendar-empty-cell{min-height:56px;border-radius:8px}
-  .st-key-apex_forecaster_calendar .stButton>button{min-height:56px!important;padding:7px 5px!important;border-radius:8px!important;font-size:13px!important;} .st-key-apex_forecaster_calendar .stButton>button::before{display:none!important;}
-  .apex-calendar-legend{gap:14px;margin-top:14px;font-size:10px}.apex-forecaster-status{margin-top:13px;padding-top:12px}.apex-forecaster-chip{font-size:8.5px;min-height:25px;padding:4px 7px}.apex-selected-date-head{margin-top:17px}.apex-selected-date-title{font-size:16px}
-  .apex-event-card{padding:14px 14px;border-radius:13px}.apex-event-name{font-size:13.5px}.apex-event-values{gap:7px}.apex-event-value{padding:9px 7px}.apex-event-value-number{font-size:12px}
-  .apex-intelligence-shell{padding:14px 12px;border-radius:15px}.fc-outlook{grid-template-columns:1fr 1fr!important}.fc-outlook-main{grid-column:1/-1}.fc-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}
-}
-@media(max-width:430px){
-  .apex-event-values{grid-template-columns:1fr}.apex-event-value{padding:10px 11px}.fc-metrics{grid-template-columns:1fr}
+  .st-key-apex_forecaster_shell{width:100%!important;margin:10px auto 16px!important;padding:16px 10px!important;border-radius:17px!important}.apex-forecaster-header{gap:10px}.apex-forecaster-label{font-size:14px}.apex-forecaster-subtitle{font-size:10px}.apex-calendar-header-icon{width:36px;height:36px;border-radius:9px;font-size:15px}.apex-current-month{font-size:13px;margin:15px 0 13px}
+  .apex-calendar-weekdays{gap:4px}.apex-calendar-weekday{font-size:7px;letter-spacing:.2px}
+  [class*="st-key-apex_cal_row_"] [data-testid="stHorizontalBlock"]{gap:4px!important;flex-wrap:nowrap!important}
+  [class*="st-key-apex_cal_cell_"],[class*="st-key-apex_cal_outside_"]{min-height:50px!important;padding:2px 1px 0!important;border-radius:7px!important}
+  [class*="st-key-apex_cal_cell_"] .stButton>button,[class*="st-key-apex_cal_cell_"] button[data-testid="stBaseButton-secondary"],[class*="st-key-apex_cal_outside_"] .stButton>button,[class*="st-key-apex_cal_outside_"] button[data-testid="stBaseButton-secondary"]{min-height:47px!important;padding:3px 0 15px!important;font-size:11px!important;border-radius:6px!important}
+  .apex-calendar-dots{gap:2px;min-height:8px;margin-top:-14px;margin-bottom:4px}.apex-calendar-dot{width:4px;height:4px}.apex-calendar-more{font-size:6px}.apex-calendar-legend{gap:13px;font-size:8px;margin-top:14px}
+  .apex-selected-date-header{margin-top:17px}.apex-selected-date-title{font-size:11px}.apex-selected-date-count{font-size:7.5px}
+  [class*="st-key-apex_day_event_"]{padding:11px!important}.apex-day-event-top{align-items:flex-start}.apex-day-event-name{font-size:11.5px}.apex-event-mini-number{font-size:10px}
+  .st-key-apex_forecaster_modal{top:3vh!important;width:calc(100vw - 12px)!important;max-width:none!important;max-height:94vh!important;padding:0 12px 18px!important;border-radius:13px!important}
+  .st-key-apex_forecaster_modal_header{margin:0 -12px 12px!important;padding:12px!important}.apex-modal-kicker{font-size:14px}.apex-modal-date{font-size:8.5px}
+  .apex-event-basic-grid{grid-template-columns:1fr!important}.apex-market-impact-grid{grid-template-columns:1fr!important}.apex-cross-asset-grid{grid-template-columns:1fr 1fr!important}.apex-modal-section{padding:11px}.apex-modal-event-name{font-size:13px}
 }
 @media(max-width:390px){
-  .apex-forecaster-shell{width:100%;padding:14px 9px}.apex-calendar-weekdays{gap:3px}.apex-calendar-weekday{font-size:8px}.apex-calendar-empty-cell{min-height:50px}.st-key-apex_forecaster_calendar [data-testid="stHorizontalBlock"]{gap:3px!important;margin-bottom:3px!important}
-  .st-key-apex_forecaster_calendar .stButton>button{min-height:50px!important;padding:5px 4px!important;font-size:12px!important;}
+  .st-key-apex_forecaster_shell{padding:13px 7px!important}.apex-calendar-weekdays{gap:3px}.apex-calendar-weekday{font-size:6.5px}
+  [class*="st-key-apex_cal_row_"] [data-testid="stHorizontalBlock"]{gap:3px!important}
+  [class*="st-key-apex_cal_cell_"],[class*="st-key-apex_cal_outside_"]{min-height:44px!important}.apex-calendar-dots{margin-top:-13px}.apex-calendar-more{display:none}
+  .apex-modal-values{grid-template-columns:1fr!important}.apex-event-mini-values{grid-template-columns:repeat(3,minmax(0,1fr));gap:4px}.apex-event-mini-value{padding:6px 5px}.apex-event-mini-label{font-size:6.5px}.apex-event-mini-number{font-size:9px}
 }
+
 </style>
 """)
 
@@ -4930,26 +4956,203 @@ def _forecaster_radar_refresh_tick() -> None:
         st.caption("Live calendar refresh active.")
 
 
+def _render_forecaster_event_modal(
+    ev: dict,
+    events: list[dict],
+    fred_key: str,
+    channel_name: str,
+    auth_user: dict | None,
+    actuals_cache: dict,
+) -> None:
+    '''Presentation-only large Forecaster event modal using the existing intelligence engine.'''
+    is_admin = bool(auth_user and auth_user.get("is_admin", False))
+    ev_code = str(ev.get("code", "")).strip()
+    currency_flags = {
+        "USD": "🇺🇸", "EUR": "🇪🇺", "GBP": "💷", "CAD": "🍁",
+        "JPY": "💴", "AUD": "🇦🇺", "NZD": "🇳🇿", "CHF": "🏔️",
+    }
+    cur = ev.get("currency", "USD")
+    cur_flag = currency_flags.get(cur, "🌐")
+
+    saved_actual = str(actuals_cache.get(ev_code, "")).strip()
+    published_actual = _normalize_forex_factory_actual(ev.get("actual_str", ""))
+    effective_actual = saved_actual or published_actual
+    bg_result = _forecaster_bg_get(ev, effective_actual)
+
+    if bg_result and bg_result.get("nowcast"):
+        nowcast = bg_result["nowcast"]
+        causal_ai = bg_result.get("causal_ai") or {"status": "skipped"}
+        all_news = bg_result.get("all_news") or []
+    else:
+        # Preserve the existing cold-start behavior: quantitative result only;
+        # causal AI remains on the existing background worker.
+        all_news = fetch_all_instant_news(channel_name)
+        nowcast = compute_event_nowcast(
+            ev,
+            fred_key,
+            all_news,
+            actual_override=effective_actual,
+        )
+        causal_ai = {"status": "updating"}
+        with _FORECASTER_BG_LOCK:
+            _FORECASTER_BG_CACHE[ev_code] = {
+                "signature": _forecaster_bg_signature(ev, effective_actual),
+                "updated_at": time.time(),
+                "nowcast": nowcast,
+                "causal_ai": causal_ai,
+                "all_news": all_news,
+                "effective_actual": effective_actual,
+            }
+        _ensure_forecaster_background_worker(
+            [ev],
+            fred_key,
+            channel_name,
+            actuals_cache,
+        )
+
+    try:
+        _record_forecaster_snapshot(ev, nowcast, actual=effective_actual)
+    except Exception:
+        pass
+
+    actual_value = effective_actual or "Pending"
+    actual_color = "#00ffa3" if effective_actual else "#8fa3b4"
+    impact = str(ev.get("impact", "Medium")).title()
+    impact_color = "#a84de3" if impact == "High" else ("#ffbc26" if impact == "Medium" else "#38d4e4")
+    modal_date = ev.get("datetime_obj")
+    modal_date_text = modal_date.strftime("%A, %d %B %Y") if isinstance(modal_date, datetime) else ev.get("date_str", "")
+
+    render_html('<div class="apex-event-modal-overlay" aria-hidden="true"></div>')
+    with st.container(key="apex_forecaster_modal"):
+        with st.container(key="apex_forecaster_modal_header"):
+            h1, h2 = st.columns([8, 1], vertical_alignment="center")
+            with h1:
+                render_html(f'<div class="apex-modal-kicker">Event Details</div><div class="apex-modal-date">{modal_date_text}</div>')
+            with h2:
+                with st.container(key="apex_forecaster_modal_close"):
+                    if st.button("×", key="apex_fc_modal_close_btn", help="Close Event Details", use_container_width=True):
+                        st.session_state["apex_forecaster_modal_open"] = False
+                        st.session_state.pop("APEX_FORECASTER_SELECTED_EVENT", None)
+                        st.rerun()
+
+        render_html(f'''
+        <div class="apex-modal-section">
+          <div class="apex-modal-section-title">Basic Event Information</div>
+          <div class="apex-event-basic-grid">
+            <div class="apex-readonly-field"><div class="apex-readonly-label">Currency</div><div class="apex-readonly-value">{cur_flag} {cur}</div></div>
+            <div class="apex-readonly-field"><div class="apex-readonly-label">Impact</div><div class="apex-readonly-value" style="color:{impact_color};">● {impact} Impact</div></div>
+            <div class="apex-readonly-field"><div class="apex-readonly-label">Time</div><div class="apex-readonly-value">{ev.get('time_str','—')}</div></div>
+          </div>
+          <div style="height:9px"></div>
+          <div class="apex-readonly-field"><div class="apex-readonly-label">Event</div><div class="apex-modal-event-name">{ev.get('title','—')}</div></div>
+        </div>
+        <div class="apex-modal-section">
+          <div class="apex-modal-section-title">Actual / Forecast / Previous</div>
+          <div class="apex-modal-values">
+            <div class="apex-modal-value"><div class="apex-modal-value-label">Actual</div><div class="apex-modal-value-number" style="color:{actual_color};">{actual_value}</div></div>
+            <div class="apex-modal-value"><div class="apex-modal-value-label">Forecast</div><div class="apex-modal-value-number" style="color:#ffd166;">{ev.get('forecast_str','—')}</div></div>
+            <div class="apex-modal-value"><div class="apex-modal-value-label">Previous</div><div class="apex-modal-value-number">{ev.get('prev_str','—')}</div></div>
+          </div>
+        </div>
+        <div class="apex-modal-section">
+          <div class="apex-modal-section-title">ApexMacro Nowcast</div>
+          <div class="apex-market-impact-grid">
+            <div class="apex-impact-box">
+              <div class="apex-impact-box-title">Causal / Forecast State</div>
+              <div class="apex-impact-box-value" style="color:{nowcast['bias_color']};">{nowcast['bias_label']}</div>
+              <div style="font-size:9.5px;color:#91a4b1;line-height:1.5;margin-top:5px;">{nowcast['outcome_desc']}</div>
+              <div style="font-size:8.7px;color:#718795;margin-top:6px;">Beat <b style="color:#00ffa3;">{nowcast.get('probabilities',{}).get('beat',0):.1f}%</b> • In-line <b style="color:#ffd166;">{nowcast.get('probabilities',{}).get('inline',0):.1f}%</b> • Miss <b style="color:#ff788a;">{nowcast.get('probabilities',{}).get('miss',0):.1f}%</b></div>
+            </div>
+            <div class="apex-impact-box">
+              <div class="apex-impact-box-title">Market Impact</div>
+              <div class="apex-impact-box-value" style="color:{nowcast['currency_action_color']};">{nowcast['currency_action_en']}</div>
+              <div style="font-size:9.5px;color:#91a4b1;line-height:1.5;margin-top:5px;">{nowcast['currency_action_desc_en']}</div>
+              <div style="font-size:8.7px;color:#718795;margin-top:6px;">Model confidence: <b style="color:{nowcast['bias_color']};">{nowcast['confidence']}%</b> • Conflict {nowcast.get('conflict_score',0)*100:.0f}% • Evidence {nowcast.get('evidence_quality',0)*100:.0f}%</div>
+            </div>
+          </div>
+        </div>
+        <div class="apex-modal-section">
+          <div class="apex-modal-section-title">Cross-Asset Impact</div>
+          <div class="apex-cross-asset-grid">
+            <div class="apex-cross-asset"><b>🥇 Gold</b>{nowcast['gold_implication']}</div>
+            <div class="apex-cross-asset"><b>💵 USD</b>{nowcast['usd_implication']}</div>
+            <div class="apex-cross-asset"><b>🛢️ Oil</b>{nowcast['oil_implication']}</div>
+            <div class="apex-cross-asset"><b>📊 Nasdaq-100</b>{nowcast['nasdaq_implication']}</div>
+          </div>
+        </div>
+        ''')
+
+        # Preserve the complete existing causal-AI renderer and semantics.
+        render_causal_macro_ai_panel(causal_ai)
+
+        render_html('<div class="apex-modal-section"><div class="apex-modal-section-title">Evidence &amp; Precursors</div></div>')
+        if nowcast["precursor_results"]:
+            p_cols = st.columns(min(len(nowcast["precursor_results"]), 3))
+            for p_idx, p_item in enumerate(nowcast["precursor_results"]):
+                p_col = p_cols[p_idx % len(p_cols)]
+                p_mom_color = "#00ffa3" if p_item["mom"] > 0 else ("#ff5e75" if p_item["mom"] < 0 else "#8fa3b4")
+                p_arr = "▲" if p_item["mom"] > 0 else ("▼" if p_item["mom"] < 0 else "•")
+                with p_col:
+                    render_html(f'''
+                    <div class="fc-metric" style="margin-bottom:8px;">
+                      <div class="fc-metric-l">{p_item['name']}</div>
+                      <div class="fc-metric-v">{p_item['latest']:.2f}</div>
+                      <div class="fc-metric-note" style="color:{p_mom_color};font-weight:800;">{p_arr} {p_item['mom']:+.2f} MoM</div>
+                    </div>
+                    ''')
+        else:
+            st.caption("No mapped FRED precursor series are available for this catalyst.")
+
+        if nowcast["correlated_articles"]:
+            render_html('<div class="apex-modal-section"><div class="apex-modal-section-title">Correlated Breaking Wires &amp; Speeches</div></div>')
+            for a in nowcast["correlated_articles"]:
+                render_html(f'''
+                <div style="padding:9px 11px;background:rgba(0,245,255,.025);border-left:2px solid rgba(0,245,255,.55);border-radius:6px;margin-bottom:7px;font-size:10px;color:#dce7ed;line-height:1.5;overflow-wrap:anywhere;">
+                  <b>{a.get('title', '')}</b><div style="color:#718795;font-size:8.8px;margin-top:2px;">{a.get('publishedAt', '')}</div>
+                </div>
+                ''')
+
+        # Preserve the exact existing authorization rule and persistence mechanism.
+        if is_admin:
+            render_html('<div class="apex-modal-section"><div class="apex-modal-section-title">👑 Admin Actual Override</div></div>')
+            c1, c2 = st.columns([3, 1], vertical_alignment="bottom")
+            with c1:
+                entered_actual_val = st.text_input(
+                    f"Actual Value for {ev_code}",
+                    value=effective_actual,
+                    placeholder="e.g. -0.5% or 0.5",
+                    key=f"act_txt_modal_{ev_code}",
+                    label_visibility="collapsed",
+                )
+            with c2:
+                if st.button("💾 Update Actual", key=f"act_btn_modal_{ev_code}", use_container_width=True):
+                    actuals_cache[ev_code] = entered_actual_val.strip()
+                    save_actuals_cache(actuals_cache)
+                    st.success("Published!")
+                    time.sleep(0.3)
+                    st.rerun()
+
+
 def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict | None = None) -> None:
-    """Design A calendar presentation over the existing authoritative Forecaster intelligence."""
+    '''Design A Forecaster UI: month calendar -> selected-day events -> large details modal.'''
     if "selected_tz" not in st.session_state or st.session_state["selected_tz"] not in SUPPORTED_TIMEZONES:
         st.session_state["selected_tz"] = "🏛️ Kurdistan & Iraq (UTC+3)"
 
     tz_info = SUPPORTED_TIMEZONES.get(st.session_state["selected_tz"], {"offset": 3, "label": "KRD (UTC+3)"})
     is_admin = bool(auth_user and auth_user.get("is_admin", False))
-    user_now = datetime.utcnow() + timedelta(hours=tz_info["offset"])
-    today_date = user_now.date()
 
     selected_event_key = "APEX_FORECASTER_SELECTED_EVENT"
+    modal_key = "apex_forecaster_modal_open"
     selected_date_key = "apex_forecaster_selected_date"
     snapshot_key = "APEX_FORECASTER_EVENT_SNAPSHOT"
 
-    # Keep the existing lightweight radar refresh/background-precompute behavior.
-    selected_code = st.session_state.get(selected_event_key, "")
+    selected_code = str(st.session_state.get(selected_event_key, "") or "")
+    modal_open = bool(st.session_state.get(modal_key, False))
+
     if not selected_code:
         _forecaster_radar_refresh_tick()
 
-    # Preserve the current Forecaster event-source/snapshot behavior exactly.
+    # Preserve the existing event snapshot behavior while a modal event is selected.
     if selected_code and st.session_state.get(snapshot_key):
         events = st.session_state[snapshot_key]
     else:
@@ -4968,349 +5171,194 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     if actuals_changed:
         save_actuals_cache(actuals_cache)
 
-    # Preserve the existing singleton-safe background warm-up exactly as the current project uses it.
+    # Preserve the existing singleton-safe background precomputation.
     _ensure_forecaster_background_worker(events, fred_key, channel_name, actuals_cache)
 
-    # Presentation-only grouping. Event objects remain untouched.
+    local_now = datetime.utcnow() + timedelta(hours=tz_info["offset"])
+    today = local_now.date()
+    display_year, display_month = today.year, today.month
+
+    # Presentation-only date grouping. Event dictionaries and identifiers are untouched.
     events_by_date: dict[date, list[dict]] = {}
     for event in events:
-        event_dt = event.get("datetime_obj")
-        if isinstance(event_dt, datetime):
-            events_by_date.setdefault(event_dt.date(), []).append(event)
+        dt = event.get("datetime_obj")
+        if isinstance(dt, datetime):
+            events_by_date.setdefault(dt.date(), []).append(event)
     for day_events in events_by_date.values():
         day_events.sort(key=lambda item: item.get("datetime_obj") or datetime.max)
 
-    # The current month is driven by the already-normalized Forecaster timezone.
-    display_year = user_now.year
-    display_month = user_now.month
-    month_name = cal_lib.month_name[display_month].upper()
+    current_month_event_dates = sorted(
+        d for d in events_by_date
+        if d.year == display_year and d.month == display_month
+    )
 
-    current_month_dates = sorted(d for d in events_by_date if d.year == display_year and d.month == display_month)
-    raw_selected_date = st.session_state.get(selected_date_key, "")
-    selected_date = None
-    if raw_selected_date:
-        try:
-            candidate = date.fromisoformat(str(raw_selected_date))
-            if candidate.year == display_year and candidate.month == display_month:
-                selected_date = candidate
-        except Exception:
-            selected_date = None
+    raw_selected_date = str(st.session_state.get(selected_date_key, "") or "")
+    try:
+        selected_date = date.fromisoformat(raw_selected_date) if raw_selected_date else None
+    except Exception:
+        selected_date = None
 
-    if selected_date is None:
-        if today_date in events_by_date and today_date.year == display_year and today_date.month == display_month:
-            selected_date = today_date
+    if selected_date is None or selected_date.year != display_year or selected_date.month != display_month:
+        if today in events_by_date:
+            selected_date = today
         else:
-            upcoming_dates = [d for d in current_month_dates if d >= today_date]
-            selected_date = upcoming_dates[0] if upcoming_dates else today_date
+            upcoming = [d for d in current_month_event_dates if d >= today]
+            selected_date = upcoming[0] if upcoming else today
         st.session_state[selected_date_key] = selected_date.isoformat()
+
+    # Dynamic selected/today styles are scoped to exact keyed calendar cells.
+    selected_css_key = f"apex_cal_cell_{selected_date.strftime('%Y_%m_%d')}"
+    today_css_key = f"apex_cal_cell_{today.strftime('%Y_%m_%d')}"
+    render_html(f'''
+    <style>
+      .st-key-{today_css_key}{{box-shadow:inset 0 0 0 1px rgba(65,200,215,.22);}}
+      .st-key-{selected_css_key}{{border-color:rgba(20,225,235,.95)!important;background:linear-gradient(145deg,rgba(6,64,75,.78),rgba(4,28,38,.94))!important;box-shadow:0 0 18px rgba(20,220,230,.12)!important;}}
+      .st-key-{selected_css_key} button{{color:#ffffff!important;font-weight:950!important;}}
+    </style>
+    ''')
+
+    with st.container(key="apex_forecaster_shell"):
+        render_html(f'''
+          <div class="apex-forecaster-header">
+            <div>
+              <div class="apex-forecaster-label">FORECASTER</div>
+              <div class="apex-forecaster-subtitle">Daily outlook for this month • {tz_info['label']}</div>
+            </div>
+            <div class="apex-calendar-header-icon" aria-hidden="true">▣</div>
+          </div>
+          <div class="apex-current-month">{local_now.strftime('%B %Y')}</div>
+          <div class="apex-calendar-weekdays">
+            <div class="apex-calendar-weekday">MON</div><div class="apex-calendar-weekday">TUE</div><div class="apex-calendar-weekday">WED</div><div class="apex-calendar-weekday">THU</div><div class="apex-calendar-weekday">FRI</div><div class="apex-calendar-weekday">SAT</div><div class="apex-calendar-weekday">SUN</div>
+          </div>
+        ''')
+    
+        # Calendar rows are Streamlit-native buttons so selection state remains rerun-safe.
+        weeks = cal_lib.Calendar(firstweekday=0).monthdatescalendar(display_year, display_month)
+        for w_idx, week in enumerate(weeks):
+            with st.container(key=f"apex_cal_row_{w_idx}"):
+                cols = st.columns(7, gap="small")
+                for c_idx, day_value in enumerate(week):
+                    in_month = day_value.month == display_month
+                    key_prefix = "apex_cal_cell" if in_month else "apex_cal_outside"
+                    cell_key = f"{key_prefix}_{day_value.strftime('%Y_%m_%d')}"
+                    with cols[c_idx]:
+                        with st.container(key=cell_key):
+                            if in_month:
+                                if st.button(str(day_value.day), key=f"apex_cal_btn_{day_value.isoformat()}", use_container_width=True):
+                                    st.session_state[selected_date_key] = day_value.isoformat()
+                                    st.session_state[modal_key] = False
+                                    st.session_state.pop(selected_event_key, None)
+                                    st.rerun()
+    
+                                day_events = events_by_date.get(day_value, [])
+                                if day_events:
+                                    dot_parts = []
+                                    shown = day_events[:4]
+                                    for item in shown:
+                                        imp = str(item.get("impact", "Medium")).strip().lower()
+                                        cls = "high" if imp == "high" else ("medium" if imp == "medium" else "low")
+                                        dot_parts.append(f'<span class="apex-calendar-dot {cls}"></span>')
+                                    more = len(day_events) - len(shown)
+                                    more_html = f'<span class="apex-calendar-more">+{more}</span>' if more > 0 else ''
+                                    render_html(f'<div class="apex-calendar-dots">{"".join(dot_parts)}{more_html}</div>')
+                                else:
+                                    render_html('<div class="apex-calendar-dots"></div>')
+                            else:
+                                # Adjacent-month dates are shown only for grid alignment and are intentionally inactive.
+                                st.button(str(day_value.day), key=f"apex_cal_out_btn_{day_value.isoformat()}", use_container_width=True, disabled=True)
+                                render_html('<div class="apex-calendar-dots"></div>')
+    
+        render_html('''
+        <div class="apex-calendar-legend">
+          <span class="apex-calendar-legend-item"><span class="apex-calendar-dot high"></span> High Impact</span>
+          <span class="apex-calendar-legend-item"><span class="apex-calendar-dot medium"></span> Medium Impact</span>
+          <span class="apex-calendar-legend-item"><span class="apex-calendar-dot low"></span> Low Impact</span>
+        </div>
+        ''')
+        ai_key_state = "Configured" if DEFAULT_AI_KEY else "Missing"
+        high_count = sum(1 for e in events if str(e.get("impact", "")).title() == "High")
+        medium_count = sum(1 for e in events if str(e.get("impact", "")).title() == "Medium")
+        render_html(f'''
+        <div class="apex-forecaster-status">
+          <span>Tracked <b>{len(events)}</b></span>
+          <span>High <b>{high_count}</b></span>
+          <span>Medium <b>{medium_count}</b></span>
+          <span>AI <b>{DEFAULT_AI_PROVIDER} / {DEFAULT_AI_MODEL}</b></span>
+          <span>Key <b>{ai_key_state}</b></span>
+        </div>
+        ''')
+
+    selected_events = list(events_by_date.get(selected_date, []))
+    render_html(f'''
+    <div class="apex-selected-date-header">
+      <div class="apex-selected-date-title">{selected_date.strftime('%d %B %Y')}</div>
+      <div class="apex-selected-date-count">{len(selected_events)} EVENT{'S' if len(selected_events) != 1 else ''}</div>
+    </div>
+    ''')
 
     currency_flags = {
         "USD": "🇺🇸", "EUR": "🇪🇺", "GBP": "💷", "CAD": "🍁",
-        "JPY": "💴", "AUD": "🇦🇺", "NZD": "🇳🇿", "CHF": "🏔️", "ALL": "🌐",
+        "JPY": "💴", "AUD": "🇦🇺", "NZD": "🇳🇿", "CHF": "🏔️",
     }
 
-    high_count = sum(1 for e in events if str(e.get("impact", "")).title() == "High")
-    medium_count = sum(1 for e in events if str(e.get("impact", "")).title() == "Medium")
-    perf = _forecaster_performance()
-    ai_key_state = "Configured" if DEFAULT_AI_KEY else "Missing"
-    ai_key_class = "green" if DEFAULT_AI_KEY else ""
-
-    # One keyed Streamlit container provides the actual Design A glass shell.
-    # Calendar button CSS is scoped to this container only.
-    day_button_css: list[str] = []
-    with st.container(key="apex_forecaster_calendar"):
-        render_html(f"""
-        <div class="apex-forecaster-head">
-          <div>
-            <div class="apex-forecaster-label">FORECASTER</div>
-            <div class="apex-forecaster-subtitle">Daily outlook for this month • {tz_info['label']}</div>
-          </div>
-          <div class="apex-calendar-header-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4M17 3v4M3 10h18"/></svg>
-          </div>
-        </div>
-        <div class="apex-current-month">{month_name} {display_year}</div>
-        <div class="apex-calendar-weekdays">
-          <div class="apex-calendar-weekday">MON</div><div class="apex-calendar-weekday">TUE</div><div class="apex-calendar-weekday">WED</div><div class="apex-calendar-weekday">THU</div><div class="apex-calendar-weekday">FRI</div><div class="apex-calendar-weekday">SAT</div><div class="apex-calendar-weekday">SUN</div>
-        </div>
-        """)
-        def _calendar_short_event_title(value: str, limit: int = 21) -> str:
-            # Presentation only: keep source title intact elsewhere, shorten only inside the tiny date cell.
-            title = " ".join(str(value or "").split())
-            replacements = {
-                "Price Index": "Price Idx",
-                "Consumer Price Index": "CPI",
-                "Producer Price Index": "PPI",
-                "Consumer Confidence": "Consumer Conf.",
-                "Unemployment Claims": "Jobless Claims",
-                "Non-Farm Employment Change": "NFP",
-                "Nonfarm Payrolls": "NFP",
-                "Gross Domestic Product": "GDP",
-                "Manufacturing": "Mfg",
-            }
-            for old, new in replacements.items():
-                title = title.replace(old, new)
-            if len(title) <= limit:
-                return title
-            return title[: max(1, limit - 1)].rstrip() + "…"
-
-        def _css_content_escape(value: str) -> str:
-            encoded = json.dumps(str(value), ensure_ascii=False)[1:-1]
-            return encoded.replace(chr(92) + "n", chr(92) + "A ")
-
-
-        month_weeks = cal_lib.Calendar(firstweekday=0).monthdayscalendar(display_year, display_month)
-        for week in month_weeks:
-            cols = st.columns(7, gap="small")
-            for col, day_num in zip(cols, week):
-                with col:
-                    if day_num == 0:
-                        st.markdown('<div class="apex-calendar-empty-cell" aria-hidden="true"></div>', unsafe_allow_html=True)
-                        continue
-
-                    day_date = date(display_year, display_month, day_num)
-                    day_events = events_by_date.get(day_date, [])
-                    highest_impact = ""
-                    if any(str(e.get("impact", "")).title() == "High" for e in day_events):
-                        highest_impact = "high"
-                    elif any(str(e.get("impact", "")).title() == "Medium" for e in day_events):
-                        highest_impact = "medium"
-                    elif day_events:
-                        highest_impact = "low"
-
-                    key = f"fc_day_{display_year}{display_month:02d}{day_num:02d}"
-                    is_selected = day_date == selected_date
-                    if st.button(str(day_num), key=key, use_container_width=True, type="primary" if is_selected else "secondary"):
-                        st.session_state[selected_date_key] = day_date.isoformat()
-                        # Date navigation should not keep intelligence selected from a different day.
-                        active_code = st.session_state.get(selected_event_key, "")
-                        if active_code:
-                            active_event = next((x for x in events if x.get("code") == active_code), None)
-                            if not active_event or active_event.get("datetime_obj").date() != day_date:
-                                st.session_state.pop(selected_event_key, None)
-                        st.rerun()
-
-                    selector = f".st-key-{key} button"
-                    if day_date == today_date and not is_selected:
-                        day_button_css.append(f"{selector}{{border-color:rgba(65,200,215,.40)!important;}}")
-
-                    # Put the real Forecaster events inside the calendar cell without mutating source data.
-                    if day_events:
-                        summary_lines: list[str] = []
-                        for cal_event in day_events[:2]:
-                            cal_impact = str(cal_event.get("impact", "Low")).title()
-                            impact_mark = {"High": "●", "Medium": "●", "Low": "●"}.get(cal_impact, "●")
-                            cal_cur = str(cal_event.get("currency", ""))
-                            cal_title = _calendar_short_event_title(cal_event.get("title", ""))
-                            cal_time = str(cal_event.get("time_str", "")).split(" ", 1)[0]
-                            summary_lines.append(f"{impact_mark} {cal_cur} · {cal_title} · {cal_time}")
-                        if len(day_events) > 2:
-                            summary_lines.append(f"+{len(day_events) - 2} more")
-                        summary_text = _css_content_escape("\n".join(summary_lines))
-                        day_button_css.append(f'{selector}::before{{content:"{summary_text}";}}')
-
-                    if highest_impact:
-                        dot_color = {"high": "#B84FE8", "medium": "#FFB82E", "low": "#4BC7D8"}[highest_impact]
-                        # Desktop: a restrained impact marker in the lower-right corner.
-                        # Mobile: the dot remains visible while long event text is hidden for 7-column fit.
-                        count_text = str(len(day_events)) if len(day_events) > 1 else ""
-                        day_button_css.append(
-                            f"{selector}::after{{content:'{count_text}';position:absolute;right:9px;bottom:8px;min-width:7px;height:7px;padding-left:{'7px' if count_text else '0'};border-radius:999px;background:{dot_color};box-shadow:0 0 8px {dot_color}44;color:#dfeaf0;font-size:8px;font-weight:800;line-height:7px;text-align:left;}}"
-                        )
-
-        render_html(f"""
-        <div class="apex-calendar-legend">
-          <span class="apex-calendar-legend-item"><span class="apex-calendar-legend-dot high"></span>High Impact</span>
-          <span class="apex-calendar-legend-item"><span class="apex-calendar-legend-dot medium"></span>Medium Impact</span>
-          <span class="apex-calendar-legend-item"><span class="apex-calendar-legend-dot low"></span>Low Impact</span>
-        </div>
-        <div class="apex-forecaster-status">
-          <div class="apex-forecaster-status-left">
-            <span class="apex-forecaster-chip">Tracked <b class="cyan">{len(events)}</b></span>
-            <span class="apex-forecaster-chip">High <b class="purple">{high_count}</b></span>
-            <span class="apex-forecaster-chip">Medium <b class="gold">{medium_count}</b></span>
-          </div>
-          <div class="apex-forecaster-status-right">
-            <span class="apex-forecaster-chip">AI <b>{DEFAULT_AI_PROVIDER}</b> • {DEFAULT_AI_MODEL} • <b class="{ai_key_class}">{ai_key_state}</b></span>
-            {f'<span class="apex-forecaster-chip">Learning <b>{perf["accuracy"]:.1f}%</b> • {perf["resolved"]} resolved</span>' if is_admin and perf['resolved'] else ('<span class="apex-forecaster-chip">Learning <b>Active</b></span>' if is_admin else '')}
-          </div>
-        </div>
-        """)
-
-    if day_button_css:
-        st.markdown("<style>" + "".join(day_button_css) + "</style>", unsafe_allow_html=True)
-
-
-    selected_day_events = events_by_date.get(selected_date, [])
-    selected_label = selected_date.strftime("%B %d, %Y")
-    render_html(f"""
-    <div class="apex-selected-date-head">
-      <div>
-        <div class="apex-selected-date-title">{selected_label}</div>
-        <div class="apex-selected-date-meta">{len(selected_day_events)} Macro Catalyst{'s' if len(selected_day_events) != 1 else ''}</div>
-      </div>
-    </div>
-    """)
-
-    if not selected_day_events:
-        render_html('<div class="apex-empty-day">No scheduled macro catalysts for this date.</div>')
-        st.session_state.pop(selected_event_key, None)
-        return
-
-    # Display every event for the selected date without mutating or filtering the underlying list.
-    active_code = st.session_state.get(selected_event_key, "")
-    with st.container(key="apex_forecaster_event_list"):
-        for item in selected_day_events:
+    if not selected_events:
+        render_html('<div class="apex-no-catalysts">No scheduled macro catalysts for this date.</div>')
+    else:
+        for item in selected_events:
             code = str(item.get("code", ""))
-            cur = str(item.get("currency", "USD"))
-            cur_flag = currency_flags.get(cur, "🌐")
+            safe_key = re.sub(r"[^A-Za-z0-9_]+", "_", code)[:100]
+            cur = item.get("currency", "USD")
+            flag = currency_flags.get(cur, "🌐")
             impact = str(item.get("impact", "Medium")).title()
-            impact_class = "high" if impact == "High" else ("medium" if impact == "Medium" else "low")
-            impact_label = impact.upper()
+            impact_color = "#a84de3" if impact == "High" else ("#ffbc26" if impact == "Medium" else "#38d4e4")
             saved_actual = str(actuals_cache.get(code, "")).strip()
             published_actual = _normalize_forex_factory_actual(item.get("actual_str", ""))
-            effective_actual = saved_actual or published_actual
-            actual_display = effective_actual or "Pending"
-            active_class = " is-active" if code == active_code else ""
-            render_html(f"""
-            <div class="apex-event-card{active_class}">
-              <div class="apex-event-topline">
-                <div class="apex-event-kicker">{cur_flag} {cur} • <span class="apex-event-impact-{impact_class}">{impact_label} IMPACT</span></div>
-                <div class="apex-event-time">{item['time_str']}</div>
-              </div>
-              <div class="apex-event-name">{item['title']}</div>
-              <div class="apex-event-values">
-                <div class="apex-event-value"><div class="apex-event-value-label">Actual</div><div class="apex-event-value-number actual">{actual_display}</div></div>
-                <div class="apex-event-value"><div class="apex-event-value-label">Forecast</div><div class="apex-event-value-number forecast">{item['forecast_str']}</div></div>
-                <div class="apex-event-value"><div class="apex-event-value-label">Previous</div><div class="apex-event-value-number">{item['prev_str']}</div></div>
-              </div>
-            </div>
-            """)
-            btn_label = "Intelligence Open" if code == active_code else "Open Intelligence →"
-            if st.button(btn_label, key=f"fc_open_{code}", use_container_width=True, type="primary" if code == active_code else "secondary"):
-                st.session_state[selected_event_key] = code
-                st.rerun()
+            actual_value = saved_actual or published_actual or "Pending"
+            time_plain = item.get("datetime_obj").strftime("%H:%M") if isinstance(item.get("datetime_obj"), datetime) else item.get("time_str", "—")
 
-    ev = next((item for item in selected_day_events if item.get("code") == st.session_state.get(selected_event_key, "")), None)
-    if ev is None:
-        st.caption("Select an event above to open its Nowcast, Evidence & Precursors and Causal Intelligence.")
-        return
-
-    # From this point onward the existing authoritative intelligence path is preserved.
-    ev_code = ev["code"]
-    saved_actual = str(actuals_cache.get(ev_code, "")).strip()
-    published_actual = _normalize_forex_factory_actual(ev.get("actual_str", ""))
-    effective_actual = saved_actual or published_actual
-    bg_result = _forecaster_bg_get(ev, effective_actual)
-
-    if bg_result and bg_result.get("nowcast"):
-        nowcast = bg_result["nowcast"]
-        causal_ai = bg_result.get("causal_ai") or {"status": "skipped"}
-        all_news = bg_result.get("all_news") or []
-    else:
-        with st.spinner(f"Preparing quantitative Nowcast for {ev.get('title','selected catalyst')}..."):
-            all_news = fetch_all_instant_news(channel_name)
-            nowcast = compute_event_nowcast(ev, fred_key, all_news, actual_override=effective_actual)
-            causal_ai = {"status": "updating"}
-            with _FORECASTER_BG_LOCK:
-                _FORECASTER_BG_CACHE[ev_code] = {
-                    "signature": _forecaster_bg_signature(ev, effective_actual),
-                    "updated_at": time.time(),
-                    "nowcast": nowcast,
-                    "causal_ai": causal_ai,
-                    "all_news": all_news,
-                    "effective_actual": effective_actual,
-                }
-            _ensure_forecaster_background_worker([ev], fred_key, channel_name, actuals_cache)
-
-    try:
-        _record_forecaster_snapshot(ev, nowcast, actual=effective_actual)
-    except Exception:
-        pass
-
-    cur = ev.get("currency", "USD")
-    actual_value = effective_actual or "Pending"
-    actual_color = "#42e5ec" if effective_actual else "#718795"
-    bias_bg = "rgba(0,255,163,.055)" if nowcast["bias_color"] == "#00ffa3" else ("rgba(255,94,117,.055)" if nowcast["bias_color"] == "#ff5e75" else "rgba(255,209,102,.05)")
-
-    render_html(f"""
-    <div class="apex-intelligence-shell">
-      <div class="sec-title">Event Intelligence — {currency_flags.get(cur, '🌐')} {cur} · {ev['title']}</div>
-      <div class="fc-body" style="padding:4px 0 0;">
-        <div class="fc-time" style="margin-bottom:10px;">📅 {ev['date_str']} &nbsp;•&nbsp; 🕒 {ev['time_str']} &nbsp;•&nbsp; {ev['countdown']}</div>
-        <div class="fc-metrics">
-          <div class="fc-metric"><div class="fc-metric-l">Actual</div><div class="fc-metric-v" style="color:{actual_color};">{actual_value}</div><div class="fc-metric-note">Published print</div></div>
-          <div class="fc-metric"><div class="fc-metric-l">Forecast</div><div class="fc-metric-v" style="color:#ffb82e;">{ev['forecast_str']}</div><div class="fc-metric-note">Market consensus</div></div>
-          <div class="fc-metric"><div class="fc-metric-l">Previous</div><div class="fc-metric-v">{ev['prev_str']}</div><div class="fc-metric-note">Last official release</div></div>
-        </div>
-        <div class="fc-nowcast" style="background:{bias_bg};border:1px solid {nowcast['bias_color']}33;">
-          <div>
-            <div class="fc-now-lbl" style="color:{nowcast['bias_color']};">ApexMacro Nowcast</div>
-            <div class="fc-now-title" style="color:{nowcast['bias_color']};">{nowcast['bias_label']}</div>
-            <div class="fc-now-desc">{nowcast['outcome_desc']}</div>
-            <div style="font-size:9.5px;color:#8fa3b4;margin-top:7px;">Beat <b style="color:#00ffa3;">{nowcast.get('probabilities',{}).get('beat',0):.1f}%</b> &nbsp;•&nbsp; In-line <b style="color:#ffd166;">{nowcast.get('probabilities',{}).get('inline',0):.1f}%</b> &nbsp;•&nbsp; Miss <b style="color:#ff788a;">{nowcast.get('probabilities',{}).get('miss',0):.1f}%</b></div>
-            <div style="font-size:8.8px;color:#718795;margin-top:3px;">Conflict {nowcast.get('conflict_score',0)*100:.0f}% • Evidence quality {nowcast.get('evidence_quality',0)*100:.0f}% • Model: {nowcast.get('event_family','general').title()}</div>
-          </div>
-          <div class="fc-score"><div class="fc-score-num" style="color:{nowcast['bias_color']};">{nowcast['confidence']}%</div><div class="fc-score-cap">Model confidence</div><div style="font-size:9px;color:#718795;margin-top:4px;">Baseline: {ev['consensus_bias']}</div></div>
-        </div>
-        <div class="fc-outlook" style="grid-template-columns:1.45fr repeat(4,.65fr);">
-          <div class="fc-outlook-main"><div class="fc-small-lbl">Direct {cur} trajectory</div><div class="fc-main-action" style="color:{nowcast['currency_action_color']};">{nowcast['currency_action_en']}</div><div class="fc-main-desc">{nowcast['currency_action_desc_en']}</div></div>
-          <div class="fc-asset"><b>🥇 Gold</b>{nowcast['gold_implication']}</div>
-          <div class="fc-asset"><b>💵 USD</b>{nowcast['usd_implication']}</div>
-          <div class="fc-asset"><b>🛢️ Oil</b>{nowcast['oil_implication']}</div>
-          <div class="fc-asset"><b>📊 Nasdaq-100</b>{nowcast['nasdaq_implication']}</div>
-        </div>
-      </div>
-    </div>
-    """)
-
-    # Existing Causal Intelligence renderer is reused without analytical changes.
-    render_causal_macro_ai_panel(causal_ai)
+            with st.container(key=f"apex_day_event_{safe_key}"):
+                render_html(f'''
+                <div class="apex-day-event-top">
+                  <div class="apex-day-event-meta">
+                    <span class="apex-day-event-time">{time_plain}</span>
+                    <span>{flag}</span><span class="apex-day-event-currency">{cur}</span>
+                    <span class="apex-day-impact" style="color:{impact_color};">● {impact}</span>
+                  </div>
+                  <div style="font-size:8px;color:#607583;">{item.get('countdown','')}</div>
+                </div>
+                <div class="apex-day-event-name">{item.get('title','—')}</div>
+                <div class="apex-event-mini-values">
+                  <div class="apex-event-mini-value"><div class="apex-event-mini-label">Actual</div><div class="apex-event-mini-number">{actual_value}</div></div>
+                  <div class="apex-event-mini-value"><div class="apex-event-mini-label">Forecast</div><div class="apex-event-mini-number">{item.get('forecast_str','—')}</div></div>
+                  <div class="apex-event-mini-value"><div class="apex-event-mini-label">Previous</div><div class="apex-event-mini-number">{item.get('prev_str','—')}</div></div>
+                </div>
+                ''')
+                if st.button("Open Event Details  ›", key=f"apex_open_event_{safe_key}", use_container_width=True):
+                    st.session_state[selected_event_key] = code
+                    st.session_state[modal_key] = True
+                    st.session_state[snapshot_key] = events
+                    st.rerun()
 
     if is_admin:
-        st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
-        render_html('<div class="fc-small-lbl" style="margin-bottom:6px;">👑 Admin Actual Override</div>')
-        col_inp, col_btn = st.columns([3, 1])
-        with col_inp:
-            entered_actual_val = st.text_input(
-                f"Actual Value for {ev_code}", value=effective_actual,
-                placeholder="e.g. -0.5% or 0.5", key=f"act_txt_{ev_code}", label_visibility="collapsed"
+        perf = _forecaster_performance()
+        perf_note = f"Resolved: {perf['resolved']} • Correct: {perf['correct']} • Accuracy: {perf['accuracy']:.1f}%" if perf['resolved'] else "Learning history active — awaiting resolved forecasts"
+        render_html(f'<div style="margin:13px 0 0;padding:8px 11px;border:1px solid rgba(0,245,255,.10);border-radius:9px;color:#718795;font-size:9px;">🧪 Forecaster Learning &amp; Backtesting • {perf_note}</div>')
+
+    # The modal is an overlay; calendar and selected-day event rows stay mounted behind it.
+    if modal_open and selected_code:
+        ev = next((item for item in events if str(item.get("code", "")) == selected_code), None)
+        if ev is None:
+            st.session_state[modal_key] = False
+            st.session_state.pop(selected_event_key, None)
+        else:
+            _render_forecaster_event_modal(
+                ev,
+                events,
+                fred_key,
+                channel_name,
+                auth_user,
+                actuals_cache,
             )
-        with col_btn:
-            if st.button("💾 Publish", key=f"act_btn_{ev_code}", use_container_width=True):
-                actuals_cache[ev_code] = entered_actual_val.strip()
-                save_actuals_cache(actuals_cache)
-                st.success("Published!")
-                time.sleep(0.3)
-                st.rerun()
-
-    st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
-    render_html('<div class="fc-small-lbl" style="margin-bottom:7px;">Evidence & Precursors</div>')
-    if nowcast["precursor_results"]:
-        p_cols = st.columns(min(len(nowcast["precursor_results"]), 3))
-        for p_idx, p_item in enumerate(nowcast["precursor_results"]):
-            p_col = p_cols[p_idx % len(p_cols)]
-            p_mom_color = "#00ffa3" if p_item["mom"] > 0 else ("#ff5e75" if p_item["mom"] < 0 else "#8fa3b4")
-            p_arr = "▲" if p_item["mom"] > 0 else ("▼" if p_item["mom"] < 0 else "•")
-            with p_col:
-                render_html(f"""
-                <div class="fc-metric" style="margin-bottom:8px;">
-                  <div class="fc-metric-l">{p_item['name']}</div><div class="fc-metric-v">{p_item['latest']:.2f}</div>
-                  <div class="fc-metric-note" style="color:{p_mom_color};font-weight:800;">{p_arr} {p_item['mom']:+.2f} MoM</div>
-                </div>
-                """)
-    else:
-        st.caption("No mapped FRED precursor series are available for this catalyst.")
-
-    if nowcast["correlated_articles"]:
-        render_html('<div class="fc-small-lbl" style="margin:8px 0 7px;">Correlated breaking wires & speeches</div>')
-        for article in nowcast["correlated_articles"]:
-            render_html(f"""
-            <div style="padding:8px 10px;background:rgba(0,245,255,.025);border-left:2px solid rgba(0,245,255,.55);border-radius:5px;margin-bottom:6px;font-size:10.5px;color:#dce7ed;line-height:1.45;">
-              <b>{article.get('title', '')}</b><div style="color:#718795;font-size:9px;margin-top:2px;">{article.get('publishedAt', '')}</div>
-            </div>
-            """)
-
 
 def _tron_headers() -> dict[str, str]:
     headers = {"Accept": "application/json", "User-Agent": "ApexMacro-VIP-Payments/1.0"}
