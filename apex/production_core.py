@@ -95,6 +95,10 @@ REQUEST_TIMEOUT = 8
 
 FOREX_FACTORY_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 
+_FOREX_FACTORY_LAST_GOOD_EVENTS: list[dict] = []
+_FOREX_FACTORY_LAST_GOOD_AT = 0.0
+_FOREX_FACTORY_LAST_GOOD_LOCK = threading.RLock()
+
 
 def _ai_runtime(
     api_key: str | None = None,
@@ -370,9 +374,16 @@ def _normalize_causal_ai_payload(parsed: dict, source_count: int) -> dict:
     return result
 
 
-@st.cache_data(ttl=30, show_spinner=False)
 def fetch_forex_factory_calendar() -> list[dict]:
-    """Load and normalize the live Forex Factory/Faireconomy weekly calendar."""
+    """
+    Load and normalize the live Forex Factory/Faireconomy weekly calendar.
+
+    A transient network failure must never wipe the live Forecaster.
+    The last non-empty calendar is retained in memory and reused until a fresh
+    non-empty response is available.
+    """
+    global _FOREX_FACTORY_LAST_GOOD_EVENTS, _FOREX_FACTORY_LAST_GOOD_AT
+
     urls = [
         FOREX_FACTORY_CALENDAR_URL,
         "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
@@ -384,7 +395,7 @@ def fetch_forex_factory_calendar() -> list[dict]:
         try:
             response = requests.get(
                 url,
-                timeout=12,
+                timeout=10,
                 headers={
                     "User-Agent": "Mozilla/5.0 (compatible; ApexMacro/1.0)",
                     "Accept": "application/json,text/plain,*/*",
@@ -399,9 +410,6 @@ def fetch_forex_factory_calendar() -> list[dict]:
         except Exception:
             continue
 
-    if not rows:
-        return []
-
     normalized = []
     aliases = {
         "Red": "High",
@@ -412,31 +420,42 @@ def fetch_forex_factory_calendar() -> list[dict]:
         "Low Impact": "Low",
     }
 
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
+    if rows:
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
 
-        title = str(row.get("title") or row.get("event") or row.get("name") or "").strip()
-        country = str(row.get("country") or row.get("currency") or "").strip().upper()
-        raw_impact = str(row.get("impact") or "").strip()
-        impact = aliases.get(raw_impact.title(), raw_impact.title())
-        raw_date = row.get("date") or row.get("datetime") or row.get("time")
+            title = str(row.get("title") or row.get("event") or row.get("name") or "").strip()
+            country = str(row.get("country") or row.get("currency") or "").strip().upper()
+            raw_impact = str(row.get("impact") or "").strip()
+            impact = aliases.get(raw_impact.title(), raw_impact.title())
+            raw_date = row.get("date") or row.get("datetime") or row.get("time")
 
-        if not title or not country or not raw_date:
-            continue
+            if not title or not country or not raw_date:
+                continue
 
-        normalized.append({
-            **row,
-            "title": title,
-            "country": country,
-            "impact": impact,
-            "date": raw_date,
-            "forecast": row.get("forecast", ""),
-            "previous": row.get("previous", ""),
-            "actual": row.get("actual", ""),
-        })
+            normalized.append({
+                **row,
+                "title": title,
+                "country": country,
+                "impact": impact,
+                "date": raw_date,
+                "forecast": row.get("forecast", ""),
+                "previous": row.get("previous", ""),
+                "actual": row.get("actual", ""),
+            })
 
-    return normalized
+    if normalized:
+        with _FOREX_FACTORY_LAST_GOOD_LOCK:
+            _FOREX_FACTORY_LAST_GOOD_EVENTS = [dict(item) for item in normalized]
+            _FOREX_FACTORY_LAST_GOOD_AT = time.time()
+        return normalized
+
+    with _FOREX_FACTORY_LAST_GOOD_LOCK:
+        if _FOREX_FACTORY_LAST_GOOD_EVENTS:
+            return [dict(item) for item in _FOREX_FACTORY_LAST_GOOD_EVENTS]
+
+    return []
 
 TELEGRAM_BOT_TOKEN = get_secret("TELEGRAM_BOT_TOKEN", "")
 
@@ -4589,6 +4608,12 @@ def render_causal_macro_ai_panel(analysis: dict) -> None:
 
 
 @st.fragment(run_every=30)
+def _forecaster_radar_refresh_tick() -> None:
+    """Trigger periodic radar refresh without running while a catalyst is selected."""
+    if not st.session_state.get("APEX_FORECASTER_SELECTED_EVENT"):
+        st.caption("Live calendar refresh active.")
+
+
 def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict | None = None) -> None:
     """Fast Catalyst Radar: render the full calendar first, analyze only the selected event."""
     if "selected_tz" not in st.session_state or st.session_state["selected_tz"] not in SUPPORTED_TIMEZONES:
@@ -4597,8 +4622,23 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     tz_info = SUPPORTED_TIMEZONES.get(st.session_state["selected_tz"], {"offset": 3, "label": "KRD (UTC+3)"})
     is_admin = auth_user and auth_user.get("is_admin", False)
 
+    selected_key = "APEX_FORECASTER_SELECTED_EVENT"
+    selected_code = st.session_state.get(selected_key, "")
+
+    if not selected_code:
+        _forecaster_radar_refresh_tick()
+
     # FAST PATH: calendar + published Actuals only. No FRED/news/AI work is done here.
-    events = get_upcoming_catalyst_events(tz_info["offset"], tz_info["label"])
+    # While an event is selected, the calendar is frozen for that analysis cycle so
+    # a transient feed failure or refresh cannot interrupt the selected analysis.
+    snapshot_key = "APEX_FORECASTER_EVENT_SNAPSHOT"
+
+    if selected_code and st.session_state.get(snapshot_key):
+        events = st.session_state[snapshot_key]
+    else:
+        events = get_upcoming_catalyst_events(tz_info["offset"], tz_info["label"])
+        if events:
+            st.session_state[snapshot_key] = events
     actuals_cache = load_actuals_cache()
 
     actuals_changed = False
@@ -4618,7 +4658,7 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
           <div class="fc-eyebrow">ApexMacro / Predictive Intelligence</div>
           <div class="fc-title">🔮 Macro Catalyst Forecaster</div>
           <div class="fc-sub">Upcoming macro releases ranked with the existing FRED precursor model, live wire sentiment and causal AI layer.</div>
-          <div class="fc-live"><span class="live-dot"></span> NOWCAST ENGINE ACTIVE &nbsp;•&nbsp; {tz_info['label']} &nbsp;•&nbsp; AUTO REFRESH 30s</div>
+          <div class="fc-live"><span class="live-dot"></span> NOWCAST ENGINE ACTIVE &nbsp;•&nbsp; {tz_info['label']} &nbsp;•&nbsp; LIVE CALENDAR</div>
         </div>
         <div class="fc-horizon">
           <div class="fc-horizon-lbl">PREDICTIVE HORIZON</div>
@@ -4668,8 +4708,6 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
 
     # Lightweight radar first. Clicking an event immediately switches the page
     # into a selected-catalyst view instead of leaving the analysis below the full list.
-    selected_key = "APEX_FORECASTER_SELECTED_EVENT"
-    selected_code = st.session_state.get(selected_key, "")
     selected_from_click = False
 
     # If an event is already selected, show a compact Back control and skip
@@ -4677,11 +4715,13 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     if selected_code:
         if st.button("← Back to Catalyst Radar", key="fc_back_to_radar", use_container_width=True):
             st.session_state.pop(selected_key, None)
+            st.session_state.pop(snapshot_key, None)
             st.rerun()
 
         ev = next((item for item in events if item.get("code") == selected_code), None)
         if ev is None:
             st.session_state.pop(selected_key, None)
+            st.session_state.pop(snapshot_key, None)
             st.rerun()
     else:
         ev = None
@@ -4695,6 +4735,7 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
             )
             if st.button(label, key=f"fc_select_{item['code']}", use_container_width=True):
                 st.session_state[selected_key] = item["code"]
+                st.session_state[snapshot_key] = events
                 selected_code = item["code"]
                 selected_from_click = True
                 break
@@ -4833,7 +4874,6 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
               <b>{a.get('title', '')}</b><div style="color:#718795;font-size:9px;margin-top:2px;">{a.get('publishedAt', '')}</div>
             </div>
             """)
-
 
 def _tron_headers() -> dict[str, str]:
     headers = {"Accept": "application/json", "User-Agent": "ApexMacro-VIP-Payments/1.0"}
