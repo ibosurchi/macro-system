@@ -67,7 +67,7 @@ DEFAULT_FRED_KEY = get_secret("FRED_API_KEY", "")
 DEFAULT_TELEGRAM_CHANNEL = get_secret("TELEGRAM_CHANNEL", "Forex_LiveStream")
 
 # Central AI provider configuration.
-# RUAPI is preferred when configured; OpenRouter remains a compatibility fallback.
+# RUAPI is the production default. OpenRouter is used only when explicitly selected.
 DEFAULT_RUAPI_KEY = get_secret("RUAPI_API_KEY", "")
 DEFAULT_RUAPI_MODEL = get_secret("RUAPI_MODEL", "claude-sonnet-5") or "claude-sonnet-5"
 DEFAULT_RUAPI_BASE_URL = get_secret("RUAPI_BASE_URL", "https://www.ruapi.ai/v1").rstrip("/")
@@ -75,41 +75,52 @@ DEFAULT_RUAPI_BASE_URL = get_secret("RUAPI_BASE_URL", "https://www.ruapi.ai/v1")
 DEFAULT_OPENROUTER_KEY = get_secret("OPENROUTER_API_KEY", "")
 DEFAULT_OPENROUTER_MODEL = get_secret("OPENROUTER_MODEL", "openai/gpt-4o-mini") or "openai/gpt-4o-mini"
 
-DEFAULT_AI_KEY = DEFAULT_RUAPI_KEY or DEFAULT_OPENROUTER_KEY
-DEFAULT_AI_MODEL = DEFAULT_RUAPI_MODEL if DEFAULT_RUAPI_KEY else DEFAULT_OPENROUTER_MODEL
-DEFAULT_AI_CHAT_URL = (
-    f"{DEFAULT_RUAPI_BASE_URL}/chat/completions"
-    if DEFAULT_RUAPI_KEY
-    else "https://openrouter.ai/api/v1/chat/completions"
-)
-DEFAULT_AI_PROVIDER = "RUAPI" if DEFAULT_RUAPI_KEY else "OpenRouter"
+DEFAULT_AI_PROVIDER = (get_secret("AI_PROVIDER", "RUAPI") or "RUAPI").strip().upper()
+if DEFAULT_AI_PROVIDER not in {"RUAPI", "OPENROUTER"}:
+    DEFAULT_AI_PROVIDER = "RUAPI"
+
+if DEFAULT_AI_PROVIDER == "OPENROUTER":
+    DEFAULT_AI_KEY = DEFAULT_OPENROUTER_KEY
+    DEFAULT_AI_MODEL = DEFAULT_OPENROUTER_MODEL
+    DEFAULT_AI_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
+else:
+    DEFAULT_AI_PROVIDER = "RUAPI"
+    DEFAULT_AI_KEY = DEFAULT_RUAPI_KEY
+    DEFAULT_AI_MODEL = DEFAULT_RUAPI_MODEL
+    DEFAULT_AI_CHAT_URL = f"{DEFAULT_RUAPI_BASE_URL}/chat/completions"
+
+AI_CACHE_VERSION = "ruapi-provider-v2"
 
 REQUEST_TIMEOUT = 8
 
 FOREX_FACTORY_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 
 
-def _ai_runtime(api_key: str | None = None) -> tuple[str, str, str, str]:
-    """Return provider, endpoint, model and API key without changing analysis logic."""
-    key = str(api_key or DEFAULT_AI_KEY or "").strip()
-
-    # Explicit RUAPI configuration always wins when its key is present.
-    if DEFAULT_RUAPI_KEY and (not api_key or key == DEFAULT_RUAPI_KEY):
+def _ai_runtime(
+    api_key: str | None = None,
+    provider_hint: str | None = None,
+    model_hint: str | None = None,
+) -> tuple[str, str, str, str]:
+    """Resolve the explicitly configured AI provider without silent provider switching."""
+    provider = str(provider_hint or DEFAULT_AI_PROVIDER or "RUAPI").strip().upper()
+    if provider == "OPENROUTER":
+        key = str(api_key or DEFAULT_OPENROUTER_KEY or "").strip()
+        model = str(model_hint or DEFAULT_OPENROUTER_MODEL or "openai/gpt-4o-mini").strip()
         return (
-            "RUAPI",
-            f"{DEFAULT_RUAPI_BASE_URL}/chat/completions",
-            DEFAULT_RUAPI_MODEL,
-            key or DEFAULT_RUAPI_KEY,
+            "OpenRouter",
+            "https://openrouter.ai/api/v1/chat/completions",
+            model,
+            key,
         )
 
-    # Backward-compatible OpenRouter path for an explicitly supplied legacy key.
+    key = str(api_key or DEFAULT_RUAPI_KEY or "").strip()
+    model = str(model_hint or DEFAULT_RUAPI_MODEL or "claude-sonnet-5").strip()
     return (
-        "OpenRouter",
-        "https://openrouter.ai/api/v1/chat/completions",
-        DEFAULT_OPENROUTER_MODEL,
+        "RUAPI",
+        f"{DEFAULT_RUAPI_BASE_URL}/chat/completions",
+        model,
         key,
     )
-
 
 def _ai_headers(api_key: str, title: str) -> dict:
     return {
@@ -2451,10 +2462,10 @@ def fetch_all_instant_news(channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> list
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_openrouter_analysis(news_text: str, api_key: str = DEFAULT_AI_KEY) -> str:
+def get_openrouter_analysis(news_text: str, api_key: str = DEFAULT_AI_KEY, provider_hint: str = DEFAULT_AI_PROVIDER, model_hint: str = DEFAULT_AI_MODEL, cache_version: str = AI_CACHE_VERSION) -> str:
     if not news_text or not api_key:
         return "AI analysis unavailable."
-    provider, url, model, resolved_key = _ai_runtime(api_key)
+    provider, url, model, resolved_key = _ai_runtime(api_key, provider_hint, model_hint)
     if not resolved_key:
         return "AI analysis unavailable."
     headers = _ai_headers(resolved_key, "ApexMacro Desk")
@@ -2586,7 +2597,7 @@ def _gold_rule_based_news_points(articles: list) -> float:
     return float(np.clip(score, -0.50, 0.50))
 
 
-def get_openrouter_gold_signal(news_text: str, api_key: str = DEFAULT_AI_KEY) -> dict:
+def get_openrouter_gold_signal(news_text: str, api_key: str = DEFAULT_AI_KEY, provider_hint: str = DEFAULT_AI_PROVIDER, model_hint: str = DEFAULT_AI_MODEL, cache_version: str = AI_CACHE_VERSION) -> dict:
     """Structured, bounded AI interpretation for Gold."""
     default = {
         "direction": "Neutral",
@@ -2599,7 +2610,7 @@ def get_openrouter_gold_signal(news_text: str, api_key: str = DEFAULT_AI_KEY) ->
     if not news_text or not api_key:
         return default
 
-    provider, url, model, resolved_key = _ai_runtime(api_key)
+    provider, url, model, resolved_key = _ai_runtime(api_key, provider_hint, model_hint)
     if not resolved_key:
         return default
     headers = _ai_headers(resolved_key, "ApexMacro Gold Intelligence")
@@ -2726,7 +2737,7 @@ def analyze_news_rule_based(articles: list) -> dict:
         f"{a.get('title', '')}: {a.get('description', '')}"
         for a in ranked_articles[:10]
     ])
-    ai_summary = get_openrouter_analysis(combined_news)
+    ai_summary = get_openrouter_analysis(combined_news, DEFAULT_AI_KEY, DEFAULT_AI_PROVIDER, DEFAULT_AI_MODEL, AI_CACHE_VERSION)
 
     bullish_keywords = ["surge", "jump", "higher", "beat", "strong", "rally", "growth", "bull", "cut inflation", "options", "profit"]
     bearish_keywords = ["drop", "fall", "lower", "miss", "weak", "slump", "bear", "inflation rise", "tension", "attacking", "military", "war"]
@@ -3970,10 +3981,10 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_ove
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_causal_macro_ai_analysis(event: dict, nowcast: dict, articles: list, api_key: str = DEFAULT_AI_KEY) -> dict:
+def get_causal_macro_ai_analysis(event: dict, nowcast: dict, articles: list, api_key: str = DEFAULT_AI_KEY, provider_hint: str = DEFAULT_AI_PROVIDER, model_hint: str = DEFAULT_AI_MODEL, cache_version: str = AI_CACHE_VERSION) -> dict:
     """Event-specific causal AI layer. Keeps the existing quantitative nowcast intact."""
     if not api_key:
-        return {"status": "unavailable", "raw": "AI API key is unavailable."}
+        return {"status": "unavailable", "raw": f"{DEFAULT_AI_PROVIDER} API key is unavailable. Check Streamlit Secrets."}
 
     impact = str(event.get("impact", "")).title()
     if impact != "High":
@@ -4054,7 +4065,7 @@ EVENT-RELEVANT LIVE NEWS
 {news_text}
 """
 
-    provider, url, model, resolved_key = _ai_runtime(api_key)
+    provider, url, model, resolved_key = _ai_runtime(api_key, provider_hint, model_hint)
     if not resolved_key:
         return {"status": "unavailable", "raw": "AI API key is unavailable."}
 
@@ -4186,6 +4197,17 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
     render_html('<div class="sec-title">Catalyst Radar</div>')
 
+    ai_key_state = "Configured" if DEFAULT_AI_KEY else "Missing"
+    ai_key_color = "#00ffa3" if DEFAULT_AI_KEY else "#ff8a9b"
+    render_html(
+        f'<div style="margin:0 0 14px 0;padding:9px 12px;border:1px solid rgba(0,229,246,.14);'
+        f'border-radius:10px;background:rgba(3,12,19,.55);font-size:11px;color:#8da2b3;">'
+        f'🧠 AI Provider: <b style="color:#28eaf5;">{DEFAULT_AI_PROVIDER}</b>'
+        f' &nbsp;•&nbsp; Model: <b style="color:#eaf5fb;">{DEFAULT_AI_MODEL}</b>'
+        f' &nbsp;•&nbsp; Key: <b style="color:{ai_key_color};">{ai_key_state}</b>'
+        f'</div>'
+    )
+
     currency_flags = {
         "USD": "🇺🇸", "EUR": "🇪🇺", "GBP": "💷", "CAD": "🍁",
         "JPY": "💴", "AUD": "🇦🇺", "NZD": "🇳🇿", "CHF": "🏔️"
@@ -4201,7 +4223,7 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
         published_actual = _normalize_forex_factory_actual(ev.get("actual_str", ""))
         effective_actual = saved_actual or published_actual
         nowcast = compute_event_nowcast(ev, fred_key, all_news, actual_override=effective_actual)
-        causal_ai = get_causal_macro_ai_analysis(ev, nowcast, all_news) if ev.get("impact") == "High" else {"status": "skipped"}
+        causal_ai = get_causal_macro_ai_analysis(ev, nowcast, all_news, DEFAULT_AI_KEY, DEFAULT_AI_PROVIDER, DEFAULT_AI_MODEL, AI_CACHE_VERSION) if ev.get("impact") == "High" else {"status": "skipped"}
         cur = ev.get("currency", "USD")
         cur_flag = currency_flags.get(cur, "🌐")
         impact_icon = "🔴" if ev.get("impact") == "High" else "🟡"
