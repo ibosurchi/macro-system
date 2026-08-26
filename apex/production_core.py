@@ -230,7 +230,7 @@ def _ai_message_content(response_json: dict) -> str:
         return ""
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def fetch_forex_factory_calendar() -> list[dict]:
     """Fetch the Forex Factory weekly calendar and keep only High/Medium events."""
     try:
@@ -2559,7 +2559,7 @@ def fetch_all_instant_news(channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> list
     return _rank_news_articles(deduped)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def get_openrouter_analysis(
     news_text: str,
     api_key: str = DEFAULT_AI_KEY,
@@ -2697,6 +2697,7 @@ def _gold_rule_based_news_points(articles: list) -> float:
     return float(np.clip(score, -0.50, 0.50))
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def get_openrouter_gold_signal(
     news_text: str,
     api_key: str = DEFAULT_AI_KEY,
@@ -3828,6 +3829,11 @@ def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3
         total_seconds = diff.total_seconds()
         days_away = (event_local.date() - user_now.date()).days
 
+        # Keep a released catalyst on the live Forecaster radar for 48 hours only.
+        # Persisted Actual values remain stored for compatibility/history.
+        if total_seconds < -(48 * 3600):
+            continue
+
         if total_seconds < -43200:
             countdown_label = "✅ Released"
         elif total_seconds < 0:
@@ -4087,7 +4093,7 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_ove
     }
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def get_causal_macro_ai_analysis(event: dict, nowcast: dict, articles: list, api_key: str = DEFAULT_AI_KEY, provider_hint: str = DEFAULT_AI_PROVIDER, model_hint: str = DEFAULT_AI_MODEL, cache_version: str = AI_CACHE_VERSION) -> dict:
     """Event-specific causal AI layer. Keeps the existing quantitative nowcast intact."""
     if not api_key:
@@ -4249,6 +4255,7 @@ def render_causal_macro_ai_panel(analysis: dict) -> None:
     """)
 
 
+@st.fragment(run_every=30)
 def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict | None = None) -> None:
     if "selected_tz" not in st.session_state or st.session_state["selected_tz"] not in SUPPORTED_TIMEZONES:
         st.session_state["selected_tz"] = "🏛️ Kurdistan & Iraq (UTC+3)"
@@ -4281,7 +4288,7 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
           <div class="fc-eyebrow">ApexMacro / Predictive Intelligence</div>
           <div class="fc-title">🔮 Macro Catalyst Forecaster</div>
           <div class="fc-sub">Upcoming macro releases ranked with the existing FRED precursor model, live wire sentiment and causal AI layer.</div>
-          <div class="fc-live"><span class="live-dot"></span> NOWCAST ENGINE ACTIVE &nbsp;•&nbsp; {tz_info['label']}</div>
+          <div class="fc-live"><span class="live-dot"></span> NOWCAST ENGINE ACTIVE &nbsp;•&nbsp; {tz_info['label']} &nbsp;•&nbsp; AUTO REFRESH 30s</div>
         </div>
         <div class="fc-horizon">
           <div class="fc-horizon-lbl">PREDICTIVE HORIZON</div>
