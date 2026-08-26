@@ -1430,7 +1430,7 @@ div[data-testid="stPopover"] > button {
 .apex-current-month{text-align:center;margin:22px 0 17px;color:#f2f6f8;font-size:15px;font-weight:850;letter-spacing:1.25px;text-transform:uppercase;}
 .apex-calendar-weekdays{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:10px;margin:0 0 10px;}
 .apex-calendar-weekday{text-align:center;font-size:11px;font-weight:700;letter-spacing:.8px;color:#a9b6c3;}
-.apex-calendar-empty-cell{min-height:76px;border-radius:12px;border:1px solid rgba(100,150,175,.04);background:rgba(8,20,28,.18);opacity:.28;}
+.apex-calendar-empty-cell{min-height:112px;border-radius:12px;border:1px solid rgba(100,150,175,.04);background:rgba(8,20,28,.18);opacity:.28;}
 .apex-calendar-legend{display:flex;align-items:center;justify-content:center;gap:34px;margin-top:20px;color:#b5c0cb;font-size:12px;flex-wrap:wrap;}
 .apex-calendar-legend-item{display:inline-flex;align-items:center;gap:7px;white-space:nowrap;}
 .apex-calendar-legend-dot{width:7px;height:7px;border-radius:50%;display:inline-block;}
@@ -1464,14 +1464,21 @@ div[data-testid="stPopover"] > button {
 .st-key-apex_forecaster_calendar [data-testid="stHorizontalBlock"]{gap:10px!important;margin-bottom:10px!important;}
 .st-key-apex_forecaster_calendar [data-testid="column"]{min-width:0!important;}
 .st-key-apex_forecaster_calendar .stButton>button{
-  position:relative;width:100%!important;min-width:0!important;min-height:76px!important;padding:12px!important;
-  display:flex!important;align-items:center!important;justify-content:center!important;
+  position:relative;width:100%!important;min-width:0!important;min-height:112px!important;padding:12px!important;
+  display:flex!important;align-items:flex-start!important;justify-content:flex-start!important;
   border-radius:12px!important;border:1px solid rgba(100,150,175,.12)!important;
   background:linear-gradient(145deg,rgba(18,38,50,.72),rgba(7,20,30,.82))!important;
-  color:#f2f6f8!important;font-size:18px!important;font-weight:650!important;line-height:1!important;
+  color:#f2f6f8!important;font-size:16px!important;font-weight:850!important;line-height:1!important;
+  text-align:left!important;overflow:hidden!important;
   box-shadow:inset 0 1px 0 rgba(255,255,255,.025)!important;transition:border-color 160ms ease,background 160ms ease,transform 160ms ease,box-shadow 160ms ease!important;
 }
-.st-key-apex_forecaster_calendar .stButton>button p{font-size:inherit!important;font-weight:inherit!important;line-height:1!important;color:inherit!important;margin:0!important;}
+.st-key-apex_forecaster_calendar .stButton>button p{font-size:inherit!important;font-weight:inherit!important;line-height:1!important;color:inherit!important;margin:0!important;position:relative!important;z-index:2!important;}
+.st-key-apex_forecaster_calendar .stButton>button::before{
+  content:'';position:absolute;left:12px;right:10px;top:35px;z-index:1;
+  color:#aebdca;font-size:9.5px;font-weight:650;line-height:1.38;text-align:left;
+  white-space:pre-line;overflow:hidden;max-height:58px;letter-spacing:0;
+}
+.st-key-apex_forecaster_calendar .stButton>button .apex-calendar-event-summary{pointer-events:none;}
 .st-key-apex_forecaster_calendar .stButton>button[kind='primary']{
   border-color:rgba(30,225,235,.90)!important;background:linear-gradient(145deg,rgba(10,65,75,.72),rgba(5,28,38,.88))!important;
   box-shadow:0 0 0 1px rgba(30,225,235,.08),0 0 22px rgba(30,225,235,.13),inset 0 1px 0 rgba(255,255,255,.035)!important;color:#f4fbfc!important;
@@ -1483,8 +1490,8 @@ div[data-testid="stPopover"] > button {
   .apex-forecaster-shell{width:calc(100% - 4px);margin:14px auto;padding:16px 12px;border-radius:18px;}
   .apex-forecaster-label{font-size:15px}.apex-forecaster-subtitle{font-size:11.5px}.apex-calendar-header-icon{width:38px;height:38px;flex-basis:38px;border-radius:10px}
   .apex-current-month{margin:17px 0 13px;font-size:12px}.apex-calendar-weekdays{gap:5px;margin-bottom:6px}.apex-calendar-weekday{font-size:9px;letter-spacing:.35px}.st-key-apex_forecaster_calendar [data-testid="stHorizontalBlock"]{gap:5px!important;margin-bottom:5px!important}
-  .apex-calendar-empty-cell{min-height:50px;border-radius:8px}
-  .st-key-apex_forecaster_calendar .stButton>button{min-height:50px!important;padding:7px 3px!important;border-radius:8px!important;font-size:14px!important;}
+  .apex-calendar-empty-cell{min-height:56px;border-radius:8px}
+  .st-key-apex_forecaster_calendar .stButton>button{min-height:56px!important;padding:7px 5px!important;border-radius:8px!important;font-size:13px!important;} .st-key-apex_forecaster_calendar .stButton>button::before{display:none!important;}
   .apex-calendar-legend{gap:14px;margin-top:14px;font-size:10px}.apex-forecaster-status{margin-top:13px;padding-top:12px}.apex-forecaster-chip{font-size:8.5px;min-height:25px;padding:4px 7px}.apex-selected-date-head{margin-top:17px}.apex-selected-date-title{font-size:16px}
   .apex-event-card{padding:14px 14px;border-radius:13px}.apex-event-name{font-size:13.5px}.apex-event-values{gap:7px}.apex-event-value{padding:9px 7px}.apex-event-value-number{font-size:12px}
   .apex-intelligence-shell{padding:14px 12px;border-radius:15px}.fc-outlook{grid-template-columns:1fr 1fr!important}.fc-outlook-main{grid-column:1/-1}.fc-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}
@@ -1493,8 +1500,8 @@ div[data-testid="stPopover"] > button {
   .apex-event-values{grid-template-columns:1fr}.apex-event-value{padding:10px 11px}.fc-metrics{grid-template-columns:1fr}
 }
 @media(max-width:390px){
-  .apex-forecaster-shell{width:100%;padding:14px 9px}.apex-calendar-weekdays{gap:3px}.apex-calendar-weekday{font-size:8px}.apex-calendar-empty-cell{min-height:44px}.st-key-apex_forecaster_calendar [data-testid="stHorizontalBlock"]{gap:3px!important;margin-bottom:3px!important}
-  .st-key-apex_forecaster_calendar .stButton>button{min-height:44px!important;padding:5px 2px!important;font-size:13px!important;}
+  .apex-forecaster-shell{width:100%;padding:14px 9px}.apex-calendar-weekdays{gap:3px}.apex-calendar-weekday{font-size:8px}.apex-calendar-empty-cell{min-height:50px}.st-key-apex_forecaster_calendar [data-testid="stHorizontalBlock"]{gap:3px!important;margin-bottom:3px!important}
+  .st-key-apex_forecaster_calendar .stButton>button{min-height:50px!important;padding:5px 4px!important;font-size:12px!important;}
 }
 </style>
 """)
@@ -5027,6 +5034,31 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
           <div class="apex-calendar-weekday">MON</div><div class="apex-calendar-weekday">TUE</div><div class="apex-calendar-weekday">WED</div><div class="apex-calendar-weekday">THU</div><div class="apex-calendar-weekday">FRI</div><div class="apex-calendar-weekday">SAT</div><div class="apex-calendar-weekday">SUN</div>
         </div>
         """)
+        def _calendar_short_event_title(value: str, limit: int = 21) -> str:
+            # Presentation only: keep source title intact elsewhere, shorten only inside the tiny date cell.
+            title = " ".join(str(value or "").split())
+            replacements = {
+                "Price Index": "Price Idx",
+                "Consumer Price Index": "CPI",
+                "Producer Price Index": "PPI",
+                "Consumer Confidence": "Consumer Conf.",
+                "Unemployment Claims": "Jobless Claims",
+                "Non-Farm Employment Change": "NFP",
+                "Nonfarm Payrolls": "NFP",
+                "Gross Domestic Product": "GDP",
+                "Manufacturing": "Mfg",
+            }
+            for old, new in replacements.items():
+                title = title.replace(old, new)
+            if len(title) <= limit:
+                return title
+            return title[: max(1, limit - 1)].rstrip() + "…"
+
+        def _css_content_escape(value: str) -> str:
+            encoded = json.dumps(str(value), ensure_ascii=False)[1:-1]
+            return encoded.replace(chr(92) + "n", chr(92) + "A ")
+
+
         month_weeks = cal_lib.Calendar(firstweekday=0).monthdayscalendar(display_year, display_month)
         for week in month_weeks:
             cols = st.columns(7, gap="small")
@@ -5061,10 +5093,29 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
                     selector = f".st-key-{key} button"
                     if day_date == today_date and not is_selected:
                         day_button_css.append(f"{selector}{{border-color:rgba(65,200,215,.40)!important;}}")
+
+                    # Put the real Forecaster events inside the calendar cell without mutating source data.
+                    if day_events:
+                        summary_lines: list[str] = []
+                        for cal_event in day_events[:2]:
+                            cal_impact = str(cal_event.get("impact", "Low")).title()
+                            impact_mark = {"High": "●", "Medium": "●", "Low": "●"}.get(cal_impact, "●")
+                            cal_cur = str(cal_event.get("currency", ""))
+                            cal_title = _calendar_short_event_title(cal_event.get("title", ""))
+                            cal_time = str(cal_event.get("time_str", "")).split(" ", 1)[0]
+                            summary_lines.append(f"{impact_mark} {cal_cur} · {cal_title} · {cal_time}")
+                        if len(day_events) > 2:
+                            summary_lines.append(f"+{len(day_events) - 2} more")
+                        summary_text = _css_content_escape("\n".join(summary_lines))
+                        day_button_css.append(f'{selector}::before{{content:"{summary_text}";}}')
+
                     if highest_impact:
                         dot_color = {"high": "#B84FE8", "medium": "#FFB82E", "low": "#4BC7D8"}[highest_impact]
+                        # Desktop: a restrained impact marker in the lower-right corner.
+                        # Mobile: the dot remains visible while long event text is hidden for 7-column fit.
+                        count_text = str(len(day_events)) if len(day_events) > 1 else ""
                         day_button_css.append(
-                            f"{selector}::after{{content:'';position:absolute;left:50%;bottom:9px;transform:translateX(-50%);width:6px;height:6px;border-radius:50%;background:{dot_color};box-shadow:0 0 8px {dot_color}44;}}"
+                            f"{selector}::after{{content:'{count_text}';position:absolute;right:9px;bottom:8px;min-width:7px;height:7px;padding-left:{'7px' if count_text else '0'};border-radius:999px;background:{dot_color};box-shadow:0 0 8px {dot_color}44;color:#dfeaf0;font-size:8px;font-weight:800;line-height:7px;text-align:left;}}"
                         )
 
         render_html(f"""
