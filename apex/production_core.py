@@ -65,10 +65,61 @@ def get_secret(key_name: str, default_val: str = "") -> str:
 
 DEFAULT_FRED_KEY = get_secret("FRED_API_KEY", "")
 DEFAULT_TELEGRAM_CHANNEL = get_secret("TELEGRAM_CHANNEL", "Forex_LiveStream")
+
+# Central AI provider configuration.
+# RUAPI is preferred when configured; OpenRouter remains a compatibility fallback.
+DEFAULT_RUAPI_KEY = get_secret("RUAPI_API_KEY", "")
+DEFAULT_RUAPI_MODEL = get_secret("RUAPI_MODEL", "claude-sonnet-5") or "claude-sonnet-5"
+DEFAULT_RUAPI_BASE_URL = get_secret("RUAPI_BASE_URL", "https://www.ruapi.ai/v1").rstrip("/")
+
 DEFAULT_OPENROUTER_KEY = get_secret("OPENROUTER_API_KEY", "")
+DEFAULT_OPENROUTER_MODEL = get_secret("OPENROUTER_MODEL", "openai/gpt-4o-mini") or "openai/gpt-4o-mini"
+
+DEFAULT_AI_KEY = DEFAULT_RUAPI_KEY or DEFAULT_OPENROUTER_KEY
+DEFAULT_AI_MODEL = DEFAULT_RUAPI_MODEL if DEFAULT_RUAPI_KEY else DEFAULT_OPENROUTER_MODEL
+DEFAULT_AI_CHAT_URL = (
+    f"{DEFAULT_RUAPI_BASE_URL}/chat/completions"
+    if DEFAULT_RUAPI_KEY
+    else "https://openrouter.ai/api/v1/chat/completions"
+)
+DEFAULT_AI_PROVIDER = "RUAPI" if DEFAULT_RUAPI_KEY else "OpenRouter"
+
 REQUEST_TIMEOUT = 8
 
 FOREX_FACTORY_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+
+
+def _ai_runtime(api_key: str | None = None) -> tuple[str, str, str, str]:
+    """Return provider, endpoint, model and API key without changing analysis logic."""
+    key = str(api_key or DEFAULT_AI_KEY or "").strip()
+
+    # Explicit RUAPI configuration always wins when its key is present.
+    if DEFAULT_RUAPI_KEY and (not api_key or key == DEFAULT_RUAPI_KEY):
+        return (
+            "RUAPI",
+            f"{DEFAULT_RUAPI_BASE_URL}/chat/completions",
+            DEFAULT_RUAPI_MODEL,
+            key or DEFAULT_RUAPI_KEY,
+        )
+
+    # Backward-compatible OpenRouter path for an explicitly supplied legacy key.
+    return (
+        "OpenRouter",
+        "https://openrouter.ai/api/v1/chat/completions",
+        DEFAULT_OPENROUTER_MODEL,
+        key,
+    )
+
+
+def _ai_headers(api_key: str, title: str) -> dict:
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "HTTP-Referer": "https://apexmacro.com",
+        "X-Title": title,
+        "Content-Type": "application/json",
+    }
+
+
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_forex_factory_calendar() -> list[dict]:
@@ -2400,18 +2451,15 @@ def fetch_all_instant_news(channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> list
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_openrouter_analysis(news_text: str, api_key: str = DEFAULT_OPENROUTER_KEY) -> str:
+def get_openrouter_analysis(news_text: str, api_key: str = DEFAULT_AI_KEY) -> str:
     if not news_text or not api_key:
         return "AI analysis unavailable."
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "HTTP-Referer": "https://apexmacro.com",
-        "X-Title": "ApexMacro Desk",
-        "Content-Type": "application/json",
-    }
+    provider, url, model, resolved_key = _ai_runtime(api_key)
+    if not resolved_key:
+        return "AI analysis unavailable."
+    headers = _ai_headers(resolved_key, "ApexMacro Desk")
     payload = {
-        "model": "openai/gpt-4o-mini",
+        "model": model,
         "messages": [
             {
                 "role": "system",
@@ -2438,7 +2486,7 @@ def get_openrouter_analysis(news_text: str, api_key: str = DEFAULT_OPENROUTER_KE
             return res_json["choices"][0]["message"]["content"].strip()
         return "Could not generate AI analysis at the moment."
     except Exception as e:
-        return f"AI Error: {str(e)}"
+        return f"{provider} AI Error: {str(e)}"
 
 
 def _is_gold_relevant_news(article: dict) -> bool:
@@ -2538,7 +2586,7 @@ def _gold_rule_based_news_points(articles: list) -> float:
     return float(np.clip(score, -0.50, 0.50))
 
 
-def get_openrouter_gold_signal(news_text: str, api_key: str = DEFAULT_OPENROUTER_KEY) -> dict:
+def get_openrouter_gold_signal(news_text: str, api_key: str = DEFAULT_AI_KEY) -> dict:
     """Structured, bounded AI interpretation for Gold."""
     default = {
         "direction": "Neutral",
@@ -2551,15 +2599,12 @@ def get_openrouter_gold_signal(news_text: str, api_key: str = DEFAULT_OPENROUTER
     if not news_text or not api_key:
         return default
 
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "HTTP-Referer": "https://apexmacro.com",
-        "X-Title": "ApexMacro Gold Intelligence",
-        "Content-Type": "application/json",
-    }
+    provider, url, model, resolved_key = _ai_runtime(api_key)
+    if not resolved_key:
+        return default
+    headers = _ai_headers(resolved_key, "ApexMacro Gold Intelligence")
     payload = {
-        "model": "openai/gpt-4o-mini",
+        "model": model,
         "messages": [
             {
                 "role": "system",
@@ -3925,7 +3970,7 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_ove
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_causal_macro_ai_analysis(event: dict, nowcast: dict, articles: list, api_key: str = DEFAULT_OPENROUTER_KEY) -> dict:
+def get_causal_macro_ai_analysis(event: dict, nowcast: dict, articles: list, api_key: str = DEFAULT_AI_KEY) -> dict:
     """Event-specific causal AI layer. Keeps the existing quantitative nowcast intact."""
     if not api_key:
         return {"status": "unavailable", "raw": "AI API key is unavailable."}
@@ -4009,21 +4054,18 @@ EVENT-RELEVANT LIVE NEWS
 {news_text}
 """
 
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "HTTP-Referer": "https://apexmacro.com",
-        "X-Title": "ApexMacro Causal Macro Intelligence",
-        "Content-Type": "application/json",
-    }
+    provider, url, model, resolved_key = _ai_runtime(api_key)
+    if not resolved_key:
+        return {"status": "unavailable", "raw": "AI API key is unavailable."}
+
+    headers = _ai_headers(resolved_key, "ApexMacro Causal Macro Intelligence")
     payload = {
-        "model": "openai/gpt-4o-mini",
+        "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
         "temperature": 0.15,
-        "response_format": {"type": "json_object"},
     }
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=25)
@@ -4041,7 +4083,7 @@ EVENT-RELEVANT LIVE NEWS
         parsed["status"] = "ok"
         return parsed
     except Exception as exc:
-        return {"status": "error", "raw": f"AI causal analysis error: {exc}"}
+        return {"status": "error", "raw": f"{provider} causal analysis error: {exc}"}
 
 
 def render_causal_macro_ai_panel(analysis: dict) -> None:
