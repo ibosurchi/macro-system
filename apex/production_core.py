@@ -131,6 +131,78 @@ def _ai_headers(api_key: str, title: str) -> dict:
     }
 
 
+def _post_ai_chat(
+    provider: str,
+    url: str,
+    headers: dict,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    temperature: float,
+    timeout: int,
+):
+    """
+    Send an OpenAI-compatible chat request.
+    RUAPI fallback deliberately mirrors its documented minimal payload:
+    model + messages only.
+    """
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": temperature,
+    }
+
+    response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+
+    # Some gateway/model combinations reject optional parameters or the system role.
+    # For RUAPI, retry once with the exact minimal OpenAI-compatible shape shown in its docs.
+    if str(provider).upper() == "RUAPI" and response.status_code == 400:
+        minimal_prompt = (
+            f"{system_prompt.strip()}\n\n"
+            f"USER REQUEST / EVIDENCE:\n{user_prompt.strip()}"
+        )
+        minimal_payload = {
+            "model": model,
+            "messages": [
+                {"role": "user", "content": minimal_prompt}
+            ],
+        }
+        response = requests.post(
+            url,
+            headers=headers,
+            json=minimal_payload,
+            timeout=timeout,
+        )
+
+    if not response.ok:
+        detail = ""
+        try:
+            body = response.json()
+            if isinstance(body, dict):
+                err = body.get("error", body)
+                if isinstance(err, dict):
+                    detail = str(err.get("message") or err.get("detail") or err)
+                else:
+                    detail = str(err)
+            else:
+                detail = str(body)
+        except Exception:
+            detail = str(response.text or "").strip()
+
+        detail = re.sub(r"\s+", " ", detail)[:500]
+        provider_label = str(provider or "AI")
+        if detail:
+            raise RuntimeError(
+                f"{provider_label} HTTP {response.status_code}: {detail}"
+            )
+        response.raise_for_status()
+
+    return response
+
+
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_forex_factory_calendar() -> list[dict]:
@@ -4070,17 +4142,17 @@ EVENT-RELEVANT LIVE NEWS
         return {"status": "unavailable", "raw": "AI API key is unavailable."}
 
     headers = _ai_headers(resolved_key, "ApexMacro Causal Macro Intelligence")
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "temperature": 0.15,
-    }
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=25)
-        response.raise_for_status()
+        response = _post_ai_chat(
+            provider=provider,
+            url=url,
+            headers=headers,
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            temperature=0.15,
+            timeout=25,
+        )
         data = response.json()
         raw = data.get("choices", [{}])[0].get("message", {}).get("content", "")
         try:
