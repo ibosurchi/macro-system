@@ -204,6 +204,32 @@ def _post_ai_chat(
 
 
 
+def _ai_message_content(response_json: dict) -> str:
+    """Extract text from an OpenAI-compatible chat-completions response."""
+    try:
+        choices = response_json.get("choices") or []
+        if not choices:
+            return ""
+        message = (choices[0] or {}).get("message") or {}
+        content = message.get("content", "")
+        if isinstance(content, str):
+            return content.strip()
+        # Some gateways can return structured content parts.
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict):
+                    txt = item.get("text") or item.get("content") or ""
+                    if txt:
+                        parts.append(str(txt))
+                elif item:
+                    parts.append(str(item))
+            return "\n".join(parts).strip()
+        return str(content or "").strip()
+    except Exception:
+        return ""
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_forex_factory_calendar() -> list[dict]:
     """Fetch the Forex Factory weekly calendar and keep only High/Medium events."""
@@ -2534,40 +2560,42 @@ def fetch_all_instant_news(channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> list
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_openrouter_analysis(news_text: str, api_key: str = DEFAULT_AI_KEY, provider_hint: str = DEFAULT_AI_PROVIDER, model_hint: str = DEFAULT_AI_MODEL, cache_version: str = AI_CACHE_VERSION) -> str:
+def get_openrouter_analysis(
+    news_text: str,
+    api_key: str = DEFAULT_AI_KEY,
+    provider_hint: str = DEFAULT_AI_PROVIDER,
+    model_hint: str = DEFAULT_AI_MODEL,
+    cache_version: str = AI_CACHE_VERSION,
+) -> str:
     if not news_text or not api_key:
         return "AI analysis unavailable."
+
     provider, url, model, resolved_key = _ai_runtime(api_key, provider_hint, model_hint)
     if not resolved_key:
-        return "AI analysis unavailable."
-    headers = _ai_headers(resolved_key, "ApexMacro Desk")
-    payload = {
-        "model": model,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You are an institutional financial analyst and macro strategist. "
-                    "Analyze ONLY the supplied live-news items. Respect source names and timestamps, prioritize the freshest "
-                    "high-impact developments, and treat cross-source confirmation as stronger evidence than a single headline. "
-                    "Do not invent missing facts and do not treat stale or undated items as breaking news. "
-                    "Provide a concise 2-3 sentence executive summary highlighting the immediate directional impact on "
-                    "Gold (XAUUSD), US Dollar (USD), and Crude Oil."
-                )
-            },
-            {
-                "role": "user",
-                "content": news_text
-            }
-        ],
-        "temperature": 0.3
-    }
+        return f"{provider} AI key is unavailable."
+
+    system_prompt = (
+        "You are an institutional financial analyst and macro strategist. "
+        "Analyze ONLY the supplied live-news items. Respect source names and timestamps, prioritize the freshest "
+        "high-impact developments, and treat cross-source confirmation as stronger evidence than a single headline. "
+        "Do not invent missing facts and do not treat stale or undated items as breaking news. "
+        "Provide a concise 2-3 sentence executive summary highlighting the immediate directional impact on "
+        "Gold (XAUUSD), US Dollar (USD), Crude Oil, and Nasdaq-100 when relevant."
+    )
+
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=15)
-        res_json = response.json()
-        if "choices" in res_json and len(res_json["choices"]) > 0:
-            return res_json["choices"][0]["message"]["content"].strip()
-        return "Could not generate AI analysis at the moment."
+        response = _post_ai_chat(
+            provider=provider,
+            url=url,
+            headers=_ai_headers(resolved_key, "ApexMacro Desk"),
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=news_text,
+            temperature=0.2,
+            timeout=20,
+        )
+        content = _ai_message_content(response.json())
+        return content or "Could not generate AI analysis at the moment."
     except Exception as e:
         return f"{provider} AI Error: {str(e)}"
 
@@ -2669,14 +2697,19 @@ def _gold_rule_based_news_points(articles: list) -> float:
     return float(np.clip(score, -0.50, 0.50))
 
 
-def get_openrouter_gold_signal(news_text: str, api_key: str = DEFAULT_AI_KEY, provider_hint: str = DEFAULT_AI_PROVIDER, model_hint: str = DEFAULT_AI_MODEL, cache_version: str = AI_CACHE_VERSION) -> dict:
-    """Structured, bounded AI interpretation for Gold."""
+def get_openrouter_gold_signal(
+    news_text: str,
+    api_key: str = DEFAULT_AI_KEY,
+    provider_hint: str = DEFAULT_AI_PROVIDER,
+    model_hint: str = DEFAULT_AI_MODEL,
+    cache_version: str = AI_CACHE_VERSION,
+) -> dict:
     default = {
         "direction": "Neutral",
         "score": 0.0,
         "confidence": 0.0,
         "horizon": "Unknown",
-        "reason": "AI Gold signal unavailable.",
+        "reason": "Gold AI signal is temporarily unavailable.",
         "active": False,
     }
     if not news_text or not api_key:
@@ -2685,43 +2718,44 @@ def get_openrouter_gold_signal(news_text: str, api_key: str = DEFAULT_AI_KEY, pr
     provider, url, model, resolved_key = _ai_runtime(api_key, provider_hint, model_hint)
     if not resolved_key:
         return default
-    headers = _ai_headers(resolved_key, "ApexMacro Gold Intelligence")
-    payload = {
-        "model": model,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You are the Gold intelligence analyst for an institutional macro terminal. "
-                    "Assess ONLY the directional impact of the supplied CURRENT news on Gold/XAUUSD. "
-                    "Use the supplied source names and timestamps: prioritize fresher high-quality reports, look for "
-                    "cross-source confirmation, and lower confidence when evidence is stale, undated, contradictory or single-source. "
-                    "Reason through real yields, USD/DXY, Federal Reserve expectations, inflation, "
-                    "safe-haven/geopolitical demand, central-bank demand and ETF flows. "
-                    "Do not treat generic positive/negative words as Gold direction, and do not invent facts not present in the feed. "
-                    "Return ONLY valid JSON with keys: direction, score, confidence, horizon, reason. "
-                    "direction must be Bullish, Neutral or Bearish. "
-                    "score must be from -1.0 to +1.0. confidence must be from 0 to 100. "
-                    "horizon must be Intraday, 1-3 Days, or Multi-Day. "
-                    "reason must be one concise sentence."
-                )
-            },
-            {"role": "user", "content": news_text},
-        ],
-        "temperature": 0.1,
-    }
+
+    system_prompt = (
+        "You are the Gold intelligence analyst for an institutional macro terminal. "
+        "Assess ONLY the directional impact of the supplied CURRENT news on Gold/XAUUSD. "
+        "Use supplied source names and timestamps: prioritize fresher high-quality reports, look for cross-source "
+        "confirmation, and lower confidence when evidence is stale, undated, contradictory, or single-source. "
+        "Reason through real yields, USD/DXY, Federal Reserve expectations, inflation, "
+        "safe-haven/geopolitical demand, central-bank demand and ETF flows. "
+        "Do not treat generic positive/negative words as Gold direction and do not invent facts not present in the feed. "
+        "Return ONLY valid JSON with keys: direction, score, confidence, horizon, reason. "
+        "direction must be Bullish, Neutral or Bearish. "
+        "score must be from -1.0 to +1.0. confidence must be from 0 to 100. "
+        "horizon must be Intraday, 1-3 Days, or Multi-Day. "
+        "reason must be one concise sentence."
+    )
+
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=15)
-        response.raise_for_status()
-        data = response.json()
-        content = str(data["choices"][0]["message"]["content"]).strip()
+        response = _post_ai_chat(
+            provider=provider,
+            url=url,
+            headers=_ai_headers(resolved_key, "ApexMacro Gold Intelligence"),
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=news_text,
+            temperature=0.1,
+            timeout=20,
+        )
+        content = _ai_message_content(response.json())
         content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.I | re.S).strip()
         parsed = json.loads(content)
+
         direction = str(parsed.get("direction", "Neutral")).strip().title()
         if direction not in {"Bullish", "Neutral", "Bearish"}:
             direction = "Neutral"
+
         score = float(np.clip(float(parsed.get("score", 0.0)), -1.0, 1.0))
         confidence = float(np.clip(float(parsed.get("confidence", 0.0)), 0.0, 100.0))
+
         return {
             "direction": direction,
             "score": score,
@@ -2730,7 +2764,8 @@ def get_openrouter_gold_signal(news_text: str, api_key: str = DEFAULT_AI_KEY, pr
             "reason": str(parsed.get("reason", ""))[:280],
             "active": True,
         }
-    except Exception:
+    except Exception as exc:
+        default["reason"] = f"{provider} Gold AI unavailable: {str(exc)[:220]}"
         return default
 
 
@@ -2757,7 +2792,7 @@ def _gold_news_intelligence(articles: list) -> dict:
         f"{a.get('title', '')}: {a.get('description', '')}"
         for a in ranked_relevant[:12]
     )
-    ai = get_openrouter_gold_signal(news_text)
+    ai = get_openrouter_gold_signal(news_text, DEFAULT_AI_KEY, DEFAULT_AI_PROVIDER, DEFAULT_AI_MODEL, AI_CACHE_VERSION)
     confidence_factor = float(ai.get("confidence", 0.0)) / 100.0 if ai.get("active") else 0.0
     ai_points = float(np.clip(float(ai.get("score", 0.0)) * 0.50 * confidence_factor, -0.50, 0.50))
 
@@ -3590,7 +3625,7 @@ def page_nasdaq(fred_key: str, channel_name: str) -> None:
         nn_color = "#00ffa3" if ndx_news_pts > 0 else ("#ff5e75" if ndx_news_pts < 0 else "#8fa3b4")
         if ndx_news:
             ndx_news_text = "\n".join(f"- {a.get('title','')}: {a.get('description','')}" for a in ndx_news[:6])
-            ai_ndx_summary = get_openrouter_analysis(ndx_news_text)
+            ai_ndx_summary = get_openrouter_analysis(ndx_news_text, DEFAULT_AI_KEY, DEFAULT_AI_PROVIDER, DEFAULT_AI_MODEL, AI_CACHE_VERSION)
         else:
             ai_ndx_summary = "No Nasdaq-specific live wire catalyst detected in the current feed window."
         ai_summary_html = f'<div style="margin-top:10px;padding:10px 12px;background:rgba(173,123,255,0.06);border:1px solid rgba(173,123,255,0.22);border-radius:10px;font-size:11.5px;color:#ecf7ff;text-align:left;line-height:1.5;"><b style="color:#ad7bff;">NDX Macro AI Summary:</b> {ai_ndx_summary}</div>' if ai_ndx_summary else ''
@@ -4154,7 +4189,7 @@ EVENT-RELEVANT LIVE NEWS
             timeout=25,
         )
         data = response.json()
-        raw = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        raw = _ai_message_content(data)
         try:
             parsed = json.loads(raw)
         except Exception:
