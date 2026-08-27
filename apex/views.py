@@ -318,36 +318,44 @@ header[data-testid="stHeader"],
   color: #f0f4f8 !important;
 }
 
-/* ── MOBILE HEADER (TOP BAR: LOGO ON LEFT, ☰ ON RIGHT) ──── */
+/* ── MOBILE HEADER (☰ ON LEFT, LOGO ON RIGHT) ───────────── */
 .apex-mobile-header-bar-container {
   display: block;
-  margin: 0 0 8px;
-  padding: 0 0 8px;
+  margin: 0 0 12px;
+  padding: 0 0 6px;
   border-bottom: 1px solid rgba(70, 145, 165, 0.18);
 }
 
-.apex-mobile-header-bar-container [data-testid="stHorizontalBlock"] {
+.apex-mobile-header-bar-container [data-testid="stHorizontalBlock"],
+.apex-mobile-drawer-head [data-testid="stHorizontalBlock"] {
   display: flex !important;
   flex-direction: row !important;
   flex-wrap: nowrap !important;
   align-items: center !important;
   justify-content: space-between !important;
   gap: 8px !important;
+  width: 100% !important;
 }
 
-.apex-mobile-header-bar-container [data-testid="column"]:first-child {
-  flex: 1 1 auto !important;
-  min-width: 0 !important;
-  width: auto !important;
-}
-
-.apex-mobile-header-bar-container [data-testid="column"]:last-child {
+/* First Column: ☰ Button on Left */
+.apex-mobile-header-bar-container [data-testid="column"]:first-child,
+.apex-mobile-drawer-head [data-testid="column"]:first-child {
   flex: 0 0 44px !important;
   min-width: 44px !important;
   width: 44px !important;
+  max-width: 44px !important;
 }
 
-.apex-mobile-header-bar-container button {
+/* Last Column: Logo on Right */
+.apex-mobile-header-bar-container [data-testid="column"]:last-child,
+.apex-mobile-drawer-head [data-testid="column"]:last-child {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  width: calc(100% - 50px) !important;
+}
+
+.apex-mobile-header-bar-container button,
+.apex-mobile-drawer-head button {
   width: 42px !important;
   height: 42px !important;
   min-height: 42px !important;
@@ -365,9 +373,20 @@ header[data-testid="stHeader"],
   cursor: pointer !important;
 }
 
+.apex-sidebar-brand.apex-brand-right {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  text-align: right !important;
+  gap: 10px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  width: 100% !important;
+}
+
 /* ── MOBILE FULL-SCREEN GLASS DRAWER ─────────────────────── */
 .apex-mobile-drawer-wrap {
-  padding: 4px 0 24px;
+  padding: 0 0 24px;
   animation: apexMobileDrawerFadeIn 0.20s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
@@ -383,42 +402,8 @@ header[data-testid="stHeader"],
 }
 
 .apex-mobile-drawer-head [data-testid="stHorizontalBlock"] {
-  display: flex !important;
-  flex-direction: row !important;
-  flex-wrap: nowrap !important;
-  align-items: center !important;
-  justify-content: space-between !important;
-  gap: 8px !important;
   padding-bottom: 8px;
   border-bottom: 1px solid rgba(70, 145, 165, 0.18);
-}
-
-.apex-mobile-drawer-head [data-testid="column"]:first-child {
-  flex: 1 1 auto !important;
-  min-width: 0 !important;
-}
-
-.apex-mobile-drawer-head [data-testid="column"]:last-child {
-  flex: 0 0 44px !important;
-  min-width: 44px !important;
-}
-
-.apex-mobile-drawer-head button {
-  width: 42px !important;
-  height: 42px !important;
-  min-height: 42px !important;
-  display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  border-radius: 10px !important;
-  border: 1px solid rgba(39, 220, 231, 0.55) !important;
-  background: rgba(10, 32, 45, 0.90) !important;
-  color: #27dce7 !important;
-  font-size: 19px !important;
-  font-weight: 800 !important;
-  padding: 0 !important;
-  box-shadow: 0 0 16px rgba(39, 220, 231, 0.28) !important;
-  cursor: pointer !important;
 }
 
 .apex-mobile-menu-list {
