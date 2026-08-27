@@ -6,17 +6,18 @@ Only real existing routes are rendered.
 """
 from __future__ import annotations
 
+from html import escape
 import streamlit as st
 from .. import production_core as core
 
 ROUTES = {
     "dashboard": ("⌂", "Dashboard", "pages/dashboard.py"),
-    "forex": ("◉", "Forex", "pages/forex.py"),
-    "gold": ("◆", "Gold", "pages/gold.py"),
-    "oil": ("◔", "Oil", "pages/oil.py"),
-    "nasdaq": ("▥", "Nasdaq-100", "pages/nasdaq.py"),
-    "forecaster": ("▣", "Forecaster", "pages/forecaster.py"),
-    "admin": ("♛", "Admin", "pages/admin.py"),
+    "forex": ("💱", "Forex", "pages/forex.py"),
+    "gold": ("🥇", "Gold", "pages/gold.py"),
+    "oil": ("🛢️", "Oil", "pages/oil.py"),
+    "nasdaq": ("📊", "Nasdaq-100", "pages/nasdaq.py"),
+    "forecaster": ("🎯", "Forecaster", "pages/forecaster.py"),
+    "admin": ("👑", "Admin", "pages/admin.py"),
 }
 
 
@@ -27,30 +28,34 @@ def render_terminal_nav(active_page: str, auth_user: dict | None = None) -> None
         keys.append("admin")
 
     with st.sidebar:
-        st.markdown(
-            '''<div class="apex-auth-brand">
-                 <div class="apex-auth-mark">A</div>
-                 <div><div class="apex-auth-brand-name">APEXMACRO</div><div class="apex-auth-brand-sub">Intelligence Desk</div></div>
-               </div><div class="apex-auth-side-sep"></div>''',
-            unsafe_allow_html=True,
-        )
+        core.render_html("""<div class="apex-sidebar-brand">
+<div class="apex-sidebar-logo-icon">▲</div>
+<div>
+<div class="apex-sidebar-brand-title">APEXMACRO</div>
+<div class="apex-sidebar-brand-subtitle">Intelligence Desk</div>
+</div>
+</div>
+<div class="apex-sidebar-sep"></div>""")
+
         for key in keys:
             icon, label, path = ROUTES[key]
+            is_active = (active_page == key)
             if st.button(
                 f"{icon}  {label}",
-                key=f"terminal_side_{key}",
+                key=f"terminal_side_{key}_{active_page}",
                 use_container_width=True,
-                type="primary" if active_page == key else "secondary",
+                type="primary" if is_active else "secondary",
             ):
                 st.session_state["active_tab"] = label
                 st.switch_page(path)
 
         now = core.get_current_time()
-        st.markdown(
-            f'''<div class="apex-auth-side-status">
-                  <div class="apex-auth-side-label">Market Time</div>
-                  <div class="apex-auth-side-clock">{now.strftime('%H:%M:%S')}</div>
-                  <div class="apex-auth-side-date">{now.strftime('%d %b %Y')}</div>
-                </div>''',
-            unsafe_allow_html=True,
-        )
+        core.render_html(f"""<div class="apex-sidebar-bottom">
+<div class="apex-side-meta"><span>◷</span> Market Time (UTC)</div>
+<div class="apex-side-clock">{now.strftime('%H:%M:%S')}</div>
+<div class="apex-side-date">{now.strftime('%d %b %Y, %a')}</div>
+</div>
+<div class="apex-sidebar-mode-toggle">
+<span>🌙 Dark Mode</span>
+<span style="font-size:9px;">⌵</span>
+</div>""")
