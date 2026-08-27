@@ -28,31 +28,36 @@ def render_terminal_nav(active_page: str, auth_user: dict | None = None) -> bool
     role = "Admin" if is_admin else "VIP"
     user_name = escape(str((auth_user or {}).get("user_name") or (auth_user or {}).get("username") or role))
     avatar_initials = user_name[:2].upper() if user_name else "AD"
+    now = core.get_current_time()
+
     keys = ["dashboard", "forex", "gold", "oil", "nasdaq", "forecaster"]
     if is_admin:
         keys.append("admin")
 
     # ── 1. Full-Screen Mobile Drawer View (When Opened) ────────────────
     if st.session_state.get("mobile_menu_open", False):
-        core.render_html("""<div class="apex-mobile-drawer-wrap">
-<div class="apex-mobile-drawer-head">
-<div class="apex-sidebar-brand" style="padding:0;">
+        st.markdown('<div class="apex-mobile-drawer-wrap">', unsafe_allow_html=True)
+        st.markdown('<div class="apex-mobile-drawer-head">', unsafe_allow_html=True)
+        
+        col_logo, col_close = st.columns([0.82, 0.18])
+        with col_logo:
+            core.render_html("""<div class="apex-sidebar-brand" style="padding:0;">
 <div class="apex-sidebar-logo-icon">▲</div>
 <div>
 <div class="apex-sidebar-brand-title">APEXMACRO</div>
 <div class="apex-sidebar-brand-subtitle">INTELLIGENCE DESK</div>
 </div>
 </div>""")
-
-        # Close button in mobile drawer header
-        col_dummy, col_close = st.columns([0.82, 0.18])
         with col_close:
-            if st.button("✕", key=f"m_drawer_close_{active_page}", use_container_width=True):
+            # User requested ☰ icon for toggling/closing the drawer
+            if st.button("☰", key=f"m_drawer_close_{active_page}", use_container_width=True, help="Close menu"):
                 st.session_state["mobile_menu_open"] = False
                 st.rerun()
 
+        st.markdown('</div>', unsafe_allow_html=True)
+
         # Vertical navigation items
-        st.markdown("<div style='margin-top:16px;'>", unsafe_allow_html=True)
+        st.markdown("<div class='apex-mobile-menu-list'>", unsafe_allow_html=True)
         for key in keys:
             icon, label, path = ROUTES[key]
             is_active = (active_page == key)
@@ -68,13 +73,12 @@ def render_terminal_nav(active_page: str, auth_user: dict | None = None) -> bool
         st.markdown("</div>", unsafe_allow_html=True)
 
         # Bottom Profile Box in Drawer
-        now = core.get_current_time()
         core.render_html(f"""<div class="apex-mobile-profile-card">
 <div class="apex-mobile-profile-left">
 <div class="apex-mobile-profile-avatar">{avatar_initials}</div>
 <div>
 <div class="apex-mobile-profile-name">{user_name}</div>
-<div class="apex-mobile-profile-role">{'Administrator' if is_admin else 'VIP Access'} • {now.strftime('%H:%M')} UTC</div>
+<div class="apex-mobile-profile-role">{'Administrator' if is_admin else 'VIP Access'} • {now.strftime('%H:%M UTC')}</div>
 </div>
 </div>
 <div style="color:#27dce7;font-size:16px;">›</div>
@@ -106,7 +110,6 @@ def render_terminal_nav(active_page: str, auth_user: dict | None = None) -> bool
                 st.session_state["active_tab"] = label
                 st.switch_page(path)
 
-        now = core.get_current_time()
         core.render_html(f"""<div class="apex-sidebar-bottom">
 <div class="apex-side-meta"><span>◷</span> Market Time (UTC)</div>
 <div class="apex-side-clock">{now.strftime('%H:%M:%S')}</div>
@@ -117,9 +120,9 @@ def render_terminal_nav(active_page: str, auth_user: dict | None = None) -> bool
 <span style="font-size:9px;">⌵</span>
 </div>""")
 
-    # ── 3. Mobile Header Bar with Hamburger Button ────────────────────
+    # ── 3. Mobile Top Header Bar (Closed State) ───────────────────────
     st.markdown('<div class="apex-mobile-header-bar-container">', unsafe_allow_html=True)
-    m_col1, m_col2 = st.columns([0.80, 0.20])
+    m_col1, m_col2 = st.columns([0.82, 0.18])
     with m_col1:
         core.render_html("""<div class="apex-sidebar-brand" style="padding:0;">
 <div class="apex-sidebar-logo-icon">▲</div>
@@ -129,7 +132,7 @@ def render_terminal_nav(active_page: str, auth_user: dict | None = None) -> bool
 </div>
 </div>""")
     with m_col2:
-        if st.button("☰", key=f"btn_open_m_menu_{active_page}", use_container_width=True):
+        if st.button("☰", key=f"btn_open_m_menu_{active_page}", use_container_width=True, help="Open menu"):
             st.session_state["mobile_menu_open"] = True
             st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
