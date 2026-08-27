@@ -26,6 +26,14 @@ def _render_html(html_str: str) -> None:
     st.markdown(clean, unsafe_allow_html=True)
 
 
+def _render_plotly(fig: go.Figure) -> None:
+    """Render Plotly figure supporting latest Streamlit width='stretch' syntax."""
+    try:
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+    except (TypeError, ValueError):
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
 # ─────────────────────────────────────────────
 # Pure Helpers (no engine modifications)
 # ─────────────────────────────────────────────
@@ -1458,7 +1466,7 @@ Composite sentiment from 7 major indicators
                 paper_bgcolor="rgba(0,0,0,0)",
                 font={"color": "#94a2b0"},
             )
-            st.plotly_chart(fig_gauge, use_container_width=True, config={"displayModeBar": False})
+            _render_plotly(fig_gauge)
             _render_html(f'<div style="text-align:center;margin-top:-14px;font-size:12.5px;font-weight:800;color:{"#ff554f" if gauge_val < -10 else "#1ddf91" if gauge_val > 10 else "#ffb21a"};">{escape(risk)}</div>')
 
         with g_right:
@@ -1502,7 +1510,7 @@ Composite sentiment from 7 major indicators
                     side="right",
                 ),
             )
-            st.plotly_chart(fig_history, use_container_width=True, config={"displayModeBar": False})
+            _render_plotly(fig_history)
 
         _render_html("</div>")
 
