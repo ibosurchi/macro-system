@@ -6,7 +6,7 @@ All strategies, data sources, and calculations remain 100% untouched.
 from __future__ import annotations
 
 from html import escape
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import streamlit as st
 import plotly.graph_objects as go
 import numpy as np
@@ -1360,375 +1360,386 @@ header[data-testid="stHeader"],
 # ─────────────────────────────────────────────
 
 def _render_dashboard_ui(auth_user):
+    """Authenticated dashboard built only from real ApexMacro data.
+
+    Presentation rules:
+    - no demo/fallback numbers
+    - no synthetic sentiment history
+    - no fake operational status
+    - live/near-live snapshot reuses ApexMacro's existing Yahoo tactical feed
+    """
     _inject_terminal_css()
 
-    # ── 1. Navigation & Mobile Drawer (Returns True if mobile menu is open)
     if render_terminal_nav("dashboard", auth_user):
         return
 
-    # ── 2. Fetch System Data (Existing cached calls) ───────────────────
     usd = (
         core.compute_composite("USD", core.DEFAULT_FRED_KEY, core.DEFAULT_TELEGRAM_CHANNEL)
         if core.DEFAULT_FRED_KEY else None
     )
     events = core.get_upcoming_catalyst_events()
-    dxy  = core.fetch_fred("DTWEXBGS",            core.DEFAULT_FRED_KEY, limit=35) if core.DEFAULT_FRED_KEY else None
-    gold = core.fetch_fred("GOLDAMGBD228NLBM",    core.DEFAULT_FRED_KEY, limit=35) if core.DEFAULT_FRED_KEY else None
-    oil  = core.fetch_fred(core.OIL_SERIES["wti"],core.DEFAULT_FRED_KEY, limit=35) if core.DEFAULT_FRED_KEY else None
-    ndx  = core.fetch_fred("NASDAQ100",            core.DEFAULT_FRED_KEY, limit=35) if core.DEFAULT_FRED_KEY else None
+    tracked_assets = len(core.ALERT_ASSETS)
 
-    market_data = [
-        ("USD Index (DXY)", "$",   dxy),
-        ("Gold (XAUUSD)",   "🥇", gold),
-        ("Crude Oil (WTI)", "🛢️", oil),
-        ("Nasdaq-100",      "📊", ndx),
-    ]
+    usd_score = float(usd.get("score")) if usd and usd.get("score") is not None else None
 
-    available = sum(1 for _, _, df in market_data if df is not None and not df.empty)
-    broad = _broad(usd.get("score") if usd else None)
-    risk = _risk_label(broad)
-    score = float((usd or {}).get("score", -0.25))
-    gauge_val = round(score * 100)
+    gold_score = None
+    ndx_score = None
+    oil_score = None
+    if core.DEFAULT_FRED_KEY:
+        try:
+            gold_score = core._calc_gold_score_only(
+                core.DEFAULT_FRED_KEY, core.DEFAULT_TELEGRAM_CHANNEL
+            )[0]
+        except Exception:
+            gold_score = None
+        try:
+            ndx_score = core._calc_ndx_score_only(
+                core.DEFAULT_FRED_KEY, core.DEFAULT_TELEGRAM_CHANNEL
+            )[0]
+        except Exception:
+            ndx_score = None
+        try:
+            oil_check = core.fetch_fred(core.OIL_SERIES["wti"], core.DEFAULT_FRED_KEY, limit=30)
+            if oil_check is not None and not oil_check.empty:
+                oil_score = core._calc_oil_score_only(
+                    core.DEFAULT_FRED_KEY, core.DEFAULT_TELEGRAM_CHANNEL
+                )[0]
+        except Exception:
+            oil_score = None
+
+    model_scores = {"USD": usd_score, "Gold": gold_score, "Oil": oil_score, "Nasdaq": ndx_score}
+    model_regimes = {k: _broad(v) for k, v in model_scores.items() if v is not None}
+
+    bulls = sum(1 for x in model_regimes.values() if x == "Bullish")
+    bears = sum(1 for x in model_regimes.values() if x == "Bearish")
+    neutrals = sum(1 for x in model_regimes.values() if x == "Neutral")
+    if not model_regimes:
+        cross_asset_bias = "Unavailable"
+    elif bulls > bears and bulls >= 2:
+        cross_asset_bias = "Bullish"
+    elif bears > bulls and bears >= 2:
+        cross_asset_bias = "Bearish"
+    elif neutrals == len(model_regimes):
+        cross_asset_bias = "Neutral"
+    else:
+        cross_asset_bias = "Mixed"
+
+    usd_regime = _broad(usd_score) if usd_score is not None else "Unavailable"
 
     is_admin = bool((auth_user or {}).get("is_admin"))
     role = "Admin" if is_admin else "VIP"
-    user_name = escape(str((auth_user or {}).get("user_name") or (auth_user or {}).get("username") or role))
-    avatar_initials = user_name[:2].upper() if user_name else "AD"
+    user_name = escape(
+        str((auth_user or {}).get("user_name")
+            or (auth_user or {}).get("username")
+            or role)
+    )
+    avatar_initials = user_name[:2].upper() if user_name else "AP"
     now = core.get_current_time()
 
-    # ── 3. Top Header Row ─────────────────────────────────────────────
+    # Reuse existing near-live Yahoo tactical market feed (55-second cache).
+    live_specs = [
+        ("USD Index (DXY)", "$",   ["DX-Y.NYB"]),
+        ("Gold (XAUUSD)",   "🥇", ["XAUUSD=X", "GC=F"]),
+        ("Crude Oil (WTI)", "🛢️", ["CL=F"]),
+        ("Nasdaq-100",      "📊", ["^NDX", "NQ=F"]),
+    ]
+
+    def _live_series(symbols):
+        for symbol in symbols:
+            try:
+                df = core._fetch_tactical_price_series(symbol)
+                if df is not None and not df.empty and len(df) >= 2:
+                    return df, symbol
+            except Exception:
+                continue
+        return None, ""
+
+    def _live_stats(df):
+        if df is None or df.empty:
+            return None, None, [], None
+        data = df.dropna(subset=["close"]).copy()
+        if data.empty:
+            return None, None, [], None
+        latest = float(data["close"].iloc[-1])
+        latest_ts = int(data["ts"].iloc[-1])
+        target = latest_ts - 24 * 3600
+        older = data[data["ts"] <= target]
+        ch = None
+        if not older.empty:
+            prev = float(older["close"].iloc[-1])
+            if prev:
+                ch = ((latest / prev) - 1.0) * 100.0
+        vals = [float(x) for x in data["close"].tail(180).tolist()]
+        stamp = datetime.fromtimestamp(latest_ts, tz=timezone.utc)
+        return latest, ch, vals, stamp
+
+    live_market = []
+    for name, icon, symbols in live_specs:
+        df, used_symbol = _live_series(symbols)
+        latest, ch, vals, stamp = _live_stats(df)
+        live_market.append({
+            "name": name, "icon": icon, "symbol": used_symbol,
+            "latest": latest, "change": ch, "vals": vals, "stamp": stamp,
+            "live": latest is not None,
+        })
+
+    live_count = sum(1 for item in live_market if item["live"])
+    latest_feed_stamp = max(
+        (item["stamp"] for item in live_market if item["stamp"] is not None),
+        default=None
+    )
+
     _render_html(f"""<div class="apex-dashboard-head">
 <div>
 <div class="apex-dashboard-title">Global Macro Overview</div>
-<div class="apex-dashboard-subtitle">Real-time macro intelligence and market overview</div>
+<div class="apex-dashboard-subtitle">Live market prices, existing macro models and upcoming catalysts</div>
 </div>
 <div class="apex-user-controls">
-<div class="apex-bell-btn">
-🔔<div class="apex-bell-badge">3</div>
-</div>
-<div class="apex-vip-badge">
-👑 VIP
-</div>
+<div class="apex-vip-badge">{'♛ ADMIN' if is_admin else '♢ VIP'}</div>
 <div class="apex-profile-chip">
 <div class="apex-profile-avatar">{avatar_initials}</div>
 <span>{user_name}</span>
-<span style="font-size:8px;opacity:0.6;">⌵</span>
 </div>
 </div>
 </div>""")
 
-    # ── 4. Top 4 Summary Cards ────────────────────────────────────────
-    _, _, dxy_vals  = _latest_change(dxy)
-    _, _, gold_vals = _latest_change(gold)
-    _, _, oil_vals  = _latest_change(oil)
-    _, _, ndx_vals  = _latest_change(ndx)
-
-    card1_spark = _smooth_sparkline_svg(dxy_vals or [10, 14, 12, 17, 15, 22, 20, 26], color="#27dce7", w=105, h=34)
-    card2_spark = _smooth_sparkline_svg(gold_vals or [12, 11, 15, 14, 19, 18, 24], color="#b54ee3", w=105, h=34)
-    card3_spark = _smooth_sparkline_svg(oil_vals or [22, 20, 24, 18, 16, 19, 14], color="#ff554f", w=105, h=34)
-    card4_spark = _smooth_sparkline_svg(ndx_vals or [14, 16, 15, 20, 18, 22, 25], color="#ffb21a", w=105, h=34)
-
-    risk_cls = _tone(risk)
-    broad_cls = _tone(broad)
+    usd_cls = _tone(usd_regime)
+    cross_cls = _tone(cross_asset_bias)
 
     _render_html(f"""<div class="apex-summary-grid">
-<!-- Card 1: Active Assets -->
 <div class="apex-summary-card">
 <div class="apex-summary-left">
 <div class="apex-summary-kicker-row">
-<span class="apex-summary-icon">📈</span>
-<span class="apex-kicker">ACTIVE ASSETS</span>
+<span class="apex-summary-icon">◉</span>
+<span class="apex-kicker">TRACKED ASSETS</span>
 </div>
-<div class="apex-metric">{available or 8}</div>
-<div class="apex-summary-sub positive">↑ 2 vs yesterday</div>
+<div class="apex-metric">{tracked_assets}</div>
+<div class="apex-summary-sub">Configured models and alert assets</div>
 </div>
-<div class="apex-summary-spark">{card1_spark}</div>
 </div>
 
-<!-- Card 2: Global Events -->
 <div class="apex-summary-card">
 <div class="apex-summary-left">
 <div class="apex-summary-kicker-row">
-<span class="apex-summary-icon" style="color:#b54ee3;">📅</span>
-<span class="apex-kicker">GLOBAL EVENTS</span>
+<span class="apex-summary-icon" style="color:#b54ee3;">▣</span>
+<span class="apex-kicker">UPCOMING EVENTS</span>
 </div>
-<div class="apex-metric">{len(events) if events else 12}</div>
-<div class="apex-summary-sub positive">↑ 3 vs yesterday</div>
+<div class="apex-metric">{len(events)}</div>
+<div class="apex-summary-sub">Current Forecaster calendar window</div>
 </div>
-<div class="apex-summary-spark">{card2_spark}</div>
 </div>
 
-<!-- Card 3: Risk Regime -->
 <div class="apex-summary-card">
 <div class="apex-summary-left">
 <div class="apex-summary-kicker-row">
-<span class="apex-summary-icon" style="color:#ff554f;">🛡️</span>
-<span class="apex-kicker">RISK REGIME</span>
+<span class="apex-summary-icon">💵</span>
+<span class="apex-kicker">USD MACRO REGIME</span>
 </div>
-<div class="apex-metric {risk_cls}">{escape(risk)}</div>
-<div class="apex-summary-sub">High Uncertainty</div>
+<div class="apex-metric {usd_cls}">{escape(usd_regime)}</div>
+<div class="apex-summary-sub">Existing USD macro + news composite</div>
 </div>
-<div class="apex-summary-spark">{card3_spark}</div>
 </div>
 
-<!-- Card 4: Market Bias -->
 <div class="apex-summary-card">
 <div class="apex-summary-left">
 <div class="apex-summary-kicker-row">
-<span class="apex-summary-icon" style="color:#ffb21a;">🎯</span>
-<span class="apex-kicker">MARKET BIAS</span>
+<span class="apex-summary-icon" style="color:#ffb21a;">◎</span>
+<span class="apex-kicker">CROSS-ASSET BIAS</span>
 </div>
-<div class="apex-metric {broad_cls}">{escape(broad)}</div>
-<div class="apex-summary-sub">Cautious</div>
+<div class="apex-metric {cross_cls}">{escape(cross_asset_bias)}</div>
+<div class="apex-summary-sub">{len(model_regimes)} model regimes currently available</div>
 </div>
-<div class="apex-summary-spark">{card4_spark}</div>
 </div>
 </div>""")
 
-    # ── 5. Middle Grid: Macro Regime (Map + Factors) & Market Snapshot
-    col_mid1, col_mid2 = st.columns([1.12, 1.0], gap="small")
+    # Real USD macro categories from the existing model rows.
+    rows = (usd or {}).get("rows", [])
+    category_scores = {}
+    category_dates = {}
+    category_counts = {}
+    for row in rows:
+        cat = str(row.get("cat", ""))
+        group = "labor" if cat in {"labor_pos", "labor_neg"} else cat
+        if group not in {"inflation", "growth", "labor", "rate"}:
+            continue
+        category_scores.setdefault(group, []).append(float(row.get("score", 0.0)))
+        category_counts[group] = category_counts.get(group, 0) + 1
+        d = str(row.get("date", ""))
+        if d and d > category_dates.get(group, ""):
+            category_dates[group] = d
 
-    with col_mid1:
-        dxy_latest, dxy_chg, _ = _latest_change(dxy)
-        dxy_str = f"{dxy_latest:.2f}" if dxy_latest else "104.32"
-        dxy_delta = f"↓ {abs(dxy_chg):.2f}" if dxy_chg and dxy_chg < 0 else f"↑ {abs(dxy_chg or 0.18):.2f}"
-        dxy_color = "#1ddf91" if (dxy_chg or -0.18) < 0 else "#ff554f"
-
-        map_svg = _world_map_svg()
-
-        _render_html(f"""<div class="apex-panel">
-<div class="apex-panel-header">
-<div class="apex-panel-title">
-Global Macro Regime <span class="apex-info-icon">ⓘ</span>
-</div>
-</div>
-<div class="apex-regime-split">
-<div class="apex-regime-map-wrap">
-{map_svg}
-</div>
-<div class="apex-regime-rows">
-<div class="apex-regime-item">
-<div class="apex-regime-icon-box">🏭</div>
+    display_groups = [
+        ("growth", "🏭", "Growth", "Activity and demand"),
+        ("inflation", "📈", "Inflation", "Price pressure"),
+        ("labor", "👥", "Labor Market", "Employment and unemployment"),
+        ("rate", "🏦", "Policy Rates", "Central-bank policy"),
+    ]
+    regime_html = []
+    for group, icon, label, sub in display_groups:
+        vals = category_scores.get(group, [])
+        avg = float(np.mean(vals)) if vals else None
+        status = _broad(avg) if avg is not None else "Unavailable"
+        date_txt = category_dates.get(group, "—")
+        count_txt = category_counts.get(group, 0)
+        score_txt = f"{avg:+.2f}" if avg is not None else "—"
+        regime_html.append(f"""<div class="apex-regime-item">
+<div class="apex-regime-icon-box">{icon}</div>
 <div class="apex-regime-label-group">
-<div class="apex-regime-name">Growth</div>
-<div class="apex-regime-subtext">Global PMI Composite</div>
+<div class="apex-regime-name">{label}</div>
+<div class="apex-regime-subtext">{sub} · {count_txt} indicators · latest {escape(date_txt)}</div>
 </div>
-<span class="apex-status-pill amber">Slowing</span>
-</div>
+<div class="apex-regime-val-chip">{score_txt} <span class="{_tone(status)}">{escape(status)}</span></div>
+</div>""")
 
-<div class="apex-regime-item">
+    dxy_item = next((x for x in live_market if x["name"].startswith("USD Index")), None)
+    if dxy_item and dxy_item["live"]:
+        dxy_ch = dxy_item["change"]
+        dxy_tone = "positive" if (dxy_ch or 0) > 0 else "negative" if (dxy_ch or 0) < 0 else "neutral"
+        dxy_ch_txt = f"{dxy_ch:+.2f}%" if dxy_ch is not None else "—"
+        regime_html.append(f"""<div class="apex-regime-item">
 <div class="apex-regime-icon-box">💲</div>
 <div class="apex-regime-label-group">
-<div class="apex-regime-name">Inflation</div>
-<div class="apex-regime-subtext">Major Economies CPI</div>
+<div class="apex-regime-name">Dollar Price Action</div>
+<div class="apex-regime-subtext">DXY live/near-live market feed</div>
 </div>
-<span class="apex-status-pill amber">Sticky</span>
-</div>
-
-<div class="apex-regime-item">
-<div class="apex-regime-icon-box">💧</div>
-<div class="apex-regime-label-group">
-<div class="apex-regime-name">Liquidity</div>
-<div class="apex-regime-subtext">Global Liquidity Index</div>
-</div>
-<span class="apex-status-pill red">Tightening</span>
-</div>
-
-<div class="apex-regime-item">
-<div class="apex-regime-icon-box">🛡️</div>
-<div class="apex-regime-label-group">
-<div class="apex-regime-name">Risk Appetite</div>
-<div class="apex-regime-subtext">Risk Sentiment Index</div>
-</div>
-<span class="apex-status-pill red">Low</span>
-</div>
-
-<div class="apex-regime-item">
-<div class="apex-regime-icon-box">📉</div>
-<div class="apex-regime-label-group">
-<div class="apex-regime-name">Volatility</div>
-<div class="apex-regime-subtext">VIX Index</div>
-</div>
-<div class="apex-regime-val-chip">22.4 <span style="color:#ff554f;font-weight:800;">↑ 2.1</span></div>
-</div>
-
-<div class="apex-regime-item">
-<div class="apex-regime-icon-box">💵</div>
-<div class="apex-regime-label-group">
-<div class="apex-regime-name">Dollar Strength</div>
-<div class="apex-regime-subtext">DXY Index</div>
-</div>
-<div class="apex-regime-val-chip">{dxy_str} <span style="color:{dxy_color};font-weight:800;">{dxy_delta}</span></div>
-</div>
-</div>
-</div>
+<div class="apex-regime-val-chip">{_fmt(dxy_item["latest"])} <span class="{dxy_tone}">{dxy_ch_txt}</span></div>
 </div>""")
 
-    with col_mid2:
-        # Build Table rows for Market Snapshot
-        snapshot_rows = []
-        for name, icon, df in market_data:
-            latest, ch, vals = _latest_change(df)
+    snapshot_rows = []
+    for item in live_market:
+        latest = item["latest"]
+        ch = item["change"]
+        vals = item["vals"]
+        if latest is None:
+            price_str = "Unavailable"
+            chg_str = "—"
+            tone = "neutral"
+            spark = ""
+        else:
+            price_str = _fmt(latest)
             tone = "positive" if (ch or 0) > 0 else "negative" if (ch or 0) < 0 else "neutral"
             chg_str = f"{ch:+.2f}%" if ch is not None else "—"
-            price_str = _fmt(latest)
             spark_color = "#1ddf91" if (ch or 0) >= 0 else "#ff554f"
             spark = _smooth_sparkline_svg(vals, color=spark_color, w=84, h=22) if len(vals) > 1 else ""
 
-            snapshot_rows.append(f"""<div class="apex-snapshot-row">
+        snapshot_rows.append(f"""<div class="apex-snapshot-row">
 <div class="apex-asset-info">
-<div class="apex-asset-icon-round">{icon}</div>
-<div class="apex-asset-title">{escape(name)}</div>
+<div class="apex-asset-icon-round">{item["icon"]}</div>
+<div>
+<div class="apex-asset-title">{escape(item["name"])}</div>
+<div style="font-size:8.5px;color:#6f8493;margin-top:2px;">{escape(item["symbol"] or "feed unavailable")}</div>
 </div>
-<div class="apex-asset-price">{price_str}</div>
+</div>
+<div class="apex-asset-price">{escape(price_str)}</div>
 <div class="apex-asset-chg {tone}">{escape(chg_str)}</div>
 <div>{spark}</div>
 </div>""")
 
-        # S&P 500 row matching the mock
-        snapshot_rows.append("""<div class="apex-snapshot-row">
-<div class="apex-asset-info">
-<div class="apex-asset-icon-round" style="font-size:8px;font-weight:800;color:#27dce7;">S&P</div>
-<div class="apex-asset-title">S&P 500</div>
-</div>
-<div class="apex-asset-price">5,495.52</div>
-<div class="apex-asset-chg positive">+0.41%</div>
-<div>""" + _smooth_sparkline_svg([12, 14, 13, 17, 16, 20, 22], color="#1ddf91", w=84, h=22) + """</div>
-</div>""")
+    feed_stamp_text = (
+        latest_feed_stamp.strftime("%d %b %Y %H:%M UTC")
+        if latest_feed_stamp is not None else "No live feed timestamp available"
+    )
 
+    col_mid1, col_mid2 = st.columns([1.05, 1.0], gap="small")
+    with col_mid1:
         _render_html(f"""<div class="apex-panel">
 <div class="apex-panel-header">
-<div class="apex-panel-title">
-Market Snapshot <span class="apex-info-icon">ⓘ</span>
+<div class="apex-panel-title">US Macro Regime <span class="apex-info-icon">ⓘ</span></div>
 </div>
+<div style="font-size:10px;color:#708493;margin:-4px 0 10px;">
+This panel summarizes the same USD indicators already used by the ApexMacro macro model. It is not a separate strategy.
+</div>
+<div class="apex-regime-rows">
+{"".join(regime_html) if regime_html else '<div class="apex-meta">USD macro data unavailable.</div>'}
+</div>
+</div>""")
+
+    with col_mid2:
+        _render_html(f"""<div class="apex-panel">
+<div class="apex-panel-header">
+<div class="apex-panel-title">Market Snapshot <span class="apex-info-icon">ⓘ</span></div>
 </div>
 <div class="apex-snapshot-head">
 <div>Asset</div>
 <div>Price</div>
 <div>24H Change</div>
-<div>Trend (7D)</div>
+<div>Intraday Trend</div>
 </div>
 {"".join(snapshot_rows)}
 <div class="apex-snapshot-footer">
-All prices are delayed. Source: ApexMacro Feeds
+Live/near-live Yahoo market feed already used by ApexMacro Tactical Move · cached about 55 seconds · latest feed: {escape(feed_stamp_text)}
 </div>
 </div>""")
 
-    # ── 6. Lower Grid: Sentiment Gauge + Line Chart & Top Catalysts ───
-    col_low1, col_low2 = st.columns([1.45, 0.72], gap="small")
-
+    col_low1, col_low2 = st.columns([1.38, 0.74], gap="small")
     with col_low1:
-        _render_html("""<div class="apex-panel" style="padding-bottom:12px;">
-<div class="apex-panel-header">
-<div class="apex-panel-title">
-Market Sentiment Index <span class="apex-info-icon">ⓘ</span>
-</div>
-<div class="apex-timeframe-tabs">
-<div class="apex-timeframe-tab">7D</div>
-<div class="apex-timeframe-tab">14D</div>
-<div class="apex-timeframe-tab active">1M</div>
-<div class="apex-timeframe-tab">3M</div>
-<div class="apex-timeframe-tab">6M</div>
-<div class="apex-timeframe-tab">1Y</div>
-</div>
-</div>
-<div class="apex-sentiment-subtitle">
-Composite sentiment from 7 major indicators
-</div>""")
-
-        g_left, g_right = st.columns([0.38, 0.62], gap="small")
-        with g_left:
+        if usd_score is not None:
+            gauge_val = max(-100, min(100, round(usd_score * 100)))
+            gauge_color = "#ff554f" if gauge_val < -15 else "#1ddf91" if gauge_val > 15 else "#ffb21a"
             fig_gauge = go.Figure(go.Indicator(
                 mode="gauge+number",
                 value=gauge_val,
-                number={"font": {"size": 32, "color": "#ff554f" if gauge_val < -10 else "#1ddf91" if gauge_val > 10 else "#f3f6f8"}},
+                number={"font": {"size": 31, "color": gauge_color}},
                 gauge={
-                    "axis": {
-                        "range": [-100, 100],
-                        "tickfont": {"color": "#6e808e", "size": 8.5},
-                        "tickvals": [-100, 0, 100],
-                    },
-                    "bar": {"color": "#27dce7", "thickness": 0.20},
+                    "axis": {"range": [-100, 100], "tickfont": {"color": "#6e808e", "size": 8.5},
+                             "tickvals": [-100, -50, 0, 50, 100]},
+                    "bar": {"color": gauge_color, "thickness": 0.20},
                     "bgcolor": "rgba(0,0,0,0)",
                     "borderwidth": 0,
                     "steps": [
-                        {"range": [-100, -20], "color": "rgba(255,85,79, 0.22)"},
-                        {"range": [-20,   20], "color": "rgba(148,162,176,0.10)"},
-                        {"range": [20,   100], "color": "rgba(29,223,145, 0.20)"},
+                        {"range": [-100, -15], "color": "rgba(255,85,79,.18)"},
+                        {"range": [-15, 15], "color": "rgba(148,162,176,.09)"},
+                        {"range": [15, 100], "color": "rgba(29,223,145,.16)"},
                     ],
                 },
             ))
             fig_gauge.update_layout(
-                height=170,
-                margin=dict(l=6, r=6, t=10, b=0),
-                paper_bgcolor="rgba(0,0,0,0)",
-                font={"color": "#94a2b0"},
+                height=205, margin=dict(l=15, r=15, t=18, b=5),
+                paper_bgcolor="rgba(0,0,0,0)", font={"color": "#94a2b0"}
             )
-            _render_plotly(fig_gauge)
-            _render_html(f'<div style="text-align:center;margin-top:-14px;font-size:12.5px;font-weight:800;color:{"#ff554f" if gauge_val < -10 else "#1ddf91" if gauge_val > 10 else "#ffb21a"};">{escape(risk)}</div>')
-
-        with g_right:
-            date_range = [now - timedelta(days=29 - i) for i in range(30)]
-            x_dates = [d.strftime("%d %b") for d in date_range]
-
-            base_trend = np.linspace(gauge_val + 15, gauge_val, 30)
-            noise = np.sin(np.linspace(0, 10, 30)) * 25 + np.cos(np.linspace(1, 8, 30)) * 15
-            y_vals = np.clip(base_trend + noise, -90, 90)
-
-            fig_history = go.Figure()
-            fig_history.add_trace(go.Scatter(
-                x=x_dates,
-                y=y_vals,
-                mode="lines",
-                line=dict(color="#27dce7", width=2.0, shape="spline"),
-                fill="tozeroy",
-                fillcolor="rgba(39, 220, 231, 0.12)",
-                hoverinfo="x+y",
-            ))
-
-            fig_history.update_layout(
-                height=180,
-                margin=dict(l=6, r=10, t=10, b=10),
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                xaxis=dict(
-                    showgrid=False,
-                    tickmode="array",
-                    tickvals=[x_dates[0], x_dates[4], x_dates[8], x_dates[12], x_dates[16], x_dates[20], x_dates[24], x_dates[29]],
-                    tickfont=dict(size=8, color="#6e808e"),
-                ),
-                yaxis=dict(
-                    range=[-100, 100],
-                    tickvals=[-100, -50, 0, 50, 100],
-                    gridcolor="rgba(70, 145, 165, 0.10)",
-                    zeroline=True,
-                    zerolinecolor="rgba(70, 145, 165, 0.22)",
-                    tickfont=dict(size=8, color="#6e808e"),
-                    side="right",
-                ),
-            )
-            _render_plotly(fig_history)
-
-        _render_html("</div>")
+            _render_html("""<div class="apex-panel">
+<div class="apex-panel-header">
+<div class="apex-panel-title">USD Composite Score <span class="apex-info-icon">ⓘ</span></div>
+</div>
+<div class="apex-sentiment-subtitle">
+Current score from the existing 50% macro-data + 50% asset-specific news model.
+</div>""")
+            g1, g2 = st.columns([0.42, 0.58], gap="small")
+            with g1:
+                _render_plotly(fig_gauge)
+            with g2:
+                macro_score = (usd or {}).get("macro_score")
+                news_points = (usd or {}).get("news_points")
+                macro_txt = f"{float(macro_score):+.3f}" if macro_score is not None else "—"
+                news_txt = f"{float(news_points):+.3f}" if news_points is not None else "—"
+                _render_html(f"""<div style="padding:22px 6px 8px;">
+<div style="font-size:22px;font-weight:850;color:{gauge_color};margin-bottom:8px;">{escape(usd_regime)}</div>
+<div style="font-size:11px;color:#94a2b0;line-height:1.65;">
+<b style="color:#dfe7ec;">Final score:</b> {usd_score:+.3f}<br>
+<b style="color:#dfe7ec;">Macro component:</b> {macro_txt}<br>
+<b style="color:#dfe7ec;">News points:</b> {news_txt}<br><br>
+Current-state gauge only. No synthetic historical sentiment series is generated.
+</div>
+</div>""")
+            _render_html("</div>")
+        else:
+            _render_html("""<div class="apex-panel">
+<div class="apex-panel-title">USD Composite Score</div>
+<div class="apex-meta">Current USD composite is unavailable.</div>
+</div>""")
 
     with col_low2:
         cat_rows_html = []
-        sample_events = events[:4] if events else []
-
-        if sample_events:
-            for e in sample_events:
-                dt = e.get("datetime_obj")
-                date_str = dt.strftime("%d %b").upper() if dt else escape(str(e.get("date_str", "27 AUG")))
-                time_str = escape(str(e.get("time_str", "15:30")).split(" ")[0])
-                curr = escape(str(e.get("currency", "USD")))
-                impact = str(e.get("impact", "Medium")).capitalize()
-                title = escape(str(e.get("title", "Catalyst Event")))
-                countdown = escape(str(e.get("countdown", "In 3h 42m")).replace("⚡ ", "").replace("🔥 ", "").replace("✅ ", ""))
-                flag = _flag(curr)
-                impact_class = impact.lower()
-
-                cat_rows_html.append(f"""<div class="apex-catalyst-item">
-<div class="apex-cat-flag-badge">{flag}</div>
+        for e in events[:5]:
+            dt = e.get("datetime_obj")
+            date_str = dt.strftime("%d %b").upper() if dt else escape(str(e.get("date_str", "—")))
+            time_str = escape(str(e.get("time_str", "—")).split(" ")[0])
+            curr = escape(str(e.get("currency", "ALL")))
+            impact = str(e.get("impact", "Medium")).capitalize()
+            title = escape(str(e.get("title", "Catalyst Event")))
+            countdown = escape(str(e.get("countdown", "")).replace("⚡ ", "").replace("🔥 ", "").replace("✅ ", ""))
+            cat_rows_html.append(f"""<div class="apex-catalyst-item">
+<div class="apex-cat-flag-badge">{_flag(curr)}</div>
 <div class="apex-cat-datetime-col">
 <div class="apex-cat-date-text">{date_str}</div>
 <div class="apex-cat-time-text">{time_str}</div>
@@ -1737,87 +1748,29 @@ Composite sentiment from 7 major indicators
 <div class="apex-cat-tag-row">
 <span class="apex-cat-curr-text">{curr}</span>
 <span class="apex-cat-dot-sep">●</span>
-<span class="apex-cat-impact-text {impact_class}">{impact} Impact</span>
+<span class="apex-cat-impact-text {impact.lower()}">{escape(impact)} Impact</span>
 </div>
 <div class="apex-cat-headline">{title}</div>
 </div>
 <div class="apex-cat-timer-col">{countdown}</div>
 </div>""")
-        else:
-            cat_rows_html.append("""<div class="apex-catalyst-item">
-<div class="apex-cat-flag-badge">🇺🇸</div>
-<div class="apex-cat-datetime-col">
-<div class="apex-cat-date-text">27 AUG</div>
-<div class="apex-cat-time-text">15:30</div>
-</div>
-<div class="apex-cat-info-col">
-<div class="apex-cat-tag-row">
-<span class="apex-cat-curr-text">USD</span>
-<span class="apex-cat-dot-sep">●</span>
-<span class="apex-cat-impact-text medium">Medium Impact</span>
-</div>
-<div class="apex-cat-headline">Unemployment Claims</div>
-</div>
-<div class="apex-cat-timer-col">In 3h 42m</div>
-</div>
-<div class="apex-catalyst-item">
-<div class="apex-cat-flag-badge">🇺🇸</div>
-<div class="apex-cat-datetime-col">
-<div class="apex-cat-date-text">27 AUG</div>
-<div class="apex-cat-time-text">19:15</div>
-</div>
-<div class="apex-cat-info-col">
-<div class="apex-cat-tag-row">
-<span class="apex-cat-curr-text">ALL</span>
-<span class="apex-cat-dot-sep">●</span>
-<span class="apex-cat-impact-text medium">Medium Impact</span>
-</div>
-<div class="apex-cat-headline">Jackson Hole Symposium</div>
-</div>
-<div class="apex-cat-timer-col">In 7h 27m</div>
-</div>
-<div class="apex-catalyst-item">
-<div class="apex-cat-flag-badge">🇪🇺</div>
-<div class="apex-cat-datetime-col">
-<div class="apex-cat-date-text">28 AUG</div>
-<div class="apex-cat-time-text">10:00</div>
-</div>
-<div class="apex-cat-info-col">
-<div class="apex-cat-tag-row">
-<span class="apex-cat-curr-text">EUR</span>
-<span class="apex-cat-dot-sep">●</span>
-<span class="apex-cat-impact-text high">High Impact</span>
-</div>
-<div class="apex-cat-headline">Eurozone CPI (YoY)</div>
-</div>
-<div class="apex-cat-timer-col">In 22h 12m</div>
-</div>""")
 
         _render_html(f"""<div class="apex-panel">
 <div class="apex-panel-header">
-<div class="apex-panel-title">
-Top Catalysts <span class="apex-info-icon">ⓘ</span>
+<div class="apex-panel-title">Top Catalysts <span class="apex-info-icon">ⓘ</span></div>
 </div>
-<a class="apex-header-link" onclick="window.location.href='#forecaster'">Go to Forecaster ›</a>
-</div>
-{"".join(cat_rows_html)}
-<div class="apex-catalyst-bottom-link">
-<span>View full calendar in Forecaster</span>
-<span>›</span>
-</div>
+{"".join(cat_rows_html) if cat_rows_html else '<div class="apex-meta">No upcoming Forecaster catalysts are available in the current calendar window.</div>'}
 </div>""")
-
         if st.button("Go to Forecaster  →", key="dash_btn_forecaster", use_container_width=True):
             st.switch_page("pages/forecaster.py")
 
-    # ── 7. Single Institutional Footer Bar ────────────────────────────
     _render_html(f"""<div class="apex-footer-bar">
 <div class="apex-footer-bar-left">
-<span>Last Updated: {now.strftime('%d %b %Y, %H:%M UTC')}</span>
-<span class="apex-live-status"><span class="apex-live-dot"></span> All Systems Operational</span>
-<span>Data Source: ApexMacro Intelligence Engine</span>
+<span>Dashboard rendered: {now.strftime('%d %b %Y, %H:%M')}</span>
+<span>Live feeds available: {live_count}/4</span>
+<span>Macro source: FRED + ApexMacro news intelligence</span>
 </div>
-<span>© 2026 ApexMacro. All rights reserved.</span>
+<span>© 2026 ApexMacro</span>
 </div>""")
 
 
