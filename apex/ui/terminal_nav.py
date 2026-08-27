@@ -1,7 +1,7 @@
 """Shared responsive authenticated navigation.
 
 Desktop: persistent institutional left sidebar.
-Mobile: Streamlit's native collapsed sidebar acts as the hamburger/drawer.
+Mobile: sleek horizontal swipeable navigation tab-bar.
 Only real existing routes are rendered.
 """
 from __future__ import annotations
@@ -27,6 +27,7 @@ def render_terminal_nav(active_page: str, auth_user: dict | None = None) -> None
     if is_admin:
         keys.append("admin")
 
+    # 1. Desktop Persistent Sidebar
     with st.sidebar:
         core.render_html("""<div class="apex-sidebar-brand">
 <div class="apex-sidebar-logo-icon">▲</div>
@@ -59,3 +60,20 @@ def render_terminal_nav(active_page: str, auth_user: dict | None = None) -> None
 <span>🌙 Dark Mode</span>
 <span style="font-size:9px;">⌵</span>
 </div>""")
+
+    # 2. Mobile Responsive Horizontal Navigation Bar
+    st.markdown('<div class="apex-mobile-nav-container">', unsafe_allow_html=True)
+    cols = st.columns(len(keys), gap="small")
+    for i, key in enumerate(keys):
+        icon, label, path = ROUTES[key]
+        is_active = (active_page == key)
+        with cols[i]:
+            if st.button(
+                f"{icon} {label}",
+                key=f"m_nav_{key}_{active_page}",
+                use_container_width=True,
+                type="primary" if is_active else "secondary",
+            ):
+                st.session_state["active_tab"] = label
+                st.switch_page(path)
+    st.markdown('</div>', unsafe_allow_html=True)

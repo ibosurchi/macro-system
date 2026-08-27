@@ -21,6 +21,16 @@ def _shared_auth_css() -> None:
   --apex-auth-muted: #94a2b0;
 }
 
+/* Hide default streamlit headers and deploy buttons */
+header[data-testid="stHeader"],
+.stDeployButton,
+[data-testid="stHeaderActionElements"],
+[data-testid="stToolbar"] {
+  display: none !important;
+  visibility: hidden !important;
+  height: 0 !important;
+}
+
 [data-testid="stAppViewContainer"] {
   background: radial-gradient(circle at 10% 0%, rgba(0,220,230,.03), transparent 28%), var(--apex-auth-bg) !important;
 }
@@ -48,59 +58,12 @@ def _shared_auth_css() -> None:
 }
 
 @media (max-width: 1023px) {
-  header[data-testid="stHeader"] {
-    display: flex !important;
-    visibility: visible !important;
-    background: transparent !important;
-    height: 48px !important;
-    z-index: 999990 !important;
-  }
-  
-  [data-testid="stSidebarCollapsedControl"],
-  [data-testid="collapsedControl"],
-  button[data-testid="stSidebarCollapseButton"],
-  button[aria-label="Expand sidebar"],
-  button[aria-label="Open sidebar"],
-  button[kind="header"] {
-    display: flex !important;
-    visibility: visible !important;
-    position: fixed !important;
-    top: 10px !important;
-    left: 10px !important;
-    z-index: 999999 !important;
-    background: rgba(7, 25, 35, 0.94) !important;
-    border: 1px solid rgba(39, 220, 231, 0.50) !important;
-    border-radius: 9px !important;
-    padding: 6px 10px !important;
-    color: #27dce7 !important;
-    box-shadow: 0 0 16px rgba(39, 220, 231, 0.25) !important;
-    cursor: pointer !important;
-  }
-
-  [data-testid="stSidebarCollapsedControl"] svg,
-  [data-testid="collapsedControl"] svg {
-    fill: #27dce7 !important;
-    stroke: #27dce7 !important;
-    color: #27dce7 !important;
-  }
-
   [data-testid="stSidebar"] {
-    z-index: 1000000 !important;
-    background: #03111a !important;
-    box-shadow: 4px 0 30px rgba(0, 0, 0, 0.85) !important;
+    display: none !important;
   }
-
-  [data-testid="stSidebar"] button[aria-label="Close sidebar"],
-  [data-testid="stSidebar"] [data-testid="stSidebarCollapseButton"] {
-    display: flex !important;
-    visibility: visible !important;
-    color: #27dce7 !important;
-  }
-  
-  .block-container {
-    padding-top: 54px !important;
-    padding-left: 12px !important;
-    padding-right: 12px !important;
+  [data-testid="stSidebarCollapsedControl"],
+  [data-testid="collapsedControl"] {
+    display: none !important;
   }
 }
 
@@ -138,6 +101,60 @@ def _shared_auth_css() -> None:
   background: rgba(255, 255, 255, 0.03) !important;
   border-color: rgba(70, 145, 165, 0.25) !important;
   color: #f0f4f8 !important;
+}
+
+/* ── MOBILE HORIZONTAL NAVIGATION STRIP ─────────────────── */
+.apex-mobile-nav-container {
+  display: none;
+}
+
+@media (max-width: 1023px) {
+  .apex-mobile-nav-container {
+    display: block !important;
+    margin: 6px 0 14px !important;
+    padding: 6px 6px 4px !important;
+    background: rgba(7, 25, 35, 0.70) !important;
+    border: 1px solid rgba(70, 145, 165, 0.22) !important;
+    border-radius: 12px !important;
+  }
+  
+  .apex-mobile-nav-container [data-testid="column"] {
+    min-width: 86px !important;
+    flex: 1 1 0 !important;
+  }
+  
+  .apex-mobile-nav-container [data-testid="stHorizontalBlock"] {
+    display: flex !important;
+    flex-direction: row !important;
+    flex-wrap: nowrap !important;
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+    gap: 6px !important;
+    padding-bottom: 3px !important;
+  }
+
+  .apex-mobile-nav-container [data-testid="stHorizontalBlock"]::-webkit-scrollbar {
+    height: 3px;
+  }
+  .apex-mobile-nav-container [data-testid="stHorizontalBlock"]::-webkit-scrollbar-thumb {
+    background: rgba(39, 220, 231, 0.40);
+    border-radius: 3px;
+  }
+
+  .apex-mobile-nav-container button {
+    min-height: 36px !important;
+    padding: 4px 10px !important;
+    font-size: 11.5px !important;
+    font-weight: 700 !important;
+    white-space: nowrap !important;
+    border-radius: 8px !important;
+  }
+  
+  .apex-mobile-nav-container button[kind="primary"] {
+    background: linear-gradient(90deg, rgba(20, 210, 225, 0.20) 0%, rgba(20, 210, 225, 0.06) 100%) !important;
+    border: 1px solid rgba(39, 220, 231, 0.50) !important;
+    color: #27dce7 !important;
+  }
 }
 
 .apex-sidebar-brand {
@@ -254,9 +271,13 @@ def _shared_auth_css() -> None:
 
 .block-container {
   max-width: 1750px !important;
+  padding: 22px 28px 30px !important;
 }
 
 @media (max-width: 768px) {
+  .block-container {
+    padding: 12px 10px 24px !important;
+  }
   .apex-auth-desktop-strip { display: none; }
   .apex-auth-mobile-head {
     display: flex;
@@ -264,7 +285,7 @@ def _shared_auth_css() -> None:
     justify-content: space-between;
     gap: 10px;
     min-height: 44px;
-    margin: 0 0 12px;
+    margin: 0 0 8px;
     padding: 7px 12px;
     border: 1px solid rgba(55, 150, 170, 0.18);
     border-radius: 11px;
