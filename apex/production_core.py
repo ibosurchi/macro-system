@@ -5432,7 +5432,7 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     .apex-fc2-section-title{font-size:14px;font-weight:800;color:#eef5f8}
     .apex-fc2-count{font-size:10px;color:#9fb0ba;border:1px solid rgba(83,135,158,.20);background:rgba(7,25,35,.78);border-radius:999px;padding:5px 9px}
     .apex-fc2-empty{padding:22px 16px;border:1px dashed rgba(83,135,158,.22);border-radius:14px;color:#8295a2;text-align:center;background:rgba(5,18,27,.48)}
-    .apex-fc2-dots{display:flex;align-items:center;justify-content:center;gap:3px;height:8px;margin-top:-5px;margin-bottom:4px}
+    .apex-fc2-dots{display:flex;align-items:center;justify-content:center;gap:4px;height:9px;margin-top:-5px;margin-bottom:4px}
     .apex-fc2-dot{width:5px;height:5px;border-radius:50%;display:inline-block}.apex-fc2-dot.high{background:#b04ce4}.apex-fc2-dot.medium{background:#ffb822}.apex-fc2-dot.low{background:#35d2e3}
     .apex-fc2-legend{display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin:10px 0 0;color:#8fa1ae;font-size:10px}.apex-fc2-legend span{display:flex;align-items:center;gap:5px}
     .apex-fc2-detail-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:10px}.apex-fc2-detail-kicker{font-size:10px;color:#28dce7;font-weight:800;letter-spacing:.1em;text-transform:uppercase}.apex-fc2-detail-title{font-size:19px;color:#f2f7fa;font-weight:800;line-height:1.25;margin-top:5px}.apex-fc2-detail-time{font-size:11px;color:#91a3af;margin-top:5px}
@@ -5440,6 +5440,9 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     .apex-fc2-insight{padding:11px;border-top:1px solid rgba(83,135,158,.14);color:#91a3af;font-size:11px;line-height:1.5}.apex-fc2-insight b{display:block;color:#dce7ec;font-size:11px;margin-bottom:4px}
 
     /* Week rail */
+    [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fc2_day_"]){width:100%!important;max-width:100%!important;gap:8px!important;overflow:hidden!important}
+    [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fc2_day_"])>[data-testid="stColumn"],
+    [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fc2_day_"])>[data-testid="column"]{min-width:0!important;max-width:100%!important}
     [class*="st-key-apex_fc2_day_"] button{min-height:82px!important;padding:9px 4px!important;border-radius:13px!important;border:1px solid rgba(83,135,158,.17)!important;background:linear-gradient(145deg,rgba(10,31,42,.82),rgba(4,17,25,.94))!important;color:#9fb0ba!important;white-space:pre-line!important;line-height:1.25!important;font-size:11px!important;font-weight:700!important;box-shadow:none!important;transition:transform .18s ease,border-color .18s ease,background .18s ease!important}
     [class*="st-key-apex_fc2_day_"] button p{white-space:pre-line!important;text-align:center!important;margin:0!important}
     [class*="st-key-apex_fc2_day_selected_"] button{border-color:rgba(39,220,231,.85)!important;background:linear-gradient(145deg,rgba(12,68,78,.72),rgba(5,28,37,.95))!important;color:#2be0e9!important;box-shadow:0 0 18px rgba(39,220,231,.10)!important}
@@ -5447,16 +5450,19 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     [class*="st-key-apex_fc2_day_"] button:hover{transform:translateY(-2px)!important;border-color:rgba(39,220,231,.50)!important;color:#eaf6f8!important}
 
     /* Main two-column intelligence composition */
-    [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fc2_timeline_col"]){align-items:stretch!important;gap:14px!important}
-    [class*="st-key-apex_fc2_timeline_col"],[class*="st-key-apex_fc2_detail_col"]{height:100%!important;border:1px solid rgba(83,135,158,.17)!important;background:linear-gradient(145deg,rgba(6,22,31,.94),rgba(3,13,20,.98))!important;border-radius:17px!important;padding:15px!important;box-sizing:border-box!important}
+    [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fc2_timeline_col"]){align-items:stretch!important;gap:14px!important;width:100%!important;max-width:100%!important;overflow:visible!important}
+    [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fc2_timeline_col"])>[data-testid="stColumn"],
+    [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fc2_timeline_col"])>[data-testid="column"]{min-width:0!important;max-width:100%!important;overflow:hidden!important}
+    [class*="st-key-apex_fc2_timeline_col"],[class*="st-key-apex_fc2_detail_col"]{height:100%!important;min-width:0!important;max-width:100%!important;overflow:hidden!important;border:1px solid rgba(83,135,158,.17)!important;background:linear-gradient(145deg,rgba(6,22,31,.94),rgba(3,13,20,.98))!important;border-radius:17px!important;padding:15px!important;box-sizing:border-box!important}
+    [class*="st-key-apex_fc2_timeline_col"] *,[class*="st-key-apex_fc2_detail_col"] *{min-width:0}
 
     /* Event timeline cards */
-    [class*="st-key-apex_fc2_event_"]{position:relative!important;margin:0 0 11px 22px!important}
+    [class*="st-key-apex_fc2_event_"]{position:relative!important;margin:0 0 11px 22px!important;width:calc(100% - 22px)!important;max-width:calc(100% - 22px)!important;box-sizing:border-box!important;overflow:visible!important}
     [class*="st-key-apex_fc2_event_"]::before{content:"";position:absolute;left:-18px;top:0;bottom:-12px;width:1px;background:rgba(83,135,158,.16)}
     [class*="st-key-apex_fc2_event_"]::after{content:"";position:absolute;left:-22px;top:19px;width:9px;height:9px;border-radius:50%;background:#b04ce4;box-shadow:0 0 0 4px #061721}
     [class*="st-key-apex_fc2_event_medium_"]::after{background:#ffb822}[class*="st-key-apex_fc2_event_low_"]::after{background:#35d2e3}
-    [class*="st-key-apex_fc2_event_"] button{width:100%!important;min-height:118px!important;padding:13px 14px!important;border-radius:13px!important;border:1px solid rgba(83,135,158,.17)!important;background:rgba(7,25,35,.78)!important;color:#eaf1f4!important;text-align:left!important;justify-content:flex-start!important;white-space:pre-wrap!important;box-shadow:none!important;font-size:12px!important;line-height:1.52!important;font-weight:650!important;transition:transform .16s ease,border-color .16s ease,background .16s ease!important}
-    [class*="st-key-apex_fc2_event_"] button p{text-align:left!important;white-space:pre-wrap!important;margin:0!important;width:100%!important}
+    [class*="st-key-apex_fc2_event_"] button{width:100%!important;max-width:100%!important;min-width:0!important;min-height:108px!important;padding:12px 13px!important;border-radius:13px!important;border:1px solid rgba(83,135,158,.17)!important;background:rgba(7,25,35,.78)!important;color:#eaf1f4!important;text-align:left!important;justify-content:flex-start!important;white-space:pre-wrap!important;overflow-wrap:anywhere!important;word-break:normal!important;box-shadow:none!important;font-size:11px!important;line-height:1.46!important;font-weight:650!important;transition:transform .16s ease,border-color .16s ease,background .16s ease!important}
+    [class*="st-key-apex_fc2_event_"] button p{text-align:left!important;white-space:pre-wrap!important;overflow-wrap:anywhere!important;margin:0!important;width:100%!important;max-width:100%!important}
     [class*="st-key-apex_fc2_event_selected_"] button{border-color:rgba(39,220,231,.60)!important;background:linear-gradient(145deg,rgba(8,38,49,.92),rgba(4,20,29,.98))!important}
     [class*="st-key-apex_fc2_event_"] button:hover{transform:translateY(-2px)!important;border-color:rgba(39,220,231,.45)!important;background:rgba(8,33,44,.90)!important}
 
@@ -5466,11 +5472,12 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
       .apex-fc2-hero{align-items:flex-start;flex-direction:column;margin-bottom:12px}.apex-fc2-title{font-size:23px}.apex-fc2-weekmeta{padding:5px 8px}
       [class*="st-key-apex_fc2_day_"] button{min-height:66px!important;padding:7px 2px!important;border-radius:9px!important;font-size:9px!important}
       .apex-fc2-dots{gap:2px;margin-top:-7px}.apex-fc2-dot{width:4px;height:4px}
-      [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fc2_timeline_col"]){display:flex!important;flex-direction:column!important}
-      [class*="st-key-apex_fc2_timeline_col"],[class*="st-key-apex_fc2_detail_col"]{width:100%!important;padding:12px!important}
-      [class*="st-key-apex_fc2_detail_col"]{order:-1!important}
-      [class*="st-key-apex_fc2_event_"]{margin-left:18px!important}
-      [class*="st-key-apex_fc2_event_"] button{min-height:112px!important;padding:12px!important;font-size:11px!important}
+      [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fc2_day_"]){gap:4px!important}
+      [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fc2_timeline_col"]){display:flex!important;flex-direction:column!important;gap:12px!important}
+      [class*="st-key-apex_fc2_timeline_col"],[class*="st-key-apex_fc2_detail_col"]{width:100%!important;max-width:100%!important;padding:12px!important;overflow:hidden!important}
+      [class*="st-key-apex_fc2_detail_col"]{order:initial!important}
+      [class*="st-key-apex_fc2_event_"]{margin-left:17px!important;width:calc(100% - 17px)!important;max-width:calc(100% - 17px)!important}
+      [class*="st-key-apex_fc2_event_"] button{min-height:104px!important;padding:11px!important;font-size:10px!important;line-height:1.42!important}
       .apex-fc2-detail-title{font-size:16px}.apex-fc2-metrics{gap:6px}.apex-fc2-metric{padding:8px}.apex-fc2-metric-value{font-size:12px}
     }
     @media(max-width:390px){
@@ -5512,12 +5519,14 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
                     args=(day_date,),
                 )
                 if day_events:
-                    dots = []
-                    for d_ev in day_events[:4]:
-                        impact = str(d_ev.get("impact", "")).title()
-                        dot_cls = "high" if impact == "High" else ("medium" if impact == "Medium" else "low")
-                        dots.append(f'<span class="apex-fc2-dot {dot_cls}"></span>')
-                    render_html(f'<div class="apex-fc2-dots">{"".join(dots)}</div>')
+                    # One marker per impact CATEGORY (not one marker per event).
+                    # This keeps the week rail clean and prevents repeated purple/yellow dots
+                    # from being mistaken for duplicate events.
+                    present_impacts = []
+                    for impact_name, dot_cls in (("High", "high"), ("Medium", "medium"), ("Low", "low")):
+                        if any(str(d_ev.get("impact", "")).title() == impact_name for d_ev in day_events):
+                            present_impacts.append(f'<span class="apex-fc2-dot {dot_cls}"></span>')
+                    render_html(f'<div class="apex-fc2-dots">{"".join(present_impacts)}</div>')
 
     render_html("""
     <div class="apex-fc2-legend">
