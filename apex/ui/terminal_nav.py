@@ -1,7 +1,7 @@
 """Shared responsive authenticated navigation.
 
 Desktop: persistent institutional left sidebar matching Image 1.
-Mobile: Logo on top-LEFT, compact square ☰ button on top-RIGHT.
+Mobile: compact right-side glass drawer (width: min(78vw, 320px)) with blurred left overlay.
 """
 from __future__ import annotations
 
@@ -67,22 +67,31 @@ def render_terminal_nav(active_page: str, auth_user: dict | None = None) -> bool
 <span style="font-size:9px;">⌵</span>
 </div>""")
 
-    # ── 2. Mobile Drawer Open State (LOGO ON LEFT, COMPACT ☰ ON RIGHT) ─
+    # ── 2. Mobile Drawer Open State (Right-Side Compact Glass Drawer) ───
     if st.session_state.get("mobile_menu_open", False):
-        st.markdown('<div class="apex-mobile-drawer-wrap">', unsafe_allow_html=True)
+        # Full-Screen Blurred & Dimmed Backdrop Overlay
+        core.render_html('<div class="apex-mobile-menu-overlay is-open"></div>')
+
+        # Tap-outside invisible button covering the left blurred area
+        if st.button("", key=f"m_overlay_bg_{active_page}", help="Close menu"):
+            st.session_state["mobile_menu_open"] = False
+            st.rerun()
+
+        # Right-side compact drawer (width: min(78vw, 320px))
+        st.markdown('<div class="apex-mobile-menu-drawer is-open">', unsafe_allow_html=True)
         st.markdown('<div class="apex-mobile-drawer-head">', unsafe_allow_html=True)
 
-        col_logo, col_close = st.columns([0.82, 0.18])
+        col_logo, col_close = st.columns([0.78, 0.22])
         with col_logo:
-            core.render_html("""<div class="apex-sidebar-brand" style="padding:0;margin:0;">
-<div class="apex-sidebar-logo-icon">▲</div>
+            core.render_html("""<div class="apex-mobile-drawer-brand">
+<div class="apex-sidebar-logo-icon" style="width:34px;height:34px;font-size:18px;">▲</div>
 <div>
-<div class="apex-sidebar-brand-title">APEXMACRO</div>
-<div class="apex-sidebar-brand-subtitle">INTELLIGENCE DESK</div>
+<div class="apex-sidebar-brand-title" style="font-size:14px;letter-spacing:1px;">APEXMACRO</div>
+<div class="apex-sidebar-brand-subtitle" style="font-size:9px;">INTELLIGENCE DESK</div>
 </div>
 </div>""")
         with col_close:
-            if st.button("☰", key=f"m_drawer_close_{active_page}", use_container_width=True, help="Close navigation menu"):
+            if st.button("✕", key=f"m_drawer_close_{active_page}", use_container_width=True, help="Close navigation menu"):
                 st.session_state["mobile_menu_open"] = False
                 st.rerun()
 
@@ -90,7 +99,7 @@ def render_terminal_nav(active_page: str, auth_user: dict | None = None) -> bool
 
         # Menu List
         st.markdown("<div class='apex-mobile-menu-list'>", unsafe_allow_html=True)
-        for key in keys:
+        for idx, key in enumerate(keys):
             icon, label, path = ROUTES[key]
             is_active = (active_page == key)
             if st.button(
@@ -104,16 +113,16 @@ def render_terminal_nav(active_page: str, auth_user: dict | None = None) -> bool
                 st.switch_page(path)
         st.markdown("</div>", unsafe_allow_html=True)
 
-        # Bottom Profile Card
-        core.render_html(f"""<div class="apex-mobile-profile-card">
+        # Bottom Profile Card inside Drawer
+        core.render_html(f"""<div class="apex-mobile-account-card">
 <div class="apex-mobile-profile-left">
-<div class="apex-mobile-profile-avatar">{avatar_initials}</div>
-<div>
-<div class="apex-mobile-profile-name">{user_name}</div>
-<div class="apex-mobile-profile-role">{'Administrator' if is_admin else 'VIP Access'} • {now.strftime('%H:%M UTC')}</div>
+<div class="apex-mobile-profile-avatar" style="width:34px;height:34px;font-size:12px;">{avatar_initials}</div>
+<div style="min-width:0;overflow:hidden;">
+<div class="apex-mobile-profile-name" style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{user_name}</div>
+<div class="apex-mobile-profile-role" style="font-size:10px;">{'Administrator' if is_admin else 'VIP Access'} • {now.strftime('%H:%M UTC')}</div>
 </div>
 </div>
-<div style="color:#27dce7;font-size:18px;font-weight:700;">›</div>
+<div style="color:#27dce7;font-size:16px;font-weight:700;">›</div>
 </div>
 </div>""")
         st.stop()

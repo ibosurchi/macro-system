@@ -61,7 +61,9 @@ header[data-testid="stHeader"],
     visibility: hidden !important;
   }
   .apex-mobile-header-bar-container,
-  .apex-mobile-drawer-wrap {
+  .apex-mobile-menu-overlay,
+  .apex-mobile-menu-drawer,
+  button[key*="m_overlay_bg"] {
     display: none !important;
   }
   .apex-auth-desktop-strip {
@@ -131,8 +133,7 @@ header[data-testid="stHeader"],
   border-bottom: 1px solid rgba(70, 145, 165, 0.18);
 }
 
-.apex-mobile-header-bar-container [data-testid="stHorizontalBlock"],
-.apex-mobile-drawer-head [data-testid="stHorizontalBlock"] {
+.apex-mobile-header-bar-container [data-testid="stHorizontalBlock"] {
   display: flex !important;
   flex-direction: row !important;
   flex-wrap: nowrap !important;
@@ -142,29 +143,24 @@ header[data-testid="stHeader"],
   width: 100% !important;
 }
 
-/* First Column: Logo on Left */
-.apex-mobile-header-bar-container [data-testid="column"]:first-child,
-.apex-mobile-drawer-head [data-testid="column"]:first-child {
+.apex-mobile-header-bar-container [data-testid="column"]:first-child {
   flex: 1 1 auto !important;
   min-width: 0 !important;
-  width: calc(100% - 52px) !important;
+  width: calc(100% - 50px) !important;
 }
 
-/* Last Column: Compact 42px ☰ Button on Right */
-.apex-mobile-header-bar-container [data-testid="column"]:last-child,
-.apex-mobile-drawer-head [data-testid="column"]:last-child {
-  flex: 0 0 44px !important;
-  min-width: 44px !important;
-  width: 44px !important;
-  max-width: 44px !important;
-}
-
-.apex-mobile-header-bar-container button,
-.apex-mobile-drawer-head button {
+.apex-mobile-header-bar-container [data-testid="column"]:last-child {
+  flex: 0 0 42px !important;
+  min-width: 42px !important;
   width: 42px !important;
-  height: 42px !important;
-  min-height: 42px !important;
   max-width: 42px !important;
+}
+
+.apex-mobile-header-bar-container button {
+  width: 40px !important;
+  height: 40px !important;
+  min-height: 40px !important;
+  max-width: 40px !important;
   display: inline-flex !important;
   align-items: center !important;
   justify-content: center !important;
@@ -172,12 +168,246 @@ header[data-testid="stHeader"],
   border: 1px solid rgba(39, 220, 231, 0.45) !important;
   background: rgba(7, 25, 35, 0.85) !important;
   color: #27dce7 !important;
-  font-size: 20px !important;
+  font-size: 19px !important;
   font-weight: 800 !important;
   padding: 0 !important;
   box-shadow: 0 0 14px rgba(39, 220, 231, 0.20) !important;
   cursor: pointer !important;
   margin: 0 !important;
+  transition: transform 150ms ease !important;
+}
+
+.apex-mobile-header-bar-container button:active {
+  transform: scale(0.92) !important;
+}
+
+/* ── MOBILE OVERLAY (BLURRED & DIMMED LEFT AREA) ─────────── */
+.apex-mobile-menu-overlay {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 99980 !important;
+  background: rgba(1, 7, 12, 0.52) !important;
+  backdrop-filter: blur(7px) !important;
+  -webkit-backdrop-filter: blur(7px) !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  transition: opacity 220ms ease, backdrop-filter 250ms ease !important;
+}
+
+button[key*="m_overlay_bg"] {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  bottom: 0 !important;
+  right: min(78vw, 320px) !important;
+  width: calc(100vw - min(78vw, 320px)) !important;
+  height: 100vh !important;
+  background: transparent !important;
+  border: none !important;
+  z-index: 99985 !important;
+  color: transparent !important;
+  cursor: pointer !important;
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
+/* ── MOBILE RIGHT-SIDE COMPACT GLASS DRAWER (min(78vw, 320px)) ── */
+.apex-mobile-menu-drawer {
+  position: fixed !important;
+  top: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  left: auto !important;
+  width: min(78vw, 320px) !important;
+  max-width: 320px !important;
+  box-sizing: border-box !important;
+  padding: 16px 12px 24px !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  -webkit-overflow-scrolling: touch !important;
+  background: linear-gradient(160deg, rgba(5, 22, 32, 0.985), rgba(2, 12, 19, 0.995)) !important;
+  border-left: 1px solid rgba(30, 205, 220, 0.32) !important;
+  box-shadow: -16px 0 45px rgba(0, 0, 0, 0.40) !important;
+  z-index: 99999 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  transform: translateX(0) !important;
+  animation: apexDrawerSlideRight 280ms cubic-bezier(0.22, 0.8, 0.25, 1) forwards !important;
+}
+
+@keyframes apexDrawerSlideRight {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+@media (max-width: 380px) {
+  .apex-mobile-menu-drawer {
+    width: min(82vw, 300px) !important;
+    max-width: 300px !important;
+  }
+  button[key*="m_overlay_bg"] {
+    right: min(82vw, 300px) !important;
+    width: calc(100vw - min(82vw, 300px)) !important;
+  }
+}
+
+@media (min-width: 600px) and (max-width: 768px) {
+  .apex-mobile-menu-drawer {
+    width: 320px !important;
+    max-width: 320px !important;
+  }
+  button[key*="m_overlay_bg"] {
+    right: 320px !important;
+    width: calc(100vw - 320px) !important;
+  }
+}
+
+.apex-mobile-drawer-head {
+  padding-bottom: 10px !important;
+  margin-bottom: 8px !important;
+  border-bottom: 1px solid rgba(70, 145, 165, 0.18) !important;
+}
+
+.apex-mobile-drawer-head [data-testid="stHorizontalBlock"] {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  width: 100% !important;
+}
+
+.apex-mobile-drawer-head [data-testid="column"]:first-child {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+}
+
+.apex-mobile-drawer-head [data-testid="column"]:last-child {
+  flex: 0 0 38px !important;
+  min-width: 38px !important;
+  width: 38px !important;
+  max-width: 38px !important;
+}
+
+.apex-mobile-drawer-head button[key*="m_drawer_close"] {
+  width: 36px !important;
+  height: 36px !important;
+  min-height: 36px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border-radius: 8px !important;
+  border: 1px solid rgba(39, 220, 231, 0.40) !important;
+  background: rgba(10, 32, 45, 0.90) !important;
+  color: #27dce7 !important;
+  font-size: 18px !important;
+  font-weight: 700 !important;
+  padding: 0 !important;
+  cursor: pointer !important;
+  transition: transform 150ms ease !important;
+}
+
+.apex-mobile-drawer-head button[key*="m_drawer_close"]:active {
+  transform: scale(0.92) !important;
+}
+
+.apex-mobile-drawer-brand {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+}
+
+/* ── COMPACT DRAWER MENU ITEMS ──────────────────────────── */
+.apex-mobile-menu-list {
+  display: flex !important;
+  flex-direction: column !important;
+  margin-top: 6px !important;
+  margin-bottom: 16px !important;
+}
+
+.apex-mobile-menu-list button {
+  min-height: 46px !important;
+  height: 46px !important;
+  padding: 9px 12px !important;
+  margin-bottom: 7px !important;
+  border-radius: 10px !important;
+  font-size: 14px !important;
+  font-weight: 550 !important;
+  text-align: left !important;
+  justify-content: flex-start !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  letter-spacing: 0.15px !important;
+  transition: opacity 220ms ease, transform 260ms cubic-bezier(0.22, 0.8, 0.25, 1) !important;
+}
+
+.apex-mobile-menu-list button:active {
+  transform: scale(0.97) !important;
+}
+
+.apex-mobile-menu-list button[kind="primary"] {
+  color: #29E1E9 !important;
+  background: linear-gradient(90deg, rgba(25, 215, 225, 0.13), rgba(25, 215, 225, 0.035)) !important;
+  border: 1px solid rgba(25, 215, 225, 0.38) !important;
+  box-shadow: inset 0 0 14px rgba(39, 220, 231, 0.06), 0 0 10px rgba(39, 220, 231, 0.08) !important;
+}
+
+.apex-mobile-menu-list button[kind="secondary"] {
+  background: rgba(7, 25, 35, 0.50) !important;
+  border: 1px solid rgba(70, 145, 165, 0.20) !important;
+  color: #d8e5ee !important;
+}
+
+.apex-mobile-menu-list button[kind="secondary"]:hover {
+  border-color: rgba(39, 220, 231, 0.38) !important;
+  color: #ffffff !important;
+  background: rgba(10, 32, 45, 0.70) !important;
+}
+
+/* ── ACCOUNT / ADMIN CARD INSIDE DRAWER ─────────────────── */
+.apex-mobile-account-card {
+  width: 100% !important;
+  min-width: 0 !important;
+  box-sizing: border-box !important;
+  padding: 11px !important;
+  overflow: hidden !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  border-radius: 12px !important;
+  background: rgba(7, 28, 39, 0.75) !important;
+  border: 1px solid rgba(24, 205, 220, 0.28) !important;
+  margin-top: auto !important;
+}
+
+.apex-mobile-profile-left {
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+}
+
+.apex-mobile-profile-avatar {
+  border-radius: 50% !important;
+  border: 1px solid rgba(39, 220, 231, 0.40) !important;
+  background: rgba(39, 220, 231, 0.10) !important;
+  color: #27dce7 !important;
+  font-weight: 800 !important;
+  display: grid !important;
+  place-items: center !important;
+  flex-shrink: 0 !important;
+}
+
+.apex-mobile-profile-name {
+  font-weight: 800 !important;
+  color: #f3f7f9 !important;
+}
+
+.apex-mobile-profile-role {
+  color: #27dce7 !important;
+  margin-top: 1px !important;
 }
 
 .apex-sidebar-brand {
@@ -213,102 +443,6 @@ header[data-testid="stHeader"],
   color: #27dce7;
   margin-top: 2px;
   letter-spacing: 0.3px;
-}
-
-/* ── MOBILE FULL-SCREEN GLASS DRAWER ─────────────────────── */
-.apex-mobile-drawer-wrap {
-  padding: 0 0 24px;
-  animation: apexMobileDrawerFadeIn 0.20s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-}
-
-@keyframes apexMobileDrawerFadeIn {
-  0% {
-    opacity: 0;
-    transform: translateY(-6px);
-  }
-  100% {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.apex-mobile-drawer-head [data-testid="stHorizontalBlock"] {
-  padding-bottom: 8px;
-  border-bottom: 1px solid rgba(70, 145, 165, 0.18);
-}
-
-.apex-mobile-menu-list {
-  margin-top: 14px;
-}
-
-.apex-mobile-menu-list button {
-  min-height: 48px !important;
-  border-radius: 12px !important;
-  text-align: left !important;
-  justify-content: flex-start !important;
-  font-size: 14.5px !important;
-  font-weight: 650 !important;
-  margin: 6px 0 !important;
-  letter-spacing: 0.2px;
-  display: flex !important;
-  align-items: center !important;
-  padding: 10px 14px !important;
-}
-
-.apex-mobile-menu-list button[kind="primary"] {
-  background: linear-gradient(90deg, rgba(20, 210, 225, 0.20) 0%, rgba(20, 210, 225, 0.05) 100%) !important;
-  border: 1px solid rgba(39, 220, 231, 0.55) !important;
-  color: #27dce7 !important;
-  box-shadow: inset 0 0 18px rgba(39, 220, 231, 0.08), 0 0 14px rgba(39, 220, 231, 0.12) !important;
-}
-
-.apex-mobile-menu-list button[kind="secondary"] {
-  background: rgba(7, 25, 35, 0.55) !important;
-  border: 1px solid rgba(70, 145, 165, 0.22) !important;
-  color: #d8e5ee !important;
-}
-
-.apex-mobile-menu-list button[kind="secondary"]:hover {
-  border-color: rgba(39, 220, 231, 0.40) !important;
-  color: #ffffff !important;
-}
-
-.apex-mobile-profile-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 14px 16px;
-  border-radius: 14px;
-  border: 1px solid rgba(70, 145, 165, 0.25);
-  background: rgba(7, 25, 35, 0.75);
-  margin-top: 24px;
-}
-.apex-mobile-profile-left {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.apex-mobile-profile-avatar {
-  width: 38px;
-  height: 38px;
-  border-radius: 50%;
-  border: 1px solid rgba(39, 220, 231, 0.40);
-  background: rgba(39, 220, 231, 0.10);
-  color: #27dce7;
-  font-size: 13px;
-  font-weight: 800;
-  display: grid;
-  place-items: center;
-}
-.apex-mobile-profile-name {
-  font-size: 14px;
-  font-weight: 800;
-  color: #f3f7f9;
-}
-.apex-mobile-profile-role {
-  font-size: 11px;
-  color: #27dce7;
-  margin-top: 1px;
 }
 
 .apex-sidebar-sep {
