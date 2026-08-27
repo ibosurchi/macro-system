@@ -577,6 +577,34 @@ header[data-testid="stHeader"],
   color: #94a2b0;
 }
 
+.apex-sidebar-brand.apex-brand-centered {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  text-align: center !important;
+  gap: 10px !important;
+  padding: 0 !important;
+  margin: 0 auto !important;
+}
+
+.apex-auth-desktop-strip {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
+@media (max-width: 1023px) {
+  .apex-auth-desktop-strip {
+    display: none !important;
+    visibility: hidden !important;
+    height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+}
+
 /* ── APP CANVAS & CONTAINER ─────────────────────────────── */
 [data-testid="stAppViewContainer"] {
   background: radial-gradient(circle at 10% 0%, rgba(0, 220, 230, 0.03), transparent 28%), #02080d !important;
@@ -594,7 +622,7 @@ header[data-testid="stHeader"],
     padding-left: 10px !important;
     padding-right: 10px !important;
     padding-bottom: 24px !important;
-    margin-top: 0 !important;
+    margin-top: -30px !important;
   }
 }
 
