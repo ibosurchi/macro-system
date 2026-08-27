@@ -318,37 +318,125 @@ header[data-testid="stHeader"],
   color: #f0f4f8 !important;
 }
 
-/* ── MOBILE HEADER BAR & HAMBURGER (IMAGE 1 & 2) ────────── */
+/* ── MOBILE HEADER (TOP BAR: LOGO ON LEFT, ☰ ON RIGHT) ──── */
 .apex-mobile-header-bar-container {
   display: block;
-  margin: 0 0 12px;
-  padding: 8px 4px 10px;
+  margin: 0 0 8px;
+  padding: 0 0 8px;
   border-bottom: 1px solid rgba(70, 145, 165, 0.18);
 }
 
+.apex-mobile-header-bar-container [data-testid="stHorizontalBlock"] {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 8px !important;
+}
+
+.apex-mobile-header-bar-container [data-testid="column"]:first-child {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  width: auto !important;
+}
+
+.apex-mobile-header-bar-container [data-testid="column"]:last-child {
+  flex: 0 0 44px !important;
+  min-width: 44px !important;
+  width: 44px !important;
+}
+
 .apex-mobile-header-bar-container button {
-  min-height: 40px !important;
+  width: 42px !important;
+  height: 42px !important;
+  min-height: 42px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
   border-radius: 10px !important;
   border: 1px solid rgba(39, 220, 231, 0.45) !important;
   background: rgba(7, 25, 35, 0.85) !important;
   color: #27dce7 !important;
-  font-size: 18px !important;
+  font-size: 19px !important;
   font-weight: 800 !important;
-  box-shadow: 0 0 12px rgba(39, 220, 231, 0.18) !important;
+  padding: 0 !important;
+  box-shadow: 0 0 14px rgba(39, 220, 231, 0.20) !important;
+  cursor: pointer !important;
 }
 
-/* ── MOBILE FULL SCREEN DRAWER (IMAGE 4 & 5) ─────────────── */
+/* ── MOBILE FULL-SCREEN GLASS DRAWER & ANIMATION ─────────── */
 .apex-mobile-drawer-wrap {
-  padding: 10px 4px 30px;
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  z-index: 999999 !important;
+  background: rgba(2, 9, 15, 0.96) !important;
+  backdrop-filter: blur(20px) !important;
+  -webkit-backdrop-filter: blur(20px) !important;
+  padding: 10px 14px 28px !important;
+  box-sizing: border-box !important;
+  overflow-y: auto !important;
+  -webkit-overflow-scrolling: touch !important;
+  animation: apexMobileDrawerFadeIn 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards !important;
 }
 
-.apex-mobile-drawer-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 12px;
-  padding-bottom: 10px;
+@keyframes apexMobileDrawerFadeIn {
+  0% {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.apex-mobile-drawer-head [data-testid="stHorizontalBlock"] {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 8px !important;
+  padding-bottom: 8px;
   border-bottom: 1px solid rgba(70, 145, 165, 0.18);
+}
+
+.apex-mobile-drawer-head [data-testid="column"]:first-child {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+}
+
+.apex-mobile-drawer-head [data-testid="column"]:last-child {
+  flex: 0 0 44px !important;
+  min-width: 44px !important;
+}
+
+.apex-mobile-drawer-head button {
+  width: 42px !important;
+  height: 42px !important;
+  min-height: 42px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border-radius: 10px !important;
+  border: 1px solid rgba(39, 220, 231, 0.55) !important;
+  background: rgba(10, 32, 45, 0.90) !important;
+  color: #27dce7 !important;
+  font-size: 19px !important;
+  font-weight: 800 !important;
+  padding: 0 !important;
+  box-shadow: 0 0 16px rgba(39, 220, 231, 0.28) !important;
+  cursor: pointer !important;
+}
+
+.apex-mobile-menu-list {
+  margin-top: 14px;
 }
 
 .apex-mobile-drawer-wrap [data-testid="stButton"] button {
@@ -388,7 +476,7 @@ header[data-testid="stHeader"],
   border-radius: 14px;
   border: 1px solid rgba(70, 145, 165, 0.25);
   background: rgba(7, 25, 35, 0.75);
-  margin-top: 30px;
+  margin-top: 24px;
 }
 .apex-mobile-profile-left {
   display: flex;
