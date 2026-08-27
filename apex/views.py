@@ -264,6 +264,9 @@ header[data-testid="stHeader"],
     display: none !important;
     visibility: hidden !important;
   }
+  .apex-mobile-header-bar-container {
+    display: none !important;
+  }
 }
 
 @media (max-width: 1023px) {
@@ -315,58 +318,104 @@ header[data-testid="stHeader"],
   color: #f0f4f8 !important;
 }
 
-/* ── MOBILE HORIZONTAL NAVIGATION STRIP ─────────────────── */
-.apex-mobile-nav-container {
-  display: none;
+/* ── MOBILE HEADER BAR & HAMBURGER (IMAGE 1 & 2) ────────── */
+.apex-mobile-header-bar-container {
+  display: block;
+  margin: 0 0 12px;
+  padding: 8px 4px 10px;
+  border-bottom: 1px solid rgba(70, 145, 165, 0.18);
 }
 
-@media (max-width: 1023px) {
-  .apex-mobile-nav-container {
-    display: block !important;
-    margin: 6px 0 14px !important;
-    padding: 6px 6px 4px !important;
-    background: rgba(7, 25, 35, 0.70) !important;
-    border: 1px solid rgba(70, 145, 165, 0.22) !important;
-    border-radius: 12px !important;
-  }
-  
-  .apex-mobile-nav-container [data-testid="column"] {
-    min-width: 86px !important;
-    flex: 1 1 0 !important;
-  }
-  
-  .apex-mobile-nav-container [data-testid="stHorizontalBlock"] {
-    display: flex !important;
-    flex-direction: row !important;
-    flex-wrap: nowrap !important;
-    overflow-x: auto !important;
-    -webkit-overflow-scrolling: touch !important;
-    gap: 6px !important;
-    padding-bottom: 3px !important;
-  }
+.apex-mobile-header-bar-container button {
+  min-height: 40px !important;
+  border-radius: 10px !important;
+  border: 1px solid rgba(39, 220, 231, 0.45) !important;
+  background: rgba(7, 25, 35, 0.85) !important;
+  color: #27dce7 !important;
+  font-size: 18px !important;
+  font-weight: 800 !important;
+  box-shadow: 0 0 12px rgba(39, 220, 231, 0.18) !important;
+}
 
-  .apex-mobile-nav-container [data-testid="stHorizontalBlock"]::-webkit-scrollbar {
-    height: 3px;
-  }
-  .apex-mobile-nav-container [data-testid="stHorizontalBlock"]::-webkit-scrollbar-thumb {
-    background: rgba(39, 220, 231, 0.40);
-    border-radius: 3px;
-  }
+/* ── MOBILE FULL SCREEN DRAWER (IMAGE 4 & 5) ─────────────── */
+.apex-mobile-drawer-wrap {
+  padding: 10px 4px 30px;
+}
 
-  .apex-mobile-nav-container button {
-    min-height: 36px !important;
-    padding: 4px 10px !important;
-    font-size: 11.5px !important;
-    font-weight: 700 !important;
-    white-space: nowrap !important;
-    border-radius: 8px !important;
-  }
-  
-  .apex-mobile-nav-container button[kind="primary"] {
-    background: linear-gradient(90deg, rgba(20, 210, 225, 0.20) 0%, rgba(20, 210, 225, 0.06) 100%) !important;
-    border: 1px solid rgba(39, 220, 231, 0.50) !important;
-    color: #27dce7 !important;
-  }
+.apex-mobile-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(70, 145, 165, 0.18);
+}
+
+.apex-mobile-drawer-wrap [data-testid="stButton"] button {
+  min-height: 48px !important;
+  border-radius: 12px !important;
+  text-align: left !important;
+  justify-content: flex-start !important;
+  font-size: 14.5px !important;
+  font-weight: 650 !important;
+  margin: 6px 0 !important;
+  letter-spacing: 0.2px;
+}
+
+.apex-mobile-drawer-wrap [data-testid="stButton"] button[kind="primary"] {
+  background: linear-gradient(90deg, rgba(20, 210, 225, 0.20) 0%, rgba(20, 210, 225, 0.05) 100%) !important;
+  border: 1px solid rgba(39, 220, 231, 0.55) !important;
+  color: #27dce7 !important;
+  box-shadow: inset 0 0 18px rgba(39, 220, 231, 0.08), 0 0 14px rgba(39, 220, 231, 0.12) !important;
+}
+
+.apex-mobile-drawer-wrap [data-testid="stButton"] button[kind="secondary"] {
+  background: rgba(7, 25, 35, 0.40) !important;
+  border: 1px solid rgba(70, 145, 165, 0.18) !important;
+  color: #c8d5de !important;
+}
+
+.apex-mobile-drawer-wrap [data-testid="stButton"] button[kind="secondary"]:hover {
+  border-color: rgba(39, 220, 231, 0.35) !important;
+  color: #f5f8fa !important;
+}
+
+.apex-mobile-profile-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(70, 145, 165, 0.25);
+  background: rgba(7, 25, 35, 0.75);
+  margin-top: 30px;
+}
+.apex-mobile-profile-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.apex-mobile-profile-avatar {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: 1px solid rgba(39, 220, 231, 0.40);
+  background: rgba(39, 220, 231, 0.10);
+  color: #27dce7;
+  font-size: 13px;
+  font-weight: 800;
+  display: grid;
+  place-items: center;
+}
+.apex-mobile-profile-name {
+  font-size: 14px;
+  font-weight: 800;
+  color: #f3f7f9;
+}
+.apex-mobile-profile-role {
+  font-size: 11px;
+  color: #27dce7;
+  margin-top: 1px;
 }
 
 /* ── SIDEBAR BRAND & WIDGETS ────────────────────────────── */
@@ -1129,95 +1178,17 @@ header[data-testid="stHeader"],
 
 
 # ─────────────────────────────────────────────
-# Sidebar & Navigation Renderers
-# ─────────────────────────────────────────────
-
-def _render_sidebar(auth_user):
-    is_admin = bool(auth_user and auth_user.get("is_admin"))
-    with st.sidebar:
-        # Top Brand Logo
-        _render_html("""<div class="apex-sidebar-brand">
-<div class="apex-sidebar-logo-icon">▲</div>
-<div>
-<div class="apex-sidebar-brand-title">APEXMACRO</div>
-<div class="apex-sidebar-brand-subtitle">Intelligence Desk</div>
-</div>
-</div>
-<div class="apex-sidebar-sep"></div>""")
-
-        # Nav Items matching visual mock
-        routes = [
-            ("dashboard",  "⌂",  "Dashboard",  "pages/dashboard.py"),
-            ("forex",      "💱", "Forex",       "pages/forex.py"),
-            ("gold",       "🥇", "Gold",        "pages/gold.py"),
-            ("oil",        "🛢️", "Oil",         "pages/oil.py"),
-            ("nasdaq",     "📊", "Nasdaq-100",  "pages/nasdaq.py"),
-            ("forecaster", "🎯", "Forecaster",  "pages/forecaster.py"),
-        ]
-        if is_admin:
-            routes.append(("admin", "👑", "Admin", "pages/admin.py"))
-
-        for key, icon, label, path in routes:
-            is_active = (key == "dashboard")
-            if st.button(
-                f"{icon}  {label}",
-                key=f"side_nav_{key}",
-                use_container_width=True,
-                type="primary" if is_active else "secondary",
-            ):
-                st.switch_page(path)
-
-        # Bottom Market Clock & Mode
-        now = core.get_current_time()
-        _render_html(f"""<div class="apex-sidebar-bottom">
-<div class="apex-side-meta"><span>◷</span> Market Time (UTC)</div>
-<div class="apex-side-clock">{now.strftime('%H:%M:%S')}</div>
-<div class="apex-side-date">{now.strftime('%d %b %Y, %a')}</div>
-</div>
-<div class="apex-sidebar-mode-toggle">
-<span>🌙 Dark Mode</span>
-<span style="font-size:9px;">⌵</span>
-</div>""")
-
-
-def _render_mobile_nav_strip(active_page: str, auth_user: dict | None = None) -> None:
-    is_admin = bool(auth_user and auth_user.get("is_admin"))
-    routes = [
-        ("dashboard",  "⌂",  "Dashboard",  "pages/dashboard.py"),
-        ("forex",      "💱", "Forex",       "pages/forex.py"),
-        ("gold",       "🥇", "Gold",        "pages/gold.py"),
-        ("oil",        "🛢️", "Oil",         "pages/oil.py"),
-        ("nasdaq",     "📊", "Nasdaq-100",  "pages/nasdaq.py"),
-        ("forecaster", "🎯", "Forecaster",  "pages/forecaster.py"),
-    ]
-    if is_admin:
-        routes.append(("admin", "👑", "Admin", "pages/admin.py"))
-
-    st.markdown('<div class="apex-mobile-nav-container">', unsafe_allow_html=True)
-    cols = st.columns(len(routes), gap="small")
-    for i, (key, icon, label, path) in enumerate(routes):
-        is_active = (key == active_page)
-        with cols[i]:
-            if st.button(
-                f"{icon} {label}",
-                key=f"m_dash_nav_{key}_{active_page}",
-                use_container_width=True,
-                type="primary" if is_active else "secondary",
-            ):
-                st.session_state["active_tab"] = label
-                st.switch_page(path)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-
-# ─────────────────────────────────────────────
 # Main Dashboard UI Renderer
 # ─────────────────────────────────────────────
 
 def _render_dashboard_ui(auth_user):
     _inject_terminal_css()
-    _render_sidebar(auth_user)
 
-    # ── Fetch System Data (Existing cached calls) ──────────────────────
+    # ── 1. Navigation & Mobile Drawer (Returns True if mobile menu is open)
+    if render_terminal_nav("dashboard", auth_user):
+        return
+
+    # ── 2. Fetch System Data (Existing cached calls) ───────────────────
     usd = (
         core.compute_composite("USD", core.DEFAULT_FRED_KEY, core.DEFAULT_TELEGRAM_CHANNEL)
         if core.DEFAULT_FRED_KEY else None
@@ -1247,7 +1218,7 @@ def _render_dashboard_ui(auth_user):
     avatar_initials = user_name[:2].upper() if user_name else "AD"
     now = core.get_current_time()
 
-    # ── 1. Top Header Row ─────────────────────────────────────────────
+    # ── 3. Top Header Row ─────────────────────────────────────────────
     _render_html(f"""<div class="apex-dashboard-head">
 <div>
 <div class="apex-dashboard-title">Global Macro Overview</div>
@@ -1268,10 +1239,7 @@ def _render_dashboard_ui(auth_user):
 </div>
 </div>""")
 
-    # ── Mobile Horizontal Navigation Tabs ─────────────────────────────
-    _render_mobile_nav_strip("dashboard", auth_user)
-
-    # ── 2. Top 4 Summary Cards ────────────────────────────────────────
+    # ── 4. Top 4 Summary Cards ────────────────────────────────────────
     _, _, dxy_vals  = _latest_change(dxy)
     _, _, gold_vals = _latest_change(gold)
     _, _, oil_vals  = _latest_change(oil)
@@ -1339,7 +1307,7 @@ def _render_dashboard_ui(auth_user):
 </div>
 </div>""")
 
-    # ── 3. Middle Grid: Macro Regime (Map + Factors) & Market Snapshot
+    # ── 5. Middle Grid: Macro Regime (Map + Factors) & Market Snapshot
     col_mid1, col_mid2 = st.columns([1.12, 1.0], gap="small")
 
     with col_mid1:
@@ -1468,7 +1436,7 @@ All prices are delayed. Source: ApexMacro Feeds
 </div>
 </div>""")
 
-    # ── 4. Lower Grid: Sentiment Gauge + Line Chart & Top Catalysts ───
+    # ── 6. Lower Grid: Sentiment Gauge + Line Chart & Top Catalysts ───
     col_low1, col_low2 = st.columns([1.45, 0.72], gap="small")
 
     with col_low1:
@@ -1492,7 +1460,6 @@ Composite sentiment from 7 major indicators
 
         g_left, g_right = st.columns([0.38, 0.62], gap="small")
         with g_left:
-            # Semicircular Half-Donut Gauge matching Image 1
             fig_gauge = go.Figure(go.Indicator(
                 mode="gauge+number",
                 value=gauge_val,
@@ -1523,7 +1490,6 @@ Composite sentiment from 7 major indicators
             _render_html(f'<div style="text-align:center;margin-top:-14px;font-size:12.5px;font-weight:800;color:{"#ff554f" if gauge_val < -10 else "#1ddf91" if gauge_val > 10 else "#ffb21a"};">{escape(risk)}</div>')
 
         with g_right:
-            # Historical Area Line Chart matching Image 1
             date_range = [now - timedelta(days=29 - i) for i in range(30)]
             x_dates = [d.strftime("%d %b") for d in date_range]
 
@@ -1568,7 +1534,6 @@ Composite sentiment from 7 major indicators
         _render_html("</div>")
 
     with col_low2:
-        # Top Catalysts Panel matching Image 1
         cat_rows_html = []
         sample_events = events[:4] if events else []
 
@@ -1667,7 +1632,7 @@ Top Catalysts <span class="apex-info-icon">ⓘ</span>
         if st.button("Go to Forecaster  →", key="dash_btn_forecaster", use_container_width=True):
             st.switch_page("pages/forecaster.py")
 
-    # ── 5. Single Institutional Footer Bar ────────────────────────────
+    # ── 7. Single Institutional Footer Bar ────────────────────────────
     _render_html(f"""<div class="apex-footer-bar">
 <div class="apex-footer-bar-left">
 <span>Last Updated: {now.strftime('%d %b %Y, %H:%M UTC')}</span>
@@ -1688,35 +1653,40 @@ def render_dashboard(auth_user: dict) -> None:
 
 def render_forex(auth_user: dict, *, active_page: str = "forex") -> None:
     render_top_header(auth_user)
-    render_terminal_nav(active_page, auth_user)
+    if render_terminal_nav(active_page, auth_user):
+        return
     core.page_forex(core.DEFAULT_FRED_KEY, core.DEFAULT_TELEGRAM_CHANNEL)
     render_footer()
 
 
 def render_gold(auth_user: dict) -> None:
     render_top_header(auth_user)
-    render_terminal_nav("gold", auth_user)
+    if render_terminal_nav("gold", auth_user):
+        return
     core.page_gold(core.DEFAULT_FRED_KEY, core.DEFAULT_TELEGRAM_CHANNEL)
     render_footer()
 
 
 def render_oil(auth_user: dict) -> None:
     render_top_header(auth_user)
-    render_terminal_nav("oil", auth_user)
+    if render_terminal_nav("oil", auth_user):
+        return
     core.page_oil(core.DEFAULT_FRED_KEY, core.DEFAULT_TELEGRAM_CHANNEL)
     render_footer()
 
 
 def render_nasdaq(auth_user: dict) -> None:
     render_top_header(auth_user)
-    render_terminal_nav("nasdaq", auth_user)
+    if render_terminal_nav("nasdaq", auth_user):
+        return
     core.page_nasdaq(core.DEFAULT_FRED_KEY, core.DEFAULT_TELEGRAM_CHANNEL)
     render_footer()
 
 
 def render_forecaster(auth_user: dict) -> None:
     render_top_header(auth_user)
-    render_terminal_nav("forecaster", auth_user)
+    if render_terminal_nav("forecaster", auth_user):
+        return
     core.page_catalyst_forecaster(
         core.DEFAULT_FRED_KEY,
         core.DEFAULT_TELEGRAM_CHANNEL,
@@ -1727,6 +1697,7 @@ def render_forecaster(auth_user: dict) -> None:
 
 def render_admin(auth_user: dict) -> None:
     render_top_header(auth_user)
-    render_terminal_nav("admin", auth_user)
+    if render_terminal_nav("admin", auth_user):
+        return
     core.render_admin_key_generator()
     render_footer()
