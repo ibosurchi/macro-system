@@ -3273,79 +3273,86 @@ def _nasdaq_relevant_articles(articles: list) -> list:
     return [a for a in (articles or []) if _is_nasdaq_news(a)]
 
 
+def _asset_news_relevance(article: dict, asset: str) -> bool:
+    """Deterministic relevance gate: unrelated headlines cannot affect an asset."""
+    text = f"{article.get('title', '')} {article.get('description', '')}".lower()
+    common_macro = ["inflation","cpi","pce","gdp","jobs","employment","unemployment","payroll","central bank","interest rate","rate cut","rate hike","bond yield","treasury yield","recession","growth","tariff","sanction","geopolitical","war"]
+    terms = {
+        "USD":["usd","dollar","dxy","federal reserve"," fed ","powell","united states","u.s.","us economy","treasury"],
+        "EUR":["eur","euro","ecb","lagarde","eurozone","euro area","germany","france","italy","spain"],
+        "GBP":["gbp","pound","sterling","bank of england","boe","united kingdom","uk economy","britain","bailey"],
+        "CAD":["cad","canadian dollar","bank of canada","boc","canada","macklem"],
+        "JPY":["jpy","yen","bank of japan","boj","japan","ueda"],
+        "CHF":["chf","swiss franc","swiss national bank","snb","switzerland"],
+        "AUD":["aud","australian dollar","reserve bank of australia","rba","australia"],
+        "NZD":["nzd","new zealand dollar","reserve bank of new zealand","rbnz","new zealand"],
+        "Gold":["gold","xau","bullion","precious metal","real yield","safe haven","gold reserve","gold etf","central bank buying"],
+        "Oil":["oil","crude","wti","brent","opec","opec+","petroleum","gasoline","energy","inventory","inventories","refinery"],
+        "Nasdaq":["nasdaq","ndx","technology stocks","tech stocks","semiconductor","nvidia","microsoft","apple","amazon","meta","alphabet","tesla","growth stocks","ai stocks","chip"]}
+    if any(term in text for term in terms.get(asset, [])): return True
+    if asset in {"USD","Gold","Nasdaq"} and any(term in text for term in common_macro): return True
+    if asset == "Oil" and any(term in text for term in ["geopolitical","war","attack","sanction","middle east","russia","iran"]): return True
+    return False
+
+def _asset_rule_news_score(articles: list, asset: str) -> float:
+    if asset == "Gold": return float(_gold_rule_based_news_points(articles))
+    bull=["rally","surge","jump","beat","strong","higher","growth","dovish","rate cut","risk on","risk-on"]
+    bear=["selloff","slump","drop","fall","miss","weak","lower","hawkish","rate hike","risk off","risk-off","recession"]
+    score=0.0
+    for art in articles:
+        if not _asset_news_relevance(art,asset): continue
+        t=f"{art.get('title','')} {art.get('description','')}".lower(); local=0.0
+        if any(k in t for k in bull): local += 0.055
+        if any(k in t for k in bear): local -= 0.055
+        if asset=="Oil":
+            if any(k in t for k in ["supply cut","output cut","inventory draw","inventories fall","supply disruption","sanction","attack"]): local += 0.075
+            if any(k in t for k in ["output increase","supply increase","inventory build","inventories rise","demand weak"]): local -= 0.075
+        elif asset=="Nasdaq":
+            if any(k in t for k in ["yields fall","yield falls","ai demand","chip rally","tech rally","strong earnings"]): local += 0.07
+            if any(k in t for k in ["yields rise","yield spike","chip restrictions","tech selloff","inflation surprise"]): local -= 0.07
+        elif asset in {"JPY","CHF"} and any(k in t for k in ["risk off","risk-off","war","attack","escalation"]): local += 0.04
+        score += local
+    return float(np.clip(score,-0.50,0.50))
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def get_multi_asset_news_intelligence(news_text: str, api_key: str=DEFAULT_AI_KEY, provider_hint: str=DEFAULT_AI_PROVIDER, model_hint: str=DEFAULT_AI_MODEL, cache_version: str=AI_CACHE_VERSION) -> dict:
+    """ONE cached provider request returns separate intelligence for every tracked asset."""
+    assets=["USD","EUR","GBP","CAD","JPY","AUD","NZD","CHF","Gold","Oil","Nasdaq"]
+    empty={a:{"score":0.0,"confidence":0.0,"reason":"No material asset-specific news signal."} for a in assets}
+    if not news_text or not api_key: return {"summary":"AI analysis unavailable.","assets":empty,"active":False}
+    provider,url,model,resolved_key=_ai_runtime(api_key,provider_hint,model_hint)
+    if not resolved_key: return {"summary":f"{provider} AI key is unavailable.","assets":empty,"active":False}
+    system_prompt=("You are the institutional multi-asset news judge for ApexMacro. Analyze ONLY the supplied CURRENT headlines. Return ONE JSON response covering USD, EUR, GBP, CAD, JPY, AUD, NZD, CHF, Gold, Oil and Nasdaq separately. A headline may affect several assets, but never copy generic sentiment across assets. Judge causal relevance: central-bank expectations, inflation/growth/labor, yields and FX for currencies; real yields/USD/safe-haven/central-bank demand for Gold; supply/demand/OPEC/geopolitics/inventories for Oil; yields/Fed/growth/earnings/semiconductors/risk appetite for Nasdaq. For each asset return score -1.0 to +1.0, confidence 0 to 100, and one short reason. If no material relevance, score MUST be 0 and confidence low. Also return a concise 2-3 sentence summary. Respect timestamps and source quality; invent nothing. Return ONLY JSON shaped as {\"summary\":\"...\",\"assets\":{\"USD\":{\"score\":0,\"confidence\":0,\"reason\":\"...\"},...}}")
+    try:
+        response=_post_ai_chat(provider=provider,url=url,headers=_ai_headers(resolved_key,"ApexMacro Multi-Asset News"),model=model,system_prompt=system_prompt,user_prompt=news_text,temperature=0.1,timeout=45)
+        content=_ai_message_content(response.json()); content=re.sub(r"^```(?:json)?\s*|\s*```$","",content,flags=re.I|re.S).strip(); parsed=json.loads(content)
+        raw=parsed.get("assets",{}) if isinstance(parsed,dict) else {}; clean={}
+        for asset in assets:
+            item=raw.get(asset,{}) if isinstance(raw,dict) else {}
+            clean[asset]={"score":float(np.clip(float(item.get("score",0.0)),-1.0,1.0)),"confidence":float(np.clip(float(item.get("confidence",0.0)),0.0,100.0)),"reason":str(item.get("reason",""))[:240]}
+        return {"summary":str(parsed.get("summary",""))[:1200],"assets":clean,"active":True}
+    except Exception as exc:
+        return {"summary":f"{provider} AI Error: {str(exc)[:300]}","assets":empty,"active":False}
+
 @st.cache_data(ttl=300, show_spinner=False)
 def analyze_news_rule_based(articles: list) -> dict:
-    scores = {
-        "USD": 0.0, "EUR": 0.0, "GBP": 0.0, "CAD": 0.0,
-        "JPY": 0.0, "AUD": 0.0, "NZD": 0.0, "CHF": 0.0,
-        "Gold": 0.0, "Oil": 0.0, "Nasdaq": 0.0
-    }
-    drivers = [
-        {"name": "Macro Data Momentum", "icon": "📊", "expected_duration": "Active Session", "reason": "Evaluated via multi-timeframe FRED indicators."},
-        {"name": "Geopolitical & Feed Flow", "icon": "📡", "expected_duration": "1-2 Days", "reason": "Real-time institutional news stream monitored."}
-    ]
-
-    if not articles:
-        return {"scores": scores, "drivers": drivers, "ai_summary": "No live news articles detected for AI analysis.", "ai_active": True}
-
-    ranked_articles = _rank_news_articles(articles)
-    combined_news = "\n".join([
-        f"- [{(a.get('source') or {}).get('name', 'Unknown Source')} | {a.get('publishedAt', '')}] "
-        f"{a.get('title', '')}: {a.get('description', '')}"
-        for a in ranked_articles[:10]
-    ])
-    ai_summary = get_openrouter_analysis(combined_news, DEFAULT_AI_KEY, DEFAULT_AI_PROVIDER, DEFAULT_AI_MODEL, AI_CACHE_VERSION)
-
-    bullish_keywords = ["surge", "jump", "higher", "beat", "strong", "rally", "growth", "bull", "cut inflation", "options", "profit"]
-    bearish_keywords = ["drop", "fall", "lower", "miss", "weak", "slump", "bear", "inflation rise", "tension", "attacking", "military", "war"]
-
-    sentiment_delta = 0.0
-    for art in articles:
-        text = (art.get("title", "") + " " + art.get("description", "")).lower()
-        if any(k in text for k in bullish_keywords):
-            sentiment_delta += 0.04
-        if any(k in text for k in bearish_keywords):
-            sentiment_delta -= 0.04
-
-    gold_intel = _gold_news_intelligence(articles)
-
-    for k in scores:
-        if k == "Gold":
-            scores[k] = float(gold_intel["points"])
-        elif k == "CHF":
-            scores[k] = max(min(-sentiment_delta + 0.05, 0.5), -0.5)
-        elif k in ["Oil"]:
-            scores[k] = max(min(sentiment_delta + 0.08, 0.5), -0.5)
-        elif k == "Nasdaq":
-            ndx_delta = 0.0
-            ndx_bull = [
-                "rally", "surge", "beat", "strong earnings", "risk on", "risk-on", "yield falls",
-                "yields fall", "rate cut", "dovish", "ai demand", "chip rally", "tech rally"
-            ]
-            ndx_bear = [
-                "selloff", "slump", "miss", "risk off", "risk-off", "yield spike", "yields rise",
-                "rate hike", "hawkish", "inflation surprise", "recession", "chip restrictions", "tech selloff"
-            ]
-            for art in _nasdaq_relevant_articles(articles):
-                text2 = (art.get("title", "") + " " + art.get("description", "")).lower()
-                if any(kw in text2 for kw in ndx_bull):
-                    ndx_delta += 0.06
-                if any(kw in text2 for kw in ndx_bear):
-                    ndx_delta -= 0.06
-            scores[k] = max(min(ndx_delta, 0.5), -0.5)
-        else:
-            scores[k] = max(min(sentiment_delta, 0.5), -0.5)
-
-    return {
-        "scores": scores,
-        "drivers": drivers,
-        "ai_summary": ai_summary,
-        "ai_active": True,
-        "gold_ai": gold_intel.get("ai", {}),
-        "gold_rule_points": gold_intel.get("rule_points", 0.0),
-        "gold_ai_points": gold_intel.get("ai_points", 0.0),
-        "gold_relevant_news_count": gold_intel.get("relevant_count", 0),
-    }
+    """Asset-specific news scores; all AI judgments arrive in one cached request."""
+    assets=["USD","EUR","GBP","CAD","JPY","AUD","NZD","CHF","Gold","Oil","Nasdaq"]; scores={a:0.0 for a in assets}
+    drivers=[{"name":"Macro Data Momentum","icon":"📊","expected_duration":"Active Session","reason":"Evaluated via multi-timeframe FRED indicators."},{"name":"Geopolitical & Feed Flow","icon":"📡","expected_duration":"1-2 Days","reason":"Real-time institutional news stream monitored."}]
+    if not articles: return {"scores":scores,"drivers":drivers,"ai_summary":"No live news articles detected for AI analysis.","ai_active":False}
+    ranked=_rank_news_articles(articles)
+    combined_news="\n".join(f"- [{(a.get('source') or {}).get('name','Unknown Source')} | {a.get('publishedAt','')}] {a.get('title','')}: {a.get('description','')}" for a in ranked[:18])
+    ai_pack=get_multi_asset_news_intelligence(combined_news,DEFAULT_AI_KEY,DEFAULT_AI_PROVIDER,DEFAULT_AI_MODEL,AI_CACHE_VERSION); ai_assets=ai_pack.get("assets",{})
+    counts={}; reasons={}
+    for asset in assets:
+        relevant=[a for a in ranked if _asset_news_relevance(a,asset)][:14]; counts[asset]=len(relevant)
+        rule=_asset_rule_news_score(relevant,asset) if relevant else 0.0; item=ai_assets.get(asset,{}) if ai_pack.get("active") else {}
+        ais=float(item.get("score",0.0)); conf=float(item.get("confidence",0.0))/100.0; aic=float(np.clip(ais*0.50*conf,-0.50,0.50)) if relevant else 0.0
+        scores[asset]=float(np.clip((0.65*rule)+(0.35*aic),-0.50,0.50)); reasons[asset]=str(item.get("reason",""))[:240]
+    gi=ai_assets.get("Gold",{}) if ai_pack.get("active") else {}; gs=float(gi.get("score",0.0)); gc=float(gi.get("confidence",0.0)); gd="Bullish" if gs>0.12 else "Bearish" if gs<-0.12 else "Neutral"
+    gold_ai={"direction":gd,"score":gs,"confidence":gc,"horizon":"1-3 Days","reason":str(gi.get("reason",""))[:280],"active":bool(ai_pack.get("active") and counts.get("Gold",0))}
+    gold_rel=[a for a in ranked if _asset_news_relevance(a,"Gold")][:14]
+    return {"scores":scores,"drivers":drivers,"ai_summary":ai_pack.get("summary",""),"ai_active":bool(ai_pack.get("active")),"asset_ai_reasons":reasons,"asset_news_counts":counts,"gold_ai":gold_ai,"gold_rule_points":_asset_rule_news_score(gold_rel,"Gold"),"gold_ai_points":float(np.clip(gs*0.50*(gc/100.0),-0.50,0.50)),"gold_relevant_news_count":counts.get("Gold",0)}
 
 def calc_mtf(vals: list, cat: str) -> dict | None:
     if not vals or len(vals) < 2:
