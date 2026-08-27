@@ -35,6 +35,7 @@ header[data-testid="stHeader"],
   background: radial-gradient(circle at 10% 0%, rgba(0,220,230,.03), transparent 28%), var(--apex-auth-bg) !important;
 }
 
+/* ── DESKTOP PERSISTENT SIDEBAR (>= 1024px) ─────────────── */
 [data-testid="stSidebar"] {
   background: linear-gradient(180deg, #03111a 0%, #020a10 100%) !important;
   border-right: 1px solid rgba(39, 220, 231, 0.22) !important;
@@ -55,6 +56,14 @@ header[data-testid="stHeader"],
     display: none !important;
     visibility: hidden !important;
   }
+  .apex-mobile-header-container {
+    display: none !important;
+  }
+  .apex-mobile-menu-overlay,
+  .apex-mobile-menu-drawer,
+  button[key*="m_overlay_bg"] {
+    display: none !important;
+  }
 }
 
 @media (max-width: 1023px) {
@@ -71,6 +80,7 @@ header[data-testid="stHeader"],
   padding: 16px 10px 18px !important;
 }
 
+/* Sidebar Nav Button Styles */
 [data-testid="stSidebar"] [data-testid="stButton"] button {
   min-height: 44px !important;
   border-radius: 9px !important;
@@ -103,60 +113,208 @@ header[data-testid="stHeader"],
   color: #f0f4f8 !important;
 }
 
-/* ── MOBILE HORIZONTAL NAVIGATION STRIP ─────────────────── */
-.apex-mobile-nav-container {
-  display: none;
+/* ── 1. CLOSED MOBILE HEADER (IMAGE 1, 2, 3) ─────────────── */
+.apex-mobile-header-container {
+  display: block;
+  margin: 0 0 12px;
+  padding: 6px 0 10px;
+  border-bottom: 1px solid rgba(70, 145, 165, 0.18);
 }
 
-@media (max-width: 1023px) {
-  .apex-mobile-nav-container {
-    display: block !important;
-    margin: 6px 0 14px !important;
-    padding: 6px 6px 4px !important;
-    background: rgba(7, 25, 35, 0.70) !important;
-    border: 1px solid rgba(70, 145, 165, 0.22) !important;
-    border-radius: 12px !important;
-  }
-  
-  .apex-mobile-nav-container [data-testid="column"] {
-    min-width: 86px !important;
-    flex: 1 1 0 !important;
-  }
-  
-  .apex-mobile-nav-container [data-testid="stHorizontalBlock"] {
-    display: flex !important;
-    flex-direction: row !important;
-    flex-wrap: nowrap !important;
-    overflow-x: auto !important;
-    -webkit-overflow-scrolling: touch !important;
-    gap: 6px !important;
-    padding-bottom: 3px !important;
-  }
+.apex-mobile-menu-trigger button {
+  width: 44px !important;
+  height: 44px !important;
+  min-height: 44px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border-radius: 10px !important;
+  background: rgba(6, 22, 31, 0.72) !important;
+  border: 1px solid rgba(30, 210, 220, 0.35) !important;
+  color: #F1F5F7 !important;
+  font-size: 20px !important;
+  font-weight: 700 !important;
+  box-shadow: 0 0 12px rgba(39, 220, 231, 0.15) !important;
+  cursor: pointer !important;
+  transition: transform 180ms ease, opacity 180ms ease !important;
+}
 
-  .apex-mobile-nav-container [data-testid="stHorizontalBlock"]::-webkit-scrollbar {
-    height: 3px;
-  }
-  .apex-mobile-nav-container [data-testid="stHorizontalBlock"]::-webkit-scrollbar-thumb {
-    background: rgba(39, 220, 231, 0.40);
-    border-radius: 3px;
-  }
+.apex-mobile-drawer-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+}
 
-  .apex-mobile-nav-container button {
-    min-height: 36px !important;
-    padding: 4px 10px !important;
-    font-size: 11.5px !important;
-    font-weight: 700 !important;
-    white-space: nowrap !important;
-    border-radius: 8px !important;
-  }
-  
-  .apex-mobile-nav-container button[kind="primary"] {
-    background: linear-gradient(90deg, rgba(20, 210, 225, 0.20) 0%, rgba(20, 210, 225, 0.06) 100%) !important;
-    border: 1px solid rgba(39, 220, 231, 0.50) !important;
-    color: #27dce7 !important;
+/* ── 4. FULL PAGE OVERLAY (BLUR & DIM) ──────────────────── */
+.apex-mobile-menu-overlay {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 99980 !important;
+  background: rgba(1, 7, 12, 0.58) !important;
+  backdrop-filter: blur(8px) !important;
+  -webkit-backdrop-filter: blur(8px) !important;
+  pointer-events: none !important;
+}
+
+/* Backdrop button for tapping outside drawer to close */
+button[key*="m_overlay_bg"] {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  background: transparent !important;
+  border: none !important;
+  z-index: 99985 !important;
+  color: transparent !important;
+  cursor: pointer !important;
+}
+
+/* ── 6. RIGHT-SIDE SLIDE-IN GLASS DRAWER ────────────────── */
+.apex-mobile-menu-drawer {
+  position: fixed !important;
+  top: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  width: min(88vw, 360px) !important;
+  z-index: 99999 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  padding: 18px 14px !important;
+  box-sizing: border-box !important;
+  background: linear-gradient(160deg, rgba(5, 22, 32, 0.98), rgba(2, 12, 19, 0.995)) !important;
+  border-left: 1px solid rgba(28, 205, 220, 0.34) !important;
+  box-shadow: -18px 0 55px rgba(0, 0, 0, 0.42) !important;
+  overflow-y: auto !important;
+  -webkit-overflow-scrolling: touch !important;
+  transform: translateX(0) !important;
+  animation: apexSlideFromRight 220ms cubic-bezier(0.2, 0.7, 0.2, 1) forwards !important;
+}
+
+@keyframes apexSlideFromRight {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .apex-mobile-menu-drawer {
+    animation: none !important;
   }
 }
 
+/* ── 9. CLOSE X BUTTON IN DRAWER ────────────────────────── */
+.apex-mobile-menu-drawer button[key*="m_drawer_close"] {
+  width: 42px !important;
+  height: 42px !important;
+  min-height: 42px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border-radius: 10px !important;
+  border: 1px solid rgba(25, 205, 220, 0.25) !important;
+  background: rgba(6, 23, 33, 0.72) !important;
+  color: #21DFE8 !important;
+  font-size: 24px !important;
+  line-height: 1 !important;
+  padding: 0 !important;
+  cursor: pointer !important;
+}
+
+/* ── 11 & 12. DRAWER MENU ITEMS ─────────────────────────── */
+.apex-mobile-menu-list {
+  display: flex !important;
+  flex-direction: column !important;
+  margin-top: 16px !important;
+  margin-bottom: 20px !important;
+}
+
+.apex-mobile-menu-list button {
+  min-height: 48px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  gap: 13px !important;
+  padding: 10px 12px !important;
+  margin-bottom: 5px !important;
+  border-radius: 9px !important;
+  font-size: 14px !important;
+  font-weight: 550 !important;
+  text-align: left !important;
+  letter-spacing: 0.2px !important;
+  border: 1px solid transparent !important;
+  transition: all 0.15s ease !important;
+}
+
+.apex-mobile-menu-list button[kind="primary"] {
+  color: #2BE3EB !important;
+  background: linear-gradient(90deg, rgba(15, 205, 218, 0.15), rgba(15, 205, 218, 0.04)) !important;
+  border: 1px solid rgba(25, 210, 220, 0.42) !important;
+  box-shadow: inset 0 0 16px rgba(39, 220, 231, 0.06), 0 0 12px rgba(39, 220, 231, 0.10) !important;
+}
+
+.apex-mobile-menu-list button[kind="secondary"] {
+  background: rgba(6, 23, 33, 0.40) !important;
+  border: 1px solid rgba(70, 145, 165, 0.16) !important;
+  color: #E8EFF3 !important;
+}
+
+.apex-mobile-menu-list button[kind="secondary"]:hover {
+  background: rgba(255, 255, 255, 0.04) !important;
+  border-color: rgba(39, 220, 231, 0.35) !important;
+  color: #ffffff !important;
+}
+
+/* ── 16. BOTTOM ACCOUNT / USER CARD ─────────────────────── */
+.apex-mobile-account-card {
+  margin-top: auto !important;
+  padding: 12px 14px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  border-radius: 12px !important;
+  background: rgba(7, 28, 39, 0.72) !important;
+  border: 1px solid rgba(24, 205, 220, 0.28) !important;
+}
+
+.apex-mobile-account-left {
+  display: flex !important;
+  align-items: center !important;
+  gap: 12px !important;
+}
+
+.apex-mobile-account-avatar {
+  width: 36px !important;
+  height: 36px !important;
+  border-radius: 50% !important;
+  border: 1px solid rgba(39, 220, 231, 0.45) !important;
+  background: rgba(39, 220, 231, 0.12) !important;
+  color: #27dce7 !important;
+  font-size: 13px !important;
+  font-weight: 800 !important;
+  display: grid !important;
+  place-items: center !important;
+}
+
+.apex-mobile-account-name {
+  font-size: 13.5px !important;
+  font-weight: 750 !important;
+  color: #f1f5f7 !important;
+  line-height: 1.2 !important;
+}
+
+.apex-mobile-account-plan {
+  font-size: 10.5px !important;
+  color: #25DFE8 !important;
+  margin-top: 1px !important;
+}
+
+.apex-mobile-account-chevron {
+  color: #25DFE8 !important;
+  font-size: 18px !important;
+  font-weight: 700 !important;
+}
+
+/* ── BRAND LOGO & SHARED CHIPS ──────────────────────────── */
 .apex-sidebar-brand {
   display: flex;
   align-items: center;
@@ -238,7 +396,6 @@ header[data-testid="stHeader"],
   color: #94a2b0;
 }
 
-.apex-auth-mobile-head { display: none; }
 .apex-auth-desktop-strip {
   display: flex;
   align-items: center;
@@ -278,49 +435,12 @@ header[data-testid="stHeader"],
   .block-container {
     padding: 12px 10px 24px !important;
   }
-  .apex-auth-desktop-strip { display: none; }
-  .apex-auth-mobile-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    min-height: 44px;
-    margin: 0 0 8px;
-    padding: 7px 12px;
-    border: 1px solid rgba(55, 150, 170, 0.18);
-    border-radius: 11px;
-    background: linear-gradient(145deg, rgba(6, 21, 30, 0.92), rgba(3, 13, 20, 0.97));
-  }
-  .apex-auth-mobile-left {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-  }
-  .apex-auth-mobile-mark {
-    font-weight: 950;
-    font-size: 17px;
-    color: #27dce7;
-  }
-  .apex-auth-mobile-title {
-    font-size: 12.5px;
-    font-weight: 800;
-    color: #eef4f7;
-    letter-spacing: 0.7px;
-  }
-  .apex-auth-mobile-role {
-    font-size: 9px;
-    color: #8fa1ad;
-    border: 1px solid rgba(70, 145, 165, 0.18);
-    padding: 3px 8px;
-    border-radius: 999px;
-  }
 }
 </style>''')
 
 
 def render_top_header(auth_user: dict | None = None) -> None:
-    """Render compact authenticated chrome instead of the legacy oversized terminal header."""
+    """Render compact authenticated chrome."""
     _shared_auth_css()
     user = auth_user or {}
     is_admin = bool(user.get("is_admin"))
@@ -332,10 +452,6 @@ def render_top_header(auth_user: dict | None = None) -> None:
               <div class="apex-auth-chip {'admin' if is_admin else 'vip'}">{'♛' if is_admin else '👑'} {role}</div>
               <div class="apex-auth-chip">{name}</div>
               <div class="apex-auth-chip">◷ {now.strftime('%H:%M')}</div>
-            </div>
-            <div class="apex-auth-mobile-head">
-              <div class="apex-auth-mobile-left"><span class="apex-auth-mobile-mark">▲</span><span class="apex-auth-mobile-title">APEXMACRO</span></div>
-              <span class="apex-auth-mobile-role">{role}</span>
             </div>'''
     )
 
