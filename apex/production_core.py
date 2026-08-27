@@ -5430,7 +5430,7 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     .apex-fc2-weekmeta{flex:0 0 auto;color:#8fa1ae;font-size:11px;border:1px solid rgba(83,135,158,.20);background:rgba(6,22,31,.74);border-radius:999px;padding:7px 10px}
     .apex-fc2-section-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 12px}
     .apex-fc2-section-title{font-size:14px;font-weight:800;color:#eef5f8}
-    .apex-fc2-count{font-size:10px;color:#9fb0ba;border:1px solid rgba(83,135,158,.20);background:rgba(7,25,35,.78);border-radius:999px;padding:5px 9px}
+    .apex-fc2-count{font-size:10px;white-space:nowrap;flex:0 0 auto;color:#9fb0ba;border:1px solid rgba(83,135,158,.20);background:rgba(7,25,35,.78);border-radius:999px;padding:5px 9px}
     .apex-fc2-empty{padding:22px 16px;border:1px dashed rgba(83,135,158,.22);border-radius:14px;color:#8295a2;text-align:center;background:rgba(5,18,27,.48)}
     .apex-fc2-dots{display:flex;align-items:center;justify-content:center;gap:4px;height:9px;margin-top:-5px;margin-bottom:4px}
     .apex-fc2-dot{width:5px;height:5px;border-radius:50%;display:inline-block}.apex-fc2-dot.high{background:#b04ce4}.apex-fc2-dot.medium{background:#ffb822}.apex-fc2-dot.low{background:#35d2e3}
@@ -5457,10 +5457,10 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     [class*="st-key-apex_fc2_timeline_col"] *,[class*="st-key-apex_fc2_detail_col"] *{min-width:0}
 
     /* Event timeline cards */
-    [class*="st-key-apex_fc2_event_"]{position:relative!important;margin:0 0 11px 22px!important;width:calc(100% - 22px)!important;max-width:calc(100% - 22px)!important;box-sizing:border-box!important;overflow:visible!important}
-    [class*="st-key-apex_fc2_event_"]::before{content:"";position:absolute;left:-18px;top:0;bottom:-12px;width:1px;background:rgba(83,135,158,.16)}
-    [class*="st-key-apex_fc2_event_"]::after{content:"";position:absolute;left:-22px;top:19px;width:9px;height:9px;border-radius:50%;background:#b04ce4;box-shadow:0 0 0 4px #061721}
-    [class*="st-key-apex_fc2_event_medium_"]::after{background:#ffb822}[class*="st-key-apex_fc2_event_low_"]::after{background:#35d2e3}
+    [class*="st-key-apex_fc2_event_"]:not([class*="st-key-apex_fc2_event_btn_"]){position:relative!important;margin:0 0 11px 22px!important;width:calc(100% - 22px)!important;max-width:calc(100% - 22px)!important;box-sizing:border-box!important;overflow:visible!important}
+    [class*="st-key-apex_fc2_event_"]:not([class*="st-key-apex_fc2_event_btn_"])::before{content:"";position:absolute;left:-18px;top:0;bottom:-12px;width:1px;background:rgba(83,135,158,.16)}
+    [class*="st-key-apex_fc2_event_"]:not([class*="st-key-apex_fc2_event_btn_"])::after{content:"";position:absolute;left:-22px;top:19px;width:9px;height:9px;border-radius:50%;background:#b04ce4;box-shadow:0 0 0 4px #061721}
+    [class*="st-key-apex_fc2_event_medium_"]:not([class*="st-key-apex_fc2_event_btn_"])::after{background:#ffb822}[class*="st-key-apex_fc2_event_low_"]:not([class*="st-key-apex_fc2_event_btn_"])::after{background:#35d2e3}
     [class*="st-key-apex_fc2_event_"] button{width:100%!important;max-width:100%!important;min-width:0!important;min-height:108px!important;padding:12px 13px!important;border-radius:13px!important;border:1px solid rgba(83,135,158,.17)!important;background:rgba(7,25,35,.78)!important;color:#eaf1f4!important;text-align:left!important;justify-content:flex-start!important;white-space:pre-wrap!important;overflow-wrap:anywhere!important;word-break:normal!important;box-shadow:none!important;font-size:11px!important;line-height:1.46!important;font-weight:650!important;transition:transform .16s ease,border-color .16s ease,background .16s ease!important}
     [class*="st-key-apex_fc2_event_"] button p{text-align:left!important;white-space:pre-wrap!important;overflow-wrap:anywhere!important;margin:0!important;width:100%!important;max-width:100%!important}
     [class*="st-key-apex_fc2_event_selected_"] button{border-color:rgba(39,220,231,.60)!important;background:linear-gradient(145deg,rgba(8,38,49,.92),rgba(4,20,29,.98))!important}
@@ -5469,16 +5469,24 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     [class*="st-key-apex_fc2_open_full"] button{width:100%!important;min-height:44px!important;margin-top:10px!important;border-radius:10px!important;border:1px solid rgba(39,220,231,.44)!important;background:linear-gradient(90deg,rgba(24,205,219,.18),rgba(24,205,219,.08))!important;color:#37e4ec!important;font-weight:800!important;box-shadow:none!important}
 
     @media(max-width:768px){
-      .apex-fc2-hero{align-items:flex-start;flex-direction:column;margin-bottom:12px}.apex-fc2-title{font-size:23px}.apex-fc2-weekmeta{padding:5px 8px}
+      .apex-fc2-hero{align-items:flex-start;flex-direction:column;margin-bottom:12px;width:100%;max-width:100%}.apex-fc2-title{font-size:23px}.apex-fc2-weekmeta{padding:5px 8px}
+      .apex-fc2-section-head{align-items:flex-start}.apex-fc2-section-title{min-width:0;overflow-wrap:anywhere}.apex-fc2-count{white-space:nowrap!important}
       [class*="st-key-apex_fc2_day_"] button{min-height:66px!important;padding:7px 2px!important;border-radius:9px!important;font-size:9px!important}
       .apex-fc2-dots{gap:2px;margin-top:-7px}.apex-fc2-dot{width:4px;height:4px}
-      [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fc2_day_"]){gap:4px!important}
-      [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fc2_timeline_col"]){display:flex!important;flex-direction:column!important;gap:12px!important}
-      [class*="st-key-apex_fc2_timeline_col"],[class*="st-key-apex_fc2_detail_col"]{width:100%!important;max-width:100%!important;padding:12px!important;overflow:hidden!important}
-      [class*="st-key-apex_fc2_detail_col"]{order:initial!important}
-      [class*="st-key-apex_fc2_event_"]{margin-left:17px!important;width:calc(100% - 17px)!important;max-width:calc(100% - 17px)!important}
+      [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fc2_day_"]){gap:4px!important;width:100%!important;max-width:100%!important}
+
+      /* Force the two Streamlit columns to become true full-width rows on phones.
+         The parent stColumn widths/flex-basis must be overridden, not only the keyed inner containers. */
+      [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fc2_timeline_col"]){display:flex!important;flex-direction:column!important;flex-wrap:nowrap!important;align-items:stretch!important;gap:12px!important;width:100%!important;max-width:100%!important;overflow:visible!important}
+      [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fc2_timeline_col"]) > [data-testid="stColumn"],
+      [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fc2_timeline_col"]) > [data-testid="column"]{display:block!important;flex:1 1 100%!important;flex-basis:100%!important;width:100%!important;min-width:0!important;max-width:100%!important;overflow:visible!important}
+      [class*="st-key-apex_fc2_timeline_col"],[class*="st-key-apex_fc2_detail_col"]{display:block!important;width:100%!important;min-width:0!important;max-width:100%!important;padding:12px!important;overflow:hidden!important;box-sizing:border-box!important}
+      [class*="st-key-apex_fc2_detail_col"]{order:initial!important;margin-top:0!important}
+
+      [class*="st-key-apex_fc2_event_"]:not([class*="st-key-apex_fc2_event_btn_"]){margin-left:17px!important;width:calc(100% - 17px)!important;max-width:calc(100% - 17px)!important}
       [class*="st-key-apex_fc2_event_"] button{min-height:104px!important;padding:11px!important;font-size:10px!important;line-height:1.42!important}
-      .apex-fc2-detail-title{font-size:16px}.apex-fc2-metrics{gap:6px}.apex-fc2-metric{padding:8px}.apex-fc2-metric-value{font-size:12px}
+      .apex-fc2-detail-title{font-size:16px;overflow-wrap:anywhere}.apex-fc2-detail-time{overflow-wrap:anywhere}.apex-fc2-metrics{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.apex-fc2-metric{padding:8px;min-width:0}.apex-fc2-metric-label{font-size:8px;overflow-wrap:normal;word-break:normal}.apex-fc2-metric-value{font-size:12px;overflow-wrap:anywhere}
+      .apex-fc2-insight{overflow-wrap:anywhere}
     }
     @media(max-width:390px){
       [class*="st-key-apex_fc2_day_"] button{min-height:61px!important;font-size:8px!important;padding:6px 1px!important}
