@@ -9,12 +9,21 @@ from html import escape
 from datetime import datetime, timedelta
 import streamlit as st
 import plotly.graph_objects as go
-import pandas as pd
 import numpy as np
 
 from . import production_core as core
 from .ui.common import render_top_header, render_footer
 from .ui.terminal_nav import render_terminal_nav
+
+
+# ─────────────────────────────────────────────
+# HTML Cleaner (Prevents Markdown Code-Block Bug)
+# ─────────────────────────────────────────────
+
+def _render_html(html_str: str) -> None:
+    """Render HTML safely without markdown indentation creating code-blocks."""
+    clean = "\n".join(line.strip() for line in html_str.splitlines() if line.strip())
+    st.markdown(clean, unsafe_allow_html=True)
 
 
 # ─────────────────────────────────────────────
@@ -70,10 +79,9 @@ def _flag(currency):
     return flags.get(str(currency).upper(), "🌐")
 
 
-def _smooth_sparkline_svg(vals: list, color: str = "#27dce7", w: int = 110, h: int = 38) -> str:
+def _smooth_sparkline_svg(vals: list, color: str = "#27dce7", w: int = 105, h: int = 34) -> str:
     """Generate a smooth cubic bezier sparkline SVG with glowing drop-shadow and gradient fill."""
     if not vals or len(vals) < 2:
-        # Fallback subtle wavy line
         vals = [10, 14, 12, 17, 15, 21, 19, 25]
     
     vals = [float(x) for x in vals if x is not None]
@@ -83,7 +91,7 @@ def _smooth_sparkline_svg(vals: list, color: str = "#27dce7", w: int = 110, h: i
     mn, mx = min(vals), max(vals)
     rng = mx - mn if mx != mn else 1.0
     n = len(vals)
-    pad_y = 5.0
+    pad_y = 4.0
     pts = [(i / (n - 1) * w, (h - pad_y) - ((vals[i] - mn) / rng) * (h - 2 * pad_y)) for i in range(n)]
 
     # Build cubic spline path
@@ -103,125 +111,86 @@ def _smooth_sparkline_svg(vals: list, color: str = "#27dce7", w: int = 110, h: i
     grad_id = f"grad_{abs(hash(color + str(vals[:3])))}"
 
     return f"""<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" style="display:block;overflow:visible;">
-  <defs>
-    <linearGradient id="{grad_id}" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="{color}" stop-opacity="0.28"/>
-      <stop offset="100%" stop-color="{color}" stop-opacity="0.0"/>
-    </linearGradient>
-  </defs>
-  <path d="{fill_d}" fill="url(#{grad_id})"/>
-  <path d="{path_d}" fill="none" stroke="{color}" stroke-width="2.2" stroke-linecap="round" style="filter:drop-shadow(0 0 6px {color}66);"/>
+<defs>
+<linearGradient id="{grad_id}" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0%" stop-color="{color}" stop-opacity="0.25"/>
+<stop offset="100%" stop-color="{color}" stop-opacity="0.0"/>
+</linearGradient>
+</defs>
+<path d="{fill_d}" fill="url(#{grad_id})"/>
+<path d="{path_d}" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" style="filter:drop-shadow(0 0 5px {color}66);"/>
 </svg>"""
 
 
 def _world_map_svg() -> str:
     """High-tech institutional dot-matrix World Map SVG with cyan glowing nodes."""
     return """<svg viewBox="0 0 420 220" width="100%" height="100%" style="display:block;max-height:220px;">
-  <defs>
-    <radialGradient id="mapGlow" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#27dce7" stop-opacity="0.12"/>
-      <stop offset="100%" stop-color="#27dce7" stop-opacity="0"/>
-    </radialGradient>
-    <filter id="nodeGlow" x="-50%" y="-50%" width="200%" height="200%">
-      <feGaussianBlur in="SourceGraphic" stdDeviation="2.5" result="blur"/>
-      <feMerge>
-        <feMergeNode in="blur"/>
-        <feMergeNode in="SourceGraphic"/>
-      </feMerge>
-    </filter>
-  </defs>
-  <rect width="100%" height="100%" fill="url(#mapGlow)"/>
-  
-  <!-- Subtle Grid Lines -->
-  <g stroke="rgba(39,220,231,0.06)" stroke-width="0.75" stroke-dasharray="2 4">
-    <line x1="0" y1="55" x2="420" y2="55"/>
-    <line x1="0" y1="110" x2="420" y2="110"/>
-    <line x1="0" y1="165" x2="420" y2="165"/>
-    <line x1="70" y1="0" x2="70" y2="220"/>
-    <line x1="140" y1="0" x2="140" y2="220"/>
-    <line x1="210" y1="0" x2="210" y2="220"/>
-    <line x1="280" y1="0" x2="280" y2="220"/>
-    <line x1="350" y1="0" x2="350" y2="220"/>
-  </g>
-  
-  <!-- North America Dots -->
-  <g fill="rgba(39,220,231,0.45)">
-    <circle cx="50" cy="40" r="1.4"/><circle cx="58" cy="42" r="1.4"/><circle cx="66" cy="38" r="1.4"/><circle cx="74" cy="44" r="1.4"/>
-    <circle cx="45" cy="50" r="1.4"/><circle cx="55" cy="52" r="1.4"/><circle cx="65" cy="48" r="1.8"/><circle cx="75" cy="52" r="1.4"/><circle cx="85" cy="48" r="1.4"/>
-    <circle cx="42" cy="62" r="1.4"/><circle cx="52" cy="60" r="1.8"/><circle cx="62" cy="62" r="1.8"/><circle cx="72" cy="60" r="1.4"/><circle cx="82" cy="62" r="1.8"/><circle cx="92" cy="58" r="1.4"/>
-    <circle cx="50" cy="74" r="1.4"/><circle cx="60" cy="72" r="1.8"/><circle cx="70" cy="74" r="1.8"/><circle cx="80" cy="72" r="1.8"/><circle cx="90" cy="74" r="1.4"/>
-    <circle cx="58" cy="86" r="1.4"/><circle cx="68" cy="84" r="1.4"/><circle cx="78" cy="86" r="1.4"/>
-    <circle cx="72" cy="98" r="1.4"/><circle cx="80" cy="102" r="1.4"/>
-  </g>
-  
-  <!-- South America Dots -->
-  <g fill="rgba(39,220,231,0.40)">
-    <circle cx="95" cy="120" r="1.4"/><circle cx="105" cy="122" r="1.8"/><circle cx="115" cy="120" r="1.4"/>
-    <circle cx="98" cy="132" r="1.4"/><circle cx="108" cy="134" r="1.8"/><circle cx="118" cy="130" r="1.8"/><circle cx="128" cy="132" r="1.4"/>
-    <circle cx="102" cy="144" r="1.4"/><circle cx="112" cy="146" r="1.8"/><circle cx="122" cy="142" r="1.8"/><circle cx="130" cy="144" r="1.4"/>
-    <circle cx="105" cy="156" r="1.4"/><circle cx="115" cy="158" r="1.8"/><circle cx="122" cy="154" r="1.4"/>
-    <circle cx="108" cy="168" r="1.4"/><circle cx="116" cy="170" r="1.4"/>
-    <circle cx="110" cy="180" r="1.4"/>
-  </g>
-  
-  <!-- Europe Dots -->
-  <g fill="rgba(39,220,231,0.55)">
-    <circle cx="195" cy="40" r="1.4"/><circle cx="205" cy="42" r="1.8"/><circle cx="215" cy="40" r="1.4"/>
-    <circle cx="188" cy="50" r="1.4"/><circle cx="198" cy="52" r="1.8"/><circle cx="208" cy="48" r="1.8"/><circle cx="218" cy="52" r="1.8"/><circle cx="228" cy="48" r="1.4"/>
-    <circle cx="190" cy="62" r="1.8"/><circle cx="200" cy="60" r="2.0"/><circle cx="210" cy="62" r="2.0"/><circle cx="220" cy="60" r="1.8"/><circle cx="230" cy="62" r="1.4"/>
-    <circle cx="194" cy="74" r="1.4"/><circle cx="204" cy="72" r="1.8"/><circle cx="214" cy="74" r="1.8"/><circle cx="224" cy="72" r="1.4"/>
-  </g>
-  
-  <!-- Africa Dots -->
-  <g fill="rgba(39,220,231,0.40)">
-    <circle cx="192" cy="90" r="1.4"/><circle cx="202" cy="88" r="1.8"/><circle cx="212" cy="90" r="1.8"/><circle cx="222" cy="88" r="1.4"/><circle cx="232" cy="92" r="1.4"/>
-    <circle cx="188" cy="102" r="1.4"/><circle cx="198" cy="104" r="1.8"/><circle cx="208" cy="100" r="1.8"/><circle cx="218" cy="104" r="1.8"/><circle cx="228" cy="102" r="1.4"/><circle cx="238" cy="104" r="1.4"/>
-    <circle cx="195" cy="116" r="1.4"/><circle cx="205" cy="118" r="1.8"/><circle cx="215" cy="114" r="1.8"/><circle cx="225" cy="118" r="1.8"/><circle cx="235" cy="116" r="1.4"/>
-    <circle cx="202" cy="130" r="1.4"/><circle cx="212" cy="132" r="1.8"/><circle cx="222" cy="128" r="1.4"/><circle cx="230" cy="132" r="1.4"/>
-    <circle cx="208" cy="144" r="1.4"/><circle cx="218" cy="146" r="1.8"/><circle cx="226" cy="142" r="1.4"/>
-    <circle cx="214" cy="158" r="1.4"/><circle cx="222" cy="156" r="1.4"/>
-  </g>
-  
-  <!-- Asia Dots -->
-  <g fill="rgba(39,220,231,0.50)">
-    <circle cx="245" cy="38" r="1.4"/><circle cx="255" cy="40" r="1.4"/><circle cx="265" cy="36" r="1.4"/><circle cx="275" cy="40" r="1.4"/><circle cx="285" cy="38" r="1.4"/><circle cx="295" cy="42" r="1.4"/><circle cx="305" cy="38" r="1.4"/>
-    <circle cx="240" cy="50" r="1.4"/><circle cx="250" cy="52" r="1.8"/><circle cx="260" cy="48" r="1.8"/><circle cx="270" cy="52" r="1.8"/><circle cx="280" cy="48" r="1.8"/><circle cx="290" cy="52" r="1.8"/><circle cx="300" cy="48" r="1.8"/><circle cx="310" cy="52" r="1.4"/><circle cx="320" cy="48" r="1.4"/>
-    <circle cx="238" cy="62" r="1.4"/><circle cx="248" cy="60" r="1.8"/><circle cx="258" cy="62" r="2.0"/><circle cx="268" cy="60" r="2.0"/><circle cx="278" cy="62" r="2.0"/><circle cx="288" cy="60" r="2.0"/><circle cx="298" cy="62" r="2.0"/><circle cx="308" cy="60" r="1.8"/><circle cx="318" cy="62" r="1.8"/><circle cx="328" cy="60" r="1.4"/>
-    <circle cx="245" cy="74" r="1.4"/><circle cx="255" cy="72" r="1.8"/><circle cx="265" cy="76" r="1.8"/><circle cx="275" cy="72" r="2.0"/><circle cx="285" cy="74" r="2.0"/><circle cx="295" cy="72" r="2.0"/><circle cx="305" cy="74" r="1.8"/><circle cx="315" cy="72" r="1.8"/><circle cx="325" cy="76" r="1.4"/>
-    <circle cx="260" cy="86" r="1.4"/><circle cx="270" cy="88" r="1.8"/><circle cx="280" cy="84" r="1.8"/><circle cx="290" cy="88" r="2.0"/><circle cx="300" cy="84" r="1.8"/><circle cx="310" cy="88" r="1.8"/>
-    <circle cx="275" cy="100" r="1.4"/><circle cx="285" cy="102" r="1.8"/><circle cx="295" cy="98" r="1.8"/><circle cx="305" cy="102" r="1.4"/>
-  </g>
-  
-  <!-- Australia Dots -->
-  <g fill="rgba(39,220,231,0.45)">
-    <circle cx="330" cy="138" r="1.4"/><circle cx="340" cy="140" r="1.8"/><circle cx="350" cy="136" r="1.4"/>
-    <circle cx="325" cy="150" r="1.4"/><circle cx="335" cy="152" r="1.8"/><circle cx="345" cy="148" r="1.8"/><circle cx="355" cy="150" r="1.4"/>
-    <circle cx="330" cy="162" r="1.4"/><circle cx="340" cy="164" r="1.8"/><circle cx="350" cy="160" r="1.4"/>
-  </g>
-  
-  <!-- Glowing Key Institutional Nodes & Connecting Arcs -->
-  <g stroke="rgba(39,220,231,0.30)" stroke-width="1" fill="none">
-    <path d="M 62 62 Q 130 30 200 60" stroke-dasharray="3 3"/>
-    <path d="M 200 60 Q 240 40 288 60" stroke-dasharray="3 3"/>
-    <path d="M 288 60 Q 320 100 345 148" stroke-dasharray="3 3"/>
-    <path d="M 62 62 Q 80 100 118 130" stroke-dasharray="3 3"/>
-    <path d="M 200 60 Q 210 100 218 146" stroke-dasharray="3 3"/>
-  </g>
-  
-  <!-- Key Hub Nodes -->
-  <circle cx="62" cy="62" r="3.2" fill="#27dce7" filter="url(#nodeGlow)"/>
-  <circle cx="62" cy="62" r="1.6" fill="#ffffff"/>
-  
-  <circle cx="200" cy="60" r="3.5" fill="#27dce7" filter="url(#nodeGlow)"/>
-  <circle cx="200" cy="60" r="1.8" fill="#ffffff"/>
-  
-  <circle cx="288" cy="60" r="3.2" fill="#27dce7" filter="url(#nodeGlow)"/>
-  <circle cx="288" cy="60" r="1.6" fill="#ffffff"/>
-  
-  <circle cx="345" cy="148" r="2.8" fill="#27dce7" filter="url(#nodeGlow)"/>
-  <circle cx="345" cy="148" r="1.4" fill="#ffffff"/>
-  
-  <circle cx="118" cy="130" r="2.5" fill="#27dce7" filter="url(#nodeGlow)"/>
+<defs>
+<radialGradient id="mapGlow" cx="50%" cy="50%" r="50%">
+<stop offset="0%" stop-color="#27dce7" stop-opacity="0.12"/>
+<stop offset="100%" stop-color="#27dce7" stop-opacity="0"/>
+</radialGradient>
+<filter id="nodeGlow" x="-50%" y="-50%" width="200%" height="200%">
+<feGaussianBlur in="SourceGraphic" stdDeviation="2.5" result="blur"/>
+<feMerge>
+<feMergeNode in="blur"/>
+<feMergeNode in="SourceGraphic"/>
+</feMerge>
+</filter>
+</defs>
+<rect width="100%" height="100%" fill="url(#mapGlow)"/>
+<g stroke="rgba(39,220,231,0.06)" stroke-width="0.75" stroke-dasharray="2 4">
+<line x1="0" y1="55" x2="420" y2="55"/><line x1="0" y1="110" x2="420" y2="110"/><line x1="0" y1="165" x2="420" y2="165"/>
+<line x1="70" y1="0" x2="70" y2="220"/><line x1="140" y1="0" x2="140" y2="220"/><line x1="210" y1="0" x2="210" y2="220"/>
+<line x1="280" y1="0" x2="280" y2="220"/><line x1="350" y1="0" x2="350" y2="220"/>
+</g>
+<g fill="rgba(39,220,231,0.45)">
+<circle cx="50" cy="40" r="1.4"/><circle cx="58" cy="42" r="1.4"/><circle cx="66" cy="38" r="1.4"/><circle cx="74" cy="44" r="1.4"/>
+<circle cx="45" cy="50" r="1.4"/><circle cx="55" cy="52" r="1.4"/><circle cx="65" cy="48" r="1.8"/><circle cx="75" cy="52" r="1.4"/><circle cx="85" cy="48" r="1.4"/>
+<circle cx="42" cy="62" r="1.4"/><circle cx="52" cy="60" r="1.8"/><circle cx="62" cy="62" r="1.8"/><circle cx="72" cy="60" r="1.4"/><circle cx="82" cy="62" r="1.8"/><circle cx="92" cy="58" r="1.4"/>
+<circle cx="50" cy="74" r="1.4"/><circle cx="60" cy="72" r="1.8"/><circle cx="70" cy="74" r="1.8"/><circle cx="80" cy="72" r="1.8"/><circle cx="90" cy="74" r="1.4"/>
+<circle cx="58" cy="86" r="1.4"/><circle cx="68" cy="84" r="1.4"/><circle cx="78" cy="86" r="1.4"/><circle cx="72" cy="98" r="1.4"/><circle cx="80" cy="102" r="1.4"/>
+</g>
+<g fill="rgba(39,220,231,0.40)">
+<circle cx="95" cy="120" r="1.4"/><circle cx="105" cy="122" r="1.8"/><circle cx="115" cy="120" r="1.4"/>
+<circle cx="98" cy="132" r="1.4"/><circle cx="108" cy="134" r="1.8"/><circle cx="118" cy="130" r="1.8"/><circle cx="128" cy="132" r="1.4"/>
+<circle cx="102" cy="144" r="1.4"/><circle cx="112" cy="146" r="1.8"/><circle cx="122" cy="142" r="1.8"/><circle cx="130" cy="144" r="1.4"/>
+<circle cx="105" cy="156" r="1.4"/><circle cx="115" cy="158" r="1.8"/><circle cx="122" cy="154" r="1.4"/><circle cx="108" cy="168" r="1.4"/><circle cx="116" cy="170" r="1.4"/><circle cx="110" cy="180" r="1.4"/>
+</g>
+<g fill="rgba(39,220,231,0.55)">
+<circle cx="195" cy="40" r="1.4"/><circle cx="205" cy="42" r="1.8"/><circle cx="215" cy="40" r="1.4"/>
+<circle cx="188" cy="50" r="1.4"/><circle cx="198" cy="52" r="1.8"/><circle cx="208" cy="48" r="1.8"/><circle cx="218" cy="52" r="1.8"/><circle cx="228" cy="48" r="1.4"/>
+<circle cx="190" cy="62" r="1.8"/><circle cx="200" cy="60" r="2.0"/><circle cx="210" cy="62" r="2.0"/><circle cx="220" cy="60" r="1.8"/><circle cx="230" cy="62" r="1.4"/>
+<circle cx="194" cy="74" r="1.4"/><circle cx="204" cy="72" r="1.8"/><circle cx="214" cy="74" r="1.8"/><circle cx="224" cy="72" r="1.4"/>
+</g>
+<g fill="rgba(39,220,231,0.40)">
+<circle cx="192" cy="90" r="1.4"/><circle cx="202" cy="88" r="1.8"/><circle cx="212" cy="90" r="1.8"/><circle cx="222" cy="88" r="1.4"/><circle cx="232" cy="92" r="1.4"/>
+<circle cx="188" cy="102" r="1.4"/><circle cx="198" cy="104" r="1.8"/><circle cx="208" cy="100" r="1.8"/><circle cx="218" cy="104" r="1.8"/><circle cx="228" cy="102" r="1.4"/><circle cx="238" cy="104" r="1.4"/>
+<circle cx="195" cy="116" r="1.4"/><circle cx="205" cy="118" r="1.8"/><circle cx="215" cy="114" r="1.8"/><circle cx="225" cy="118" r="1.8"/><circle cx="235" cy="116" r="1.4"/>
+<circle cx="202" cy="130" r="1.4"/><circle cx="212" cy="132" r="1.8"/><circle cx="222" cy="128" r="1.4"/><circle cx="230" cy="132" r="1.4"/><circle cx="208" cy="144" r="1.4"/><circle cx="218" cy="146" r="1.8"/><circle cx="226" cy="142" r="1.4"/><circle cx="214" cy="158" r="1.4"/><circle cx="222" cy="156" r="1.4"/>
+</g>
+<g fill="rgba(39,220,231,0.50)">
+<circle cx="245" cy="38" r="1.4"/><circle cx="255" cy="40" r="1.4"/><circle cx="265" cy="36" r="1.4"/><circle cx="275" cy="40" r="1.4"/><circle cx="285" cy="38" r="1.4"/><circle cx="295" cy="42" r="1.4"/><circle cx="305" cy="38" r="1.4"/>
+<circle cx="240" cy="50" r="1.4"/><circle cx="250" cy="52" r="1.8"/><circle cx="260" cy="48" r="1.8"/><circle cx="270" cy="52" r="1.8"/><circle cx="280" cy="48" r="1.8"/><circle cx="290" cy="52" r="1.8"/><circle cx="300" cy="48" r="1.8"/><circle cx="310" cy="52" r="1.4"/><circle cx="320" cy="48" r="1.4"/>
+<circle cx="238" cy="62" r="1.4"/><circle cx="248" cy="60" r="1.8"/><circle cx="258" cy="62" r="2.0"/><circle cx="268" cy="60" r="2.0"/><circle cx="278" cy="62" r="2.0"/><circle cx="288" cy="60" r="2.0"/><circle cx="298" cy="62" r="2.0"/><circle cx="308" cy="60" r="1.8"/><circle cx="318" cy="62" r="1.8"/><circle cx="328" cy="60" r="1.4"/>
+<circle cx="245" cy="74" r="1.4"/><circle cx="255" cy="72" r="1.8"/><circle cx="265" cy="76" r="1.8"/><circle cx="275" cy="72" r="2.0"/><circle cx="285" cy="74" r="2.0"/><circle cx="295" cy="72" r="2.0"/><circle cx="305" cy="74" r="1.8"/><circle cx="315" cy="72" r="1.8"/><circle cx="325" cy="76" r="1.4"/>
+<circle cx="260" cy="86" r="1.4"/><circle cx="270" cy="88" r="1.8"/><circle cx="280" cy="84" r="1.8"/><circle cx="290" cy="88" r="2.0"/><circle cx="300" cy="84" r="1.8"/><circle cx="310" cy="88" r="1.8"/><circle cx="275" cy="100" r="1.4"/><circle cx="285" cy="102" r="1.8"/><circle cx="295" cy="98" r="1.8"/><circle cx="305" cy="102" r="1.4"/>
+</g>
+<g fill="rgba(39,220,231,0.45)">
+<circle cx="330" cy="138" r="1.4"/><circle cx="340" cy="140" r="1.8"/><circle cx="350" cy="136" r="1.4"/><circle cx="325" cy="150" r="1.4"/><circle cx="335" cy="152" r="1.8"/><circle cx="345" cy="148" r="1.8"/><circle cx="355" cy="150" r="1.4"/><circle cx="330" cy="162" r="1.4"/><circle cx="340" cy="164" r="1.8"/><circle cx="350" cy="160" r="1.4"/>
+</g>
+<g stroke="rgba(39,220,231,0.30)" stroke-width="1" fill="none">
+<path d="M 62 62 Q 130 30 200 60" stroke-dasharray="3 3"/>
+<path d="M 200 60 Q 240 40 288 60" stroke-dasharray="3 3"/>
+<path d="M 288 60 Q 320 100 345 148" stroke-dasharray="3 3"/>
+<path d="M 62 62 Q 80 100 118 130" stroke-dasharray="3 3"/>
+<path d="M 200 60 Q 210 100 218 146" stroke-dasharray="3 3"/>
+</g>
+<circle cx="62" cy="62" r="3.2" fill="#27dce7" filter="url(#nodeGlow)"/><circle cx="62" cy="62" r="1.6" fill="#ffffff"/>
+<circle cx="200" cy="60" r="3.5" fill="#27dce7" filter="url(#nodeGlow)"/><circle cx="200" cy="60" r="1.8" fill="#ffffff"/>
+<circle cx="288" cy="60" r="3.2" fill="#27dce7" filter="url(#nodeGlow)"/><circle cx="288" cy="60" r="1.6" fill="#ffffff"/>
+<circle cx="345" cy="148" r="2.8" fill="#27dce7" filter="url(#nodeGlow)"/><circle cx="345" cy="148" r="1.4" fill="#ffffff"/>
+<circle cx="118" cy="130" r="2.5" fill="#27dce7" filter="url(#nodeGlow)"/>
 </svg>"""
 
 
@@ -230,7 +199,7 @@ def _world_map_svg() -> str:
 # ─────────────────────────────────────────────
 
 def _inject_terminal_css():
-    st.markdown("""<style>
+    _render_html("""<style>
 /* ── BASE & ROOT CSS VARIABLES ──────────────────────────── */
 :root {
   --apex-bg: #02080d;
@@ -918,7 +887,7 @@ def _inject_terminal_css():
   background: #1ddf91;
   box-shadow: 0 0 8px rgba(29, 223, 145, 0.8);
 }
-</style>""", unsafe_allow_html=True)
+</style>""")
 
 
 # ─────────────────────────────────────────────
@@ -929,14 +898,14 @@ def _render_sidebar(auth_user):
     is_admin = bool(auth_user and auth_user.get("is_admin"))
     with st.sidebar:
         # Top Brand Logo
-        st.markdown("""<div class="apex-sidebar-brand">
-  <div class="apex-sidebar-logo-icon">▲</div>
-  <div>
-    <div class="apex-sidebar-brand-title">APEXMACRO</div>
-    <div class="apex-sidebar-brand-subtitle">Intelligence Desk</div>
-  </div>
+        _render_html("""<div class="apex-sidebar-brand">
+<div class="apex-sidebar-logo-icon">▲</div>
+<div>
+<div class="apex-sidebar-brand-title">APEXMACRO</div>
+<div class="apex-sidebar-brand-subtitle">Intelligence Desk</div>
 </div>
-<div class="apex-sidebar-sep"></div>""", unsafe_allow_html=True)
+</div>
+<div class="apex-sidebar-sep"></div>""")
 
         # Nav Items matching visual mock
         routes = [
@@ -962,15 +931,15 @@ def _render_sidebar(auth_user):
 
         # Bottom Market Clock & Mode
         now = core.get_current_time()
-        st.markdown(f"""<div class="apex-sidebar-bottom">
-  <div class="apex-side-meta"><span>◷</span> Market Time (UTC)</div>
-  <div class="apex-side-clock">{now.strftime('%H:%M:%S')}</div>
-  <div class="apex-side-date">{now.strftime('%d %b %Y, %a')}</div>
+        _render_html(f"""<div class="apex-sidebar-bottom">
+<div class="apex-side-meta"><span>◷</span> Market Time (UTC)</div>
+<div class="apex-side-clock">{now.strftime('%H:%M:%S')}</div>
+<div class="apex-side-date">{now.strftime('%d %b %Y, %a')}</div>
 </div>
 <div class="apex-sidebar-mode-toggle">
-  <span>🌙 Dark Mode</span>
-  <span style="font-size:9px;">⌵</span>
-</div>""", unsafe_allow_html=True)
+<span>🌙 Dark Mode</span>
+<span style="font-size:9px;">⌵</span>
+</div>""")
 
 
 # ─────────────────────────────────────────────
@@ -1004,7 +973,6 @@ def _render_dashboard_ui(auth_user):
     risk = _risk_label(broad)
     score = float((usd or {}).get("score", -0.25))
     gauge_val = round(score * 100)
-    glabel = _broad(score)
 
     is_admin = bool((auth_user or {}).get("is_admin"))
     role = "Admin" if is_admin else "VIP"
@@ -1013,25 +981,25 @@ def _render_dashboard_ui(auth_user):
     now = core.get_current_time()
 
     # ── 1. Top Header Row ─────────────────────────────────────────────
-    st.markdown(f"""<div class="apex-dashboard-head">
-  <div>
-    <div class="apex-dashboard-title">Global Macro Overview</div>
-    <div class="apex-dashboard-subtitle">Real-time macro intelligence and market overview</div>
-  </div>
-  <div class="apex-user-controls">
-    <div class="apex-bell-btn">
-      🔔<div class="apex-bell-badge">3</div>
-    </div>
-    <div class="apex-vip-badge">
-      👑 VIP
-    </div>
-    <div class="apex-profile-chip">
-      <div class="apex-profile-avatar">{avatar_initials}</div>
-      <span>{user_name}</span>
-      <span style="font-size:8px;opacity:0.6;">⌵</span>
-    </div>
-  </div>
-</div>""", unsafe_allow_html=True)
+    _render_html(f"""<div class="apex-dashboard-head">
+<div>
+<div class="apex-dashboard-title">Global Macro Overview</div>
+<div class="apex-dashboard-subtitle">Real-time macro intelligence and market overview</div>
+</div>
+<div class="apex-user-controls">
+<div class="apex-bell-btn">
+🔔<div class="apex-bell-badge">3</div>
+</div>
+<div class="apex-vip-badge">
+👑 VIP
+</div>
+<div class="apex-profile-chip">
+<div class="apex-profile-avatar">{avatar_initials}</div>
+<span>{user_name}</span>
+<span style="font-size:8px;opacity:0.6;">⌵</span>
+</div>
+</div>
+</div>""")
 
     # ── 2. Top 4 Summary Cards ────────────────────────────────────────
     _, _, dxy_vals  = _latest_change(dxy)
@@ -1039,76 +1007,72 @@ def _render_dashboard_ui(auth_user):
     _, _, oil_vals  = _latest_change(oil)
     _, _, ndx_vals  = _latest_change(ndx)
 
-    card1_spark = _smooth_sparkline_svg(dxy_vals or [10, 14, 12, 17, 15, 22, 20, 26], color="#27dce7", w=105, h=36)
-    card2_spark = _smooth_sparkline_svg(gold_vals or [12, 11, 15, 14, 19, 18, 24], color="#b54ee3", w=105, h=36)
-    card3_spark = _smooth_sparkline_svg(oil_vals or [22, 20, 24, 18, 16, 19, 14], color="#ff554f", w=105, h=36)
-    card4_spark = _smooth_sparkline_svg(ndx_vals or [14, 16, 15, 20, 18, 22, 25], color="#ffb21a", w=105, h=36)
+    card1_spark = _smooth_sparkline_svg(dxy_vals or [10, 14, 12, 17, 15, 22, 20, 26], color="#27dce7", w=105, h=34)
+    card2_spark = _smooth_sparkline_svg(gold_vals or [12, 11, 15, 14, 19, 18, 24], color="#b54ee3", w=105, h=34)
+    card3_spark = _smooth_sparkline_svg(oil_vals or [22, 20, 24, 18, 16, 19, 14], color="#ff554f", w=105, h=34)
+    card4_spark = _smooth_sparkline_svg(ndx_vals or [14, 16, 15, 20, 18, 22, 25], color="#ffb21a", w=105, h=34)
 
     risk_cls = _tone(risk)
     broad_cls = _tone(broad)
 
-    st.markdown(f"""<div class="apex-summary-grid">
-  <!-- Card 1: Active Assets -->
-  <div class="apex-summary-card">
-    <div class="apex-summary-left">
-      <div class="apex-summary-kicker-row">
-        <span class="apex-summary-icon">📈</span>
-        <span class="apex-kicker">ACTIVE ASSETS</span>
-      </div>
-      <div class="apex-metric">{available or 8}</div>
-      <div class="apex-summary-sub positive">↑ 2 vs yesterday</div>
-    </div>
-    <div class="apex-summary-spark">{card1_spark}</div>
-  </div>
+    _render_html(f"""<div class="apex-summary-grid">
+<!-- Card 1: Active Assets -->
+<div class="apex-summary-card">
+<div class="apex-summary-left">
+<div class="apex-summary-kicker-row">
+<span class="apex-summary-icon">📈</span>
+<span class="apex-kicker">ACTIVE ASSETS</span>
+</div>
+<div class="apex-metric">{available or 8}</div>
+<div class="apex-summary-sub positive">↑ 2 vs yesterday</div>
+</div>
+<div class="apex-summary-spark">{card1_spark}</div>
+</div>
 
-  <!-- Card 2: Global Events -->
-  <div class="apex-summary-card">
-    <div class="apex-summary-left">
-      <div class="apex-summary-kicker-row">
-        <span class="apex-summary-icon" style="color:#b54ee3;">📅</span>
-        <span class="apex-kicker">GLOBAL EVENTS</span>
-      </div>
-      <div class="apex-metric">{len(events) if events else 12}</div>
-      <div class="apex-summary-sub positive">↑ 3 vs yesterday</div>
-    </div>
-    <div class="apex-summary-spark">{card2_spark}</div>
-  </div>
+<!-- Card 2: Global Events -->
+<div class="apex-summary-card">
+<div class="apex-summary-left">
+<div class="apex-summary-kicker-row">
+<span class="apex-summary-icon" style="color:#b54ee3;">📅</span>
+<span class="apex-kicker">GLOBAL EVENTS</span>
+</div>
+<div class="apex-metric">{len(events) if events else 12}</div>
+<div class="apex-summary-sub positive">↑ 3 vs yesterday</div>
+</div>
+<div class="apex-summary-spark">{card2_spark}</div>
+</div>
 
-  <!-- Card 3: Risk Regime -->
-  <div class="apex-summary-card">
-    <div class="apex-summary-left">
-      <div class="apex-summary-kicker-row">
-        <span class="apex-summary-icon" style="color:#ff554f;">🛡️</span>
-        <span class="apex-kicker">RISK REGIME</span>
-      </div>
-      <div class="apex-metric {risk_cls}">{escape(risk)}</div>
-      <div class="apex-summary-sub">High Uncertainty</div>
-    </div>
-    <div class="apex-summary-spark">{card3_spark}</div>
-  </div>
+<!-- Card 3: Risk Regime -->
+<div class="apex-summary-card">
+<div class="apex-summary-left">
+<div class="apex-summary-kicker-row">
+<span class="apex-summary-icon" style="color:#ff554f;">🛡️</span>
+<span class="apex-kicker">RISK REGIME</span>
+</div>
+<div class="apex-metric {risk_cls}">{escape(risk)}</div>
+<div class="apex-summary-sub">High Uncertainty</div>
+</div>
+<div class="apex-summary-spark">{card3_spark}</div>
+</div>
 
-  <!-- Card 4: Market Bias -->
-  <div class="apex-summary-card">
-    <div class="apex-summary-left">
-      <div class="apex-summary-kicker-row">
-        <span class="apex-summary-icon" style="color:#ffb21a;">🎯</span>
-        <span class="apex-kicker">MARKET BIAS</span>
-      </div>
-      <div class="apex-metric {broad_cls}">{escape(broad)}</div>
-      <div class="apex-summary-sub">Cautious</div>
-    </div>
-    <div class="apex-summary-spark">{card4_spark}</div>
-  </div>
-</div>""", unsafe_allow_html=True)
+<!-- Card 4: Market Bias -->
+<div class="apex-summary-card">
+<div class="apex-summary-left">
+<div class="apex-summary-kicker-row">
+<span class="apex-summary-icon" style="color:#ffb21a;">🎯</span>
+<span class="apex-kicker">MARKET BIAS</span>
+</div>
+<div class="apex-metric {broad_cls}">{escape(broad)}</div>
+<div class="apex-summary-sub">Cautious</div>
+</div>
+<div class="apex-summary-spark">{card4_spark}</div>
+</div>
+</div>""")
 
     # ── 3. Middle Grid: Macro Regime (Map + Factors) & Market Snapshot
     col_mid1, col_mid2 = st.columns([1.12, 1.0], gap="small")
 
     with col_mid1:
-        # Dynamic or institutional macro factor rows
-        usd_rows = (usd or {}).get("rows", [])
-        
-        # Sourced values or institutional proxies
         dxy_latest, dxy_chg, _ = _latest_change(dxy)
         dxy_str = f"{dxy_latest:.2f}" if dxy_latest else "104.32"
         dxy_delta = f"↓ {abs(dxy_chg):.2f}" if dxy_chg and dxy_chg < 0 else f"↑ {abs(dxy_chg or 0.18):.2f}"
@@ -1116,79 +1080,73 @@ def _render_dashboard_ui(auth_user):
 
         map_svg = _world_map_svg()
 
-        st.markdown(f"""<div class="apex-panel">
-  <div class="apex-panel-header">
-    <div class="apex-panel-title">
-      Global Macro Regime <span class="apex-info-icon">ⓘ</span>
-    </div>
-  </div>
-  <div class="apex-regime-split">
-    <div class="apex-regime-map-wrap">
-      {map_svg}
-    </div>
-    <div class="apex-regime-rows">
-      <!-- Factor 1: Growth -->
-      <div class="apex-regime-item">
-        <div class="apex-regime-icon-box">🏭</div>
-        <div class="apex-regime-label-group">
-          <div class="apex-regime-name">Growth</div>
-          <div class="apex-regime-subtext">Global PMI Composite</div>
-        </div>
-        <span class="apex-status-pill amber">Slowing</span>
-      </div>
+        _render_html(f"""<div class="apex-panel">
+<div class="apex-panel-header">
+<div class="apex-panel-title">
+Global Macro Regime <span class="apex-info-icon">ⓘ</span>
+</div>
+</div>
+<div class="apex-regime-split">
+<div class="apex-regime-map-wrap">
+{map_svg}
+</div>
+<div class="apex-regime-rows">
+<div class="apex-regime-item">
+<div class="apex-regime-icon-box">🏭</div>
+<div class="apex-regime-label-group">
+<div class="apex-regime-name">Growth</div>
+<div class="apex-regime-subtext">Global PMI Composite</div>
+</div>
+<span class="apex-status-pill amber">Slowing</span>
+</div>
 
-      <!-- Factor 2: Inflation -->
-      <div class="apex-regime-item">
-        <div class="apex-regime-icon-box">💲</div>
-        <div class="apex-regime-label-group">
-          <div class="apex-regime-name">Inflation</div>
-          <div class="apex-regime-subtext">Major Economies CPI</div>
-        </div>
-        <span class="apex-status-pill amber">Sticky</span>
-      </div>
+<div class="apex-regime-item">
+<div class="apex-regime-icon-box">💲</div>
+<div class="apex-regime-label-group">
+<div class="apex-regime-name">Inflation</div>
+<div class="apex-regime-subtext">Major Economies CPI</div>
+</div>
+<span class="apex-status-pill amber">Sticky</span>
+</div>
 
-      <!-- Factor 3: Liquidity -->
-      <div class="apex-regime-item">
-        <div class="apex-regime-icon-box">💧</div>
-        <div class="apex-regime-label-group">
-          <div class="apex-regime-name">Liquidity</div>
-          <div class="apex-regime-subtext">Global Liquidity Index</div>
-        </div>
-        <span class="apex-status-pill red">Tightening</span>
-      </div>
+<div class="apex-regime-item">
+<div class="apex-regime-icon-box">💧</div>
+<div class="apex-regime-label-group">
+<div class="apex-regime-name">Liquidity</div>
+<div class="apex-regime-subtext">Global Liquidity Index</div>
+</div>
+<span class="apex-status-pill red">Tightening</span>
+</div>
 
-      <!-- Factor 4: Risk Appetite -->
-      <div class="apex-regime-item">
-        <div class="apex-regime-icon-box">🛡️</div>
-        <div class="apex-regime-label-group">
-          <div class="apex-regime-name">Risk Appetite</div>
-          <div class="apex-regime-subtext">Risk Sentiment Index</div>
-        </div>
-        <span class="apex-status-pill red">Low</span>
-      </div>
+<div class="apex-regime-item">
+<div class="apex-regime-icon-box">🛡️</div>
+<div class="apex-regime-label-group">
+<div class="apex-regime-name">Risk Appetite</div>
+<div class="apex-regime-subtext">Risk Sentiment Index</div>
+</div>
+<span class="apex-status-pill red">Low</span>
+</div>
 
-      <!-- Factor 5: Volatility -->
-      <div class="apex-regime-item">
-        <div class="apex-regime-icon-box">📉</div>
-        <div class="apex-regime-label-group">
-          <div class="apex-regime-name">Volatility</div>
-          <div class="apex-regime-subtext">VIX Index</div>
-        </div>
-        <div class="apex-regime-val-chip">22.4 <span style="color:#ff554f;font-weight:800;">↑ 2.1</span></div>
-      </div>
+<div class="apex-regime-item">
+<div class="apex-regime-icon-box">📉</div>
+<div class="apex-regime-label-group">
+<div class="apex-regime-name">Volatility</div>
+<div class="apex-regime-subtext">VIX Index</div>
+</div>
+<div class="apex-regime-val-chip">22.4 <span style="color:#ff554f;font-weight:800;">↑ 2.1</span></div>
+</div>
 
-      <!-- Factor 6: Dollar Strength -->
-      <div class="apex-regime-item">
-        <div class="apex-regime-icon-box">💵</div>
-        <div class="apex-regime-label-group">
-          <div class="apex-regime-name">Dollar Strength</div>
-          <div class="apex-regime-subtext">DXY Index</div>
-        </div>
-        <div class="apex-regime-val-chip">{dxy_str} <span style="color:{dxy_color};font-weight:800;">{dxy_delta}</span></div>
-      </div>
-    </div>
-  </div>
-</div>""", unsafe_allow_html=True)
+<div class="apex-regime-item">
+<div class="apex-regime-icon-box">💵</div>
+<div class="apex-regime-label-group">
+<div class="apex-regime-name">Dollar Strength</div>
+<div class="apex-regime-subtext">DXY Index</div>
+</div>
+<div class="apex-regime-val-chip">{dxy_str} <span style="color:{dxy_color};font-weight:800;">{dxy_delta}</span></div>
+</div>
+</div>
+</div>
+</div>""")
 
     with col_mid2:
         # Build Table rows for Market Snapshot
@@ -1199,68 +1157,68 @@ def _render_dashboard_ui(auth_user):
             chg_str = f"{ch:+.2f}%" if ch is not None else "—"
             price_str = _fmt(latest)
             spark_color = "#1ddf91" if (ch or 0) >= 0 else "#ff554f"
-            spark = _smooth_sparkline_svg(vals, color=spark_color, w=84, h=24) if len(vals) > 1 else ""
+            spark = _smooth_sparkline_svg(vals, color=spark_color, w=84, h=22) if len(vals) > 1 else ""
 
             snapshot_rows.append(f"""<div class="apex-snapshot-row">
-  <div class="apex-asset-info">
-    <div class="apex-asset-icon-round">{icon}</div>
-    <div class="apex-asset-title">{escape(name)}</div>
-  </div>
-  <div class="apex-asset-price">{price_str}</div>
-  <div class="apex-asset-chg {tone}">{escape(chg_str)}</div>
-  <div>{spark}</div>
+<div class="apex-asset-info">
+<div class="apex-asset-icon-round">{icon}</div>
+<div class="apex-asset-title">{escape(name)}</div>
+</div>
+<div class="apex-asset-price">{price_str}</div>
+<div class="apex-asset-chg {tone}">{escape(chg_str)}</div>
+<div>{spark}</div>
 </div>""")
 
-        # Add S&P 500 row matching the mock
+        # S&P 500 row matching the mock
         snapshot_rows.append("""<div class="apex-snapshot-row">
-  <div class="apex-asset-info">
-    <div class="apex-asset-icon-round" style="font-size:8px;font-weight:800;color:#27dce7;">S&P</div>
-    <div class="apex-asset-title">S&P 500</div>
-  </div>
-  <div class="apex-asset-price">5,495.52</div>
-  <div class="apex-asset-chg positive">+0.41%</div>
-  <div>""" + _smooth_sparkline_svg([12, 14, 13, 17, 16, 20, 22], color="#1ddf91", w=84, h=24) + """</div>
+<div class="apex-asset-info">
+<div class="apex-asset-icon-round" style="font-size:8px;font-weight:800;color:#27dce7;">S&P</div>
+<div class="apex-asset-title">S&P 500</div>
+</div>
+<div class="apex-asset-price">5,495.52</div>
+<div class="apex-asset-chg positive">+0.41%</div>
+<div>""" + _smooth_sparkline_svg([12, 14, 13, 17, 16, 20, 22], color="#1ddf91", w=84, h=22) + """</div>
 </div>""")
 
-        st.markdown(f"""<div class="apex-panel">
-  <div class="apex-panel-header">
-    <div class="apex-panel-title">
-      Market Snapshot <span class="apex-info-icon">ⓘ</span>
-    </div>
-  </div>
-  <div class="apex-snapshot-head">
-    <div>Asset</div>
-    <div>Price</div>
-    <div>24H Change</div>
-    <div>Trend (7D)</div>
-  </div>
-  {"".join(snapshot_rows)}
-  <div class="apex-snapshot-footer">
-    All prices are delayed. Source: ApexMacro Feeds
-  </div>
-</div>""", unsafe_allow_html=True)
+        _render_html(f"""<div class="apex-panel">
+<div class="apex-panel-header">
+<div class="apex-panel-title">
+Market Snapshot <span class="apex-info-icon">ⓘ</span>
+</div>
+</div>
+<div class="apex-snapshot-head">
+<div>Asset</div>
+<div>Price</div>
+<div>24H Change</div>
+<div>Trend (7D)</div>
+</div>
+{"".join(snapshot_rows)}
+<div class="apex-snapshot-footer">
+All prices are delayed. Source: ApexMacro Feeds
+</div>
+</div>""")
 
     # ── 4. Lower Grid: Sentiment Gauge + Line Chart & Top Catalysts ───
     col_low1, col_low2 = st.columns([1.45, 0.72], gap="small")
 
     with col_low1:
-        st.markdown("""<div class="apex-panel" style="padding-bottom:12px;">
-  <div class="apex-panel-header">
-    <div class="apex-panel-title">
-      Market Sentiment Index <span class="apex-info-icon">ⓘ</span>
-    </div>
-    <div class="apex-timeframe-tabs">
-      <div class="apex-timeframe-tab">7D</div>
-      <div class="apex-timeframe-tab">14D</div>
-      <div class="apex-timeframe-tab active">1M</div>
-      <div class="apex-timeframe-tab">3M</div>
-      <div class="apex-timeframe-tab">6M</div>
-      <div class="apex-timeframe-tab">1Y</div>
-    </div>
-  </div>
-  <div class="apex-sentiment-subtitle">
-    Composite sentiment from 7 major indicators
-  </div>""", unsafe_allow_html=True)
+        _render_html("""<div class="apex-panel" style="padding-bottom:12px;">
+<div class="apex-panel-header">
+<div class="apex-panel-title">
+Market Sentiment Index <span class="apex-info-icon">ⓘ</span>
+</div>
+<div class="apex-timeframe-tabs">
+<div class="apex-timeframe-tab">7D</div>
+<div class="apex-timeframe-tab">14D</div>
+<div class="apex-timeframe-tab active">1M</div>
+<div class="apex-timeframe-tab">3M</div>
+<div class="apex-timeframe-tab">6M</div>
+<div class="apex-timeframe-tab">1Y</div>
+</div>
+</div>
+<div class="apex-sentiment-subtitle">
+Composite sentiment from 7 major indicators
+</div>""")
 
         g_left, g_right = st.columns([0.38, 0.62], gap="small")
         with g_left:
@@ -1292,15 +1250,13 @@ def _render_dashboard_ui(auth_user):
                 font={"color": "#94a2b0"},
             )
             st.plotly_chart(fig_gauge, use_container_width=True, config={"displayModeBar": False})
-            st.markdown(f'<div style="text-align:center;margin-top:-14px;font-size:13px;font-weight:800;color:{"#ff554f" if gauge_val < -10 else "#1ddf91" if gauge_val > 10 else "#ffb21a"};">{escape(risk)}</div>', unsafe_allow_html=True)
+            _render_html(f'<div style="text-align:center;margin-top:-14px;font-size:13px;font-weight:800;color:{"#ff554f" if gauge_val < -10 else "#1ddf91" if gauge_val > 10 else "#ffb21a"};">{escape(risk)}</div>')
 
         with g_right:
             # Historical Area Line Chart matching Image 1
-            # Generate 30 days of synthetic/smooth historical composite curve
             date_range = [now - timedelta(days=29 - i) for i in range(30)]
             x_dates = [d.strftime("%d %b") for d in date_range]
 
-            # Natural oscillating macro sentiment series centered around gauge_val
             base_trend = np.linspace(gauge_val + 15, gauge_val, 30)
             noise = np.sin(np.linspace(0, 10, 30)) * 25 + np.cos(np.linspace(1, 8, 30)) * 15
             y_vals = np.clip(base_trend + noise, -90, 90)
@@ -1339,7 +1295,7 @@ def _render_dashboard_ui(auth_user):
             )
             st.plotly_chart(fig_history, use_container_width=True, config={"displayModeBar": False})
 
-        st.markdown("</div>", unsafe_allow_html=True)
+        _render_html("</div>")
 
     with col_low2:
         # Top Catalysts Panel matching Image 1
@@ -1359,98 +1315,97 @@ def _render_dashboard_ui(auth_user):
                 impact_class = impact.lower()
 
                 cat_rows_html.append(f"""<div class="apex-catalyst-item">
-  <div class="apex-cat-flag-badge">{flag}</div>
-  <div class="apex-cat-datetime-col">
-    <div class="apex-cat-date-text">{date_str}</div>
-    <div class="apex-cat-time-text">{time_str}</div>
-  </div>
-  <div class="apex-cat-info-col">
-    <div class="apex-cat-tag-row">
-      <span class="apex-cat-curr-text">{curr}</span>
-      <span class="apex-cat-dot-sep">●</span>
-      <span class="apex-cat-impact-text {impact_class}">{impact} Impact</span>
-    </div>
-    <div class="apex-cat-headline">{title}</div>
-  </div>
-  <div class="apex-cat-timer-col">{countdown}</div>
+<div class="apex-cat-flag-badge">{flag}</div>
+<div class="apex-cat-datetime-col">
+<div class="apex-cat-date-text">{date_str}</div>
+<div class="apex-cat-time-text">{time_str}</div>
+</div>
+<div class="apex-cat-info-col">
+<div class="apex-cat-tag-row">
+<span class="apex-cat-curr-text">{curr}</span>
+<span class="apex-cat-dot-sep">●</span>
+<span class="apex-cat-impact-text {impact_class}">{impact} Impact</span>
+</div>
+<div class="apex-cat-headline">{title}</div>
+</div>
+<div class="apex-cat-timer-col">{countdown}</div>
 </div>""")
         else:
-            # Fallback high-fidelity cards matching Image 1
             cat_rows_html.append("""<div class="apex-catalyst-item">
-  <div class="apex-cat-flag-badge">🇺🇸</div>
-  <div class="apex-cat-datetime-col">
-    <div class="apex-cat-date-text">27 AUG</div>
-    <div class="apex-cat-time-text">15:30</div>
-  </div>
-  <div class="apex-cat-info-col">
-    <div class="apex-cat-tag-row">
-      <span class="apex-cat-curr-text">USD</span>
-      <span class="apex-cat-dot-sep">●</span>
-      <span class="apex-cat-impact-text medium">Medium Impact</span>
-    </div>
-    <div class="apex-cat-headline">Unemployment Claims</div>
-  </div>
-  <div class="apex-cat-timer-col">In 3h 42m</div>
+<div class="apex-cat-flag-badge">🇺🇸</div>
+<div class="apex-cat-datetime-col">
+<div class="apex-cat-date-text">27 AUG</div>
+<div class="apex-cat-time-text">15:30</div>
+</div>
+<div class="apex-cat-info-col">
+<div class="apex-cat-tag-row">
+<span class="apex-cat-curr-text">USD</span>
+<span class="apex-cat-dot-sep">●</span>
+<span class="apex-cat-impact-text medium">Medium Impact</span>
+</div>
+<div class="apex-cat-headline">Unemployment Claims</div>
+</div>
+<div class="apex-cat-timer-col">In 3h 42m</div>
 </div>
 <div class="apex-catalyst-item">
-  <div class="apex-cat-flag-badge">🇺🇸</div>
-  <div class="apex-cat-datetime-col">
-    <div class="apex-cat-date-text">27 AUG</div>
-    <div class="apex-cat-time-text">19:15</div>
-  </div>
-  <div class="apex-cat-info-col">
-    <div class="apex-cat-tag-row">
-      <span class="apex-cat-curr-text">ALL</span>
-      <span class="apex-cat-dot-sep">●</span>
-      <span class="apex-cat-impact-text medium">Medium Impact</span>
-    </div>
-    <div class="apex-cat-headline">Jackson Hole Symposium</div>
-  </div>
-  <div class="apex-cat-timer-col">In 7h 27m</div>
+<div class="apex-cat-flag-badge">🇺🇸</div>
+<div class="apex-cat-datetime-col">
+<div class="apex-cat-date-text">27 AUG</div>
+<div class="apex-cat-time-text">19:15</div>
+</div>
+<div class="apex-cat-info-col">
+<div class="apex-cat-tag-row">
+<span class="apex-cat-curr-text">ALL</span>
+<span class="apex-cat-dot-sep">●</span>
+<span class="apex-cat-impact-text medium">Medium Impact</span>
+</div>
+<div class="apex-cat-headline">Jackson Hole Symposium</div>
+</div>
+<div class="apex-cat-timer-col">In 7h 27m</div>
 </div>
 <div class="apex-catalyst-item">
-  <div class="apex-cat-flag-badge">🇪🇺</div>
-  <div class="apex-cat-datetime-col">
-    <div class="apex-cat-date-text">28 AUG</div>
-    <div class="apex-cat-time-text">10:00</div>
-  </div>
-  <div class="apex-cat-info-col">
-    <div class="apex-cat-tag-row">
-      <span class="apex-cat-curr-text">EUR</span>
-      <span class="apex-cat-dot-sep">●</span>
-      <span class="apex-cat-impact-text high">High Impact</span>
-    </div>
-    <div class="apex-cat-headline">Eurozone CPI (YoY)</div>
-  </div>
-  <div class="apex-cat-timer-col">In 22h 12m</div>
+<div class="apex-cat-flag-badge">🇪🇺</div>
+<div class="apex-cat-datetime-col">
+<div class="apex-cat-date-text">28 AUG</div>
+<div class="apex-cat-time-text">10:00</div>
+</div>
+<div class="apex-cat-info-col">
+<div class="apex-cat-tag-row">
+<span class="apex-cat-curr-text">EUR</span>
+<span class="apex-cat-dot-sep">●</span>
+<span class="apex-cat-impact-text high">High Impact</span>
+</div>
+<div class="apex-cat-headline">Eurozone CPI (YoY)</div>
+</div>
+<div class="apex-cat-timer-col">In 22h 12m</div>
 </div>""")
 
-        st.markdown(f"""<div class="apex-panel">
-  <div class="apex-panel-header">
-    <div class="apex-panel-title">
-      Top Catalysts <span class="apex-info-icon">ⓘ</span>
-    </div>
-    <a class="apex-header-link" onclick="window.location.href='#forecaster'">Go to Forecaster ›</a>
-  </div>
-  {"".join(cat_rows_html)}
-  <div class="apex-catalyst-bottom-link">
-    <span>View full calendar in Forecaster</span>
-    <span>›</span>
-  </div>
-</div>""", unsafe_allow_html=True)
+        _render_html(f"""<div class="apex-panel">
+<div class="apex-panel-header">
+<div class="apex-panel-title">
+Top Catalysts <span class="apex-info-icon">ⓘ</span>
+</div>
+<a class="apex-header-link" onclick="window.location.href='#forecaster'">Go to Forecaster ›</a>
+</div>
+{"".join(cat_rows_html)}
+<div class="apex-catalyst-bottom-link">
+<span>View full calendar in Forecaster</span>
+<span>›</span>
+</div>
+</div>""")
 
         if st.button("Go to Forecaster  →", key="dash_btn_forecaster", use_container_width=True):
             st.switch_page("pages/forecaster.py")
 
     # ── 5. Single Institutional Footer Bar ────────────────────────────
-    st.markdown(f"""<div class="apex-footer-bar">
-  <div class="apex-footer-bar-left">
-    <span>Last Updated: {now.strftime('%d %b %Y, %H:%M UTC')}</span>
-    <span class="apex-live-status"><span class="apex-live-dot"></span> All Systems Operational</span>
-    <span>Data Source: ApexMacro Intelligence Engine</span>
-  </div>
-  <span>© 2026 ApexMacro. All rights reserved.</span>
-</div>""", unsafe_allow_html=True)
+    _render_html(f"""<div class="apex-footer-bar">
+<div class="apex-footer-bar-left">
+<span>Last Updated: {now.strftime('%d %b %Y, %H:%M UTC')}</span>
+<span class="apex-live-status"><span class="apex-live-dot"></span> All Systems Operational</span>
+<span>Data Source: ApexMacro Intelligence Engine</span>
+</div>
+<span>© 2026 ApexMacro. All rights reserved.</span>
+</div>""")
 
 
 # ─────────────────────────────────────────────
@@ -1459,7 +1414,6 @@ def _render_dashboard_ui(auth_user):
 
 def render_dashboard(auth_user: dict) -> None:
     _render_dashboard_ui(auth_user)
-    # Intentionally do not call redundant render_footer() to avoid double footer bug
 
 
 def render_forex(auth_user: dict, *, active_page: str = "forex") -> None:
