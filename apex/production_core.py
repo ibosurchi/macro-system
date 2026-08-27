@@ -4644,7 +4644,7 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_ove
     return result
 
 
-@st.cache_data(ttl=180, show_spinner=False)
+@st.cache_data(ttl=21600, show_spinner=False)
 def get_causal_macro_ai_analysis(event: dict, nowcast: dict, articles: list, api_key: str = DEFAULT_AI_KEY, provider_hint: str = DEFAULT_AI_PROVIDER, model_hint: str = DEFAULT_AI_MODEL, cache_version: str = AI_CACHE_VERSION) -> dict:
     """Event-specific causal AI layer. Keeps the existing quantitative nowcast intact."""
     if not api_key:
@@ -4807,7 +4807,7 @@ def render_causal_macro_ai_panel(analysis: dict) -> None:
     if analysis.get("status") != "ok":
         if analysis.get("status") == "skipped":
             return
-        if analysis.get("status") == "updating":
+        if analysis.get("status") in {"updating", "deferred"}:
             render_html(
                 '<div class="fc-ai" style="border-color:rgba(173,123,255,.22);color:#bfa7ff;">'
                 '🧠 Causal Macro Intelligence is updating in the background. '
@@ -4863,7 +4863,13 @@ _FORECASTER_BG_LOCK = threading.RLock()
 _FORECASTER_BG_CACHE: dict[str, dict] = {}
 _FORECASTER_BG_INFLIGHT: set[str] = set()
 _FORECASTER_BG_WORKER_RUNNING = False
-_FORECASTER_BG_TTL_SECONDS = 300
+_FORECASTER_BG_TTL_SECONDS = 900
+# Causal AI is expensive. Reuse it until the event's meaningful evidence changes.
+# This cache is independent from the faster quantitative Nowcast cache.
+_FORECASTER_AI_REUSE_CACHE: dict[str, dict] = {}
+_FORECASTER_AI_MAX_AGE_SECONDS = 48 * 3600
+_FORECASTER_AI_ERROR_RETRY_SECONDS = 15 * 60
+_FORECASTER_AI_PREWARM_HORIZON_SECONDS = 72 * 3600
 
 
 def _forecaster_bg_signature(event: dict, actual: str = "") -> str:
@@ -4877,6 +4883,70 @@ def _forecaster_bg_signature(event: dict, actual: str = "") -> str:
         "ai_cache": AI_CACHE_VERSION,
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def _forecaster_ai_evidence_signature(event: dict, nowcast: dict, relevant_articles: list, actual: str = "") -> str:
+    """Fingerprint only evidence that can materially change causal AI output."""
+    precursor_rows = []
+    for row in (nowcast.get("precursor_results") or []):
+        precursor_rows.append({
+            "name": row.get("name", ""),
+            "latest": round(float(row.get("latest", 0) or 0), 6),
+            "mom": round(float(row.get("mom", 0) or 0), 6),
+            "score": round(float(row.get("score", 0) or 0), 6),
+        })
+
+    news_rows = []
+    for art in (relevant_articles or [])[:10]:
+        source = art.get("source", {})
+        source_name = source.get("name", "") if isinstance(source, dict) else str(source or "")
+        news_rows.append({
+            "source": source_name,
+            "published": str(art.get("publishedAt", "")),
+            "title": str(art.get("title", "")).strip(),
+            "description": str(art.get("description", "")).strip(),
+        })
+    news_rows.sort(key=lambda x: (x["published"], x["source"], x["title"]))
+
+    payload = {
+        "event": _forecaster_bg_signature(event, actual),
+        "precursors": precursor_rows,
+        "probabilities": nowcast.get("probabilities", {}),
+        "composite": round(float(nowcast.get("nowcast_composite", 0) or 0), 6),
+        "conflict": round(float(nowcast.get("conflict_score", 0) or 0), 6),
+        "evidence_quality": round(float(nowcast.get("evidence_quality", 0) or 0), 6),
+        "news": news_rows,
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def _forecaster_relevant_ai_articles(event: dict, all_news: list) -> list:
+    """Use the same event-verification gate so unrelated feed churn cannot trigger AI spend."""
+    verified, _ = _verified_event_news(event, all_news or [])
+    return verified[:10]
+
+
+def _forecaster_ai_cache_get(code: str, evidence_sig: str) -> dict | None:
+    now_ts = time.time()
+    with _FORECASTER_BG_LOCK:
+        item = _FORECASTER_AI_REUSE_CACHE.get(code)
+        if not item or item.get("evidence_signature") != evidence_sig:
+            return None
+        age = now_ts - float(item.get("updated_at", 0))
+        result = item.get("result") or {}
+        max_age = _FORECASTER_AI_ERROR_RETRY_SECONDS if result.get("status") == "error" else _FORECASTER_AI_MAX_AGE_SECONDS
+        if age > max_age:
+            return None
+        return result
+
+
+def _forecaster_ai_cache_put(code: str, evidence_sig: str, result: dict) -> None:
+    with _FORECASTER_BG_LOCK:
+        _FORECASTER_AI_REUSE_CACHE[code] = {
+            "evidence_signature": evidence_sig,
+            "updated_at": time.time(),
+            "result": result,
+        }
 
 
 def _forecaster_bg_get(event: dict, actual: str = "") -> dict | None:
@@ -4895,7 +4965,7 @@ def _forecaster_bg_get(event: dict, actual: str = "") -> dict | None:
 
 
 
-def _forecaster_background_worker(events: list[dict], fred_key: str, channel_name: str, actuals_snapshot: dict) -> None:
+def _forecaster_background_worker(events: list[dict], fred_key: str, channel_name: str, actuals_snapshot: dict, force_ai: bool = False) -> None:
     """
     Continuously warm Forecaster results off the click path.
 
@@ -4950,7 +5020,8 @@ def _forecaster_background_worker(events: list[dict], fred_key: str, channel_nam
                     and time.time() - float(existing.get("updated_at", 0)) <= _FORECASTER_BG_TTL_SECONDS
                     and existing.get("nowcast")
                 )
-                if fresh or code in _FORECASTER_BG_INFLIGHT:
+                ai_ready = bool(existing and (existing.get("causal_ai") or {}).get("status") in {"ok", "skipped"})
+                if (fresh and (not force_ai or ai_ready)) or code in _FORECASTER_BG_INFLIGHT:
                     return
                 _FORECASTER_BG_INFLIGHT.add(code)
 
@@ -4973,17 +5044,42 @@ def _forecaster_background_worker(events: list[dict], fred_key: str, channel_nam
                         "effective_actual": effective_actual,
                     }
 
-                # Stage 2: slower AI runs after the Nowcast is already available.
+                # Stage 2: causal AI is event-driven, not timer-driven.
+                # Unrelated news-feed churn and Streamlit reruns must not spend tokens.
                 if str(ev.get("impact", "")).title() == "High":
-                    causal_ai = get_causal_macro_ai_analysis(
-                        ev,
-                        nowcast,
-                        all_news,
-                        DEFAULT_AI_KEY,
-                        DEFAULT_AI_PROVIDER,
-                        DEFAULT_AI_MODEL,
-                        AI_CACHE_VERSION,
+                    ev_dt = ev.get("datetime_obj")
+                    seconds_to_event = None
+                    if isinstance(ev_dt, datetime):
+                        try:
+                            local_now = datetime.utcnow() + timedelta(hours=3)
+                            seconds_to_event = (ev_dt.replace(tzinfo=None) - local_now).total_seconds()
+                        except Exception:
+                            seconds_to_event = None
+
+                    should_prewarm_ai = force_ai or effective_actual or (
+                        seconds_to_event is not None
+                        and -(48 * 3600) <= seconds_to_event <= _FORECASTER_AI_PREWARM_HORIZON_SECONDS
                     )
+
+                    if should_prewarm_ai:
+                        relevant_ai_news = _forecaster_relevant_ai_articles(ev, all_news)
+                        evidence_sig = _forecaster_ai_evidence_signature(
+                            ev, nowcast, relevant_ai_news, effective_actual
+                        )
+                        causal_ai = _forecaster_ai_cache_get(code, evidence_sig)
+                        if causal_ai is None:
+                            causal_ai = get_causal_macro_ai_analysis(
+                                ev,
+                                nowcast,
+                                relevant_ai_news,
+                                DEFAULT_AI_KEY,
+                                DEFAULT_AI_PROVIDER,
+                                DEFAULT_AI_MODEL,
+                                AI_CACHE_VERSION,
+                            )
+                            _forecaster_ai_cache_put(code, evidence_sig, causal_ai)
+                    else:
+                        causal_ai = {"status": "deferred"}
                 else:
                     causal_ai = {"status": "skipped"}
 
@@ -5022,7 +5118,7 @@ def _forecaster_background_worker(events: list[dict], fred_key: str, channel_nam
         with _FORECASTER_BG_LOCK:
             _FORECASTER_BG_WORKER_RUNNING = False
 
-def _ensure_forecaster_background_worker(events: list[dict], fred_key: str, channel_name: str, actuals_cache: dict) -> None:
+def _ensure_forecaster_background_worker(events: list[dict], fred_key: str, channel_name: str, actuals_cache: dict, force_ai: bool = False) -> None:
     """Start at most one daemon worker per process; reruns do not duplicate RUAPI calls."""
     global _FORECASTER_BG_WORKER_RUNNING
     if not events:
@@ -5034,9 +5130,14 @@ def _ensure_forecaster_background_worker(events: list[dict], fred_key: str, chan
         code = str(ev.get("code", "")).strip()
         saved = str((actuals_cache or {}).get(code, "")).strip()
         published = _normalize_forex_factory_actual(ev.get("actual_str", ""))
-        if _forecaster_bg_get(ev, saved or published) is None:
+        cached = _forecaster_bg_get(ev, saved or published)
+        if cached is None:
             needs_work = True
             break
+        if force_ai and str(ev.get("impact", "")).title() == "High":
+            if (cached.get("causal_ai") or {}).get("status") not in {"ok", "skipped"}:
+                needs_work = True
+                break
     if not needs_work:
         return
 
@@ -5047,7 +5148,7 @@ def _ensure_forecaster_background_worker(events: list[dict], fred_key: str, chan
 
     threading.Thread(
         target=_forecaster_background_worker,
-        args=(list(events), fred_key, channel_name, dict(actuals_cache or {})),
+        args=(list(events), fred_key, channel_name, dict(actuals_cache or {}), force_ai),
         daemon=True,
         name="ApexMacroForecasterPrecompute",
     ).start()
@@ -5081,6 +5182,8 @@ def _show_forecaster_event_dialog(
         nowcast = bg_result["nowcast"]
         causal_ai = bg_result.get("causal_ai") or {"status": "skipped"}
         all_news = bg_result.get("all_news") or []
+        if str(modal_ev.get("impact", "")).title() == "High" and causal_ai.get("status") not in {"ok", "skipped"}:
+            _ensure_forecaster_background_worker([modal_ev], fred_key, channel_name, actuals_cache, force_ai=True)
     else:
         with st.spinner(f"Loading Causal Intelligence for {modal_ev.get('title','catalyst')}..."):
             all_news = fetch_all_instant_news(channel_name)
@@ -5097,7 +5200,7 @@ def _show_forecaster_event_dialog(
                     "all_news": all_news,
                     "effective_actual": effective_actual,
                 }
-            _ensure_forecaster_background_worker([modal_ev], fred_key, channel_name, actuals_cache)
+            _ensure_forecaster_background_worker([modal_ev], fred_key, channel_name, actuals_cache, force_ai=True)
 
     try:
         _record_forecaster_snapshot(modal_ev, nowcast, actual=effective_actual)
@@ -5151,7 +5254,7 @@ def _show_forecaster_event_dialog(
     if causal_ai.get("status") == "ok":
         ai_text = causal_ai.get("event_assessment", "") or nowcast.get("outcome_desc", "")
         ai_updated = "Live Causal Macro Engine"
-    elif causal_ai.get("status") == "updating":
+    elif causal_ai.get("status") in {"updating", "deferred"}:
         ai_text = nowcast.get("outcome_desc", "") + " (Causal AI synthesis updating in background...)"
         ai_updated = "Updating..."
     else:
