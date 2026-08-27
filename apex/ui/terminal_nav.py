@@ -1,7 +1,7 @@
 """Shared responsive authenticated navigation.
 
 Desktop: persistent institutional left sidebar matching Image 1.
-Mobile: sleek interactive glassmorphism drawer matching Image 4 & 5.
+Mobile: centered logo top bar with ☰ drawer toggle matching user directive.
 """
 from __future__ import annotations
 
@@ -67,14 +67,14 @@ def render_terminal_nav(active_page: str, auth_user: dict | None = None) -> bool
 <span style="font-size:9px;">⌵</span>
 </div>""")
 
-    # ── 2. Mobile Drawer Open State (Full Glass Menu) ──────────────────
+    # ── 2. Mobile Drawer Open State (Centered Logo + Close ☰ Button) ──
     if st.session_state.get("mobile_menu_open", False):
         st.markdown('<div class="apex-mobile-drawer-wrap">', unsafe_allow_html=True)
         st.markdown('<div class="apex-mobile-drawer-head">', unsafe_allow_html=True)
 
         col_logo, col_close = st.columns([0.82, 0.18])
         with col_logo:
-            core.render_html("""<div class="apex-sidebar-brand" style="padding:0;margin:0;">
+            core.render_html("""<div class="apex-sidebar-brand apex-brand-centered">
 <div class="apex-sidebar-logo-icon">▲</div>
 <div>
 <div class="apex-sidebar-brand-title">APEXMACRO</div>
@@ -88,7 +88,7 @@ def render_terminal_nav(active_page: str, auth_user: dict | None = None) -> bool
 
         st.markdown('</div>', unsafe_allow_html=True)
 
-        # Large visible menu buttons
+        # Menu List
         st.markdown("<div class='apex-mobile-menu-list'>", unsafe_allow_html=True)
         for key in keys:
             icon, label, path = ROUTES[key]
@@ -119,11 +119,11 @@ def render_terminal_nav(active_page: str, auth_user: dict | None = None) -> bool
         st.stop()
         return True
 
-    # ── 3. Mobile Top Header Bar (Closed State) ───────────────────────
+    # ── 3. Mobile Top Header Bar (Closed State: Centered Logo + ☰ Button)
     st.markdown('<div class="apex-mobile-header-bar-container">', unsafe_allow_html=True)
     m_col1, m_col2 = st.columns([0.82, 0.18])
     with m_col1:
-        core.render_html("""<div class="apex-sidebar-brand" style="padding:0;margin:0;">
+        core.render_html("""<div class="apex-sidebar-brand apex-brand-centered">
 <div class="apex-sidebar-logo-icon">▲</div>
 <div>
 <div class="apex-sidebar-brand-title">APEXMACRO</div>

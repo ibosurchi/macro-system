@@ -64,6 +64,9 @@ header[data-testid="stHeader"],
   .apex-mobile-drawer-wrap {
     display: none !important;
   }
+  .apex-auth-desktop-strip {
+    display: flex !important;
+  }
 }
 
 @media (max-width: 1023px) {
@@ -73,6 +76,13 @@ header[data-testid="stHeader"],
   [data-testid="stSidebarCollapsedControl"],
   [data-testid="collapsedControl"] {
     display: none !important;
+  }
+  .apex-auth-desktop-strip {
+    display: none !important;
+    visibility: hidden !important;
+    height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
   }
 }
 
@@ -113,11 +123,11 @@ header[data-testid="stHeader"],
   color: #f0f4f8 !important;
 }
 
-/* ── MOBILE HEADER (TOP BAR: LOGO ON LEFT, ☰ ON RIGHT) ──── */
+/* ── MOBILE HEADER (TOP BAR: CENTERED LOGO + ☰ ON RIGHT) ─ */
 .apex-mobile-header-bar-container {
   display: block;
-  margin: 0 0 10px;
-  padding: 2px 0 8px;
+  margin: 0 0 12px;
+  padding: 0 0 6px;
   border-bottom: 1px solid rgba(70, 145, 165, 0.18);
 }
 
@@ -128,18 +138,20 @@ header[data-testid="stHeader"],
   align-items: center !important;
   justify-content: space-between !important;
   gap: 8px !important;
+  width: 100% !important;
 }
 
 .apex-mobile-header-bar-container [data-testid="column"]:first-child {
   flex: 1 1 auto !important;
   min-width: 0 !important;
-  width: auto !important;
+  width: calc(100% - 50px) !important;
 }
 
 .apex-mobile-header-bar-container [data-testid="column"]:last-child {
   flex: 0 0 44px !important;
   min-width: 44px !important;
   width: 44px !important;
+  max-width: 44px !important;
 }
 
 .apex-mobile-header-bar-container button {
@@ -160,9 +172,19 @@ header[data-testid="stHeader"],
   cursor: pointer !important;
 }
 
+.apex-sidebar-brand.apex-brand-centered {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  text-align: center !important;
+  gap: 10px !important;
+  padding: 0 !important;
+  margin: 0 auto !important;
+}
+
 /* ── MOBILE FULL-SCREEN GLASS DRAWER ─────────────────────── */
 .apex-mobile-drawer-wrap {
-  padding: 4px 0 24px;
+  padding: 0 0 24px;
   animation: apexMobileDrawerFadeIn 0.20s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
@@ -186,16 +208,20 @@ header[data-testid="stHeader"],
   gap: 8px !important;
   padding-bottom: 8px;
   border-bottom: 1px solid rgba(70, 145, 165, 0.18);
+  width: 100% !important;
 }
 
 .apex-mobile-drawer-head [data-testid="column"]:first-child {
   flex: 1 1 auto !important;
   min-width: 0 !important;
+  width: calc(100% - 50px) !important;
 }
 
 .apex-mobile-drawer-head [data-testid="column"]:last-child {
   flex: 0 0 44px !important;
   min-width: 44px !important;
+  width: 44px !important;
+  max-width: 44px !important;
 }
 
 .apex-mobile-drawer-head button {
@@ -414,7 +440,7 @@ header[data-testid="stHeader"],
     padding-left: 10px !important;
     padding-right: 10px !important;
     padding-bottom: 24px !important;
-    margin-top: 0 !important;
+    margin-top: -30px !important;
   }
 }
 </style>''')
