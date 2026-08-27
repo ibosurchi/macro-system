@@ -47,6 +47,63 @@ def _shared_auth_css() -> None:
   }
 }
 
+@media (max-width: 1023px) {
+  header[data-testid="stHeader"] {
+    display: flex !important;
+    visibility: visible !important;
+    background: transparent !important;
+    height: 48px !important;
+    z-index: 999990 !important;
+  }
+  
+  [data-testid="stSidebarCollapsedControl"],
+  [data-testid="collapsedControl"],
+  button[data-testid="stSidebarCollapseButton"],
+  button[aria-label="Expand sidebar"],
+  button[aria-label="Open sidebar"],
+  button[kind="header"] {
+    display: flex !important;
+    visibility: visible !important;
+    position: fixed !important;
+    top: 10px !important;
+    left: 10px !important;
+    z-index: 999999 !important;
+    background: rgba(7, 25, 35, 0.94) !important;
+    border: 1px solid rgba(39, 220, 231, 0.50) !important;
+    border-radius: 9px !important;
+    padding: 6px 10px !important;
+    color: #27dce7 !important;
+    box-shadow: 0 0 16px rgba(39, 220, 231, 0.25) !important;
+    cursor: pointer !important;
+  }
+
+  [data-testid="stSidebarCollapsedControl"] svg,
+  [data-testid="collapsedControl"] svg {
+    fill: #27dce7 !important;
+    stroke: #27dce7 !important;
+    color: #27dce7 !important;
+  }
+
+  [data-testid="stSidebar"] {
+    z-index: 1000000 !important;
+    background: #03111a !important;
+    box-shadow: 4px 0 30px rgba(0, 0, 0, 0.85) !important;
+  }
+
+  [data-testid="stSidebar"] button[aria-label="Close sidebar"],
+  [data-testid="stSidebar"] [data-testid="stSidebarCollapseButton"] {
+    display: flex !important;
+    visibility: visible !important;
+    color: #27dce7 !important;
+  }
+  
+  .block-container {
+    padding-top: 54px !important;
+    padding-left: 12px !important;
+    padding-right: 12px !important;
+  }
+}
+
 [data-testid="stSidebar"] > div:first-child {
   padding: 16px 10px 18px !important;
 }
@@ -200,20 +257,15 @@ def _shared_auth_css() -> None:
 }
 
 @media (max-width: 768px) {
-  .block-container {
-    padding-top: 12px !important;
-    padding-left: 14px !important;
-    padding-right: 14px !important;
-  }
   .apex-auth-desktop-strip { display: none; }
   .apex-auth-mobile-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 10px;
-    min-height: 46px;
+    min-height: 44px;
     margin: 0 0 12px;
-    padding: 8px 12px;
+    padding: 7px 12px;
     border: 1px solid rgba(55, 150, 170, 0.18);
     border-radius: 11px;
     background: linear-gradient(145deg, rgba(6, 21, 30, 0.92), rgba(3, 13, 20, 0.97));
@@ -226,11 +278,11 @@ def _shared_auth_css() -> None:
   }
   .apex-auth-mobile-mark {
     font-weight: 950;
-    font-size: 18px;
+    font-size: 17px;
     color: #27dce7;
   }
   .apex-auth-mobile-title {
-    font-size: 13px;
+    font-size: 12.5px;
     font-weight: 800;
     color: #eef4f7;
     letter-spacing: 0.7px;
