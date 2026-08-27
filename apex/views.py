@@ -2,6 +2,11 @@
 from . import production_core as core
 from .ui.common import render_top_header, render_footer
 from .ui.terminal_nav import render_terminal_nav
+from .ui.dashboard import render_dashboard as render_dashboard_ui
+
+def render_dashboard(auth_user: dict) -> None:
+    render_dashboard_ui(auth_user)
+    render_footer()
 
 def render_forex(auth_user: dict, *, active_page: str = "forex") -> None:
     render_top_header(auth_user)
