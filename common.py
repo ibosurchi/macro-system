@@ -21,6 +21,31 @@ def _shared_auth_css() -> None:
   --apex-auth-muted: #94a2b0;
 }
 
+*, *::before, *::after {
+  box-sizing: border-box !important;
+}
+
+html, body {
+  overflow-x: clip !important;
+  max-width: 100vw !important;
+  width: 100% !important;
+  position: relative !important;
+  touch-action: pan-y !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+[data-testid="stAppViewContainer"],
+[data-testid="stAppViewBlockContainer"],
+.stApp,
+.main,
+.block-container {
+  overflow-x: clip !important;
+  max-width: 100vw !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+}
+
 /* Hide default streamlit headers and deploy buttons completely */
 header[data-testid="stHeader"],
 [data-testid="stHeader"],
@@ -61,7 +86,11 @@ header[data-testid="stHeader"],
     visibility: hidden !important;
   }
   .apex-mobile-header-bar-container,
-  .apex-mobile-open-container {
+  .apex-mobile-menu-overlay,
+  .apex-mobile-menu-drawer,
+  .st-key-apex_mobile_header,
+  .st-key-apex_mobile_menu_overlay,
+  .st-key-apex_mobile_menu_drawer {
     display: none !important;
   }
   .apex-auth-desktop-strip {
@@ -123,214 +152,107 @@ header[data-testid="stHeader"],
   color: #f0f4f8 !important;
 }
 
-/* ── MOBILE HEADER (LOGO ON LEFT, COMPACT ☰ ON RIGHT) ───── */
-.apex-mobile-header-bar-container {
-  display: block;
-  margin: 0 0 10px;
-  padding: 0 0 6px;
-  border-bottom: 1px solid rgba(70, 145, 165, 0.18);
+/* ── APEX COMPACT MOBILE NAV ─────────────────────────────── */
+.st-key-apex_mobile_header {
+  display:block!important;
+  width:calc(100% - 20px)!important;
+  max-width:calc(100% - 20px)!important;
+  margin:0 10px 12px!important;
+  padding:0!important;
+  box-sizing:border-box!important;
+  overflow:visible!important;
 }
+.st-key-apex_mobile_header>div{width:100%!important;max-width:100%!important;min-width:0!important;}
+.st-key-apex_mobile_header [data-testid="stHorizontalBlock"]{
+  display:grid!important;
+  grid-template-columns:minmax(0,1fr) 44px!important;
+  align-items:center!important;
+  gap:10px!important;
+  width:100%!important;
+  max-width:100%!important;
+  margin:0!important;
+  padding:0!important;
+}
+.st-key-apex_mobile_header [data-testid="column"]{width:auto!important;min-width:0!important;padding:0!important;margin:0!important;}
+.st-key-apex_mobile_header [data-testid="column"]:first-child{min-width:0!important;overflow:hidden!important;}
+.st-key-apex_mobile_header [data-testid="column"]:last-child{
+  width:44px!important;
+  min-width:44px!important;
+  max-width:44px!important;
+  display:flex!important;
+  align-items:center!important;
+  justify-content:center!important;
+  overflow:visible!important;
+}
+.st-key-apex_mobile_header [data-testid="column"]:last-child [data-testid="stButton"]{
+  width:44px!important;
+  min-width:44px!important;
+  max-width:44px!important;
+  margin:0!important;
+  padding:0!important;
+}
+.st-key-apex_mobile_header button{
+  width:42px!important;
+  height:42px!important;
+  min-width:42px!important;
+  min-height:42px!important;
+  max-width:42px!important;
+  padding:0!important;
+  margin:0!important;
+  border-radius:10px!important;
+  border:1px solid rgba(39,220,231,.45)!important;
+  background:rgba(6,22,31,.90)!important;
+  color:#27dce7!important;
+  font-size:19px!important;
+  box-shadow:0 0 14px rgba(39,220,231,.15)!important;
+  transition:transform 150ms ease,background 180ms ease!important;
+}
+.st-key-apex_mobile_header button:active{transform:scale(.92)!important;}
+.apex-mobile-top-brand,.apex-mobile-drawer-brand{display:flex;align-items:center;gap:10px;min-width:0;max-width:100%;overflow:hidden;}
+.apex-brand-logo{width:42px;height:42px;min-width:42px;border-radius:11px;border:1px solid rgba(39,220,231,.36);background:linear-gradient(145deg,rgba(11,37,48,.96),rgba(4,18,26,.98));display:grid;place-items:center;box-shadow:inset 0 0 16px rgba(39,220,231,.07),0 0 14px rgba(39,220,231,.06);}
+.apex-brand-logo svg{width:28px;height:28px;display:block;}
+.apex-brand-copy{min-width:0;}
+.apex-mobile-top-brand .apex-sidebar-brand-title,.apex-mobile-drawer-brand .apex-sidebar-brand-title{font-size:15px;letter-spacing:1.25px;white-space:nowrap;}
+.apex-mobile-top-brand .apex-sidebar-brand-subtitle,.apex-mobile-drawer-brand .apex-sidebar-brand-subtitle{font-size:8.5px;letter-spacing:.55px;white-space:nowrap;}
 
-.apex-mobile-header-bar-container [data-testid="stHorizontalBlock"] {
-  display: flex !important;
-  flex-direction: row !important;
-  flex-wrap: nowrap !important;
-  align-items: center !important;
-  justify-content: space-between !important;
-  gap: 8px !important;
-  width: 100% !important;
-}
+/* Real full-screen overlay. The empty Streamlit block itself is fixed. */
+.st-key-apex_mobile_menu_overlay{position:fixed!important;inset:0!important;z-index:99980!important;background:rgba(1,7,12,.52)!important;backdrop-filter:blur(7px)!important;-webkit-backdrop-filter:blur(7px)!important;animation:apexOverlayIn 220ms ease both!important;}
+.st-key-apex_mobile_menu_overlay [data-testid="stButton"]{position:absolute!important;inset:0!important;margin:0!important;}
+.st-key-apex_mobile_menu_overlay button{position:absolute!important;inset:0!important;width:100%!important;height:100%!important;min-height:100%!important;border:0!important;border-radius:0!important;background:transparent!important;color:transparent!important;box-shadow:none!important;padding:0!important;}
+@keyframes apexOverlayIn{from{opacity:0;backdrop-filter:blur(0)}to{opacity:1;backdrop-filter:blur(7px)}}
 
-.apex-mobile-header-bar-container [data-testid="column"]:first-child {
-  flex: 1 1 auto !important;
-  min-width: 0 !important;
-  width: calc(100% - 50px) !important;
-}
+/* IMPORTANT: width is on the keyed Streamlit container that ACTUALLY owns the widgets. */
+.st-key-apex_mobile_menu_drawer{position:fixed!important;top:0!important;right:0!important;bottom:0!important;left:auto!important;margin:0!important;translate:none!important;width:min(78vw,320px)!important;max-width:320px!important;min-width:0!important;height:100dvh!important;z-index:99990!important;box-sizing:border-box!important;padding:14px 12px 18px!important;overflow-y:auto!important;overflow-x:hidden!important;background:linear-gradient(160deg,rgba(5,22,32,.995),rgba(2,12,19,.998))!important;border-left:1px solid rgba(30,205,220,.32)!important;box-shadow:-18px 0 50px rgba(0,0,0,.42)!important;animation:apexDrawerIn 285ms cubic-bezier(.22,.8,.25,1) both!important;}
+.st-key-apex_mobile_menu_drawer>div{width:100%!important;max-width:100%!important;min-width:0!important;}
+@keyframes apexDrawerIn{from{transform:translateX(102%);opacity:.65}to{transform:translateX(0);opacity:1}}
+.st-key-apex_mobile_menu_drawer [data-testid="stHorizontalBlock"]{display:flex!important;flex-wrap:nowrap!important;align-items:center!important;gap:8px!important;width:100%!important;}
+.st-key-apex_mobile_menu_drawer [data-testid="column"]:first-child{flex:1 1 auto!important;min-width:0!important;}
+.st-key-apex_mobile_menu_drawer [data-testid="column"]:last-child{flex:0 0 38px!important;min-width:38px!important;max-width:38px!important;}
+.st-key-apex_mobile_menu_drawer [data-testid="column"]:last-child button{width:36px!important;height:36px!important;min-height:36px!important;padding:0!important;border-radius:9px!important;border:1px solid rgba(39,220,231,.34)!important;background:rgba(8,28,39,.88)!important;color:#27dce7!important;font-size:18px!important;transition:transform 150ms ease!important;}
+.st-key-apex_mobile_menu_drawer [data-testid="column"]:last-child button:active{transform:scale(.90)!important;}
+.st-key-apex_mobile_menu_drawer .apex-brand-logo{width:36px;height:36px;min-width:36px;border-radius:9px;}
+.st-key-apex_mobile_menu_drawer .apex-brand-logo svg{width:24px;height:24px;}
 
-.apex-mobile-header-bar-container [data-testid="column"]:last-child {
-  flex: 0 0 42px !important;
-  min-width: 42px !important;
-  width: 42px !important;
-  max-width: 42px !important;
-}
+/* Compact buttons + staggered entrance */
+.st-key-apex_mobile_menu_items{margin-top:14px!important;margin-bottom:14px!important;}
+.st-key-apex_mobile_menu_items [data-testid="stButton"]{margin:0 0 7px!important;opacity:0;transform:translateX(14px) scale(.985);animation:apexItemIn 250ms cubic-bezier(.22,.8,.25,1) forwards;}
+.st-key-apex_mobile_menu_items [data-testid="stButton"]:nth-child(1){animation-delay:45ms}.st-key-apex_mobile_menu_items [data-testid="stButton"]:nth-child(2){animation-delay:80ms}.st-key-apex_mobile_menu_items [data-testid="stButton"]:nth-child(3){animation-delay:115ms}.st-key-apex_mobile_menu_items [data-testid="stButton"]:nth-child(4){animation-delay:150ms}.st-key-apex_mobile_menu_items [data-testid="stButton"]:nth-child(5){animation-delay:185ms}.st-key-apex_mobile_menu_items [data-testid="stButton"]:nth-child(6){animation-delay:220ms}.st-key-apex_mobile_menu_items [data-testid="stButton"]:nth-child(7){animation-delay:255ms}
+@keyframes apexItemIn{to{opacity:1;transform:translateX(0) scale(1)}}
+.st-key-apex_mobile_menu_items button{width:100%!important;min-height:44px!important;height:44px!important;padding:8px 11px!important;border-radius:10px!important;font-size:13.5px!important;font-weight:600!important;text-align:left!important;justify-content:flex-start!important;letter-spacing:.1px!important;transition:transform 130ms ease,border-color 180ms ease,background 180ms ease!important;}
+.st-key-apex_mobile_menu_items button:active{transform:scale(.97)!important;}
+.st-key-apex_mobile_menu_items button[kind="primary"]{color:#2be3eb!important;background:linear-gradient(90deg,rgba(20,210,225,.15),rgba(20,210,225,.04))!important;border:1px solid rgba(39,220,231,.48)!important;box-shadow:inset 0 0 14px rgba(39,220,231,.05),0 0 12px rgba(39,220,231,.05)!important;}
+.st-key-apex_mobile_menu_items button[kind="secondary"]{color:#c3d0d9!important;background:rgba(7,25,35,.58)!important;border:1px solid rgba(70,145,165,.20)!important;}
+.st-key-apex_mobile_menu_items button[kind="secondary"]:hover{color:#fff!important;border-color:rgba(39,220,231,.34)!important;background:rgba(9,31,43,.78)!important;}
 
-.apex-mobile-header-bar-container button {
-  width: 40px !important;
-  height: 40px !important;
-  min-height: 40px !important;
-  max-width: 40px !important;
-  display: inline-flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  border-radius: 10px !important;
-  border: 1px solid rgba(39, 220, 231, 0.45) !important;
-  background: rgba(7, 25, 35, 0.85) !important;
-  color: #27dce7 !important;
-  font-size: 19px !important;
-  font-weight: 800 !important;
-  padding: 0 !important;
-  box-shadow: 0 0 14px rgba(39, 220, 231, 0.20) !important;
-  cursor: pointer !important;
-  margin: 0 !important;
-}
+.apex-mobile-account-card{width:100%;min-width:0;box-sizing:border-box;padding:10px;overflow:hidden;display:flex;align-items:center;justify-content:space-between;gap:8px;border-radius:11px;background:rgba(7,28,39,.76);border:1px solid rgba(24,205,220,.25);margin-top:10px;}
+.apex-mobile-profile-left{display:flex;align-items:center;gap:9px;min-width:0;overflow:hidden;}
+.apex-mobile-profile-avatar{width:32px;height:32px;min-width:32px;border-radius:50%;border:1px solid rgba(39,220,231,.40);background:rgba(39,220,231,.10);color:#27dce7;font-size:11px;font-weight:800;display:grid;place-items:center;}
+.apex-mobile-profile-copy{min-width:0;overflow:hidden;}.apex-mobile-profile-name{font-size:12px;font-weight:800;color:#f3f7f9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}.apex-mobile-profile-role{font-size:9px;color:#27dce7;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}.apex-mobile-profile-chevron{color:#27dce7;font-size:16px;font-weight:700;}
 
-/* ── MOBILE OPEN CONTAINER (LEFT 22% DIMMED + RIGHT 78% DRAWER) ── */
-.apex-mobile-open-container {
-  margin: 0 0 16px !important;
-  padding: 0 !important;
-}
-
-.apex-mobile-open-container [data-testid="stHorizontalBlock"] {
-  display: flex !important;
-  flex-direction: row !important;
-  flex-wrap: nowrap !important;
-  align-items: stretch !important;
-  gap: 0 !important;
-  width: 100% !important;
-  min-height: 82vh !important;
-}
-
-/* Left Dimmed Backdrop Column (22%) */
-.apex-mobile-open-container [data-testid="column"]:first-child {
-  flex: 0 0 22% !important;
-  width: 22% !important;
-  max-width: 22% !important;
-  min-width: 0 !important;
-  background: rgba(1, 7, 12, 0.58) !important;
-  backdrop-filter: blur(8px) !important;
-  -webkit-backdrop-filter: blur(8px) !important;
-  border-radius: 12px 0 0 12px !important;
-  padding: 10px 4px !important;
-}
-
-.apex-mobile-dim-backdrop button {
-  width: 36px !important;
-  height: 36px !important;
-  min-height: 36px !important;
-  max-width: 36px !important;
-  display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  border-radius: 8px !important;
-  border: 1px solid rgba(39, 220, 231, 0.40) !important;
-  background: rgba(7, 25, 35, 0.90) !important;
-  color: #27dce7 !important;
-  font-size: 16px !important;
-  font-weight: 700 !important;
-  padding: 0 !important;
-  margin: 0 auto !important;
-}
-
-/* Right Glass Drawer Column (78%, max 320px) */
-.apex-mobile-open-container [data-testid="column"]:last-child {
-  flex: 0 0 78% !important;
-  width: 78% !important;
-  max-width: 320px !important;
-  min-width: 0 !important;
-  margin-left: auto !important;
-  background: linear-gradient(160deg, rgba(5, 22, 32, 0.985), rgba(2, 12, 19, 0.995)) !important;
-  border-left: 1px solid rgba(30, 205, 220, 0.32) !important;
-  box-shadow: -14px 0 35px rgba(0, 0, 0, 0.45) !important;
-  border-radius: 0 12px 12px 0 !important;
-  padding: 12px 8px 18px !important;
-}
-
-.apex-mobile-drawer-brand {
-  display: flex !important;
-  align-items: center !important;
-  gap: 8px !important;
-  padding: 0 4px 10px !important;
-  border-bottom: 1px solid rgba(70, 145, 165, 0.18) !important;
-  margin-bottom: 8px !important;
-}
-
-/* ── COMPACT DRAWER MENU ITEMS ──────────────────────────── */
-.apex-mobile-menu-list {
-  display: flex !important;
-  flex-direction: column !important;
-  margin-top: 4px !important;
-  margin-bottom: 12px !important;
-}
-
-.apex-mobile-menu-list button {
-  min-height: 44px !important;
-  height: 44px !important;
-  padding: 8px 10px !important;
-  margin-bottom: 6px !important;
-  border-radius: 9px !important;
-  font-size: 13px !important;
-  font-weight: 550 !important;
-  text-align: left !important;
-  justify-content: flex-start !important;
-  display: flex !important;
-  align-items: center !important;
-  gap: 8px !important;
-  letter-spacing: 0.15px !important;
-}
-
-.apex-mobile-menu-list button[kind="primary"] {
-  color: #29E1E9 !important;
-  background: linear-gradient(90deg, rgba(25, 215, 225, 0.14), rgba(25, 215, 225, 0.035)) !important;
-  border: 1px solid rgba(25, 215, 225, 0.38) !important;
-  box-shadow: inset 0 0 14px rgba(39, 220, 231, 0.06), 0 0 10px rgba(39, 220, 231, 0.08) !important;
-}
-
-.apex-mobile-menu-list button[kind="secondary"] {
-  background: rgba(7, 25, 35, 0.50) !important;
-  border: 1px solid rgba(70, 145, 165, 0.20) !important;
-  color: #d8e5ee !important;
-}
-
-.apex-mobile-menu-list button[kind="secondary"]:hover {
-  border-color: rgba(39, 220, 231, 0.38) !important;
-  color: #ffffff !important;
-  background: rgba(10, 32, 45, 0.70) !important;
-}
-
-/* ── ACCOUNT / ADMIN CARD INSIDE DRAWER ─────────────────── */
-.apex-mobile-account-card {
-  width: 100% !important;
-  min-width: 0 !important;
-  box-sizing: border-box !important;
-  padding: 10px 8px !important;
-  overflow: hidden !important;
-  display: flex !important;
-  align-items: center !important;
-  justify-content: space-between !important;
-  border-radius: 10px !important;
-  background: rgba(7, 28, 39, 0.75) !important;
-  border: 1px solid rgba(24, 205, 220, 0.28) !important;
-  margin-top: 8px !important;
-}
-
-.apex-mobile-profile-left {
-  display: flex !important;
-  align-items: center !important;
-  gap: 8px !important;
-  min-width: 0 !important;
-  overflow: hidden !important;
-}
-
-.apex-mobile-profile-avatar {
-  border-radius: 50% !important;
-  border: 1px solid rgba(39, 220, 231, 0.40) !important;
-  background: rgba(39, 220, 231, 0.10) !important;
-  color: #27dce7 !important;
-  font-weight: 800 !important;
-  display: grid !important;
-  place-items: center !important;
-  flex-shrink: 0 !important;
-}
-
-.apex-mobile-profile-name {
-  font-weight: 800 !important;
-  color: #f3f7f9 !important;
-}
-
-.apex-mobile-profile-role {
-  color: #27dce7 !important;
-  margin-top: 1px !important;
-}
+@media (max-width:380px){.st-key-apex_mobile_menu_drawer{width:min(82vw,300px)!important;max-width:300px!important;padding-left:10px!important;padding-right:10px!important;}.st-key-apex_mobile_menu_items button{font-size:13px!important;}.apex-mobile-top-brand .apex-sidebar-brand-title{font-size:14px;}}
+@media (min-width:600px) and (max-width:1023px){.st-key-apex_mobile_menu_drawer{width:320px!important;max-width:320px!important;}}
+@media (min-width:1024px){.st-key-apex_mobile_header,.st-key-apex_mobile_menu_overlay,.st-key-apex_mobile_menu_drawer{display:none!important;}}
+@media (prefers-reduced-motion:reduce){.st-key-apex_mobile_menu_overlay,.st-key-apex_mobile_menu_drawer,.st-key-apex_mobile_menu_items [data-testid="stButton"]{animation:none!important;transition:none!important;opacity:1!important;transform:none!important;}}
 
 .apex-sidebar-brand {
   display: flex;
