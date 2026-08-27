@@ -154,7 +154,9 @@ def _world_map_svg() -> str:
 <circle cx="95" cy="120" r="1.4"/><circle cx="105" cy="122" r="1.8"/><circle cx="115" cy="120" r="1.4"/>
 <circle cx="98" cy="132" r="1.4"/><circle cx="108" cy="134" r="1.8"/><circle cx="118" cy="130" r="1.8"/><circle cx="128" cy="132" r="1.4"/>
 <circle cx="102" cy="144" r="1.4"/><circle cx="112" cy="146" r="1.8"/><circle cx="122" cy="142" r="1.8"/><circle cx="130" cy="144" r="1.4"/>
-<circle cx="105" cy="156" r="1.4"/><circle cx="115" cy="158" r="1.8"/><circle cx="122" cy="154" r="1.4"/><circle cx="108" cy="168" r="1.4"/><circle cx="116" cy="170" r="1.4"/><circle cx="110" cy="180" r="1.4"/>
+<circle cx="105" cy="156" r="1.4"/><circle cx="115" cy="158" r="1.8"/><circle cx="122" cy="154" r="1.4"/>
+<circle cx="108" cy="168" r="1.4"/><circle cx="116" cy="170" r="1.4"/>
+<circle cx="110" cy="180" r="1.4"/>
 </g>
 <g fill="rgba(39,220,231,0.55)">
 <circle cx="195" cy="40" r="1.4"/><circle cx="205" cy="42" r="1.8"/><circle cx="215" cy="40" r="1.4"/>
@@ -249,11 +251,59 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
 }
 
 @media (max-width: 1023px) {
-  [data-testid="stSidebarCollapsedControl"],
-  [data-testid="collapsedControl"] {
+  header[data-testid="stHeader"] {
     display: flex !important;
     visibility: visible !important;
+    background: transparent !important;
+    height: 48px !important;
+    z-index: 999990 !important;
+  }
+  
+  [data-testid="stSidebarCollapsedControl"],
+  [data-testid="collapsedControl"],
+  button[data-testid="stSidebarCollapseButton"],
+  button[aria-label="Expand sidebar"],
+  button[aria-label="Open sidebar"],
+  button[kind="header"] {
+    display: flex !important;
+    visibility: visible !important;
+    position: fixed !important;
+    top: 10px !important;
+    left: 10px !important;
     z-index: 999999 !important;
+    background: rgba(7, 25, 35, 0.94) !important;
+    border: 1px solid rgba(39, 220, 231, 0.50) !important;
+    border-radius: 9px !important;
+    padding: 6px 10px !important;
+    color: #27dce7 !important;
+    box-shadow: 0 0 16px rgba(39, 220, 231, 0.25) !important;
+    cursor: pointer !important;
+  }
+
+  [data-testid="stSidebarCollapsedControl"] svg,
+  [data-testid="collapsedControl"] svg {
+    fill: #27dce7 !important;
+    stroke: #27dce7 !important;
+    color: #27dce7 !important;
+  }
+
+  [data-testid="stSidebar"] {
+    z-index: 1000000 !important;
+    background: #03111a !important;
+    box-shadow: 4px 0 30px rgba(0, 0, 0, 0.85) !important;
+  }
+
+  [data-testid="stSidebar"] button[aria-label="Close sidebar"],
+  [data-testid="stSidebar"] [data-testid="stSidebarCollapseButton"] {
+    display: flex !important;
+    visibility: visible !important;
+    color: #27dce7 !important;
+  }
+  
+  .block-container {
+    padding-top: 54px !important;
+    padding-left: 12px !important;
+    padding-right: 12px !important;
   }
 }
 
@@ -385,12 +435,6 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
 .block-container {
   max-width: 1750px !important;
   padding: 22px 28px 30px !important;
-}
-
-@media (max-width: 768px) {
-  .block-container {
-    padding: 10px 10px 24px !important;
-  }
 }
 
 /* ── TOP HEADER (TITLE & USER CONTROLS) ─────────────────── */
