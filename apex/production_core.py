@@ -1412,6 +1412,168 @@ div[data-testid="stPopover"] > button {
 .fc-outlook{display:grid;grid-template-columns:1.45fr repeat(3,.72fr);gap:8px;margin-top:10px}.fc-outlook-main,.fc-asset{background:rgba(0,0,0,.18);border:1px solid rgba(255,255,255,.055);border-radius:10px;padding:10px}.fc-outlook-main{border-color:rgba(0,245,255,.13)}.fc-small-lbl{font-size:8.5px;color:#718795;text-transform:uppercase;font-weight:850;letter-spacing:.7px}.fc-main-action{font-size:11.5px;font-weight:900;margin-top:4px}.fc-main-desc{font-size:9.8px;color:#92a5b1;line-height:1.4;margin-top:3px}.fc-asset{font-size:10px;color:#dce7ed;line-height:1.35}.fc-asset b{display:block;color:#fff;margin-bottom:3px}
 .fc-ai{margin-top:10px;background:rgba(8,15,23,.72);border:1px solid rgba(173,123,255,.16);border-radius:12px;padding:12px}.fc-ai-head{display:flex;justify-content:space-between;gap:8px;align-items:center}.fc-ai-title{font-size:9px;font-weight:900;color:#ad7bff;letter-spacing:1px;text-transform:uppercase}.fc-ai-conf{font-size:9px;font-weight:850;color:#00ffa3}.fc-ai-assess{font-size:12px;font-weight:850;color:#fff;margin-top:6px}.fc-ai-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:8px}.fc-ai-box{background:rgba(255,255,255,.018);border:1px solid rgba(255,255,255,.055);border-radius:8px;padding:8px;font-size:9.8px;color:#dce7ed;line-height:1.4}.fc-ai-box b{font-size:8.5px;letter-spacing:.6px}.fc-ai-foot{font-size:9.5px;color:#8397a4;margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.05)}
 @media(max-width:760px){.fc-hero-row,.fc-event-top{align-items:flex-start;flex-direction:column}.fc-horizon{text-align:left}.fc-event-name{white-space:normal;max-width:none}.fc-metrics{grid-template-columns:1fr 1fr}.fc-nowcast{grid-template-columns:1fr}.fc-score{text-align:left}.fc-outlook{grid-template-columns:1fr 1fr}.fc-outlook-main{grid-column:1/-1}.fc-ai-grid{grid-template-columns:1fr}.fc-body{padding:12px}.fc-event-top{padding:12px}.fc-title{font-size:19px}}
+
+/* ===== ApexMacro Forecaster Calendar v1 — apex- scoped, safe ===== */
+.apex-forecaster-shell{width:100%;box-sizing:border-box;}
+
+/* Calendar container */
+.apex-cal-wrap{background:linear-gradient(145deg,rgba(5,18,28,.96),rgba(3,11,19,.98));border:1px solid rgba(20,205,220,.18);border-radius:18px;padding:20px 18px 16px;margin-bottom:18px;box-shadow:0 20px 60px rgba(0,0,0,.42);}
+.apex-cal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;}
+.apex-cal-title-block{}
+.apex-cal-eyebrow{font-size:9px;font-weight:900;letter-spacing:2px;color:#20DDE8;text-transform:uppercase;margin-bottom:4px;}
+.apex-cal-month-label{font-size:17px;font-weight:900;color:#F2F6F8;letter-spacing:-.2px;}
+.apex-cal-nav{display:flex;align-items:center;gap:10px;}
+.apex-cal-nav-month{font-size:13px;font-weight:800;color:#F2F6F8;min-width:140px;text-align:center;}
+
+/* Weekday row */
+.apex-cal-weekdays{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:5px;margin-bottom:6px;}
+.apex-cal-wd{font-size:9px;font-weight:900;color:#A5B2BF;text-transform:uppercase;letter-spacing:.8px;text-align:center;padding:4px 0;}
+
+/* Day grid */
+.apex-cal-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:5px;}
+.apex-calendar-day{position:relative;min-height:68px;padding:8px 5px 6px;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;box-sizing:border-box;background:linear-gradient(145deg,rgba(15,35,47,.78),rgba(6,20,29,.90));border:1px solid rgba(110,155,175,.13);border-radius:9px;color:#F4F7FA;cursor:pointer;transition:border-color 140ms ease,background 140ms ease,transform 140ms ease;user-select:none;}
+.apex-calendar-day:hover{border-color:rgba(20,205,220,.45);background:linear-gradient(145deg,rgba(6,48,60,.70),rgba(4,22,32,.88));transform:translateY(-1px);}
+.apex-calendar-day.is-selected{border:1px solid rgba(20,225,235,.92);background:linear-gradient(145deg,rgba(6,64,75,.78),rgba(4,28,38,.94));box-shadow:0 0 14px rgba(20,220,230,.10);}
+.apex-calendar-day.is-today .apex-cal-date-num{color:#20DDE8;font-weight:950;}
+.apex-calendar-day.is-other-month{opacity:.38;pointer-events:none;}
+.apex-calendar-day.no-events{cursor:default;}
+.apex-calendar-day.no-events:hover{transform:none;border-color:rgba(110,155,175,.13);background:linear-gradient(145deg,rgba(15,35,47,.78),rgba(6,20,29,.90));}
+.apex-cal-date-num{font-size:14px;font-weight:850;color:#F4F7FA;line-height:1;margin-bottom:5px;}
+.apex-cal-dots{display:flex;flex-wrap:wrap;gap:3px;align-items:center;justify-content:center;min-height:10px;}
+.apex-impact-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;}
+.apex-impact-dot.high{background:#A84DE3;box-shadow:0 0 5px rgba(168,77,227,.55);}
+.apex-impact-dot.medium{background:#FFBC26;box-shadow:0 0 5px rgba(255,188,38,.45);}
+.apex-impact-dot.low{background:#38D4E4;box-shadow:0 0 5px rgba(56,212,228,.40);}
+.apex-cal-overflow{font-size:8px;font-weight:850;color:#A5B2BF;}
+
+/* Legend */
+.apex-cal-legend{display:flex;align-items:center;gap:18px;justify-content:center;margin-top:14px;padding-top:12px;border-top:1px solid rgba(255,255,255,.05);}
+.apex-cal-legend-item{display:flex;align-items:center;gap:6px;font-size:10px;color:#A5B2BF;font-weight:650;}
+
+/* Selected day header */
+.apex-selected-day-header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px;}
+.apex-selected-day-title{font-size:15px;font-weight:900;color:#F2F6F8;letter-spacing:-.1px;}
+.apex-selected-day-count{font-size:10px;font-weight:850;color:#20DDE8;background:rgba(20,221,232,.08);border:1px solid rgba(20,221,232,.22);padding:4px 10px;border-radius:999px;}
+
+/* Day event cards */
+.apex-day-events-list{display:flex;flex-direction:column;gap:9px;margin-bottom:22px;}
+.apex-day-event-card{width:100%;display:grid;grid-template-columns:68px 90px minmax(0,1fr) 58px 58px 58px 28px;gap:10px;align-items:center;padding:14px 16px;box-sizing:border-box;background:linear-gradient(145deg,rgba(10,28,39,.82),rgba(5,17,26,.92));border:1px solid rgba(90,145,165,.16);border-radius:11px;cursor:pointer;transition:border-color 130ms ease,background 130ms ease;}
+.apex-day-event-card:hover{border-color:rgba(20,205,220,.38);background:linear-gradient(145deg,rgba(6,42,58,.82),rgba(4,20,32,.92));}
+.apex-dec-time{font-size:11px;font-weight:700;color:#A5B2BF;line-height:1.3;}
+.apex-dec-time-sub{font-size:9px;color:#637585;}
+.apex-dec-currency{display:flex;align-items:center;gap:6px;}
+.apex-dec-flag{font-size:17px;line-height:1;}
+.apex-dec-cur-badge{font-size:9px;font-weight:900;color:#20DDE8;background:rgba(20,221,232,.08);border:1px solid rgba(20,221,232,.22);padding:2px 7px;border-radius:6px;}
+.apex-dec-impact{display:flex;align-items:center;gap:5px;font-size:9px;font-weight:850;padding:3px 8px;border-radius:999px;width:fit-content;}
+.apex-dec-impact.high{color:#cc7aff;background:rgba(168,77,227,.10);border:1px solid rgba(168,77,227,.25);}
+.apex-dec-impact.medium{color:#FFBC26;background:rgba(255,188,38,.08);border:1px solid rgba(255,188,38,.22);}
+.apex-dec-impact.low{color:#38D4E4;background:rgba(56,212,228,.08);border:1px solid rgba(56,212,228,.20);}
+.apex-dec-name{font-size:12.5px;font-weight:800;color:#F2F6F8;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.apex-dec-val-box{text-align:center;}
+.apex-dec-val-lbl{font-size:8px;font-weight:850;color:#637585;text-transform:uppercase;letter-spacing:.5px;}
+.apex-dec-val{font-size:12px;font-weight:800;color:#F2F6F8;margin-top:2px;}
+.apex-dec-val.actual-live{color:#00ffa3;}
+.apex-dec-val.pending{color:#637585;}
+.apex-dec-arrow{font-size:14px;color:#20DDE8;font-weight:900;text-align:right;}
+.apex-no-events-msg{padding:22px 0;text-align:center;color:#637585;font-size:12px;}
+
+/* Modal overlay */
+.apex-event-modal-overlay{position:fixed;inset:0;z-index:9998;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(1,7,12,.58);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);}
+
+/* Modal */
+.apex-event-modal{position:relative;z-index:9999;width:min(980px,72vw);max-height:90vh;overflow-y:auto;padding:26px 28px;box-sizing:border-box;border-radius:16px;background:linear-gradient(145deg,rgba(5,20,30,.98),rgba(3,13,21,.99));border:1px solid rgba(20,215,225,.60);box-shadow:0 28px 90px rgba(0,0,0,.60),0 0 40px rgba(15,210,220,.05);scrollbar-width:thin;scrollbar-color:#20DDE8 rgba(8,16,24,.6);}
+.apex-event-modal::-webkit-scrollbar{width:5px;}.apex-event-modal::-webkit-scrollbar-track{background:rgba(8,16,24,.5);border-radius:4px;}.apex-event-modal::-webkit-scrollbar-thumb{background:linear-gradient(180deg,#20DDE8,#00ffa3);border-radius:4px;}
+
+/* Modal header */
+.apex-modal-header{position:sticky;top:-26px;z-index:10;background:rgba(5,20,30,.97);margin:-26px -28px 20px;padding:18px 28px 14px;border-bottom:1px solid rgba(20,215,225,.14);display:flex;align-items:flex-start;justify-content:space-between;gap:12px;}
+.apex-modal-header-left{}
+.apex-modal-header-tag{font-size:9px;font-weight:900;letter-spacing:2px;color:#20DDE8;text-transform:uppercase;margin-bottom:4px;}
+.apex-modal-header-date{font-size:12px;color:#A5B2BF;margin-top:2px;}
+
+/* Modal sections */
+.apex-modal-section{margin-bottom:20px;}
+.apex-modal-section-title{font-size:9px;font-weight:900;letter-spacing:1.5px;text-transform:uppercase;color:#637585;margin-bottom:10px;display:flex;align-items:center;gap:8px;}
+.apex-modal-section-title::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,rgba(20,215,225,.15),transparent);}
+
+/* Basic info grid */
+.apex-modal-basic-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:12px;}
+.apex-modal-field{padding:11px 13px;background:rgba(8,27,38,.76);border:1px solid rgba(90,145,165,.18);border-radius:9px;}
+.apex-modal-field-label{font-size:8.5px;font-weight:850;color:#637585;text-transform:uppercase;letter-spacing:.6px;margin-bottom:5px;}
+.apex-modal-field-value{font-size:13px;font-weight:800;color:#F2F6F8;}
+.apex-modal-event-name{padding:11px 13px;background:rgba(8,27,38,.76);border:1px solid rgba(90,145,165,.18);border-radius:9px;margin-bottom:14px;}
+.apex-modal-event-name .apex-modal-field-label{margin-bottom:5px;}
+.apex-modal-event-name .apex-modal-field-value{font-size:15px;}
+
+/* Actual/Forecast/Previous */
+.apex-modal-value-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;}
+.apex-modal-value-box{padding:13px 14px;background:rgba(8,27,38,.76);border:1px solid rgba(90,145,165,.18);border-radius:9px;text-align:center;}
+.apex-modal-value-label{font-size:8.5px;font-weight:850;color:#637585;text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px;}
+.apex-modal-value-num{font-size:20px;font-weight:950;color:#F2F6F8;}
+.apex-modal-value-num.actual-beat{color:#00ffa3;}
+.apex-modal-value-num.actual-miss{color:#ff5e75;}
+.apex-modal-value-num.actual-inline{color:#ffd166;}
+.apex-modal-value-num.actual-pending{color:#637585;}
+
+/* Causal + Market Impact 2-col */
+.apex-modal-2col{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px;}
+
+/* Cross-asset grid */
+.apex-cross-asset-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;}
+.apex-cross-asset-card{padding:11px 10px;background:rgba(8,24,34,.72);border:1px solid rgba(90,145,165,.14);border-radius:10px;text-align:center;}
+.apex-cross-asset-label{font-size:10px;font-weight:850;color:#F2F6F8;margin-bottom:4px;}
+.apex-cross-asset-signal{font-size:10px;color:#A5B2BF;line-height:1.3;}
+
+/* Nowcast box */
+.apex-modal-nowcast{border-radius:12px;padding:14px 16px;margin-bottom:14px;}
+.apex-modal-nowcast-title{font-size:14px;font-weight:900;margin-bottom:4px;}
+.apex-modal-nowcast-desc{font-size:11px;color:#d8e4eb;line-height:1.5;}
+.apex-modal-nowcast-probs{font-size:9.5px;color:#8fa3b4;margin-top:6px;}
+.apex-modal-conf{font-size:22px;font-weight:950;text-align:right;}
+.apex-modal-conf-cap{font-size:8.5px;color:#718795;text-transform:uppercase;font-weight:850;letter-spacing:.8px;}
+
+/* Precursor card */
+.apex-precursor-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;}
+.apex-precursor-card{padding:10px 11px;background:rgba(255,255,255,.018);border:1px solid rgba(255,255,255,.06);border-radius:10px;}
+.apex-prec-name{font-size:8.5px;font-weight:850;color:#718795;text-transform:uppercase;letter-spacing:.75px;}
+.apex-prec-val{font-size:15px;font-weight:900;color:#fff;margin-top:3px;}
+.apex-prec-mom{font-size:9px;margin-top:2px;font-weight:800;}
+
+/* Wire card */
+.apex-wire-card{padding:8px 10px;background:rgba(0,245,255,.025);border-left:2px solid rgba(0,245,255,.55);border-radius:5px;margin-bottom:6px;font-size:10.5px;color:#dce7ed;line-height:1.45;}
+.apex-wire-time{color:#718795;font-size:9px;margin-top:2px;}
+
+/* Mobile nav button base override for apex cal */
+.apex-cal-nav-btn{background:rgba(8,24,34,.72)!important;border:1px solid rgba(90,145,165,.18)!important;color:#F2F6F8!important;font-size:15px!important;font-weight:900!important;padding:4px 14px!important;border-radius:8px!important;cursor:pointer!important;line-height:1!important;}
+
+/* ---- Mobile ---- */
+@media(max-width:768px){
+  .apex-cal-wrap{padding:14px 10px 12px;}
+  .apex-cal-grid,.apex-cal-weekdays{gap:3px;}
+  .apex-calendar-day{min-height:46px;padding:5px 2px 4px;border-radius:7px;}
+  .apex-cal-date-num{font-size:12px;margin-bottom:3px;}
+  .apex-impact-dot{width:4px;height:4px;}
+  .apex-cal-dots{gap:2px;}
+  .apex-cal-legend{gap:10px;flex-wrap:wrap;}
+  .apex-day-event-card{grid-template-columns:1fr;gap:6px;padding:12px 14px;}
+  .apex-dec-time,.apex-dec-currency,.apex-dec-impact,.apex-dec-name{display:block;}
+  .apex-dec-val-box{display:inline-block;margin-right:14px;}
+  .apex-dec-arrow{text-align:left;}
+  .apex-event-modal-overlay{padding:6px;}
+  .apex-event-modal{width:100%;max-width:none;height:min(94vh,100%);max-height:94vh;padding:16px 13px;border-radius:14px;}
+  .apex-modal-header{margin:-16px -13px 16px;padding:14px 13px 12px;top:-16px;}
+  .apex-modal-basic-grid{grid-template-columns:1fr;}
+  .apex-modal-2col{grid-template-columns:1fr;}
+  .apex-cross-asset-grid{grid-template-columns:repeat(3,minmax(0,1fr));}
+  .apex-precursor-grid{grid-template-columns:1fr 1fr;}
+}
+@media(max-width:480px){
+  .apex-modal-value-grid{grid-template-columns:1fr 1fr;}
+  .apex-cross-asset-grid{grid-template-columns:1fr 1fr;}
+}
+@media(max-width:380px){
+  .apex-modal-value-grid{grid-template-columns:1fr;}
+  .apex-precursor-grid{grid-template-columns:1fr;}
+}
 </style>
 """)
 
@@ -4840,46 +5002,66 @@ def _forecaster_radar_refresh_tick() -> None:
 
 
 def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict | None = None) -> None:
-    """Fast Catalyst Radar: render the full calendar first, analyze only the selected event."""
+    """
+    Catalyst Forecaster — Glass Calendar UI.
+    Interaction: Month Calendar → Click Date → Day Events List → Click Event → Large Modal.
+    Intelligence engine (nowcast, causal AI, precursors, cross-asset, admin override) unchanged.
+    """
+    import calendar as _cal
+    from datetime import date as _date
+
+    # ── Timezone ──────────────────────────────────────────────────────────────
     if "selected_tz" not in st.session_state or st.session_state["selected_tz"] not in SUPPORTED_TIMEZONES:
         st.session_state["selected_tz"] = "🏛️ Kurdistan & Iraq (UTC+3)"
-
     tz_info = SUPPORTED_TIMEZONES.get(st.session_state["selected_tz"], {"offset": 3, "label": "KRD (UTC+3)"})
     is_admin = auth_user and auth_user.get("is_admin", False)
 
-    selected_key = "APEX_FORECASTER_SELECTED_EVENT"
-    selected_code = st.session_state.get(selected_key, "")
+    # ── Session-state keys ─────────────────────────────────────────────────────
+    # Existing keys (kept for background worker / snapshot compatibility)
+    selected_key  = "APEX_FORECASTER_SELECTED_EVENT"
+    snapshot_key  = "APEX_FORECASTER_EVENT_SNAPSHOT"
+    # New calendar/modal keys
+    cal_month_key = "apex_forecaster_calendar_month"   # (year, month) tuple
+    sel_date_key  = "apex_forecaster_selected_date"    # datetime.date
+    modal_key     = "apex_forecaster_modal_open"       # bool
+    modal_ev_key  = "apex_forecaster_modal_event_code" # str
 
-    if not selected_code:
+    # ── 30-s refresh fragment (only while no event is selected) ───────────────
+    if not st.session_state.get(selected_key):
         _forecaster_radar_refresh_tick()
 
-    # FAST PATH: calendar + published Actuals only. No FRED/news/AI work is done here.
-    # While an event is selected, the calendar is frozen for that analysis cycle so
-    # a transient feed failure or refresh cannot interrupt the selected analysis.
-    snapshot_key = "APEX_FORECASTER_EVENT_SNAPSHOT"
-
+    # ── Event data (frozen while a modal event is stored) ─────────────────────
+    selected_code = st.session_state.get(selected_key, "")
     if selected_code and st.session_state.get(snapshot_key):
         events = st.session_state[snapshot_key]
     else:
         events = get_upcoming_catalyst_events(tz_info["offset"], tz_info["label"])
         if events:
             st.session_state[snapshot_key] = events
+
     actuals_cache = load_actuals_cache()
 
+    # Auto-sync published actuals (preserves existing cache logic unchanged)
     actuals_changed = False
-    for event in events:
-        event_code = str(event.get("code", "")).strip()
-        published_actual = _normalize_forex_factory_actual(event.get("actual_str", ""))
-        if event_code and published_actual and not str(actuals_cache.get(event_code, "")).strip():
-            actuals_cache[event_code] = published_actual
+    for _ev in events:
+        _code = str(_ev.get("code", "")).strip()
+        _pub  = _normalize_forex_factory_actual(_ev.get("actual_str", ""))
+        if _code and _pub and not str(actuals_cache.get(_code, "")).strip():
+            actuals_cache[_code] = _pub
             actuals_changed = True
     if actuals_changed:
         save_actuals_cache(actuals_cache)
 
-    # Start pre-computation immediately after the lightweight calendar arrives.
-    # The worker survives Streamlit reruns and warms Nowcast + RUAPI results before clicks.
+    # Start background pre-computation worker (unchanged)
     _ensure_forecaster_background_worker(events, fred_key, channel_name, actuals_cache)
 
+    # ── Currency flag map (unchanged) ─────────────────────────────────────────
+    currency_flags = {
+        "USD": "🇺🇸", "EUR": "🇪🇺", "GBP": "💷", "CAD": "🍁",
+        "JPY": "💴", "AUD": "🇦🇺", "NZD": "🇳🇿", "CHF": "🏔️"
+    }
+
+    # ── Hero banner (unchanged) ───────────────────────────────────────────────
     render_html(f"""
     <div class="fc-hero">
       <div class="fc-hero-row">
@@ -4897,7 +5079,8 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     </div>
     """)
 
-    high_count = sum(1 for e in events if e.get("impact") == "High")
+    # ── Metric counters (unchanged) ───────────────────────────────────────────
+    high_count   = sum(1 for e in events if e.get("impact") == "High")
     medium_count = sum(1 for e in events if e.get("impact") == "Medium")
     k1, k2, k3 = st.columns(3)
     with k1:
@@ -4907,18 +5090,17 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     with k3:
         render_html(f'<div class="fc-metric"><div class="fc-metric-l">Medium impact</div><div class="fc-metric-v" style="color:#ffd166;">{medium_count}</div><div class="fc-metric-note">Secondary catalysts</div></div>')
 
+    # Admin performance note (unchanged)
     perf = _forecaster_performance()
     if is_admin:
         perf_note = f"Resolved: {perf['resolved']} • Correct: {perf['correct']} • Accuracy: {perf['accuracy']:.1f}%" if perf['resolved'] else "Learning history active — awaiting resolved forecasts"
         render_html(f'<div style="margin:8px 0 2px;padding:8px 11px;border:1px solid rgba(0,245,255,.12);border-radius:9px;color:#8fa3b4;font-size:10px;">🧪 Forecaster Learning &amp; Backtesting &nbsp;•&nbsp; {perf_note}</div>')
 
-    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
-    render_html('<div class="sec-title">Catalyst Radar</div>')
-
+    # AI provider badge (unchanged)
     ai_key_state = "Configured" if DEFAULT_AI_KEY else "Missing"
     ai_key_color = "#00ffa3" if DEFAULT_AI_KEY else "#ff8a9b"
     render_html(
-        f'<div style="margin:0 0 14px 0;padding:9px 12px;border:1px solid rgba(0,229,246,.14);'
+        f'<div style="margin:10px 0 14px 0;padding:9px 12px;border:1px solid rgba(0,229,246,.14);'
         f'border-radius:10px;background:rgba(3,12,19,.55);font-size:11px;color:#8da2b3;">'
         f'🧠 AI Provider: <b style="color:#28eaf5;">{DEFAULT_AI_PROVIDER}</b>'
         f' &nbsp;•&nbsp; Model: <b style="color:#eaf5fb;">{DEFAULT_AI_MODEL}</b>'
@@ -4930,204 +5112,588 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
         st.info("No High or Medium impact Forex Factory catalysts are available in the current calendar window.")
         return
 
-    currency_flags = {
-        "USD": "🇺🇸", "EUR": "🇪🇺", "GBP": "💷", "CAD": "🍁",
-        "JPY": "💴", "AUD": "🇦🇺", "NZD": "🇳🇿", "CHF": "🏔️"
-    }
+    # ═══════════════════════════════════════════════════════════════════════════
+    # GROUP EVENTS BY LOCAL DATE
+    # Uses existing datetime_obj (already in user's TZ from get_upcoming_catalyst_events)
+    # ═══════════════════════════════════════════════════════════════════════════
+    events_by_date: dict[_date, list[dict]] = {}
+    for _ev in events:
+        _dt = _ev.get("datetime_obj")
+        if _dt:
+            _d = _dt.date() if hasattr(_dt, "date") else _dt
+            events_by_date.setdefault(_d, []).append(_ev)
 
-    # Lightweight radar first. Clicking an event immediately switches the page
-    # into a selected-catalyst view instead of leaving the analysis below the full list.
-    selected_from_click = False
+    # ── Calendar month state ───────────────────────────────────────────────────
+    today_local = (datetime.utcnow() + timedelta(hours=tz_info["offset"])).date()
 
-    # If an event is already selected, show a compact Back control and skip
-    # rendering the entire radar above the analysis on every rerun.
-    if selected_code:
-        if st.button("← Back to Catalyst Radar", key="fc_back_to_radar", use_container_width=True):
-            st.session_state.pop(selected_key, None)
-            st.session_state.pop(snapshot_key, None)
-            st.rerun()
+    # Determine all months covered by current events window
+    all_event_dates = sorted(events_by_date.keys())
 
-        ev = next((item for item in events if item.get("code") == selected_code), None)
-        if ev is None:
-            st.session_state.pop(selected_key, None)
-            st.session_state.pop(snapshot_key, None)
-            st.rerun()
-    else:
-        ev = None
-        for item in events:
-            cur = item.get("currency", "USD")
+    if cal_month_key not in st.session_state:
+        st.session_state[cal_month_key] = (today_local.year, today_local.month)
+
+    cy, cm = st.session_state[cal_month_key]
+
+    # Determine navigable months (months that have at least one event OR are current month)
+    event_months = set((d.year, d.month) for d in all_event_dates)
+    event_months.add((today_local.year, today_local.month))
+    event_months_sorted = sorted(event_months)
+    can_prev = (cy, cm) > event_months_sorted[0] if event_months_sorted else False
+    can_next = (cy, cm) < event_months_sorted[-1] if event_months_sorted else False
+
+    # ── Default selected date ──────────────────────────────────────────────────
+    if sel_date_key not in st.session_state:
+        # Priority 1: today if has events
+        if today_local in events_by_date:
+            st.session_state[sel_date_key] = today_local
+        # Priority 2: nearest upcoming event date
+        elif all_event_dates:
+            future = [d for d in all_event_dates if d >= today_local]
+            st.session_state[sel_date_key] = future[0] if future else all_event_dates[-1]
+        # Priority 3: today
+        else:
+            st.session_state[sel_date_key] = today_local
+
+    selected_date: _date = st.session_state[sel_date_key]
+    modal_open: bool = bool(st.session_state.get(modal_key, False))
+    modal_event_code: str = str(st.session_state.get(modal_ev_key, ""))
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # MODAL — rendered at top of content so it floats over everything
+    # ═══════════════════════════════════════════════════════════════════════════
+    if modal_open and modal_event_code:
+        # Find the modal event
+        modal_ev = next((e for e in events if e.get("code") == modal_event_code), None)
+        if modal_ev is None:
+            st.session_state[modal_key] = False
+            modal_open = False
+        else:
+            ev_code = modal_ev["code"]
+            saved_actual    = str(actuals_cache.get(ev_code, "")).strip()
+            published_actual = _normalize_forex_factory_actual(modal_ev.get("actual_str", ""))
+            effective_actual = saved_actual or published_actual
+            bg_result = _forecaster_bg_get(modal_ev, effective_actual)
+
+            if bg_result and bg_result.get("nowcast"):
+                nowcast   = bg_result["nowcast"]
+                causal_ai = bg_result.get("causal_ai") or {"status": "skipped"}
+                all_news  = bg_result.get("all_news") or []
+            else:
+                with st.spinner(f"Preparing analysis for {modal_ev.get('title', 'event')}…"):
+                    all_news = fetch_all_instant_news(channel_name)
+                    nowcast  = compute_event_nowcast(
+                        modal_ev, fred_key, all_news, actual_override=effective_actual
+                    )
+                    causal_ai = {"status": "updating"}
+                    with _FORECASTER_BG_LOCK:
+                        _FORECASTER_BG_CACHE[ev_code] = {
+                            "signature": _forecaster_bg_signature(modal_ev, effective_actual),
+                            "updated_at": time.time(),
+                            "nowcast": nowcast,
+                            "causal_ai": causal_ai,
+                            "all_news": all_news,
+                            "effective_actual": effective_actual,
+                        }
+                    _ensure_forecaster_background_worker([modal_ev], fred_key, channel_name, actuals_cache)
+
+            # Record for learning/backtesting (unchanged)
+            try:
+                _record_forecaster_snapshot(modal_ev, nowcast, actual=effective_actual)
+            except Exception:
+                pass
+
+            # Also sync selected_key for refresh fragment
+            st.session_state[selected_key] = ev_code
+
+            # ── Derive display values ─────────────────────────────────────────
+            cur      = modal_ev.get("currency", "USD")
             cur_flag = currency_flags.get(cur, "🌐")
-            impact_icon = "🔴" if item.get("impact") == "High" else "🟡"
-            label = (
-                f"{cur_flag} {cur} · {item['title']} · {impact_icon} {item['impact']} "
-                f"· 🕒 {item['time_str']} · {item['countdown']}"
-            )
-            if st.button(label, key=f"fc_select_{item['code']}", use_container_width=True):
-                st.session_state[selected_key] = item["code"]
-                st.session_state[snapshot_key] = events
-                selected_code = item["code"]
-                selected_from_click = True
-                break
+            impact   = str(modal_ev.get("impact", "")).title()
+            impact_cls = "high" if impact == "High" else ("medium" if impact == "Medium" else "low")
+            impact_label = f"{'🔴' if impact == 'High' else '🟡'} {impact} Impact"
 
-        if not selected_code:
-            st.caption("Select a catalyst above to load its full Nowcast, evidence and Causal AI analysis.")
+            # Time: strip tz label to show clean HH:MM UTC
+            time_raw = str(modal_ev.get("time_str", ""))
+
+            actual_value    = effective_actual or "—"
+            actual_outcome  = nowcast.get("actual_outcome", "")
+            if not effective_actual:
+                actual_css_class = "actual-pending"
+            elif actual_outcome == "beat":
+                actual_css_class = "actual-beat"
+            elif actual_outcome == "miss":
+                actual_css_class = "actual-miss"
+            elif actual_outcome == "inline":
+                actual_css_class = "actual-inline"
+            else:
+                actual_css_class = "actual-beat" if effective_actual else "actual-pending"
+
+            bias_color = nowcast.get("bias_color", "#ffd166")
+            bias_bg    = (
+                "rgba(0,255,163,.055)" if bias_color == "#00ffa3"
+                else "rgba(255,94,117,.055)" if bias_color == "#ff5e75"
+                else "rgba(255,209,102,.05)"
+            )
+
+            ev_date_obj = modal_ev.get("datetime_obj")
+            modal_date_str = ev_date_obj.strftime("%A, %d %B %Y") if ev_date_obj else modal_ev.get("date_str", "")
+
+            # ── Build precursor HTML ──────────────────────────────────────────
+            prec_html = ""
+            if nowcast.get("precursor_results"):
+                prec_html = '<div class="apex-precursor-grid">'
+                for _p in nowcast["precursor_results"]:
+                    _mc = "#00ffa3" if _p["mom"] > 0 else ("#ff5e75" if _p["mom"] < 0 else "#8fa3b4")
+                    _ar = "▲" if _p["mom"] > 0 else ("▼" if _p["mom"] < 0 else "•")
+                    prec_html += (
+                        f'<div class="apex-precursor-card">'
+                        f'<div class="apex-prec-name">{_p["name"]}</div>'
+                        f'<div class="apex-prec-val">{_p["latest"]:.2f}</div>'
+                        f'<div class="apex-prec-mom" style="color:{_mc};">{_ar} {_p["mom"]:+.2f} MoM</div>'
+                        f'</div>'
+                    )
+                prec_html += '</div>'
+            else:
+                prec_html = '<div style="color:#637585;font-size:11px;">No mapped FRED precursor series available for this catalyst.</div>'
+
+            # ── Build wire articles HTML ──────────────────────────────────────
+            wires_html = ""
+            if nowcast.get("correlated_articles"):
+                wires_html = '<div style="margin-top:12px;"><div class="apex-modal-section-title">Correlated Wires &amp; Speeches</div>'
+                for _a in nowcast["correlated_articles"]:
+                    wires_html += (
+                        f'<div class="apex-wire-card">'
+                        f'<b>{_a.get("title","")}</b>'
+                        f'<div class="apex-wire-time">{_a.get("publishedAt","")}</div>'
+                        f'</div>'
+                    )
+                wires_html += '</div>'
+
+            # ── Cross-asset cards ─────────────────────────────────────────────
+            cross_assets = [
+                (cur_flag, cur, nowcast.get("currency_action_en", "—")),
+                ("🥇", "Gold",   nowcast.get("gold_implication", "—")),
+                ("💵", "USD",    nowcast.get("usd_implication", "—")),
+                ("🛢️", "Oil",   nowcast.get("oil_implication", "—")),
+                ("📊", "NASDAQ", nowcast.get("nasdaq_implication", "—")),
+            ]
+            cross_html = '<div class="apex-cross-asset-grid">'
+            for _ico, _lbl, _sig in cross_assets:
+                _sig_clean = str(_sig)
+                _arrow = "↑" if any(w in _sig_clean.lower() for w in ["bull", "appreciat", "higher", "tailwind", "support"]) else (
+                    "↓" if any(w in _sig_clean.lower() for w in ["bear", "weaken", "drag", "lower", "range-bound"]) else "•"
+                )
+                _sig_color = "#00ffa3" if _arrow == "↑" else ("#ff5e75" if _arrow == "↓" else "#A5B2BF")
+                # strip emoji prefix from signal text for compact display
+                _sig_words = _sig_clean.lstrip("📈📉⚖️🔺🔻").strip()[:40]
+                cross_html += (
+                    f'<div class="apex-cross-asset-card">'
+                    f'<div class="apex-cross-asset-label">{_ico} {_lbl} <span style="color:{_sig_color};">{_arrow}</span></div>'
+                    f'<div class="apex-cross-asset-signal">{_sig_words}</div>'
+                    f'</div>'
+                )
+            cross_html += '</div>'
+
+            # ── Nowcast box HTML ──────────────────────────────────────────────
+            probs = nowcast.get("probabilities", {})
+            bias_label = nowcast.get("bias_label", "—")
+            outcome_desc = nowcast.get("outcome_desc", "")
+            confidence = nowcast.get("confidence", 0)
+
+            nowcast_html = f"""
+            <div class="apex-modal-nowcast" style="background:{bias_bg};border:1px solid {bias_color}33;display:grid;grid-template-columns:1fr auto;gap:14px;align-items:center;">
+              <div>
+                <div style="font-size:9px;font-weight:900;text-transform:uppercase;letter-spacing:.9px;color:{bias_color};">ApexMacro Nowcast</div>
+                <div class="apex-modal-nowcast-title" style="color:{bias_color};">{bias_label}</div>
+                <div class="apex-modal-nowcast-desc">{outcome_desc}</div>
+                <div class="apex-modal-nowcast-probs">
+                  Beat <b style="color:#00ffa3;">{probs.get('beat',0):.1f}%</b>
+                  &nbsp;•&nbsp; In-line <b style="color:#ffd166;">{probs.get('inline',0):.1f}%</b>
+                  &nbsp;•&nbsp; Miss <b style="color:#ff788a;">{probs.get('miss',0):.1f}%</b>
+                  &nbsp;•&nbsp; Conflict {nowcast.get('conflict_score',0)*100:.0f}%
+                  &nbsp;•&nbsp; Evidence {nowcast.get('evidence_quality',0)*100:.0f}%
+                  &nbsp;•&nbsp; Model: {nowcast.get('event_family','general').title()}
+                </div>
+                <div style="font-size:9px;color:#8fa3b4;margin-top:4px;">Baseline: {modal_ev.get('consensus_bias','')}</div>
+              </div>
+              <div style="text-align:right;min-width:80px;">
+                <div class="apex-modal-conf" style="color:{bias_color};">{confidence}%</div>
+                <div class="apex-modal-conf-cap">Model Confidence</div>
+              </div>
+            </div>
+            """
+
+            # ── Currency trajectory HTML ──────────────────────────────────────
+            traj_html = f"""
+            <div style="padding:12px 14px;background:rgba(0,245,255,.025);border:1px solid rgba(0,245,255,.12);border-radius:10px;margin-bottom:14px;">
+              <div class="fc-small-lbl">Direct {cur} trajectory</div>
+              <div style="font-size:12px;font-weight:900;color:{nowcast.get('currency_action_color','#ffd166')};margin-top:4px;">{nowcast.get('currency_action_en','—')}</div>
+              <div style="font-size:10px;color:#92a5b1;margin-top:3px;line-height:1.4;">{nowcast.get('currency_action_desc_en','—')}</div>
+            </div>
+            """
+
+            # ── RENDER MODAL ──────────────────────────────────────────────────
+            render_html(f"""
+            <div class="apex-event-modal-overlay" id="apex-modal-overlay">
+              <div class="apex-event-modal" role="dialog" aria-modal="true" aria-label="Event Details">
+
+                <div class="apex-modal-header">
+                  <div class="apex-modal-header-left">
+                    <div class="apex-modal-header-tag">Event Details</div>
+                    <div style="font-size:16px;font-weight:900;color:#F2F6F8;margin:3px 0;">{modal_ev.get('title','')}</div>
+                    <div class="apex-modal-header-date">{modal_date_str}</div>
+                  </div>
+                </div>
+
+                <div class="apex-modal-section">
+                  <div class="apex-modal-section-title">Basic Information</div>
+                  <div class="apex-modal-basic-grid">
+                    <div class="apex-modal-field">
+                      <div class="apex-modal-field-label">Currency</div>
+                      <div class="apex-modal-field-value">{cur_flag} {cur}</div>
+                    </div>
+                    <div class="apex-modal-field">
+                      <div class="apex-modal-field-label">Impact</div>
+                      <div class="apex-modal-field-value apex-dec-impact {impact_cls}" style="display:inline-flex;">{impact_label}</div>
+                    </div>
+                    <div class="apex-modal-field">
+                      <div class="apex-modal-field-label">Time</div>
+                      <div class="apex-modal-field-value">{time_raw}</div>
+                    </div>
+                  </div>
+                  <div class="apex-modal-event-name">
+                    <div class="apex-modal-field-label">Event</div>
+                    <div class="apex-modal-field-value">{modal_ev.get('title','')}</div>
+                  </div>
+                </div>
+
+                <div class="apex-modal-section">
+                  <div class="apex-modal-section-title">Actual / Forecast / Previous</div>
+                  <div class="apex-modal-value-grid">
+                    <div class="apex-modal-value-box" style="border-color:rgba(20,215,225,.25);">
+                      <div class="apex-modal-value-label">Actual</div>
+                      <div class="apex-modal-value-num {actual_css_class}">{actual_value}</div>
+                    </div>
+                    <div class="apex-modal-value-box">
+                      <div class="apex-modal-value-label">Forecast</div>
+                      <div class="apex-modal-value-num" style="color:#ffd166;">{modal_ev.get('forecast_str','—')}</div>
+                    </div>
+                    <div class="apex-modal-value-box">
+                      <div class="apex-modal-value-label">Previous</div>
+                      <div class="apex-modal-value-num">{modal_ev.get('prev_str','—')}</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="apex-modal-section">
+                  <div class="apex-modal-section-title">Nowcast &amp; Trajectory</div>
+                  {nowcast_html}
+                  {traj_html}
+                </div>
+
+                <div class="apex-modal-section">
+                  <div class="apex-modal-section-title">Cross-Asset Impact</div>
+                  {cross_html}
+                </div>
+
+                <div class="apex-modal-section">
+                  <div class="apex-modal-section-title">Evidence &amp; Precursors</div>
+                  {prec_html}
+                  {wires_html}
+                </div>
+
+              </div>
+            </div>
+            """)
+
+            # ── Causal AI panel (uses existing render function, injected below modal) ──
+            render_causal_macro_ai_panel(causal_ai)
+
+            # ── Modal close + Admin override controls ─────────────────────────
+            with st.container():
+                # Close button — always visible
+                close_col, admin_col = st.columns([1, 3])
+                with close_col:
+                    if st.button("✕  Close Event Details", key="apex_modal_close_btn", use_container_width=True):
+                        st.session_state[modal_key] = False
+                        st.session_state[modal_ev_key] = ""
+                        st.session_state.pop(selected_key, None)
+                        st.rerun()
+
+                if is_admin:
+                    with admin_col:
+                        render_html(f'<div class="fc-small-lbl" style="margin-bottom:5px;">👑 Admin Actual Override &nbsp; <span style="color:#637585;">Current: {effective_actual or "—"}</span></div>')
+                    adm_inp, adm_btn = st.columns([3, 1])
+                    with adm_inp:
+                        entered_actual_val = st.text_input(
+                            f"Actual Value for {ev_code}",
+                            value=effective_actual,
+                            placeholder="e.g. -0.5% or 0.5",
+                            key=f"act_txt_{ev_code}",
+                            label_visibility="collapsed",
+                        )
+                    with adm_btn:
+                        if st.button("Update Actual", key=f"act_btn_{ev_code}", use_container_width=True):
+                            actuals_cache[ev_code] = entered_actual_val.strip()
+                            save_actuals_cache(actuals_cache)
+                            st.success("Published!")
+                            time.sleep(0.3)
+                            st.rerun()
+
+            # Modal is open — do NOT render calendar below (overlay handles it visually)
             return
 
-        ev = next((item for item in events if item.get("code") == selected_code), None)
-        if ev is None:
-            st.session_state.pop(selected_key, None)
-            return
+    # Clear selected_key when modal is closed so refresh fragment resumes
+    if not modal_open:
+        st.session_state.pop(selected_key, None)
 
-    # Show the selected catalyst immediately before any slow network/AI work.
-    cur = ev.get("currency", "USD")
-    cur_flag = currency_flags.get(cur, "🌐")
-    render_html(
-        f'<div class="sec-title">Selected Catalyst — {cur_flag} {cur} · {ev["title"]}</div>'
+    # ═══════════════════════════════════════════════════════════════════════════
+    # LEVEL 1 — MONTHLY GLASS CALENDAR
+    # ═══════════════════════════════════════════════════════════════════════════
+    month_name = _cal.month_name[cm]
+    prev_label = f"‹ {_cal.month_name[(cm - 2) % 12 + 1]}"
+    next_label = f"{_cal.month_name[cm % 12 + 1]} ›"
+
+    # Navigation buttons (Streamlit buttons trigger rerun safely)
+    nav_l, nav_c, nav_r = st.columns([1, 3, 1])
+    with nav_l:
+        if can_prev:
+            if st.button(prev_label, key="apex_cal_prev", use_container_width=True):
+                prev_month = cm - 1
+                prev_year  = cy - (1 if prev_month < 1 else 0)
+                prev_month = 12 if prev_month < 1 else prev_month
+                st.session_state[cal_month_key] = (prev_year, prev_month)
+                st.rerun()
+    with nav_c:
+        render_html(
+            f'<div style="text-align:center;font-size:15px;font-weight:900;color:#F2F6F8;padding:6px 0;">'
+            f'{month_name.upper()} {cy}</div>'
+        )
+    with nav_r:
+        if can_next:
+            if st.button(next_label, key="apex_cal_next", use_container_width=True):
+                next_month = cm + 1
+                next_year  = cy + (1 if next_month > 12 else 0)
+                next_month = 1 if next_month > 12 else next_month
+                st.session_state[cal_month_key] = (next_year, next_month)
+                st.rerun()
+
+    # ── Build calendar grid HTML ───────────────────────────────────────────────
+    # First weekday of month (0=Mon … 6=Sun) and total days
+    first_wd = _cal.monthrange(cy, cm)[0]  # 0=Mon, 6=Sun
+    days_in_month = _cal.monthrange(cy, cm)[1]
+
+    # Calendar starts on Monday; padding cells before day 1
+    # Cells before day 1 come from previous month
+    prev_month_days = _cal.monthrange(cy if cm > 1 else cy - 1, (cm - 1) if cm > 1 else 12)[1]
+
+    weekdays_html = "".join(
+        f'<div class="apex-cal-wd">{d}</div>'
+        for d in ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
     )
-    render_html(
-        f'<div style="margin:0 0 14px 0;padding:12px 14px;border:1px solid rgba(0,229,246,.18);'
-        f'border-radius:12px;background:rgba(4,14,22,.72);color:#b8c7d3;font-size:13px;">'
-        f'📅 {ev["date_str"]} &nbsp;•&nbsp; 🕒 {ev["time_str"]} &nbsp;•&nbsp; {ev["countdown"]}'
-        f'</div>'
-    )
 
-    # INSTANT PATH: use the background-precomputed result whenever available.
-    ev_code = ev["code"]
-    saved_actual = str(actuals_cache.get(ev_code, "")).strip()
-    published_actual = _normalize_forex_factory_actual(ev.get("actual_str", ""))
-    effective_actual = saved_actual or published_actual
-    bg_result = _forecaster_bg_get(ev, effective_actual)
+    cells_html = ""
+    total_cells = first_wd + days_in_month
+    # Pad to full weeks
+    total_cells = total_cells + (7 - total_cells % 7) if total_cells % 7 != 0 else total_cells
 
-    if bg_result and bg_result.get("nowcast"):
-        nowcast = bg_result["nowcast"]
-        causal_ai = bg_result.get("causal_ai") or {"status": "skipped"}
-        all_news = bg_result.get("all_news") or []
-    else:
-        # True cold-start fallback: never block the click on RUAPI.
-        # Only the quantitative Nowcast is prepared synchronously; causal AI is
-        # delegated to the background worker and will appear on the next rerun.
-        with st.spinner(f"Preparing quantitative Nowcast for {ev.get('title','selected catalyst')}..."):
-            all_news = fetch_all_instant_news(channel_name)
-            nowcast = compute_event_nowcast(
-                ev,
-                fred_key,
-                all_news,
-                actual_override=effective_actual,
+    for cell_idx in range(total_cells):
+        if cell_idx < first_wd:
+            # Previous-month padding
+            pad_day = prev_month_days - first_wd + cell_idx + 1
+            cells_html += f'<div class="apex-calendar-day is-other-month"><div class="apex-cal-date-num">{pad_day}</div></div>'
+        elif cell_idx < first_wd + days_in_month:
+            day_num = cell_idx - first_wd + 1
+            cell_date = _date(cy, cm, day_num)
+            day_events = events_by_date.get(cell_date, [])
+            is_today    = (cell_date == today_local)
+            is_selected = (cell_date == selected_date)
+            has_events  = bool(day_events)
+
+            css_classes = "apex-calendar-day"
+            if is_today:    css_classes += " is-today"
+            if is_selected: css_classes += " is-selected"
+            if not has_events: css_classes += " no-events"
+
+            # Build dots
+            dots_html = ""
+            if day_events:
+                MAX_DOTS = 4
+                shown = day_events[:MAX_DOTS]
+                overflow = len(day_events) - MAX_DOTS
+                for _e in shown:
+                    _imp = str(_e.get("impact", "")).lower()
+                    _dot_cls = "high" if _imp == "high" else ("medium" if _imp == "medium" else "low")
+                    dots_html += f'<div class="apex-impact-dot {_dot_cls}"></div>'
+                if overflow > 0:
+                    dots_html += f'<div class="apex-cal-overflow">+{overflow}</div>'
+
+            # State key for date click (encoded as query param via button)
+            cell_key = f"apex_cal_day_{cy}_{cm}_{day_num}"
+
+            cells_html += (
+                f'<div class="{css_classes}" data-date="{cell_date.isoformat()}">'
+                f'<div class="apex-cal-date-num">{day_num}</div>'
+                f'<div class="apex-cal-dots">{dots_html}</div>'
+                f'</div>'
             )
-            causal_ai = {"status": "updating"}
-            with _FORECASTER_BG_LOCK:
-                _FORECASTER_BG_CACHE[ev_code] = {
-                    "signature": _forecaster_bg_signature(ev, effective_actual),
-                    "updated_at": time.time(),
-                    "nowcast": nowcast,
-                    "causal_ai": causal_ai,
-                    "all_news": all_news,
-                    "effective_actual": effective_actual,
-                }
+        else:
+            # Next-month overflow
+            next_day = cell_idx - first_wd - days_in_month + 1
+            cells_html += f'<div class="apex-calendar-day is-other-month"><div class="apex-cal-date-num">{next_day}</div></div>'
 
-            # Warm/finish AI outside the click path.
-            _ensure_forecaster_background_worker(
-                [ev],
-                fred_key,
-                channel_name,
-                actuals_cache,
-            )
+    legend_html = """
+    <div class="apex-cal-legend">
+      <div class="apex-cal-legend-item"><div class="apex-impact-dot high" style="width:8px;height:8px;"></div> High Impact</div>
+      <div class="apex-cal-legend-item"><div class="apex-impact-dot medium" style="width:8px;height:8px;"></div> Medium Impact</div>
+      <div class="apex-cal-legend-item"><div class="apex-impact-dot low" style="width:8px;height:8px;"></div> Low Impact</div>
+    </div>
+    """
 
-    # Preserve learning/backtesting with the result actually displayed.
-    try:
-        _record_forecaster_snapshot(ev, nowcast, actual=effective_actual)
-    except Exception:
-        pass
-
-    cur = ev.get("currency", "USD")
-    cur_flag = currency_flags.get(cur, "🌐")
-    actual_value = effective_actual or "Pending"
-    actual_color = "#00ffa3" if effective_actual else "#718795"
-    bias_bg = "rgba(0,255,163,.055)" if nowcast["bias_color"] == "#00ffa3" else ("rgba(255,94,117,.055)" if nowcast["bias_color"] == "#ff5e75" else "rgba(255,209,102,.05)")
-
-    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
     render_html(f"""
-    <div class="fc-body" style="padding-top:4px;">
-      <div class="fc-time" style="margin-bottom:10px;">📅 {ev['date_str']} &nbsp;•&nbsp; 🕒 {ev['time_str']} &nbsp;•&nbsp; {ev['countdown']}</div>
-      <div class="fc-metrics">
-        <div class="fc-metric"><div class="fc-metric-l">Forecast</div><div class="fc-metric-v" style="color:#ffd166;">{ev['forecast_str']}</div><div class="fc-metric-note">Market consensus</div></div>
-        <div class="fc-metric"><div class="fc-metric-l">Previous</div><div class="fc-metric-v">{ev['prev_str']}</div><div class="fc-metric-note">Last official release</div></div>
-        <div class="fc-metric"><div class="fc-metric-l">Actual</div><div class="fc-metric-v" style="color:{actual_color};">{actual_value}</div><div class="fc-metric-note">Published print</div></div>
-      </div>
-      <div class="fc-nowcast" style="background:{bias_bg};border:1px solid {nowcast['bias_color']}33;">
-        <div>
-          <div class="fc-now-lbl" style="color:{nowcast['bias_color']};">ApexMacro Nowcast</div>
-          <div class="fc-now-title" style="color:{nowcast['bias_color']};">{nowcast['bias_label']}</div>
-          <div class="fc-now-desc">{nowcast['outcome_desc']}</div>
-          <div style="font-size:9.5px;color:#8fa3b4;margin-top:7px;">Beat <b style="color:#00ffa3;">{nowcast.get('probabilities',{}).get('beat',0):.1f}%</b> &nbsp;•&nbsp; In-line <b style="color:#ffd166;">{nowcast.get('probabilities',{}).get('inline',0):.1f}%</b> &nbsp;•&nbsp; Miss <b style="color:#ff788a;">{nowcast.get('probabilities',{}).get('miss',0):.1f}%</b></div>
-          <div style="font-size:8.8px;color:#718795;margin-top:3px;">Conflict {nowcast.get('conflict_score',0)*100:.0f}% • Evidence quality {nowcast.get('evidence_quality',0)*100:.0f}% • Model: {nowcast.get('event_family','general').title()}</div>
+    <div class="apex-forecaster-shell">
+      <div class="apex-cal-wrap">
+        <div style="margin-bottom:14px;">
+          <div class="apex-cal-eyebrow">Forecaster</div>
+          <div class="apex-cal-month-label">Daily outlook for {month_name} {cy}</div>
         </div>
-        <div class="fc-score">
-          <div class="fc-score-num" style="color:{nowcast['bias_color']};">{nowcast['confidence']}%</div>
-          <div class="fc-score-cap">Model confidence</div>
-          <div style="font-size:9px;color:#718795;margin-top:4px;">Baseline: {ev['consensus_bias']}</div>
-        </div>
-      </div>
-      <div class="fc-outlook" style="grid-template-columns:1.45fr repeat(4,.65fr);">
-        <div class="fc-outlook-main">
-          <div class="fc-small-lbl">Direct {cur} trajectory</div>
-          <div class="fc-main-action" style="color:{nowcast['currency_action_color']};">{nowcast['currency_action_en']}</div>
-          <div class="fc-main-desc">{nowcast['currency_action_desc_en']}</div>
-        </div>
-        <div class="fc-asset"><b>🥇 Gold</b>{nowcast['gold_implication']}</div>
-        <div class="fc-asset"><b>💵 USD</b>{nowcast['usd_implication']}</div>
-        <div class="fc-asset"><b>🛢️ Oil</b>{nowcast['oil_implication']}</div>
-        <div class="fc-asset"><b>📊 Nasdaq-100</b>{nowcast['nasdaq_implication']}</div>
+        <div class="apex-cal-weekdays">{weekdays_html}</div>
+        <div class="apex-cal-grid" id="apex-cal-grid">{cells_html}</div>
+        {legend_html}
       </div>
     </div>
     """)
 
-    render_causal_macro_ai_panel(causal_ai)
+    # ── Date click buttons (one per visible day-with-events, invisible but functional) ──
+    # We use a hidden Streamlit form-based approach: one small button per event date
+    # rendered as invisible triggers. The calendar cells above show the visual;
+    # these buttons handle the click state changes safely within Streamlit.
 
-    if is_admin:
-        st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
-        render_html('<div class="fc-small-lbl" style="margin-bottom:6px;">👑 Admin Actual Override</div>')
-        col_inp, col_btn = st.columns([3, 1])
-        with col_inp:
-            entered_actual_val = st.text_input(
-                f"Actual Value for {ev_code}", value=effective_actual,
-                placeholder="e.g. -0.5% or 0.5", key=f"act_txt_{ev_code}", label_visibility="collapsed"
-            )
-        with col_btn:
-            if st.button("💾 Publish", key=f"act_btn_{ev_code}", use_container_width=True):
-                actuals_cache[ev_code] = entered_actual_val.strip()
-                save_actuals_cache(actuals_cache)
-                st.success("Published!")
-                time.sleep(0.3)
-                st.rerun()
+    # Only render buttons for days in the current displayed month that have events
+    event_dates_in_month = [d for d in events_by_date if d.year == cy and d.month == cm]
+    event_dates_in_month += [today_local] if (today_local.year == cy and today_local.month == cm and today_local not in event_dates_in_month) else []
 
-    st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
-    render_html('<div class="fc-small-lbl" style="margin-bottom:7px;">Evidence & Precursors</div>')
-    if nowcast["precursor_results"]:
-        p_cols = st.columns(min(len(nowcast["precursor_results"]), 3))
-        for p_idx, p_item in enumerate(nowcast["precursor_results"]):
-            p_col = p_cols[p_idx % len(p_cols)]
-            p_mom_color = "#00ffa3" if p_item["mom"] > 0 else ("#ff5e75" if p_item["mom"] < 0 else "#8fa3b4")
-            p_arr = "▲" if p_item["mom"] > 0 else ("▼" if p_item["mom"] < 0 else "•")
-            with p_col:
-                render_html(f"""
-                <div class="fc-metric" style="margin-bottom:8px;">
-                  <div class="fc-metric-l">{p_item['name']}</div>
-                  <div class="fc-metric-v">{p_item['latest']:.2f}</div>
-                  <div class="fc-metric-note" style="color:{p_mom_color};font-weight:800;">{p_arr} {p_item['mom']:+.2f} MoM</div>
-                </div>
-                """)
+    # Build a compact button row for date selection (below calendar, above event list)
+    # These are the real click targets; the calendar HTML above is purely visual.
+    st.markdown(
+        '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;" id="apex-date-btns">',
+        unsafe_allow_html=True,
+    )
+
+    # Render compact date-select buttons as a hidden row
+    # We batch them into a single row of columns to minimise vertical space
+    event_dates_this_month = sorted(
+        [d for d in events_by_date if d.year == cy and d.month == cm]
+    )
+    all_cal_dates = sorted(set(event_dates_this_month + [today_local] if today_local.year == cy and today_local.month == cm else event_dates_this_month))
+
+    if all_cal_dates:
+        date_btn_cols = st.columns(min(len(all_cal_dates), 7))
+        for _i, _d in enumerate(all_cal_dates):
+            _col = date_btn_cols[_i % len(date_btn_cols)]
+            with _col:
+                _has_ev = _d in events_by_date
+                _is_sel = (_d == selected_date)
+                _btn_label = f"{'▶ ' if _is_sel else ''}{_d.day}" + (f" ({len(events_by_date[_d])})" if _has_ev else "")
+                if st.button(_btn_label, key=f"apex_dsel_{_d.isoformat()}", use_container_width=True):
+                    st.session_state[sel_date_key] = _d
+                    # Close any open modal when changing date
+                    st.session_state[modal_key] = False
+                    st.session_state[modal_ev_key] = ""
+                    st.rerun()
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # LEVEL 2 — SELECTED DAY EVENT LIST
+    # ═══════════════════════════════════════════════════════════════════════════
+    sel_day_events = events_by_date.get(selected_date, [])
+    sel_date_display = selected_date.strftime("%-d %B %Y") if hasattr(selected_date, "strftime") else str(selected_date)
+    # Windows-safe date formatting (%-d not supported on Windows)
+    try:
+        sel_date_display = selected_date.strftime("%-d %B %Y")
+    except Exception:
+        sel_date_display = f"{selected_date.day} {selected_date.strftime('%B %Y')}"
+
+    event_count_badge = f'{len(sel_day_events)} Event{"s" if len(sel_day_events) != 1 else ""}' if sel_day_events else "No Events"
+
+    render_html(f"""
+    <div class="apex-selected-day-header">
+      <div class="apex-selected-day-title">{sel_date_display}</div>
+      <div class="apex-selected-day-count">{event_count_badge}</div>
+    </div>
+    """)
+
+    if not sel_day_events:
+        render_html('<div class="apex-no-events-msg">No scheduled macro catalysts for this date.</div>')
     else:
-        st.caption("No mapped FRED precursor series are available for this catalyst.")
+        # Build event card HTML
+        cards_html = '<div class="apex-day-events-list">'
+        for _ev in sel_day_events:
+            _cur     = _ev.get("currency", "USD")
+            _flag    = currency_flags.get(_cur, "🌐")
+            _imp     = str(_ev.get("impact", "")).title()
+            _imp_cls = "high" if _imp == "High" else ("medium" if _imp == "Medium" else "low")
+            _imp_ico = "🔴" if _imp == "High" else "🟡"
+            _time    = str(_ev.get("time_str", ""))
 
-    if nowcast["correlated_articles"]:
-        render_html('<div class="fc-small-lbl" style="margin:8px 0 7px;">Correlated breaking wires & speeches</div>')
-        for a in nowcast["correlated_articles"]:
-            render_html(f"""
-            <div style="padding:8px 10px;background:rgba(0,245,255,.025);border-left:2px solid rgba(0,245,255,.55);border-radius:5px;margin-bottom:6px;font-size:10.5px;color:#dce7ed;line-height:1.45;">
-              <b>{a.get('title', '')}</b><div style="color:#718795;font-size:9px;margin-top:2px;">{a.get('publishedAt', '')}</div>
+            _saved   = str(actuals_cache.get(str(_ev.get("code", "")), "")).strip()
+            _pub_act = _normalize_forex_factory_actual(_ev.get("actual_str", ""))
+            _eff_act = _saved or _pub_act
+            _act_val = _eff_act if _eff_act else "—"
+            _act_cls = "actual-live" if _eff_act else "pending"
+
+            cards_html += f"""
+            <div class="apex-day-event-card" title="Click to open event details">
+              <div>
+                <div class="apex-dec-time">{_time}</div>
+              </div>
+              <div class="apex-dec-currency">
+                <span class="apex-dec-flag">{_flag}</span>
+                <span class="apex-dec-cur-badge">{_cur}</span>
+              </div>
+              <div>
+                <div class="apex-dec-impact {_imp_cls}">{_imp_ico} {_imp}</div>
+                <div class="apex-dec-name" style="margin-top:5px;">{_ev.get('title','')}</div>
+              </div>
+              <div class="apex-dec-val-box">
+                <div class="apex-dec-val-lbl">Act</div>
+                <div class="apex-dec-val {_act_cls}">{_act_val}</div>
+              </div>
+              <div class="apex-dec-val-box">
+                <div class="apex-dec-val-lbl">Fcst</div>
+                <div class="apex-dec-val">{_ev.get('forecast_str','—')}</div>
+              </div>
+              <div class="apex-dec-val-box">
+                <div class="apex-dec-val-lbl">Prev</div>
+                <div class="apex-dec-val">{_ev.get('prev_str','—')}</div>
+              </div>
+              <div class="apex-dec-arrow">›</div>
             </div>
-            """)
+            """
+        cards_html += '</div>'
+        render_html(cards_html)
+
+        # ── Event open buttons (one per event in the day list) ─────────────────
+        # Rendered as compact inline triggers below the visual cards
+        ev_btn_cols = st.columns(min(len(sel_day_events), 3))
+        for _i, _ev in enumerate(sel_day_events):
+            _col = ev_btn_cols[_i % len(ev_btn_cols)]
+            _code = str(_ev.get("code", ""))
+            _cur  = _ev.get("currency", "USD")
+            _flag = currency_flags.get(_cur, "🌐")
+            _imp_ico = "🔴" if str(_ev.get("impact","")).title() == "High" else "🟡"
+            with _col:
+                if st.button(
+                    f"{_flag} {_imp_ico} {_ev.get('title','')[:30]}",
+                    key=f"apex_evopen_{_code}",
+                    use_container_width=True,
+                ):
+                    st.session_state[modal_key]    = True
+                    st.session_state[modal_ev_key] = _code
+                    st.session_state[selected_key] = _code
+                    st.session_state[snapshot_key] = events
+                    st.rerun()
 
 def _tron_headers() -> dict[str, str]:
     headers = {"Accept": "application/json", "User-Agent": "ApexMacro-VIP-Payments/1.0"}
