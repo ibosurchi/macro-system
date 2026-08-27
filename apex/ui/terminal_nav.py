@@ -1,7 +1,7 @@
 """Shared responsive authenticated navigation.
 
 Desktop: persistent institutional left sidebar matching Image 1.
-Mobile: full-screen glassmorphism slide-in drawer matching Image 4 & 5.
+Mobile: sleek interactive glassmorphism drawer matching Image 4 & 5.
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ ROUTES = {
 
 def render_terminal_nav(active_page: str, auth_user: dict | None = None) -> bool:
     """Render navigation for authenticated pages.
-    Returns True if mobile menu is open and rendered, so the caller can stop further page execution.
+    Returns True if mobile menu is open and rendered, so the caller stops further page execution.
     """
     is_admin = bool(auth_user and auth_user.get("is_admin"))
     role = "Admin" if is_admin else "VIP"
@@ -34,60 +34,7 @@ def render_terminal_nav(active_page: str, auth_user: dict | None = None) -> bool
     if is_admin:
         keys.append("admin")
 
-    # ── 1. Full-Screen Mobile Drawer View (When Opened) ────────────────
-    if st.session_state.get("mobile_menu_open", False):
-        st.markdown('<div class="apex-mobile-drawer-wrap">', unsafe_allow_html=True)
-        st.markdown('<div class="apex-mobile-drawer-head">', unsafe_allow_html=True)
-        
-        col_logo, col_close = st.columns([0.82, 0.18])
-        with col_logo:
-            core.render_html("""<div class="apex-sidebar-brand" style="padding:0;">
-<div class="apex-sidebar-logo-icon">▲</div>
-<div>
-<div class="apex-sidebar-brand-title">APEXMACRO</div>
-<div class="apex-sidebar-brand-subtitle">INTELLIGENCE DESK</div>
-</div>
-</div>""")
-        with col_close:
-            # User requested ☰ icon for toggling/closing the drawer
-            if st.button("☰", key=f"m_drawer_close_{active_page}", use_container_width=True, help="Close menu"):
-                st.session_state["mobile_menu_open"] = False
-                st.rerun()
-
-        st.markdown('</div>', unsafe_allow_html=True)
-
-        # Vertical navigation items
-        st.markdown("<div class='apex-mobile-menu-list'>", unsafe_allow_html=True)
-        for key in keys:
-            icon, label, path = ROUTES[key]
-            is_active = (active_page == key)
-            if st.button(
-                f"{icon}   {label}",
-                key=f"m_drawer_item_{key}_{active_page}",
-                use_container_width=True,
-                type="primary" if is_active else "secondary",
-            ):
-                st.session_state["mobile_menu_open"] = False
-                st.session_state["active_tab"] = label
-                st.switch_page(path)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        # Bottom Profile Box in Drawer
-        core.render_html(f"""<div class="apex-mobile-profile-card">
-<div class="apex-mobile-profile-left">
-<div class="apex-mobile-profile-avatar">{avatar_initials}</div>
-<div>
-<div class="apex-mobile-profile-name">{user_name}</div>
-<div class="apex-mobile-profile-role">{'Administrator' if is_admin else 'VIP Access'} • {now.strftime('%H:%M UTC')}</div>
-</div>
-</div>
-<div style="color:#27dce7;font-size:16px;">›</div>
-</div>
-</div>""")
-        st.stop()
-        return True
-
-    # ── 2. Desktop Persistent Sidebar (Desktop View) ───────────────────
+    # ── 1. Desktop Persistent Sidebar (min-width: 1024px) ───────────────
     with st.sidebar:
         core.render_html("""<div class="apex-sidebar-brand">
 <div class="apex-sidebar-logo-icon">▲</div>
@@ -120,11 +67,63 @@ def render_terminal_nav(active_page: str, auth_user: dict | None = None) -> bool
 <span style="font-size:9px;">⌵</span>
 </div>""")
 
+    # ── 2. Mobile Drawer Open State (Full Glass Menu) ──────────────────
+    if st.session_state.get("mobile_menu_open", False):
+        st.markdown('<div class="apex-mobile-drawer-wrap">', unsafe_allow_html=True)
+        st.markdown('<div class="apex-mobile-drawer-head">', unsafe_allow_html=True)
+
+        col_logo, col_close = st.columns([0.82, 0.18])
+        with col_logo:
+            core.render_html("""<div class="apex-sidebar-brand" style="padding:0;margin:0;">
+<div class="apex-sidebar-logo-icon">▲</div>
+<div>
+<div class="apex-sidebar-brand-title">APEXMACRO</div>
+<div class="apex-sidebar-brand-subtitle">INTELLIGENCE DESK</div>
+</div>
+</div>""")
+        with col_close:
+            if st.button("☰", key=f"m_drawer_close_{active_page}", use_container_width=True, help="Close navigation menu"):
+                st.session_state["mobile_menu_open"] = False
+                st.rerun()
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        # Large visible menu buttons
+        st.markdown("<div class='apex-mobile-menu-list'>", unsafe_allow_html=True)
+        for key in keys:
+            icon, label, path = ROUTES[key]
+            is_active = (active_page == key)
+            if st.button(
+                f"{icon}   {label}",
+                key=f"m_drawer_item_{key}_{active_page}",
+                use_container_width=True,
+                type="primary" if is_active else "secondary",
+            ):
+                st.session_state["mobile_menu_open"] = False
+                st.session_state["active_tab"] = label
+                st.switch_page(path)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        # Bottom Profile Card
+        core.render_html(f"""<div class="apex-mobile-profile-card">
+<div class="apex-mobile-profile-left">
+<div class="apex-mobile-profile-avatar">{avatar_initials}</div>
+<div>
+<div class="apex-mobile-profile-name">{user_name}</div>
+<div class="apex-mobile-profile-role">{'Administrator' if is_admin else 'VIP Access'} • {now.strftime('%H:%M UTC')}</div>
+</div>
+</div>
+<div style="color:#27dce7;font-size:18px;font-weight:700;">›</div>
+</div>
+</div>""")
+        st.stop()
+        return True
+
     # ── 3. Mobile Top Header Bar (Closed State) ───────────────────────
     st.markdown('<div class="apex-mobile-header-bar-container">', unsafe_allow_html=True)
     m_col1, m_col2 = st.columns([0.82, 0.18])
     with m_col1:
-        core.render_html("""<div class="apex-sidebar-brand" style="padding:0;">
+        core.render_html("""<div class="apex-sidebar-brand" style="padding:0;margin:0;">
 <div class="apex-sidebar-logo-icon">▲</div>
 <div>
 <div class="apex-sidebar-brand-title">APEXMACRO</div>
@@ -132,7 +131,7 @@ def render_terminal_nav(active_page: str, auth_user: dict | None = None) -> bool
 </div>
 </div>""")
     with m_col2:
-        if st.button("☰", key=f"btn_open_m_menu_{active_page}", use_container_width=True, help="Open menu"):
+        if st.button("☰", key=f"btn_open_m_menu_{active_page}", use_container_width=True, help="Open navigation menu"):
             st.session_state["mobile_menu_open"] = True
             st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
