@@ -1,7 +1,7 @@
 """Shared responsive authenticated navigation.
 
 Desktop: persistent institutional left sidebar matching Image 1.
-Mobile: ☰ Menu button on top-LEFT, APEXMACRO logo on top-RIGHT.
+Mobile: Logo on top-LEFT, compact square ☰ button on top-RIGHT.
 """
 from __future__ import annotations
 
@@ -67,24 +67,24 @@ def render_terminal_nav(active_page: str, auth_user: dict | None = None) -> bool
 <span style="font-size:9px;">⌵</span>
 </div>""")
 
-    # ── 2. Mobile Drawer Open State (☰ ON LEFT, LOGO ON RIGHT) ────────
+    # ── 2. Mobile Drawer Open State (LOGO ON LEFT, COMPACT ☰ ON RIGHT) ─
     if st.session_state.get("mobile_menu_open", False):
         st.markdown('<div class="apex-mobile-drawer-wrap">', unsafe_allow_html=True)
         st.markdown('<div class="apex-mobile-drawer-head">', unsafe_allow_html=True)
 
-        col_close, col_logo = st.columns([0.18, 0.82])
+        col_logo, col_close = st.columns([0.82, 0.18])
+        with col_logo:
+            core.render_html("""<div class="apex-sidebar-brand" style="padding:0;margin:0;">
+<div class="apex-sidebar-logo-icon">▲</div>
+<div>
+<div class="apex-sidebar-brand-title">APEXMACRO</div>
+<div class="apex-sidebar-brand-subtitle">INTELLIGENCE DESK</div>
+</div>
+</div>""")
         with col_close:
             if st.button("☰", key=f"m_drawer_close_{active_page}", use_container_width=True, help="Close navigation menu"):
                 st.session_state["mobile_menu_open"] = False
                 st.rerun()
-        with col_logo:
-            core.render_html("""<div class="apex-sidebar-brand apex-brand-right">
-<div style="text-align:right;">
-<div class="apex-sidebar-brand-title">APEXMACRO</div>
-<div class="apex-sidebar-brand-subtitle">INTELLIGENCE DESK</div>
-</div>
-<div class="apex-sidebar-logo-icon">▲</div>
-</div>""")
 
         st.markdown('</div>', unsafe_allow_html=True)
 
@@ -119,21 +119,21 @@ def render_terminal_nav(active_page: str, auth_user: dict | None = None) -> bool
         st.stop()
         return True
 
-    # ── 3. Mobile Top Header Bar (Closed State: ☰ ON LEFT, LOGO ON RIGHT)
+    # ── 3. Mobile Top Header Bar (Closed State: LOGO ON LEFT, COMPACT ☰ ON RIGHT)
     st.markdown('<div class="apex-mobile-header-bar-container">', unsafe_allow_html=True)
-    m_col1, m_col2 = st.columns([0.18, 0.82])
+    m_col1, m_col2 = st.columns([0.82, 0.18])
     with m_col1:
-        if st.button("☰", key=f"btn_open_m_menu_{active_page}", use_container_width=True, help="Open navigation menu"):
-            st.session_state["mobile_menu_open"] = True
-            st.rerun()
-    with m_col2:
-        core.render_html("""<div class="apex-sidebar-brand apex-brand-right">
-<div style="text-align:right;">
+        core.render_html("""<div class="apex-sidebar-brand" style="padding:0;margin:0;">
+<div class="apex-sidebar-logo-icon">▲</div>
+<div>
 <div class="apex-sidebar-brand-title">APEXMACRO</div>
 <div class="apex-sidebar-brand-subtitle">INTELLIGENCE DESK</div>
 </div>
-<div class="apex-sidebar-logo-icon">▲</div>
 </div>""")
+    with m_col2:
+        if st.button("☰", key=f"btn_open_m_menu_{active_page}", use_container_width=True, help="Open navigation menu"):
+            st.session_state["mobile_menu_open"] = True
+            st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
     return False

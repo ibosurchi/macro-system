@@ -123,10 +123,10 @@ header[data-testid="stHeader"],
   color: #f0f4f8 !important;
 }
 
-/* ── MOBILE HEADER (☰ ON LEFT, LOGO ON RIGHT) ───────────── */
+/* ── MOBILE HEADER (LOGO ON LEFT, COMPACT ☰ ON RIGHT) ───── */
 .apex-mobile-header-bar-container {
   display: block;
-  margin: 0 0 12px;
+  margin: 0 0 10px;
   padding: 0 0 6px;
   border-bottom: 1px solid rgba(70, 145, 165, 0.18);
 }
@@ -142,21 +142,21 @@ header[data-testid="stHeader"],
   width: 100% !important;
 }
 
-/* First Column: ☰ Button on Left */
+/* First Column: Logo on Left */
 .apex-mobile-header-bar-container [data-testid="column"]:first-child,
 .apex-mobile-drawer-head [data-testid="column"]:first-child {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  width: calc(100% - 52px) !important;
+}
+
+/* Last Column: Compact 42px ☰ Button on Right */
+.apex-mobile-header-bar-container [data-testid="column"]:last-child,
+.apex-mobile-drawer-head [data-testid="column"]:last-child {
   flex: 0 0 44px !important;
   min-width: 44px !important;
   width: 44px !important;
   max-width: 44px !important;
-}
-
-/* Last Column: Logo on Right */
-.apex-mobile-header-bar-container [data-testid="column"]:last-child,
-.apex-mobile-drawer-head [data-testid="column"]:last-child {
-  flex: 1 1 auto !important;
-  min-width: 0 !important;
-  width: calc(100% - 50px) !important;
 }
 
 .apex-mobile-header-bar-container button,
@@ -164,29 +164,55 @@ header[data-testid="stHeader"],
   width: 42px !important;
   height: 42px !important;
   min-height: 42px !important;
-  display: flex !important;
+  max-width: 42px !important;
+  display: inline-flex !important;
   align-items: center !important;
   justify-content: center !important;
   border-radius: 10px !important;
   border: 1px solid rgba(39, 220, 231, 0.45) !important;
   background: rgba(7, 25, 35, 0.85) !important;
   color: #27dce7 !important;
-  font-size: 19px !important;
+  font-size: 20px !important;
   font-weight: 800 !important;
   padding: 0 !important;
   box-shadow: 0 0 14px rgba(39, 220, 231, 0.20) !important;
   cursor: pointer !important;
+  margin: 0 !important;
 }
 
-.apex-sidebar-brand.apex-brand-right {
-  display: flex !important;
-  align-items: center !important;
-  justify-content: flex-end !important;
-  text-align: right !important;
-  gap: 10px !important;
-  padding: 0 !important;
-  margin: 0 !important;
-  width: 100% !important;
+.apex-sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 6px 18px;
+}
+.apex-sidebar-logo-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 9px;
+  border: 1px solid rgba(39, 220, 231, 0.35);
+  background: rgba(39, 220, 231, 0.06);
+  display: grid;
+  place-items: center;
+  color: #27dce7;
+  font-size: 22px;
+  font-weight: 950;
+  font-style: italic;
+  box-shadow: inset 0 0 14px rgba(39, 220, 231, 0.08);
+  flex-shrink: 0;
+}
+.apex-sidebar-brand-title {
+  font-size: 16px;
+  font-weight: 850;
+  letter-spacing: 1.8px;
+  color: #f5f7f9;
+  line-height: 1.1;
+}
+.apex-sidebar-brand-subtitle {
+  font-size: 10px;
+  color: #27dce7;
+  margin-top: 2px;
+  letter-spacing: 0.3px;
 }
 
 /* ── MOBILE FULL-SCREEN GLASS DRAWER ─────────────────────── */
@@ -285,40 +311,6 @@ header[data-testid="stHeader"],
   margin-top: 1px;
 }
 
-.apex-sidebar-brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 4px 6px 18px;
-}
-.apex-sidebar-logo-icon {
-  width: 38px;
-  height: 38px;
-  border-radius: 9px;
-  border: 1px solid rgba(39, 220, 231, 0.35);
-  background: rgba(39, 220, 231, 0.06);
-  display: grid;
-  place-items: center;
-  color: #27dce7;
-  font-size: 22px;
-  font-weight: 950;
-  font-style: italic;
-  box-shadow: inset 0 0 14px rgba(39, 220, 231, 0.08);
-  flex-shrink: 0;
-}
-.apex-sidebar-brand-title {
-  font-size: 16px;
-  font-weight: 850;
-  letter-spacing: 1.8px;
-  color: #f5f7f9;
-  line-height: 1.1;
-}
-.apex-sidebar-brand-subtitle {
-  font-size: 10px;
-  color: #27dce7;
-  margin-top: 2px;
-  letter-spacing: 0.3px;
-}
 .apex-sidebar-sep {
   height: 1px;
   background: rgba(80, 145, 165, 0.14);
