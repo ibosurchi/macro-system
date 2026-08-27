@@ -2,12 +2,14 @@
 from . import production_core as core
 from .ui.common import render_top_header, render_footer
 from .ui.terminal_nav import render_terminal_nav
-from .dashboard import render_dashboard as _dash_render
 import streamlit as st
 
 
 def render_dashboard(auth_user: dict) -> None:
     """Delegate to the canonical apex/dashboard.py implementation."""
+    # Lazy import avoids the circular-import chain that fires at module load time
+    # (views → dashboard → production_core → … → views).
+    from .dashboard import render_dashboard as _dash_render  # noqa: PLC0415
     _dash_render(auth_user)
     render_footer()
 
