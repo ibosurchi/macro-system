@@ -365,34 +365,20 @@ header[data-testid="stHeader"],
   cursor: pointer !important;
 }
 
-/* ── MOBILE FULL-SCREEN GLASS DRAWER & ANIMATION ─────────── */
+/* ── MOBILE FULL-SCREEN GLASS DRAWER ─────────────────────── */
 .apex-mobile-drawer-wrap {
-  position: fixed !important;
-  top: 0 !important;
-  left: 0 !important;
-  right: 0 !important;
-  bottom: 0 !important;
-  width: 100vw !important;
-  height: 100vh !important;
-  z-index: 999999 !important;
-  background: rgba(2, 9, 15, 0.96) !important;
-  backdrop-filter: blur(20px) !important;
-  -webkit-backdrop-filter: blur(20px) !important;
-  padding: 10px 14px 28px !important;
-  box-sizing: border-box !important;
-  overflow-y: auto !important;
-  -webkit-overflow-scrolling: touch !important;
-  animation: apexMobileDrawerFadeIn 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards !important;
+  padding: 4px 0 24px;
+  animation: apexMobileDrawerFadeIn 0.20s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 @keyframes apexMobileDrawerFadeIn {
   0% {
     opacity: 0;
-    transform: translateY(-8px) scale(0.98);
+    transform: translateY(-6px);
   }
   100% {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translateY(0);
   }
 }
 
@@ -439,7 +425,7 @@ header[data-testid="stHeader"],
   margin-top: 14px;
 }
 
-.apex-mobile-drawer-wrap [data-testid="stButton"] button {
+.apex-mobile-menu-list button {
   min-height: 48px !important;
   border-radius: 12px !important;
   text-align: left !important;
@@ -448,24 +434,27 @@ header[data-testid="stHeader"],
   font-weight: 650 !important;
   margin: 6px 0 !important;
   letter-spacing: 0.2px;
+  display: flex !important;
+  align-items: center !important;
+  padding: 10px 14px !important;
 }
 
-.apex-mobile-drawer-wrap [data-testid="stButton"] button[kind="primary"] {
+.apex-mobile-menu-list button[kind="primary"] {
   background: linear-gradient(90deg, rgba(20, 210, 225, 0.20) 0%, rgba(20, 210, 225, 0.05) 100%) !important;
   border: 1px solid rgba(39, 220, 231, 0.55) !important;
   color: #27dce7 !important;
   box-shadow: inset 0 0 18px rgba(39, 220, 231, 0.08), 0 0 14px rgba(39, 220, 231, 0.12) !important;
 }
 
-.apex-mobile-drawer-wrap [data-testid="stButton"] button[kind="secondary"] {
-  background: rgba(7, 25, 35, 0.40) !important;
-  border: 1px solid rgba(70, 145, 165, 0.18) !important;
-  color: #c8d5de !important;
+.apex-mobile-menu-list button[kind="secondary"] {
+  background: rgba(7, 25, 35, 0.55) !important;
+  border: 1px solid rgba(70, 145, 165, 0.22) !important;
+  color: #d8e5ee !important;
 }
 
-.apex-mobile-drawer-wrap [data-testid="stButton"] button[kind="secondary"]:hover {
-  border-color: rgba(39, 220, 231, 0.35) !important;
-  color: #f5f8fa !important;
+.apex-mobile-menu-list button[kind="secondary"]:hover {
+  border-color: rgba(39, 220, 231, 0.40) !important;
+  color: #ffffff !important;
 }
 
 .apex-mobile-profile-card {
@@ -598,8 +587,14 @@ header[data-testid="stHeader"],
 }
 
 @media (max-width: 768px) {
+  .main .block-container,
+  [data-testid="stAppViewBlockContainer"],
   .block-container {
-    padding: 12px 10px 24px !important;
+    padding-top: 0 !important;
+    padding-left: 10px !important;
+    padding-right: 10px !important;
+    padding-bottom: 24px !important;
+    margin-top: 0 !important;
   }
 }
 
