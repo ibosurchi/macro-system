@@ -21,6 +21,31 @@ def _shared_auth_css() -> None:
   --apex-auth-muted: #94a2b0;
 }
 
+*, *::before, *::after {
+  box-sizing: border-box !important;
+}
+
+html, body {
+  overflow-x: clip !important;
+  max-width: 100vw !important;
+  width: 100% !important;
+  position: relative !important;
+  touch-action: pan-y !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+[data-testid="stAppViewContainer"],
+[data-testid="stAppViewBlockContainer"],
+.stApp,
+.main,
+.block-container {
+  overflow-x: clip !important;
+  max-width: 100vw !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+}
+
 /* Hide default streamlit headers and deploy buttons completely */
 header[data-testid="stHeader"],
 [data-testid="stHeader"],
