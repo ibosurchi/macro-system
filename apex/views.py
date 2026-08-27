@@ -1,6 +1,6 @@
 """Thin render orchestration for authenticated pages.
 
-Redesigned Dashboard UI matching Image 1 pixel-perfect institutional terminal aesthetic.
+Responsive Institutional Macro Terminal UI (Desktop, Tablet & Mobile).
 All strategies, data sources, and calculations remain 100% untouched.
 """
 from __future__ import annotations
@@ -94,7 +94,6 @@ def _smooth_sparkline_svg(vals: list, color: str = "#27dce7", w: int = 105, h: i
     pad_y = 4.0
     pts = [(i / (n - 1) * w, (h - pad_y) - ((vals[i] - mn) / rng) * (h - 2 * pad_y)) for i in range(n)]
 
-    # Build cubic spline path
     path_d = f"M {pts[0][0]:.1f} {pts[0][1]:.1f}"
     for i in range(len(pts) - 1):
         p0 = pts[max(i - 1, 0)]
@@ -110,7 +109,7 @@ def _smooth_sparkline_svg(vals: list, color: str = "#27dce7", w: int = 105, h: i
     fill_d = f"{path_d} L {w:.1f} {h:.1f} L 0 {h:.1f} Z"
     grad_id = f"grad_{abs(hash(color + str(vals[:3])))}"
 
-    return f"""<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" style="display:block;overflow:visible;">
+    return f"""<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" style="display:block;overflow:visible;max-width:100%;">
 <defs>
 <linearGradient id="{grad_id}" x1="0" y1="0" x2="0" y2="1">
 <stop offset="0%" stop-color="{color}" stop-opacity="0.25"/>
@@ -167,17 +166,22 @@ def _world_map_svg() -> str:
 <circle cx="192" cy="90" r="1.4"/><circle cx="202" cy="88" r="1.8"/><circle cx="212" cy="90" r="1.8"/><circle cx="222" cy="88" r="1.4"/><circle cx="232" cy="92" r="1.4"/>
 <circle cx="188" cy="102" r="1.4"/><circle cx="198" cy="104" r="1.8"/><circle cx="208" cy="100" r="1.8"/><circle cx="218" cy="104" r="1.8"/><circle cx="228" cy="102" r="1.4"/><circle cx="238" cy="104" r="1.4"/>
 <circle cx="195" cy="116" r="1.4"/><circle cx="205" cy="118" r="1.8"/><circle cx="215" cy="114" r="1.8"/><circle cx="225" cy="118" r="1.8"/><circle cx="235" cy="116" r="1.4"/>
-<circle cx="202" cy="130" r="1.4"/><circle cx="212" cy="132" r="1.8"/><circle cx="222" cy="128" r="1.4"/><circle cx="230" cy="132" r="1.4"/><circle cx="208" cy="144" r="1.4"/><circle cx="218" cy="146" r="1.8"/><circle cx="226" cy="142" r="1.4"/><circle cx="214" cy="158" r="1.4"/><circle cx="222" cy="156" r="1.4"/>
+<circle cx="202" cy="130" r="1.4"/><circle cx="212" cy="132" r="1.8"/><circle cx="222" cy="128" r="1.4"/><circle cx="230" cy="132" r="1.4"/>
+<circle cx="208" cy="144" r="1.4"/><circle cx="218" cy="146" r="1.8"/><circle cx="226" cy="142" r="1.4"/>
+<circle cx="214" cy="158" r="1.4"/><circle cx="222" cy="156" r="1.4"/>
 </g>
 <g fill="rgba(39,220,231,0.50)">
 <circle cx="245" cy="38" r="1.4"/><circle cx="255" cy="40" r="1.4"/><circle cx="265" cy="36" r="1.4"/><circle cx="275" cy="40" r="1.4"/><circle cx="285" cy="38" r="1.4"/><circle cx="295" cy="42" r="1.4"/><circle cx="305" cy="38" r="1.4"/>
 <circle cx="240" cy="50" r="1.4"/><circle cx="250" cy="52" r="1.8"/><circle cx="260" cy="48" r="1.8"/><circle cx="270" cy="52" r="1.8"/><circle cx="280" cy="48" r="1.8"/><circle cx="290" cy="52" r="1.8"/><circle cx="300" cy="48" r="1.8"/><circle cx="310" cy="52" r="1.4"/><circle cx="320" cy="48" r="1.4"/>
 <circle cx="238" cy="62" r="1.4"/><circle cx="248" cy="60" r="1.8"/><circle cx="258" cy="62" r="2.0"/><circle cx="268" cy="60" r="2.0"/><circle cx="278" cy="62" r="2.0"/><circle cx="288" cy="60" r="2.0"/><circle cx="298" cy="62" r="2.0"/><circle cx="308" cy="60" r="1.8"/><circle cx="318" cy="62" r="1.8"/><circle cx="328" cy="60" r="1.4"/>
 <circle cx="245" cy="74" r="1.4"/><circle cx="255" cy="72" r="1.8"/><circle cx="265" cy="76" r="1.8"/><circle cx="275" cy="72" r="2.0"/><circle cx="285" cy="74" r="2.0"/><circle cx="295" cy="72" r="2.0"/><circle cx="305" cy="74" r="1.8"/><circle cx="315" cy="72" r="1.8"/><circle cx="325" cy="76" r="1.4"/>
-<circle cx="260" cy="86" r="1.4"/><circle cx="270" cy="88" r="1.8"/><circle cx="280" cy="84" r="1.8"/><circle cx="290" cy="88" r="2.0"/><circle cx="300" cy="84" r="1.8"/><circle cx="310" cy="88" r="1.8"/><circle cx="275" cy="100" r="1.4"/><circle cx="285" cy="102" r="1.8"/><circle cx="295" cy="98" r="1.8"/><circle cx="305" cy="102" r="1.4"/>
+<circle cx="260" cy="86" r="1.4"/><circle cx="270" cy="88" r="1.8"/><circle cx="280" cy="84" r="1.8"/><circle cx="290" cy="88" r="2.0"/><circle cx="300" cy="84" r="1.8"/><circle cx="310" cy="88" r="1.8"/>
+<circle cx="275" cy="100" r="1.4"/><circle cx="285" cy="102" r="1.8"/><circle cx="295" cy="98" r="1.8"/><circle cx="305" cy="102" r="1.4"/>
 </g>
 <g fill="rgba(39,220,231,0.45)">
-<circle cx="330" cy="138" r="1.4"/><circle cx="340" cy="140" r="1.8"/><circle cx="350" cy="136" r="1.4"/><circle cx="325" cy="150" r="1.4"/><circle cx="335" cy="152" r="1.8"/><circle cx="345" cy="148" r="1.8"/><circle cx="355" cy="150" r="1.4"/><circle cx="330" cy="162" r="1.4"/><circle cx="340" cy="164" r="1.8"/><circle cx="350" cy="160" r="1.4"/>
+<circle cx="330" cy="138" r="1.4"/><circle cx="340" cy="140" r="1.8"/><circle cx="350" cy="136" r="1.4"/>
+<circle cx="325" cy="150" r="1.4"/><circle cx="335" cy="152" r="1.8"/><circle cx="345" cy="148" r="1.8"/><circle cx="355" cy="150" r="1.4"/>
+<circle cx="330" cy="162" r="1.4"/><circle cx="340" cy="164" r="1.8"/><circle cx="350" cy="160" r="1.4"/>
 </g>
 <g stroke="rgba(39,220,231,0.30)" stroke-width="1" fill="none">
 <path d="M 62 62 Q 130 30 200 60" stroke-dasharray="3 3"/>
@@ -195,7 +199,7 @@ def _world_map_svg() -> str:
 
 
 # ─────────────────────────────────────────────
-# CSS Design System (Exact Match for Image 1)
+# CSS Design System (Exact Match for Image 1 + Responsive Mobile)
 # ─────────────────────────────────────────────
 
 def _inject_terminal_css():
@@ -217,7 +221,11 @@ def _inject_terminal_css():
   --apex-purple: #b54ee3;
 }
 
-/* ── FORCE DESKTOP SIDEBAR OPEN & EXACT STYLING ─────────── */
+html, body, [data-testid="stAppViewContainer"], .stApp {
+  overflow-x: hidden !important;
+}
+
+/* ── SIDEBAR STYLING ────────────────────────────────────── */
 [data-testid="stSidebar"] {
   background: linear-gradient(180deg, #03111a 0%, #020a10 100%) !important;
   border-right: 1px solid rgba(39, 220, 231, 0.22) !important;
@@ -232,6 +240,20 @@ def _inject_terminal_css():
     transform: none !important;
     visibility: visible !important;
     display: block !important;
+  }
+  [data-testid="stSidebarCollapsedControl"],
+  [data-testid="collapsedControl"] {
+    display: none !important;
+    visibility: hidden !important;
+  }
+}
+
+@media (max-width: 1023px) {
+  [data-testid="stSidebarCollapsedControl"],
+  [data-testid="collapsedControl"] {
+    display: flex !important;
+    visibility: visible !important;
+    z-index: 999999 !important;
   }
 }
 
@@ -364,8 +386,11 @@ def _inject_terminal_css():
   max-width: 1750px !important;
   padding: 22px 28px 30px !important;
 }
+
 @media (max-width: 768px) {
-  .block-container { padding: 14px 12px 24px !important; }
+  .block-container {
+    padding: 10px 10px 24px !important;
+  }
 }
 
 /* ── TOP HEADER (TITLE & USER CONTROLS) ─────────────────── */
@@ -456,6 +481,29 @@ def _inject_terminal_css():
   place-items: center;
 }
 
+@media (max-width: 768px) {
+  .apex-dashboard-head {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+  .apex-dashboard-title {
+    font-size: 21px !important;
+  }
+  .apex-dashboard-subtitle {
+    font-size: 11px !important;
+  }
+  .apex-user-controls {
+    width: 100%;
+    justify-content: flex-start;
+    gap: 6px;
+  }
+  .apex-bell-btn { width: 32px; height: 32px; font-size: 12px; }
+  .apex-vip-badge { font-size: 10px; padding: 4px 9px; }
+  .apex-profile-chip { font-size: 10.5px; padding: 4px 10px 4px 5px; }
+}
+
 /* ── 4 SUMMARY METRIC CARDS ─────────────────────────────── */
 .apex-summary-grid {
   display: grid;
@@ -463,10 +511,20 @@ def _inject_terminal_css():
   gap: 14px;
   margin-bottom: 14px;
 }
-@media (max-width: 1100px) {
-  .apex-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+@media (max-width: 1100px) and (min-width: 769px) {
+  .apex-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 }
-@media (max-width: 500px) {
+
+@media (max-width: 768px) {
+  .apex-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+}
+
+@media (max-width: 360px) {
   .apex-summary-grid { grid-template-columns: 1fr; }
 }
 
@@ -538,6 +596,33 @@ def _inject_terminal_css():
   justify-content: flex-end;
 }
 
+@media (max-width: 768px) {
+  .apex-summary-card {
+    padding: 12px 10px;
+    position: relative;
+    min-height: 86px;
+    align-items: flex-start;
+  }
+  .apex-metric {
+    font-size: 20px !important;
+    margin-top: 3px;
+  }
+  .apex-kicker {
+    font-size: 8.5px !important;
+  }
+  .apex-summary-sub {
+    font-size: 9px !important;
+    margin-top: 3px;
+  }
+  .apex-summary-spark {
+    position: absolute;
+    right: 6px;
+    bottom: 6px;
+    width: 65px !important;
+    opacity: 0.65;
+  }
+}
+
 /* ── SHARED PANEL BASE ──────────────────────────────────── */
 .apex-panel {
   box-sizing: border-box;
@@ -583,6 +668,16 @@ def _inject_terminal_css():
   text-decoration: underline;
 }
 
+@media (max-width: 768px) {
+  .apex-panel {
+    padding: 13px 12px;
+    margin-bottom: 10px;
+  }
+  .apex-panel-title {
+    font-size: 13.5px;
+  }
+}
+
 /* ── MIDDLE ROW: MACRO REGIME & MARKET SNAPSHOT ─────────── */
 .apex-regime-split {
   display: grid;
@@ -590,8 +685,12 @@ def _inject_terminal_css():
   gap: 16px;
   align-items: center;
 }
+
 @media (max-width: 900px) {
-  .apex-regime-split { grid-template-columns: 1fr; }
+  .apex-regime-split {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
 }
 
 .apex-regime-map-wrap {
@@ -605,6 +704,13 @@ def _inject_terminal_css():
   border-radius: 10px;
   border: 1px solid rgba(70, 145, 165, 0.10);
   overflow: hidden;
+}
+
+@media (max-width: 768px) {
+  .apex-regime-map-wrap {
+    min-height: 120px !important;
+    max-height: 140px !important;
+  }
 }
 
 .apex-regime-rows {
@@ -670,6 +776,19 @@ def _inject_terminal_css():
   font-weight: 700;
   color: #dce5ea;
   font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 768px) {
+  .apex-regime-item {
+    grid-template-columns: 22px minmax(0, 1fr) auto;
+    gap: 6px;
+    padding: 5px 0;
+  }
+  .apex-regime-icon-box { width: 20px; height: 20px; font-size: 10px; }
+  .apex-regime-name { font-size: 11px; }
+  .apex-regime-subtext { font-size: 8.5px; }
+  .apex-status-pill { font-size: 8.5px; padding: 3px 7px; }
+  .apex-regime-val-chip { font-size: 9.5px; }
 }
 
 /* ── MARKET SNAPSHOT TABLE ──────────────────────────────── */
@@ -742,6 +861,20 @@ def _inject_terminal_css():
   border-top: 1px solid rgba(90, 145, 165, 0.08);
 }
 
+@media (max-width: 768px) {
+  .apex-snapshot-head { display: none; }
+  .apex-snapshot-row {
+    grid-template-columns: minmax(0, 1fr) auto !important;
+    grid-template-areas: 'asset price' 'spark chg' !important;
+    gap: 4px 8px !important;
+    padding: 7px 0 !important;
+  }
+  .apex-snapshot-row .apex-asset-info { grid-area: asset; }
+  .apex-snapshot-row .apex-asset-price { grid-area: price; text-align: right; font-size: 11px; }
+  .apex-snapshot-row > div:nth-child(4) { grid-area: spark; }
+  .apex-snapshot-row .apex-asset-chg { grid-area: chg; text-align: right; font-size: 11px; }
+}
+
 /* ── MARKET SENTIMENT INDEX PANEL ───────────────────────── */
 .apex-sentiment-subtitle {
   font-size: 11px;
@@ -767,6 +900,11 @@ def _inject_terminal_css():
   border-color: rgba(39, 220, 231, 0.40);
   background: rgba(39, 220, 231, 0.12);
   color: #27dce7;
+}
+
+@media (max-width: 768px) {
+  .apex-timeframe-tab { font-size: 8px; padding: 2px 5px; }
+  .apex-sentiment-subtitle { font-size: 9.5px; }
 }
 
 /* ── TOP CATALYSTS PANEL ────────────────────────────────── */
@@ -853,6 +991,18 @@ def _inject_terminal_css():
 }
 .apex-catalyst-bottom-link:hover { opacity: 1; }
 
+@media (max-width: 768px) {
+  .apex-catalyst-item {
+    grid-template-columns: 24px minmax(0, 1fr) auto !important;
+    gap: 6px !important;
+    padding: 7px 0 !important;
+  }
+  .apex-cat-datetime-col { display: none !important; }
+  .apex-cat-flag-badge { font-size: 14px; }
+  .apex-cat-headline { font-size: 10.5px; }
+  .apex-cat-timer-col { font-size: 8.5px; }
+}
+
 /* ── SINGLE INSTITUTIONAL FOOTER ────────────────────────── */
 .apex-footer-bar {
   display: flex;
@@ -886,6 +1036,21 @@ def _inject_terminal_css():
   border-radius: 50%;
   background: #1ddf91;
   box-shadow: 0 0 8px rgba(29, 223, 145, 0.8);
+}
+
+@media (max-width: 768px) {
+  .apex-footer-bar {
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 8px !important;
+    padding: 10px 12px !important;
+    font-size: 9px !important;
+  }
+  .apex-footer-bar-left {
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 5px !important;
+  }
 }
 </style>""")
 
@@ -1226,11 +1391,11 @@ Composite sentiment from 7 major indicators
             fig_gauge = go.Figure(go.Indicator(
                 mode="gauge+number",
                 value=gauge_val,
-                number={"font": {"size": 34, "color": "#ff554f" if gauge_val < -10 else "#1ddf91" if gauge_val > 10 else "#f3f6f8"}},
+                number={"font": {"size": 32, "color": "#ff554f" if gauge_val < -10 else "#1ddf91" if gauge_val > 10 else "#f3f6f8"}},
                 gauge={
                     "axis": {
                         "range": [-100, 100],
-                        "tickfont": {"color": "#6e808e", "size": 9},
+                        "tickfont": {"color": "#6e808e", "size": 8.5},
                         "tickvals": [-100, 0, 100],
                     },
                     "bar": {"color": "#27dce7", "thickness": 0.20},
@@ -1244,13 +1409,13 @@ Composite sentiment from 7 major indicators
                 },
             ))
             fig_gauge.update_layout(
-                height=185,
-                margin=dict(l=10, r=10, t=15, b=0),
+                height=170,
+                margin=dict(l=6, r=6, t=10, b=0),
                 paper_bgcolor="rgba(0,0,0,0)",
                 font={"color": "#94a2b0"},
             )
             st.plotly_chart(fig_gauge, use_container_width=True, config={"displayModeBar": False})
-            _render_html(f'<div style="text-align:center;margin-top:-14px;font-size:13px;font-weight:800;color:{"#ff554f" if gauge_val < -10 else "#1ddf91" if gauge_val > 10 else "#ffb21a"};">{escape(risk)}</div>')
+            _render_html(f'<div style="text-align:center;margin-top:-14px;font-size:12.5px;font-weight:800;color:{"#ff554f" if gauge_val < -10 else "#1ddf91" if gauge_val > 10 else "#ffb21a"};">{escape(risk)}</div>')
 
         with g_right:
             # Historical Area Line Chart matching Image 1
@@ -1266,22 +1431,22 @@ Composite sentiment from 7 major indicators
                 x=x_dates,
                 y=y_vals,
                 mode="lines",
-                line=dict(color="#27dce7", width=2.2, shape="spline"),
+                line=dict(color="#27dce7", width=2.0, shape="spline"),
                 fill="tozeroy",
                 fillcolor="rgba(39, 220, 231, 0.12)",
                 hoverinfo="x+y",
             ))
 
             fig_history.update_layout(
-                height=195,
-                margin=dict(l=10, r=15, t=10, b=10),
+                height=180,
+                margin=dict(l=6, r=10, t=10, b=10),
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(0,0,0,0)",
                 xaxis=dict(
                     showgrid=False,
                     tickmode="array",
                     tickvals=[x_dates[0], x_dates[4], x_dates[8], x_dates[12], x_dates[16], x_dates[20], x_dates[24], x_dates[29]],
-                    tickfont=dict(size=8.5, color="#6e808e"),
+                    tickfont=dict(size=8, color="#6e808e"),
                 ),
                 yaxis=dict(
                     range=[-100, 100],
@@ -1289,7 +1454,7 @@ Composite sentiment from 7 major indicators
                     gridcolor="rgba(70, 145, 165, 0.10)",
                     zeroline=True,
                     zerolinecolor="rgba(70, 145, 165, 0.22)",
-                    tickfont=dict(size=8.5, color="#6e808e"),
+                    tickfont=dict(size=8, color="#6e808e"),
                     side="right",
                 ),
             )
