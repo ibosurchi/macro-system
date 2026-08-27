@@ -5350,8 +5350,7 @@ def _show_forecaster_event_dialog(
 
 
 def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict | None = None) -> None:
-    """Catalyst Forecaster UI: calendar -> selected day -> clickable event -> dialog."""
-    import calendar as _cal
+    """Catalyst Forecaster UI: weekly catalyst rail -> timeline -> intelligence panel/dialog."""
     from datetime import date as _date
 
     if "selected_tz" not in st.session_state or st.session_state["selected_tz"] not in SUPPORTED_TIMEZONES:
@@ -5364,7 +5363,6 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
 
     selected_key = "APEX_FORECASTER_SELECTED_EVENT"
     snapshot_key = "APEX_FORECASTER_EVENT_SNAPSHOT"
-    cal_month_key = "apex_forecaster_calendar_month"
     sel_date_key = "apex_forecaster_selected_date"
 
     # Preserve the current source/data pipeline and snapshot behavior.
@@ -5407,10 +5405,6 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     all_event_dates = sorted(events_by_date)
     today_local = (datetime.utcnow() + timedelta(hours=tz_info["offset"])).date()
 
-    if cal_month_key not in st.session_state:
-        st.session_state[cal_month_key] = (today_local.year, today_local.month)
-    cy, cm = st.session_state[cal_month_key]
-
     if sel_date_key not in st.session_state or not isinstance(st.session_state[sel_date_key], _date):
         if today_local in events_by_date:
             st.session_state[sel_date_key] = today_local
@@ -5421,131 +5415,225 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
             st.session_state[sel_date_key] = today_local
 
     selected_date: _date = st.session_state[sel_date_key]
-    month_name = _cal.month_name[cm].upper()
+    week_start = selected_date - timedelta(days=selected_date.weekday())
+    week_days = [week_start + timedelta(days=i) for i in range(7)]
+    week_end = week_days[-1]
 
-    # Calendar shell/header + weekday row. The date cells themselves are real
-    # Streamlit buttons rendered immediately below, so there is no duplicate
-    # duplicate date-selector control.
+    # This CSS is intentionally scoped to the new Forecaster keys/classes so it
+    # cannot alter the approved UI of the other ApexMacro pages.
+    render_html("""
+    <style>
+    .apex-fc2-hero{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin:2px 0 16px;padding:2px 2px 6px}
+    .apex-fc2-kicker{font-size:11px;font-weight:800;letter-spacing:.16em;color:#28dce7;text-transform:uppercase}
+    .apex-fc2-title{margin-top:6px;max-width:780px;color:#f3f7fa;font-size:clamp(24px,3vw,38px);font-weight:800;line-height:1.08;letter-spacing:-.7px}
+    .apex-fc2-sub{margin-top:8px;color:#8fa1ae;font-size:12px}
+    .apex-fc2-weekmeta{flex:0 0 auto;color:#8fa1ae;font-size:11px;border:1px solid rgba(83,135,158,.20);background:rgba(6,22,31,.74);border-radius:999px;padding:7px 10px}
+    .apex-fc2-section-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 12px}
+    .apex-fc2-section-title{font-size:14px;font-weight:800;color:#eef5f8}
+    .apex-fc2-count{font-size:10px;color:#9fb0ba;border:1px solid rgba(83,135,158,.20);background:rgba(7,25,35,.78);border-radius:999px;padding:5px 9px}
+    .apex-fc2-empty{padding:22px 16px;border:1px dashed rgba(83,135,158,.22);border-radius:14px;color:#8295a2;text-align:center;background:rgba(5,18,27,.48)}
+    .apex-fc2-dots{display:flex;align-items:center;justify-content:center;gap:3px;height:8px;margin-top:-5px;margin-bottom:4px}
+    .apex-fc2-dot{width:5px;height:5px;border-radius:50%;display:inline-block}.apex-fc2-dot.high{background:#b04ce4}.apex-fc2-dot.medium{background:#ffb822}.apex-fc2-dot.low{background:#35d2e3}
+    .apex-fc2-legend{display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin:10px 0 0;color:#8fa1ae;font-size:10px}.apex-fc2-legend span{display:flex;align-items:center;gap:5px}
+    .apex-fc2-detail-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:10px}.apex-fc2-detail-kicker{font-size:10px;color:#28dce7;font-weight:800;letter-spacing:.1em;text-transform:uppercase}.apex-fc2-detail-title{font-size:19px;color:#f2f7fa;font-weight:800;line-height:1.25;margin-top:5px}.apex-fc2-detail-time{font-size:11px;color:#91a3af;margin-top:5px}
+    .apex-fc2-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0}.apex-fc2-metric{padding:10px;border:1px solid rgba(83,135,158,.16);background:rgba(7,25,35,.74);border-radius:10px}.apex-fc2-metric-label{font-size:9px;color:#7e909c}.apex-fc2-metric-value{margin-top:4px;font-size:13px;font-weight:750;color:#eef5f8}
+    .apex-fc2-insight{padding:11px;border-top:1px solid rgba(83,135,158,.14);color:#91a3af;font-size:11px;line-height:1.5}.apex-fc2-insight b{display:block;color:#dce7ec;font-size:11px;margin-bottom:4px}
+
+    /* Week rail */
+    [class*="st-key-apex_fc2_day_"] button{min-height:82px!important;padding:9px 4px!important;border-radius:13px!important;border:1px solid rgba(83,135,158,.17)!important;background:linear-gradient(145deg,rgba(10,31,42,.82),rgba(4,17,25,.94))!important;color:#9fb0ba!important;white-space:pre-line!important;line-height:1.25!important;font-size:11px!important;font-weight:700!important;box-shadow:none!important;transition:transform .18s ease,border-color .18s ease,background .18s ease!important}
+    [class*="st-key-apex_fc2_day_"] button p{white-space:pre-line!important;text-align:center!important;margin:0!important}
+    [class*="st-key-apex_fc2_day_selected_"] button{border-color:rgba(39,220,231,.85)!important;background:linear-gradient(145deg,rgba(12,68,78,.72),rgba(5,28,37,.95))!important;color:#2be0e9!important;box-shadow:0 0 18px rgba(39,220,231,.10)!important}
+    [class*="st-key-apex_fc2_day_today_"] button{border-color:rgba(39,220,231,.34)!important}
+    [class*="st-key-apex_fc2_day_"] button:hover{transform:translateY(-2px)!important;border-color:rgba(39,220,231,.50)!important;color:#eaf6f8!important}
+
+    /* Main two-column intelligence composition */
+    [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fc2_timeline_col"]){align-items:stretch!important;gap:14px!important}
+    [class*="st-key-apex_fc2_timeline_col"],[class*="st-key-apex_fc2_detail_col"]{height:100%!important;border:1px solid rgba(83,135,158,.17)!important;background:linear-gradient(145deg,rgba(6,22,31,.94),rgba(3,13,20,.98))!important;border-radius:17px!important;padding:15px!important;box-sizing:border-box!important}
+
+    /* Event timeline cards */
+    [class*="st-key-apex_fc2_event_"]{position:relative!important;margin:0 0 11px 22px!important}
+    [class*="st-key-apex_fc2_event_"]::before{content:"";position:absolute;left:-18px;top:0;bottom:-12px;width:1px;background:rgba(83,135,158,.16)}
+    [class*="st-key-apex_fc2_event_"]::after{content:"";position:absolute;left:-22px;top:19px;width:9px;height:9px;border-radius:50%;background:#b04ce4;box-shadow:0 0 0 4px #061721}
+    [class*="st-key-apex_fc2_event_medium_"]::after{background:#ffb822}[class*="st-key-apex_fc2_event_low_"]::after{background:#35d2e3}
+    [class*="st-key-apex_fc2_event_"] button{width:100%!important;min-height:118px!important;padding:13px 14px!important;border-radius:13px!important;border:1px solid rgba(83,135,158,.17)!important;background:rgba(7,25,35,.78)!important;color:#eaf1f4!important;text-align:left!important;justify-content:flex-start!important;white-space:pre-wrap!important;box-shadow:none!important;font-size:12px!important;line-height:1.52!important;font-weight:650!important;transition:transform .16s ease,border-color .16s ease,background .16s ease!important}
+    [class*="st-key-apex_fc2_event_"] button p{text-align:left!important;white-space:pre-wrap!important;margin:0!important;width:100%!important}
+    [class*="st-key-apex_fc2_event_selected_"] button{border-color:rgba(39,220,231,.60)!important;background:linear-gradient(145deg,rgba(8,38,49,.92),rgba(4,20,29,.98))!important}
+    [class*="st-key-apex_fc2_event_"] button:hover{transform:translateY(-2px)!important;border-color:rgba(39,220,231,.45)!important;background:rgba(8,33,44,.90)!important}
+
+    [class*="st-key-apex_fc2_open_full"] button{width:100%!important;min-height:44px!important;margin-top:10px!important;border-radius:10px!important;border:1px solid rgba(39,220,231,.44)!important;background:linear-gradient(90deg,rgba(24,205,219,.18),rgba(24,205,219,.08))!important;color:#37e4ec!important;font-weight:800!important;box-shadow:none!important}
+
+    @media(max-width:768px){
+      .apex-fc2-hero{align-items:flex-start;flex-direction:column;margin-bottom:12px}.apex-fc2-title{font-size:23px}.apex-fc2-weekmeta{padding:5px 8px}
+      [class*="st-key-apex_fc2_day_"] button{min-height:66px!important;padding:7px 2px!important;border-radius:9px!important;font-size:9px!important}
+      .apex-fc2-dots{gap:2px;margin-top:-7px}.apex-fc2-dot{width:4px;height:4px}
+      [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fc2_timeline_col"]){display:flex!important;flex-direction:column!important}
+      [class*="st-key-apex_fc2_timeline_col"],[class*="st-key-apex_fc2_detail_col"]{width:100%!important;padding:12px!important}
+      [class*="st-key-apex_fc2_detail_col"]{order:-1!important}
+      [class*="st-key-apex_fc2_event_"]{margin-left:18px!important}
+      [class*="st-key-apex_fc2_event_"] button{min-height:112px!important;padding:12px!important;font-size:11px!important}
+      .apex-fc2-detail-title{font-size:16px}.apex-fc2-metrics{gap:6px}.apex-fc2-metric{padding:8px}.apex-fc2-metric-value{font-size:12px}
+    }
+    @media(max-width:390px){
+      [class*="st-key-apex_fc2_day_"] button{min-height:61px!important;font-size:8px!important;padding:6px 1px!important}
+      .apex-fc2-title{font-size:21px}.apex-fc2-sub{font-size:10px}
+    }
+    @media(prefers-reduced-motion:reduce){[class*="st-key-apex_fc2_"] button{transition:none!important}}
+    </style>
+    """)
+
+    week_label = f"{week_start.strftime('%d %b')} — {week_end.strftime('%d %b %Y')}"
     render_html(f"""
-    <div class="apex-forecaster-calendar-head">
+    <div class="apex-fc2-hero">
       <div>
-        <div class="apex-forecaster-title">FORECASTER</div>
-        <div class="apex-forecaster-subtitle">Daily outlook for this month · {tz_info['label']}</div>
+        <div class="apex-fc2-kicker">CATALYST FORECASTER</div>
+        <div class="apex-fc2-title">Macro events, organized by market relevance.</div>
+        <div class="apex-fc2-sub">Live catalyst timeline · {tz_info['label']}</div>
       </div>
-      <div class="apex-forecaster-month">{month_name} {cy}</div>
-    </div>
-    <div class="apex-cal-weekdays">
-      <div class="apex-cal-wd">MON</div><div class="apex-cal-wd">TUE</div><div class="apex-cal-wd">WED</div>
-      <div class="apex-cal-wd">THU</div><div class="apex-cal-wd">FRI</div><div class="apex-cal-wd">SAT</div><div class="apex-cal-wd">SUN</div>
+      <div class="apex-fc2-weekmeta">{week_label}</div>
     </div>
     """)
 
-    first_wd = _cal.monthrange(cy, cm)[0]
-    days_in_month = _cal.monthrange(cy, cm)[1]
-    prev_y, prev_m = (cy - 1, 12) if cm == 1 else (cy, cm - 1)
-    next_y, next_m = (cy + 1, 1) if cm == 12 else (cy, cm + 1)
-    prev_month_days = _cal.monthrange(prev_y, prev_m)[1]
-    total_cells = first_wd + days_in_month
-    if total_cells % 7:
-        total_cells += 7 - (total_cells % 7)
-
-    def _select_calendar_date(day_value: _date) -> None:
+    def _select_fc2_date(day_value: _date) -> None:
         st.session_state[sel_date_key] = day_value
         st.session_state.pop(selected_key, None)
 
-    with st.container(key="apex_calendar_interactive"):
-        for week_start in range(0, total_cells, 7):
-            cols = st.columns(7, gap="small")
-            for col_idx in range(7):
-                idx = week_start + col_idx
-                with cols[col_idx]:
-                    if idx < first_wd:
-                        day_num = prev_month_days - first_wd + idx + 1
-                        outside_date = _date(prev_y, prev_m, day_num)
-                        with st.container(key=f"apex_calday_outside_{outside_date:%Y_%m_%d}"):
-                            st.button(str(day_num), key=f"apex_calbtn_out_{outside_date:%Y_%m_%d}", disabled=True, use_container_width=True)
-                    elif idx < first_wd + days_in_month:
-                        day_num = idx - first_wd + 1
-                        day_date = _date(cy, cm, day_num)
-                        day_evs = events_by_date.get(day_date, [])
-                        state = "selected" if day_date == selected_date else ("today" if day_date == today_local else "normal")
-                        with st.container(key=f"apex_calday_{state}_{day_date:%Y_%m_%d}"):
-                            st.button(
-                                str(day_num),
-                                key=f"apex_calbtn_{day_date:%Y_%m_%d}",
-                                use_container_width=True,
-                                on_click=_select_calendar_date,
-                                args=(day_date,),
-                            )
-                            if day_evs:
-                                dots = []
-                                for d_ev in day_evs[:4]:
-                                    impact = str(d_ev.get("impact", "")).title()
-                                    dot_cls = "high" if impact == "High" else ("medium" if impact == "Medium" else "low")
-                                    dots.append(f'<span class="apex-cal-live-dot {dot_cls}"></span>')
-                                more = f'<span class="apex-cal-more">+{len(day_evs)-4}</span>' if len(day_evs) > 4 else ""
-                                render_html(f'<div class="apex-cal-button-dots">{"".join(dots)}{more}</div>')
-                    else:
-                        day_num = idx - first_wd - days_in_month + 1
-                        outside_date = _date(next_y, next_m, day_num)
-                        with st.container(key=f"apex_calday_outside_{outside_date:%Y_%m_%d}"):
-                            st.button(str(day_num), key=f"apex_calbtn_out_{outside_date:%Y_%m_%d}", disabled=True, use_container_width=True)
+    # Seven-day rail, matching the new timeline concept instead of a classic month calendar.
+    week_cols = st.columns(7, gap="small")
+    for idx, day_date in enumerate(week_days):
+        day_events = events_by_date.get(day_date, [])
+        state = "selected" if day_date == selected_date else ("today" if day_date == today_local else "normal")
+        with week_cols[idx]:
+            with st.container(key=f"apex_fc2_day_{state}_{day_date:%Y_%m_%d}"):
+                st.button(
+                    f"{day_date.strftime('%a').upper()}\n{day_date.day}",
+                    key=f"apex_fc2_day_btn_{day_date:%Y_%m_%d}",
+                    use_container_width=True,
+                    on_click=_select_fc2_date,
+                    args=(day_date,),
+                )
+                if day_events:
+                    dots = []
+                    for d_ev in day_events[:4]:
+                        impact = str(d_ev.get("impact", "")).title()
+                        dot_cls = "high" if impact == "High" else ("medium" if impact == "Medium" else "low")
+                        dots.append(f'<span class="apex-fc2-dot {dot_cls}"></span>')
+                    render_html(f'<div class="apex-fc2-dots">{"".join(dots)}</div>')
 
     render_html("""
-    <div class="apex-cal-legend">
-      <div class="apex-cal-legend-item"><span class="apex-impact-dot high"></span>High Impact</div>
-      <div class="apex-cal-legend-item"><span class="apex-impact-dot medium"></span>Medium Impact</div>
-      <div class="apex-cal-legend-item"><span class="apex-impact-dot low"></span>Low Impact</div>
+    <div class="apex-fc2-legend">
+      <span><i class="apex-fc2-dot high"></i>High Impact</span>
+      <span><i class="apex-fc2-dot medium"></i>Medium Impact</span>
+      <span><i class="apex-fc2-dot low"></i>Low Impact</span>
     </div>
     """)
 
-    # LEVEL 2 — selected date event list, directly below the calendar.
     selected_date = st.session_state[sel_date_key]
     sel_events = events_by_date.get(selected_date, [])
-    date_label = f"{selected_date.day} {selected_date.strftime('%B %Y').upper()}"
-    count_label = "1 EVENT" if len(sel_events) == 1 else f"{len(sel_events)} EVENTS"
-    render_html(f"""
-    <div class="apex-selected-date-heading">
-      <div class="apex-selected-date-text">{date_label}</div>
-      <div class="apex-selected-date-count">{count_label}</div>
-    </div>
-    """)
 
-    if not sel_events:
-        render_html('<div class="apex-no-events-msg">No scheduled macro catalysts for this date.</div>')
-        return
+    # Keep the detail panel selection tied to the currently selected date.
+    selected_code = str(st.session_state.get(selected_key, "") or "")
+    selected_event = next((ev for ev in sel_events if str(ev.get("code", "")) == selected_code), None)
+    if selected_event is None and sel_events:
+        selected_event = sel_events[0]
+        st.session_state[selected_key] = str(selected_event.get("code", ""))
 
-    for idx, sev in enumerate(sel_events):
-        code = str(sev.get("code", "")).strip()
-        cur = sev.get("currency", "USD")
-        flag = currency_flags.get(cur, "🌐")
-        impact = str(sev.get("impact", "High")).title()
-        dt = sev.get("datetime_obj")
-        event_time = dt.strftime("%H:%M") if dt else "—"
-        saved = str(actuals_cache.get(code, "")).strip()
-        published = _normalize_forex_factory_actual(sev.get("actual_str", ""))
-        actual = saved or published or "—"
-        forecast = sev.get("forecast_str", "—")
-        previous = sev.get("prev_str", "—")
-        title = str(sev.get("title", ""))
+    def _select_fc2_event(code_value: str) -> None:
+        st.session_state[selected_key] = code_value
 
-        safe_key = re.sub(r"[^a-zA-Z0-9_]", "_", code)[:60] or f"event_{idx}"
-        impact_key = impact.lower() if impact.lower() in {"high", "medium", "low"} else "low"
-        with st.container(key=f"apex_evtcard_{impact_key}_{safe_key}"):
-            label = (
-                f"{event_time}   {flag} {cur}   {impact.upper()} IMPACT\n\n"
-                f"{title}\n\n"
-                f"ACT  {actual}      FCST  {forecast}      PREV  {previous}        ›"
-            )
-            if st.button(label, key=f"apex_evtbtn_{safe_key}", use_container_width=True):
-                _show_forecaster_event_dialog(
-                    sev,
-                    fred_key,
-                    channel_name,
-                    auth_user,
-                    actuals_cache,
-                    currency_flags,
-                )
+    left_col, right_col = st.columns([1.35, 0.65], gap="medium")
+
+    with left_col:
+        with st.container(key="apex_fc2_timeline_col"):
+            date_title = selected_date.strftime("%A, %d %B %Y")
+            count_label = "1 catalyst" if len(sel_events) == 1 else f"{len(sel_events)} catalysts"
+            render_html(f"""
+            <div class="apex-fc2-section-head">
+              <div class="apex-fc2-section-title">{date_title}</div>
+              <div class="apex-fc2-count">{count_label}</div>
+            </div>
+            """)
+
+            if not sel_events:
+                render_html('<div class="apex-fc2-empty">No scheduled macro catalysts for this date.</div>')
+            else:
+                for idx, sev in enumerate(sel_events):
+                    code = str(sev.get("code", "")).strip()
+                    cur = sev.get("currency", "USD")
+                    flag = currency_flags.get(cur, "🌐")
+                    impact = str(sev.get("impact", "High")).title()
+                    impact_key = impact.lower() if impact.lower() in {"high", "medium", "low"} else "low"
+                    dt = sev.get("datetime_obj")
+                    event_time = dt.strftime("%H:%M") if dt else "—"
+                    saved = str(actuals_cache.get(code, "")).strip()
+                    published = _normalize_forex_factory_actual(sev.get("actual_str", ""))
+                    actual = saved or published or "—"
+                    forecast = sev.get("forecast_str", "—") or "—"
+                    previous = sev.get("prev_str", "—") or "—"
+                    title = str(sev.get("title", ""))
+                    safe_key = re.sub(r"[^a-zA-Z0-9_]", "_", code)[:60] or f"event_{idx}"
+                    selected_marker = "selected_" if selected_event is sev or (selected_event and str(selected_event.get("code", "")) == code) else ""
+                    label = (
+                        f"{event_time}  ·  {flag} {cur}  ·  {impact.upper()} IMPACT\n\n"
+                        f"{title}\n\n"
+                        f"ACTUAL  {actual}     FORECAST  {forecast}     PREVIOUS  {previous}"
+                    )
+                    with st.container(key=f"apex_fc2_event_{selected_marker}{impact_key}_{safe_key}"):
+                        st.button(
+                            label,
+                            key=f"apex_fc2_event_btn_{safe_key}",
+                            use_container_width=True,
+                            on_click=_select_fc2_event,
+                            args=(code,),
+                        )
+
+    with right_col:
+        with st.container(key="apex_fc2_detail_col"):
+            if selected_event is None:
+                render_html("""
+                <div class="apex-fc2-detail-kicker">Catalyst Intelligence</div>
+                <div class="apex-fc2-detail-title">Select a catalyst</div>
+                <div class="apex-fc2-detail-time">Choose an event from the timeline to inspect it.</div>
+                """)
+            else:
+                code = str(selected_event.get("code", "")).strip()
+                cur = selected_event.get("currency", "USD")
+                flag = currency_flags.get(cur, "🌐")
+                impact = str(selected_event.get("impact", "High")).title()
+                dt = selected_event.get("datetime_obj")
+                event_time = dt.strftime("%H:%M") if dt else "—"
+                saved = str(actuals_cache.get(code, "")).strip()
+                published = _normalize_forex_factory_actual(selected_event.get("actual_str", ""))
+                actual = saved or published or "—"
+                forecast = selected_event.get("forecast_str", "—") or "—"
+                previous = selected_event.get("prev_str", "—") or "—"
+                title = str(selected_event.get("title", ""))
+
+                # Read-only side summary. The full existing Causal Intelligence UI
+                # remains available in the existing dialog opened below.
+                render_html(f"""
+                <div class="apex-fc2-detail-top">
+                  <div>
+                    <div class="apex-fc2-detail-kicker">Catalyst Intelligence</div>
+                    <div class="apex-fc2-detail-title">{title}</div>
+                    <div class="apex-fc2-detail-time">{event_time} · {flag} {cur} · {impact} Impact</div>
+                  </div>
+                </div>
+                <div class="apex-fc2-metrics">
+                  <div class="apex-fc2-metric"><div class="apex-fc2-metric-label">ACTUAL</div><div class="apex-fc2-metric-value">{actual}</div></div>
+                  <div class="apex-fc2-metric"><div class="apex-fc2-metric-label">FORECAST</div><div class="apex-fc2-metric-value">{forecast}</div></div>
+                  <div class="apex-fc2-metric"><div class="apex-fc2-metric-label">PREVIOUS</div><div class="apex-fc2-metric-value">{previous}</div></div>
+                </div>
+                <div class="apex-fc2-insight"><b>Institutional workflow</b>Open the complete intelligence view for nowcast, evidence, causal analysis, contradictions, cross-source confirmation and cross-asset implications.</div>
+                """)
+                if st.button("Open full intelligence", key=f"apex_fc2_open_full_{re.sub(r'[^a-zA-Z0-9_]', '_', code)[:60]}", use_container_width=True):
+                    _show_forecaster_event_dialog(
+                        selected_event,
+                        fred_key,
+                        channel_name,
+                        auth_user,
+                        actuals_cache,
+                        currency_flags,
+                    )
 
 def _tron_headers() -> dict[str, str]:
     headers = {"Accept": "application/json", "User-Agent": "ApexMacro-VIP-Payments/1.0"}
