@@ -340,14 +340,16 @@ header[data-testid="stHeader"],
 }
 
 /* ── MOBILE HEADER (LOGO ON LEFT, COMPACT ☰ ON RIGHT) ───── */
-.apex-mobile-header-bar-container {
-  display: block;
-  margin: 0 0 10px;
-  padding: 0 0 6px;
-  border-bottom: 1px solid rgba(70, 145, 165, 0.18);
+.apex-mobile-header-bar-container,
+.st-key-apex_mobile_header {
+  display: block !important;
+  margin: 0 0 12px !important;
+  padding: 0 8px 0 2px !important;
+  box-sizing: border-box !important;
 }
 
 .apex-mobile-header-bar-container [data-testid="stHorizontalBlock"],
+.st-key-apex_mobile_header [data-testid="stHorizontalBlock"],
 .apex-mobile-drawer-head [data-testid="stHorizontalBlock"] {
   display: flex !important;
   flex-direction: row !important;
@@ -360,40 +362,46 @@ header[data-testid="stHeader"],
 
 /* First Column: Logo on Left */
 .apex-mobile-header-bar-container [data-testid="column"]:first-child,
+.st-key-apex_mobile_header [data-testid="column"]:first-child,
 .apex-mobile-drawer-head [data-testid="column"]:first-child {
   flex: 1 1 auto !important;
   min-width: 0 !important;
-  width: calc(100% - 52px) !important;
 }
 
-/* Last Column: Compact 42px ☰ Button on Right */
+/* Last Column: Compact ☰ Button on Right */
 .apex-mobile-header-bar-container [data-testid="column"]:last-child,
+.st-key-apex_mobile_header [data-testid="column"]:last-child,
 .apex-mobile-drawer-head [data-testid="column"]:last-child {
-  flex: 0 0 44px !important;
-  min-width: 44px !important;
-  width: 44px !important;
-  max-width: 44px !important;
+  flex: 0 0 46px !important;
+  min-width: 46px !important;
+  width: 46px !important;
+  max-width: 46px !important;
+  display: flex !important;
+  justify-content: flex-end !important;
+  padding-right: 6px !important;
 }
 
 .apex-mobile-header-bar-container button,
+.st-key-apex_mobile_header button,
 .apex-mobile-drawer-head button {
-  width: 42px !important;
-  height: 42px !important;
-  min-height: 42px !important;
-  max-width: 42px !important;
+  width: 40px !important;
+  height: 40px !important;
+  min-height: 40px !important;
+  max-width: 40px !important;
   display: inline-flex !important;
   align-items: center !important;
   justify-content: center !important;
   border-radius: 10px !important;
   border: 1px solid rgba(39, 220, 231, 0.45) !important;
-  background: rgba(7, 25, 35, 0.85) !important;
+  background: rgba(6, 22, 31, 0.90) !important;
   color: #27dce7 !important;
-  font-size: 20px !important;
+  font-size: 19px !important;
   font-weight: 800 !important;
   padding: 0 !important;
-  box-shadow: 0 0 14px rgba(39, 220, 231, 0.20) !important;
+  margin-right: 6px !important;
+  box-shadow: 0 0 14px rgba(39, 220, 231, 0.15) !important;
   cursor: pointer !important;
-  margin: 0 !important;
+  transition: transform 150ms ease !important;
 }
 
 /* ── MOBILE OPEN CONTAINER (LEFT 22% DIMMED + RIGHT 78% DRAWER) ── */
