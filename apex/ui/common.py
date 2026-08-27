@@ -153,11 +153,11 @@ header[data-testid="stHeader"],
 }
 
 /* ── APEX COMPACT MOBILE NAV ─────────────────────────────── */
-.st-key-apex_mobile_header { display:block; margin:0 0 12px !important; padding:0 !important; }
-.st-key-apex_mobile_header [data-testid="stHorizontalBlock"]{display:flex!important;flex-wrap:nowrap!important;align-items:center!important;gap:8px!important;width:100%!important;}
+.st-key-apex_mobile_header { display:block; margin:0 0 12px !important; padding:0 8px 0 2px !important; box-sizing:border-box !important; }
+.st-key-apex_mobile_header [data-testid="stHorizontalBlock"]{display:flex!important;flex-wrap:nowrap!important;align-items:center!important;justify-content:space-between!important;gap:8px!important;width:100%!important;}
 .st-key-apex_mobile_header [data-testid="column"]:first-child{flex:1 1 auto!important;min-width:0!important;}
-.st-key-apex_mobile_header [data-testid="column"]:last-child{flex:0 0 44px!important;min-width:44px!important;max-width:44px!important;}
-.st-key-apex_mobile_header button{width:42px!important;height:42px!important;min-height:42px!important;padding:0!important;border-radius:11px!important;border:1px solid rgba(39,220,231,.40)!important;background:rgba(6,22,31,.90)!important;color:#27dce7!important;font-size:19px!important;box-shadow:0 0 16px rgba(39,220,231,.10)!important;transition:transform 150ms ease,background 180ms ease!important;}
+.st-key-apex_mobile_header [data-testid="column"]:last-child{flex:0 0 46px!important;min-width:46px!important;max-width:46px!important;display:flex!important;justify-content:flex-end!important;padding-right:6px!important;}
+.st-key-apex_mobile_header button{width:40px!important;height:40px!important;min-height:40px!important;padding:0!important;border-radius:10px!important;border:1px solid rgba(39,220,231,.45)!important;background:rgba(6,22,31,.90)!important;color:#27dce7!important;font-size:19px!important;box-shadow:0 0 14px rgba(39,220,231,.15)!important;margin-right:6px!important;transition:transform 150ms ease,background 180ms ease!important;}
 .st-key-apex_mobile_header button:active{transform:scale(.92)!important;}
 .apex-mobile-top-brand,.apex-mobile-drawer-brand{display:flex;align-items:center;gap:10px;min-width:0;}
 .apex-brand-logo{width:42px;height:42px;min-width:42px;border-radius:11px;border:1px solid rgba(39,220,231,.36);background:linear-gradient(145deg,rgba(11,37,48,.96),rgba(4,18,26,.98));display:grid;place-items:center;box-shadow:inset 0 0 16px rgba(39,220,231,.07),0 0 14px rgba(39,220,231,.06);}

@@ -118,7 +118,7 @@ def render_terminal_nav(active_page: str, auth_user: dict | None = None) -> bool
 
     # ── 3. Mobile Top Header Bar (compact logo + hamburger) ────────────
     with st.container(key="apex_mobile_header"):
-        m_col1, m_col2 = st.columns([0.84, 0.16], vertical_alignment="center")
+        m_col1, m_col2 = st.columns([0.78, 0.22], vertical_alignment="center")
         with m_col1:
             core.render_html("""<div class="apex-mobile-top-brand">
 <div class="apex-brand-logo" aria-hidden="true"><svg viewBox="0 0 64 64"><defs><linearGradient id="apexTopLogo" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#18dbe6"/><stop offset="1" stop-color="#39f0f5"/></linearGradient></defs><path d="M8 54 31.8 8 56 54H45.5L31.9 27.5 18.4 54Z" fill="url(#apexTopLogo)"/><path d="M25.3 43.5h13.4l5.4 10.5H19.9Z" fill="#06131b" opacity=".88"/></svg></div>
