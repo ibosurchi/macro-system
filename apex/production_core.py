@@ -2981,7 +2981,9 @@ _AI_BATCH_MEMORY_LOADED_AT = 0.0
 _AI_BATCH_MEMORY_REFRESH_SECONDS = 5.0
 _AI_BATCH_SUPERVISOR_RUNNING = False
 _AI_BATCH_REQUEST_INFLIGHT = False
-_AI_BATCH_POLL_SECONDS = 60
+_AI_BATCH_POLL_SECONDS = 30
+_AI_BATCH_MEDIUM_DELAY_SECONDS = 15 * 60
+_AI_BATCH_HIGH_DELAY_SECONDS = 90
 _AI_BATCH_ERROR_BACKOFF_SECONDS = 15 * 60
 _AI_BATCH_FIRST_RESULT_RETRY_SECONDS = 2 * 60
 _AI_BATCH_MACRO_REFRESH_SECONDS = 15 * 60
@@ -3266,6 +3268,141 @@ def _ai_batch_signature(news_rows: list, macro_snapshot: dict, event_rows: list)
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
 
+
+def _ai_news_trigger_score(article: dict) -> tuple[int, str]:
+    """Free deterministic 0-100 impact score. Never contacts AI."""
+    text = f"{article.get('title', '')} {article.get('description', '')}".lower()
+    if not text.strip():
+        return 0, "empty headline"
+
+    # Major scheduled/policy/geopolitical shocks deserve immediate analysis.
+    critical = {
+        "fomc": 96, "federal reserve": 90, "powell": 86, "emergency rate": 100,
+        "ecb": 86, "bank of england": 86, "boe": 84, "bank of japan": 86, "boj": 84,
+        "cpi": 90, "core cpi": 92, "pce": 88, "nonfarm payroll": 94, "nfp": 94,
+        "unemployment rate": 88, "gdp": 82, "interest rate decision": 96,
+        "rate cut": 86, "rate hike": 88, "opec": 86, "opec+": 88,
+        "missile": 88, "airstrike": 90, "invasion": 96, "war": 88,
+        "ceasefire": 82, "sanctions": 82, "tariff": 78,
+        "oil supply disruption": 92, "crude inventory": 76,
+        "nvidia": 72, "semiconductor": 70, "chip restrictions": 84,
+    }
+    best = 0; reason = ""
+    for term, score in critical.items():
+        if term in text and score > best:
+            best, reason = score, term
+
+    # Asset/region relevance raises ordinary macro headlines into the batching tier.
+    asset_terms = [
+        "usd", "dollar", "dxy", "eur", "euro", "gbp", "pound", "sterling",
+        "cad", "canada", "jpy", "yen", "chf", "swiss franc", "aud", "australia",
+        "nzd", "new zealand", "gold", "xau", "bullion", "oil", "crude", "wti",
+        "brent", "nasdaq", "ndx", "treasury yield", "real yield", "inflation",
+        "employment", "payroll", "central bank", "recession", "geopolitical",
+    ]
+    if any(term in text for term in asset_terms):
+        if best < 58:
+            best, reason = 58, "macro/asset relevance"
+
+    # Market-moving language adds urgency, but cannot make an unrelated story critical.
+    urgency = ["unexpected", "surprise", "shock", "emergency", "record", "plunge", "surge", "halted", "attack", "escalation"]
+    if best and any(term in text for term in urgency):
+        best = min(100, best + 10)
+        reason += " + urgency"
+    return int(best), reason or "low relevance"
+
+
+def _ai_news_identity(row: dict) -> str:
+    return hashlib.sha256(json.dumps({
+        "source": row.get("source", ""), "published": row.get("published", ""),
+        "title": row.get("title", ""), "description": row.get("description", ""),
+    }, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:24]
+
+
+def _ai_event_actual_map(event_rows: list[dict]) -> dict:
+    out = {}
+    for row in event_rows or []:
+        code = str(row.get("code", "")).strip()
+        actual = _normalize_forex_factory_actual(row.get("actual", ""))
+        if code:
+            out[code] = actual
+    return out
+
+
+def _ai_trigger_decision(state: dict, news_rows: list[dict], macro_snapshot: dict, event_rows: list[dict]) -> tuple[bool, dict]:
+    """Decide whether a changed snapshot deserves a paid request.
+
+    0-39: ignore for AI; 40-69: batch for 15 minutes; 70-84: analyze within
+    90 seconds; 85-100: immediate. A newly published High-impact Actual is 100.
+    """
+    now = time.time()
+    has_result = isinstance(state.get("result"), dict) and bool(state.get("result"))
+    current_news = {_ai_news_identity(r): r for r in news_rows or []}
+    seen_news = set(state.get("observed_news_ids", []) or [])
+    new_rows = [row for key, row in current_news.items() if key not in seen_news]
+
+    score = 0; reasons = []
+    for row in new_rows:
+        s, why = _ai_news_trigger_score(row)
+        if s > score:
+            score = s
+        if s >= 40:
+            reasons.append(f"news:{s}:{why}:{str(row.get('title',''))[:90]}")
+
+    macro_sig = hashlib.sha256(json.dumps(macro_snapshot or {}, sort_keys=True, default=str).encode()).hexdigest()
+    old_macro_sig = str(state.get("observed_macro_signature", ""))
+    if has_result and old_macro_sig and macro_sig != old_macro_sig:
+        score = max(score, 60)
+        reasons.append("macro:60:new FRED observation")
+
+    actual_map = _ai_event_actual_map(event_rows)
+    old_actuals = state.get("observed_event_actuals", {}) if isinstance(state.get("observed_event_actuals"), dict) else {}
+    for code, actual in actual_map.items():
+        if actual and actual != str(old_actuals.get(code, "")):
+            score = 100
+            reasons.append(f"actual:100:{code}:{actual}")
+
+    # First successful shared result is bootstrap-critical and must not wait.
+    if not has_result:
+        score = 100
+        reasons.append("bootstrap:100:first shared analysis")
+
+    pending_score = int(state.get("pending_trigger_score", 0) or 0)
+    pending_since = float(state.get("pending_trigger_since", 0) or 0)
+    pending_reasons = list(state.get("pending_trigger_reasons", []) or [])
+    if score >= 40:
+        if pending_since <= 0:
+            pending_since = now
+        pending_score = max(pending_score, score)
+        pending_reasons = (pending_reasons + reasons)[-20:]
+
+    # Always advance free observations, including low-impact headlines, so they
+    # are not reconsidered on every supervisor pass.
+    state["observed_news_ids"] = list(current_news.keys())[:80]
+    state["observed_macro_signature"] = macro_sig
+    state["observed_event_actuals"] = actual_map
+    state["last_trigger_scan_at"] = now
+    state["last_trigger_score"] = score
+    state["last_trigger_reasons"] = reasons[-10:]
+
+    if pending_score < 40:
+        state.pop("pending_trigger_score", None); state.pop("pending_trigger_since", None); state.pop("pending_trigger_reasons", None)
+        return False, state
+
+    elapsed = max(0.0, now - pending_since)
+    if pending_score >= 85:
+        due = True
+    elif pending_score >= 70:
+        due = elapsed >= _AI_BATCH_HIGH_DELAY_SECONDS
+    else:
+        due = elapsed >= _AI_BATCH_MEDIUM_DELAY_SECONDS
+
+    state["pending_trigger_score"] = pending_score
+    state["pending_trigger_since"] = pending_since
+    state["pending_trigger_reasons"] = pending_reasons
+    state["pending_trigger_due"] = bool(due)
+    return bool(due), state
+
 def _normalize_shared_asset_payload(raw: dict) -> dict:
     assets = ["USD", "EUR", "GBP", "CAD", "JPY", "AUD", "NZD", "CHF", "Gold", "Oil", "Nasdaq"]
     out = {}
@@ -3323,6 +3460,13 @@ def _run_shared_ai_batch_once() -> None:
         signature = _ai_batch_signature(news_rows, macro_snapshot, event_rows)
         state = _ai_batch_load_state()
         if state.get("signature") == signature and isinstance(state.get("result"), dict):
+            return
+
+        # Free two-stage gate: only meaningful evidence is allowed to wake paid AI.
+        # Page navigation never reaches the provider.
+        due, state = _ai_trigger_decision(state, news_rows, macro_snapshot, event_rows)
+        _ai_batch_save_state(state)
+        if not due:
             return
         if state.get("last_attempt_signature") == signature:
             last_attempt = float(state.get("last_attempt_at", 0) or 0)
@@ -3405,6 +3549,13 @@ If evidence is insufficient, say so explicitly."""
             "provider": provider,
             "model": model,
             "result": result,
+            "observed_news_ids": state.get("observed_news_ids", []),
+            "observed_macro_signature": state.get("observed_macro_signature", ""),
+            "observed_event_actuals": state.get("observed_event_actuals", {}),
+            "last_trigger_score": state.get("last_trigger_score", 0),
+            "last_trigger_reasons": state.get("last_trigger_reasons", []),
+            "last_trigger_consumed_score": state.get("pending_trigger_score", state.get("last_trigger_score", 0)),
+            "last_trigger_consumed_reasons": state.get("pending_trigger_reasons", state.get("last_trigger_reasons", [])),
         })
     except Exception as exc:
         state = _ai_batch_load_state()
