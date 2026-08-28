@@ -2990,6 +2990,49 @@ _AI_BATCH_MACRO_REFRESH_SECONDS = 15 * 60
 _AI_BATCH_MACRO_CACHE = {"at": 0.0, "data": {}}
 _AI_BATCH_WAKE_EVENT = threading.Event()
 
+# Durable admin audit trail for the shared AI engine. The log records free trigger
+# decisions, provider calls, supplied evidence, model conclusions and failures.
+AI_AUDIT_LOG_FILE = str(PROJECT_ROOT / "ai_activity_log_v1.json")
+_AI_AUDIT_STATE_ID = "ai_activity_log_v1"
+_AI_AUDIT_LOCK = threading.RLock()
+_AI_AUDIT_MAX_ENTRIES = 600
+
+
+def _ai_audit_append(kind: str, message: str, details: dict | None = None) -> None:
+    entry = {
+        "time": time.time(),
+        "time_iso": datetime.now(timezone.utc).isoformat(),
+        "kind": str(kind or "info")[:40],
+        "message": str(message or "")[:500],
+        "details": details if isinstance(details, dict) else {},
+    }
+    try:
+        with _AI_AUDIT_LOCK:
+            state = _load_persistent_state(_AI_AUDIT_STATE_ID, AI_AUDIT_LOG_FILE, {"entries": []})
+            entries = list(state.get("entries", [])) if isinstance(state, dict) else []
+            entries.append(entry)
+            entries = entries[-_AI_AUDIT_MAX_ENTRIES:]
+            _save_persistent_state(_AI_AUDIT_STATE_ID, AI_AUDIT_LOG_FILE, {"entries": entries})
+    except Exception:
+        pass
+
+
+def get_ai_activity_log(limit: int = 200) -> list[dict]:
+    try:
+        state = _load_persistent_state(_AI_AUDIT_STATE_ID, AI_AUDIT_LOG_FILE, {"entries": []})
+        entries = list(state.get("entries", [])) if isinstance(state, dict) else []
+        return list(reversed(entries[-max(1, int(limit)):]))
+    except Exception:
+        return []
+
+
+def clear_ai_activity_log() -> None:
+    try:
+        with _AI_AUDIT_LOCK:
+            _save_persistent_state(_AI_AUDIT_STATE_ID, AI_AUDIT_LOG_FILE, {"entries": []})
+    except Exception:
+        pass
+
 
 def _ai_control_load_state(force_refresh: bool = False) -> dict:
     """Read the durable master AI switch shared by every Streamlit process."""
@@ -3050,6 +3093,7 @@ def set_ai_enabled(enabled: bool, updated_by: str = "ADMINISTRATOR") -> dict:
             state.pop("last_error_at", None)
             _ai_batch_save_state(state)
     _AI_BATCH_WAKE_EVENT.set()
+    _ai_audit_append("control", f"Administrator {'enabled' if enabled else 'disabled'} paid AI", {"enabled": bool(enabled), "updated_by": updated_by})
     return payload
 
 
@@ -3263,6 +3307,33 @@ def _ai_batch_event_rows(events: list, all_news: list, actuals: dict, limit: int
     return rows
 
 
+def _ai_batch_price_context() -> dict:
+    """Free live-price confirmation context for AI; price changes alone never trigger billing."""
+    configs = {
+        "Gold": "XAUUSD=X",
+        "Oil": "CL=F",
+        "Nasdaq": "NQ=F",
+        "USD": "DX-Y.NYB",
+    }
+    out = {}
+    for asset, symbol in configs.items():
+        try:
+            df = _fetch_tactical_price_series(symbol)
+            if df is None or df.empty or "close" not in df.columns:
+                continue
+            closes = pd.to_numeric(df["close"], errors="coerce").dropna()
+            if closes.empty:
+                continue
+            last = float(closes.iloc[-1])
+            ret_1 = ((last / float(closes.iloc[-2])) - 1.0) * 100.0 if len(closes) >= 2 and float(closes.iloc[-2]) else 0.0
+            ret_12 = ((last / float(closes.iloc[-13])) - 1.0) * 100.0 if len(closes) >= 13 and float(closes.iloc[-13]) else 0.0
+            trend = "Bullish" if ret_12 > 0.20 else "Bearish" if ret_12 < -0.20 else "Neutral"
+            out[asset] = {"symbol": symbol, "last": round(last, 5), "short_change_pct": round(ret_1, 4), "trend_change_pct": round(ret_12, 4), "price_confirmation": trend}
+        except Exception:
+            continue
+    return out
+
+
 def _ai_batch_signature(news_rows: list, macro_snapshot: dict, event_rows: list) -> str:
     payload = {"news": news_rows, "macro": macro_snapshot, "events": event_rows}
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
@@ -3387,6 +3458,12 @@ def _ai_trigger_decision(state: dict, news_rows: list[dict], macro_snapshot: dic
 
     if pending_score < 40:
         state.pop("pending_trigger_score", None); state.pop("pending_trigger_since", None); state.pop("pending_trigger_reasons", None)
+        if new_rows:
+            scored = []
+            for row in new_rows[:20]:
+                s, why = _ai_news_trigger_score(row)
+                scored.append({"score": s, "reason": why, "source": row.get("source", ""), "title": row.get("title", ""), "published": row.get("published", "")})
+            _ai_audit_append("ignored", f"{len(new_rows)} new headline(s) did not pass the paid-AI gate", {"max_score": score, "new_news": scored})
         return False, state
 
     elapsed = max(0.0, now - pending_since)
@@ -3401,6 +3478,28 @@ def _ai_trigger_decision(state: dict, news_rows: list[dict], macro_snapshot: dic
     state["pending_trigger_since"] = pending_since
     state["pending_trigger_reasons"] = pending_reasons
     state["pending_trigger_due"] = bool(due)
+
+    # Log only when genuinely new free evidence was observed, not on every 30s poll.
+    if new_rows or reasons:
+        scored = []
+        for row in new_rows[:20]:
+            s, why = _ai_news_trigger_score(row)
+            scored.append({
+                "score": s, "reason": why, "source": row.get("source", ""),
+                "title": row.get("title", ""), "published": row.get("published", ""),
+            })
+        if pending_score >= 85:
+            action = "immediate shared AI request"
+        elif pending_score >= 70:
+            action = "queued for ~90 seconds"
+        elif pending_score >= 40:
+            action = "queued for 15-minute batch"
+        else:
+            action = "ignored for paid AI"
+        _ai_audit_append("trigger", f"Evidence gate score {score}/100 — {action}", {
+            "scan_score": score, "pending_score": pending_score, "due": bool(due),
+            "action": action, "new_news": scored, "reasons": reasons[-12:],
+        })
     return bool(due), state
 
 def _normalize_shared_asset_payload(raw: dict) -> dict:
@@ -3453,6 +3552,7 @@ def _run_shared_ai_batch_once() -> None:
         except Exception:
             actuals = {}
         event_rows = _ai_batch_event_rows(events, all_news, actuals, 14)
+        price_context = _ai_batch_price_context()
 
         if not news_rows and not macro_snapshot and not event_rows:
             return
@@ -3504,7 +3604,7 @@ Use ONLY supplied evidence; never invent facts. Return ONE valid JSON object and
 Required top-level keys: summary, assets, events.
 assets MUST contain USD, EUR, GBP, CAD, JPY, AUD, NZD, CHF, Gold, Oil, Nasdaq.
 For each asset return: score (-1 to +1), confidence (0-100), reason, horizon. Judge each asset separately.
-Use macro observations plus current news. Gold: real yields/USD/safe haven/central-bank demand. Oil: supply/demand/OPEC/geopolitics/inventories. Nasdaq: yields/Fed/growth/earnings/semiconductors/risk appetite.
+Use macro observations plus current news. Also use supplied live_price_context as confirmation only: if the fundamental/news direction is not confirmed by price, explicitly weaken the directional wording and say it is unconfirmed; if price contradicts it, say there is a price conflict. Gold: real yields/USD/safe haven/central-bank demand. Oil: supply/demand/OPEC/geopolitics/inventories. Nasdaq: yields/Fed/growth/earnings/semiconductors/risk appetite.
 
 events MUST be an object keyed by the supplied event code. For every supplied event return exactly these keys:
 event_assessment, causal_chain, facts, supporting_evidence, contradictions, nowcast, confidence, confidence_reason, cross_source_confirmation, usd, gold, oil, nasdaq, invalidation, source_count.
@@ -3514,8 +3614,16 @@ If evidence is insufficient, say so explicitly."""
         user_payload = {
             "news": news_rows,
             "macro_data": macro_snapshot,
+            "live_price_context": price_context,
             "high_impact_forecaster_events": event_rows,
         }
+        _ai_audit_append("request", f"Sending one shared AI request via {provider} / {model}", {
+            "trigger_score": state.get("pending_trigger_score", state.get("last_trigger_score", 0)),
+            "trigger_reasons": state.get("pending_trigger_reasons", state.get("last_trigger_reasons", [])),
+            "news_count": len(news_rows), "news": news_rows,
+            "macro_data": macro_snapshot, "live_price_context": price_context,
+            "events": [{"code": e.get("code"), "title": e.get("title"), "currency": e.get("currency"), "forecast": e.get("forecast"), "previous": e.get("previous"), "actual": e.get("actual")} for e in event_rows],
+        })
         attempt_state = {**state, "last_attempt_signature": signature, "last_attempt_at": time.time()}
         _ai_batch_save_state(attempt_state)
 
@@ -3557,11 +3665,17 @@ If evidence is insufficient, say so explicitly."""
             "last_trigger_consumed_score": state.get("pending_trigger_score", state.get("last_trigger_score", 0)),
             "last_trigger_consumed_reasons": state.get("pending_trigger_reasons", state.get("last_trigger_reasons", [])),
         })
+        _ai_audit_append("success", "Shared AI analysis completed successfully", {
+            "provider": provider, "model": model, "summary": result.get("summary", ""),
+            "assets": result.get("assets", {}), "event_count": len(result.get("events", {}) or {}),
+            "events": result.get("events", {}), "live_price_context": price_context,
+        })
     except Exception as exc:
         state = _ai_batch_load_state()
         state["last_error"] = str(exc)[:500]
         state["last_error_at"] = time.time()
         _ai_batch_save_state(state)
+        _ai_audit_append("error", "Shared AI request/analysis failed", {"error": str(exc)[:500]})
     finally:
         _release_ai_batch_process_lock(process_lock_fd)
         with _AI_BATCH_LOCK:
@@ -4333,6 +4447,21 @@ def page_gold(fred_key: str, channel_name: str) -> None:
         gold_ai_confidence = float(gold_ai.get("confidence", 0.0))
         gold_ai_reason = str(gold_ai.get("reason", ""))
         gold_ai_horizon = str(gold_ai.get("horizon", "Unknown"))
+        tactical_label = str((gold_tactical_confirm or {}).get("label", "Neutral"))
+        ai_dir_l = gold_ai_direction.lower()
+        tact_l = tactical_label.lower()
+        gold_ai_display = gold_ai_direction
+        price_note = ""
+        if ai_dir_l in {"bullish", "bearish"}:
+            if tact_l == "neutral":
+                gold_ai_display = f"Mildly {gold_ai_direction} / Price Unconfirmed"
+                price_note = " Live price has not confirmed the AI direction yet."
+            elif (ai_dir_l == "bullish" and tact_l == "bearish") or (ai_dir_l == "bearish" and tact_l == "bullish"):
+                gold_ai_display = f"{gold_ai_direction} Thesis / Price Conflict"
+                price_note = " Live price currently contradicts the AI direction."
+            else:
+                gold_ai_display = f"{gold_ai_direction} / Price Confirmed"
+                price_note = " Live price confirms the AI direction."
         gold_news_count = int(gold_intel.get("gold_relevant_news_count", 0))
         tactical_confirm_text = (
             f"{gold_tactical_confirm.get('label_icon', '')} {gold_tactical_confirm.get('label', 'Neutral')} "
@@ -4342,9 +4471,9 @@ def page_gold(fred_key: str, channel_name: str) -> None:
         ai_summary_html = (
             f'<div style="margin-top:10px;padding:10px 12px;background:rgba(255,209,102,0.06);'
             f'border:1px solid rgba(255,209,102,0.22);border-radius:10px;font-size:11.5px;color:#ecf7ff;'
-            f'text-align:left;line-height:1.55;"><b style="color:#ffd166;">Gold AI Signal:</b> '
-            f'{gold_ai_direction} • {gold_ai_confidence:.0f}% • {gold_ai_horizon}<br>'
-            f'<span style="color:#9fb1bf;">{gold_ai_reason}</span></div>'
+            f'text-align:left;line-height:1.55;"><b style="color:#ffd166;">AI News View:</b> '
+            f'{gold_ai_display} • {gold_ai_confidence:.0f}% • {gold_ai_horizon}<br>'
+            f'<span style="color:#9fb1bf;">{gold_ai_reason}{price_note}</span></div>'
         ) if gold_ai.get("active") else (
             '<div style="margin-top:10px;padding:10px 12px;background:rgba(255,255,255,0.03);'
             'border:1px solid rgba(255,255,255,0.08);border-radius:10px;font-size:11px;color:#8fa3b4;">'
@@ -8109,6 +8238,47 @@ def render_admin_key_generator() -> None:
             if fam_rows: st.dataframe(fam_rows, use_container_width=True, hide_index=True)
     else:
         st.info("No completed forecast has been scored yet. Records resolve automatically when Actual values are published.")
+    st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
+    render_html('<div class="sec-title">AI ACTIVITY &amp; EVIDENCE LOG</div>')
+    ai_logs = get_ai_activity_log(250)
+    state_now = get_shared_background_ai_state()
+    lc1, lc2, lc3, lc4 = st.columns(4)
+    lc1.metric("Log Entries", len(ai_logs))
+    lc2.metric("Last Gate Score", int(state_now.get("last_trigger_score", 0) or 0))
+    lc3.metric("Pending Score", int(state_now.get("pending_trigger_score", 0) or 0))
+    lc4.metric("Provider", str(state_now.get("model", "—")))
+    st.caption("This audit shows what the free news gate detected, what was ignored or queued, exactly what evidence was sent to AI, and what the shared model concluded. Page navigation does not create log requests.")
+    log_c1, log_c2 = st.columns([1, 1])
+    with log_c1:
+        kind_filter = st.multiselect("Show log types", ["control", "trigger", "ignored", "request", "success", "error"], default=["control", "trigger", "ignored", "request", "success", "error"], key="admin_ai_log_types")
+    with log_c2:
+        if st.button("Clear AI activity log", use_container_width=True, key="admin_clear_ai_log"):
+            clear_ai_activity_log(); st.success("AI activity log cleared."); time.sleep(0.15); st.rerun()
+    filtered_logs = [x for x in ai_logs if x.get("kind") in set(kind_filter)]
+    if filtered_logs:
+        summary_rows = []
+        for x in filtered_logs[:120]:
+            d = x.get("details", {}) if isinstance(x.get("details"), dict) else {}
+            summary_rows.append({
+                "Time (UTC)": str(x.get("time_iso", ""))[:19].replace("T", " "),
+                "Type": str(x.get("kind", "")).upper(),
+                "Message": x.get("message", ""),
+                "Score": d.get("scan_score", d.get("trigger_score", d.get("max_score", ""))),
+                "News": len(d.get("new_news", d.get("news", [])) or []),
+            })
+        st.dataframe(summary_rows, use_container_width=True, hide_index=True)
+        with st.expander("Inspect detailed AI evidence and conclusions", expanded=False):
+            chosen = st.selectbox(
+                "Log entry",
+                options=list(range(min(len(filtered_logs), 120))),
+                format_func=lambda i: f"{str(filtered_logs[i].get('time_iso',''))[:19]} · {str(filtered_logs[i].get('kind','')).upper()} · {str(filtered_logs[i].get('message',''))[:90]}",
+                key="admin_ai_log_entry",
+            )
+            selected_log = filtered_logs[chosen]
+            st.json(selected_log, expanded=True)
+    else:
+        st.info("No AI activity has been logged yet. Enable AI or wait for the free evidence gate to observe new headlines/data.")
+
     st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
     render_html('<div class="sec-title">VIP Client Registry &amp; Subscription Database</div>')
     
