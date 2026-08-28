@@ -2984,6 +2984,8 @@ _AI_BATCH_REQUEST_INFLIGHT = False
 _AI_BATCH_POLL_SECONDS = 30
 _AI_BATCH_MEDIUM_DELAY_SECONDS = 15 * 60
 _AI_BATCH_HIGH_DELAY_SECONDS = 90
+_AI_BATCH_GLOBAL_MIN_PAID_SECONDS = 90
+_AI_BATCH_SAME_TOPIC_COOLDOWN_SECONDS = 5 * 60
 _AI_BATCH_ERROR_BACKOFF_SECONDS = 15 * 60
 _AI_BATCH_FIRST_RESULT_RETRY_SECONDS = 2 * 60
 _AI_BATCH_MACRO_REFRESH_SECONDS = 15 * 60
@@ -3499,10 +3501,29 @@ def _ai_news_trigger_score(article: dict) -> tuple[int, str]:
 
 
 def _ai_news_identity(row: dict) -> str:
-    return hashlib.sha256(json.dumps({
-        "source": row.get("source", ""), "published": row.get("published", ""),
-        "title": row.get("title", ""), "description": row.get("description", ""),
-    }, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:24]
+    # Stable identity: feeds often edit descriptions/timestamps after publication.
+    # Those metadata edits must not create a second paid-AI trigger.
+    title = re.sub(r"[^a-z0-9]+", " ", str(row.get("title", "")).lower()).strip()
+    title = re.sub(r"\s+", " ", title)
+    return hashlib.sha256(title.encode("utf-8")).hexdigest()[:24]
+
+
+def _ai_news_topic(row: dict) -> str:
+    """Cheap event-family key used to batch repeated live-news fragments."""
+    text = f"{row.get('title','')} {row.get('description','')}".lower()
+    if any(x in text for x in ("warsh", "powell", "fomc", "federal reserve", " fed ")):
+        return "fed_policy_speech"
+    if any(x in text for x in ("cpi", "pce", "inflation")):
+        return "inflation"
+    if any(x in text for x in ("nonfarm", "nfp", "payroll", "unemployment")):
+        return "us_labor"
+    if any(x in text for x in ("opec", "crude", "oil", "wti", "brent")):
+        return "oil_market"
+    if any(x in text for x in ("nasdaq", "ndx", "nvidia", "semiconductor", "chip")):
+        return "nasdaq_tech"
+    if any(x in text for x in ("gold", "xau", "bullion")):
+        return "gold_market"
+    return "general_macro"
 
 
 def _ai_event_actual_map(event_rows: list[dict]) -> dict:
@@ -3528,8 +3549,11 @@ def _ai_trigger_decision(state: dict, news_rows: list[dict], macro_snapshot: dic
     new_rows = [row for key, row in current_news.items() if key not in seen_news]
 
     score = 0; reasons = []
+    new_topics = set()
     for row in new_rows:
         s, why = _ai_news_trigger_score(row)
+        if s >= 40:
+            new_topics.add(_ai_news_topic(row))
         if s > score:
             score = s
         if s >= 40:
@@ -3543,24 +3567,29 @@ def _ai_trigger_decision(state: dict, news_rows: list[dict], macro_snapshot: dic
 
     actual_map = _ai_event_actual_map(event_rows)
     old_actuals = state.get("observed_event_actuals", {}) if isinstance(state.get("observed_event_actuals"), dict) else {}
+    actual_release_trigger = False
     for code, actual in actual_map.items():
         if actual and actual != str(old_actuals.get(code, "")):
             score = 100
+            actual_release_trigger = True
             reasons.append(f"actual:100:{code}:{actual}")
 
     # First successful shared result is bootstrap-critical and must not wait.
-    if not has_result:
+    bootstrap_trigger = not has_result
+    if bootstrap_trigger:
         score = 100
         reasons.append("bootstrap:100:first shared analysis")
 
     pending_score = int(state.get("pending_trigger_score", 0) or 0)
     pending_since = float(state.get("pending_trigger_since", 0) or 0)
     pending_reasons = list(state.get("pending_trigger_reasons", []) or [])
+    pending_topics = set(state.get("pending_trigger_topics", []) or [])
     if score >= 40:
         if pending_since <= 0:
             pending_since = now
         pending_score = max(pending_score, score)
         pending_reasons = (pending_reasons + reasons)[-20:]
+        pending_topics.update(new_topics)
 
     # Always advance free observations, including low-impact headlines, so they
     # are not reconsidered on every supervisor pass.
@@ -3572,7 +3601,7 @@ def _ai_trigger_decision(state: dict, news_rows: list[dict], macro_snapshot: dic
     state["last_trigger_reasons"] = reasons[-10:]
 
     if pending_score < 40:
-        state.pop("pending_trigger_score", None); state.pop("pending_trigger_since", None); state.pop("pending_trigger_reasons", None)
+        state.pop("pending_trigger_score", None); state.pop("pending_trigger_since", None); state.pop("pending_trigger_reasons", None); state.pop("pending_trigger_topics", None)
         if new_rows:
             scored = []
             for row in new_rows[:20]:
@@ -3589,9 +3618,29 @@ def _ai_trigger_decision(state: dict, news_rows: list[dict], macro_snapshot: dic
     else:
         due = elapsed >= _AI_BATCH_MEDIUM_DELAY_SECONDS
 
+    # Cost guard for live-news storms. First critical evidence can fire immediately,
+    # then fragments are batched instead of producing one request per headline.
+    # A newly published High-impact Actual and first bootstrap are exempt.
+    if due and not actual_release_trigger and not bootstrap_trigger:
+        last_paid_at = float(state.get("last_paid_at", 0) or 0)
+        if last_paid_at and now - last_paid_at < _AI_BATCH_GLOBAL_MIN_PAID_SECONDS:
+            due = False
+        if due and pending_topics:
+            last_paid_topics = state.get("last_paid_topics", {}) if isinstance(state.get("last_paid_topics"), dict) else {}
+            waits = []
+            for topic in pending_topics:
+                t = float(last_paid_topics.get(topic, 0) or 0)
+                if t:
+                    waits.append(now - t)
+            # If every queued topic is the same recently analyzed live event, wait
+            # five minutes and absorb all intervening headlines into one batch.
+            if waits and len(waits) == len(pending_topics) and max(waits) < _AI_BATCH_SAME_TOPIC_COOLDOWN_SECONDS:
+                due = False
+
     state["pending_trigger_score"] = pending_score
     state["pending_trigger_since"] = pending_since
     state["pending_trigger_reasons"] = pending_reasons
+    state["pending_trigger_topics"] = sorted(pending_topics)
     state["pending_trigger_due"] = bool(due)
 
     # Log only when genuinely new free evidence was observed, not on every 30s poll.
@@ -3779,6 +3828,8 @@ If evidence is insufficient, say so explicitly."""
             "last_trigger_reasons": state.get("last_trigger_reasons", []),
             "last_trigger_consumed_score": state.get("pending_trigger_score", state.get("last_trigger_score", 0)),
             "last_trigger_consumed_reasons": state.get("pending_trigger_reasons", state.get("last_trigger_reasons", [])),
+            "last_paid_at": time.time(),
+            "last_paid_topics": {**(state.get("last_paid_topics", {}) if isinstance(state.get("last_paid_topics"), dict) else {}), **{topic: time.time() for topic in (state.get("pending_trigger_topics", []) or [])}},
         })
         _register_ai_price_decisions(result, price_context)
         _ai_audit_append("success", "Shared AI analysis completed successfully", {
