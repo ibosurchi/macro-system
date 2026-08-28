@@ -7146,7 +7146,7 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     today_local = (datetime.now(timezone.utc) + timedelta(hours=tz_info["offset"])).date()
     board_start_key = "apex_forecaster_board_start"
     board_start = st.session_state.get(board_start_key, today_local)
-    if not isinstance(board_start, _date) or board_start < today_local or board_start > today_local + timedelta(days=7):
+    if not isinstance(board_start, _date) or board_start < today_local or board_start > today_local + timedelta(days=60):
         board_start = today_local
         st.session_state[board_start_key] = board_start
     board_end = board_start + timedelta(days=6)
@@ -7222,9 +7222,14 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     .apex-fk-sub{margin-top:8px;color:#8fa1ae;font-size:12px}.apex-fk-week{color:#91a5b1;font-size:11px;border:1px solid rgba(55,211,226,.20);background:rgba(5,20,29,.78);border-radius:999px;padding:7px 11px;white-space:nowrap}
     .apex-fk-legend{display:flex;align-items:center;gap:15px;flex-wrap:wrap;margin:8px 0 13px;color:#91a3ae;font-size:10px}.apex-fk-leg{display:flex;align-items:center;gap:5px}.apex-fk-dot{display:inline-block;width:6px;height:6px;border-radius:50%}.apex-fk-dot.high{background:#b04ce4}.apex-fk-dot.medium{background:#ffb822}.apex-fk-dot.low{background:#35d2e3}
     .apex-fk-board-label{display:flex;align-items:center;justify-content:flex-start;gap:12px;margin:12px 0 8px;min-height:42px}.apex-fk-board-label b{color:#eaf2f5;font-size:13px}
-    [class*="st-key-apex_fk_calendar_picker"]{margin:3px 0 7px!important}
-    [class*="st-key-apex_fk_calendar_picker"] [data-testid="stDateInput"]{max-width:220px!important;margin-left:auto!important}
-    [class*="st-key-apex_fk_calendar_picker"] [data-baseweb="input"]{min-height:42px!important;border-radius:11px!important;border-color:rgba(39,220,231,.28)!important;background:rgba(7,25,35,.82)!important}
+    .apex-fk-board-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:10px 0 8px;min-height:46px}
+    .apex-fk-board-range{display:flex;align-items:center;justify-content:center;min-height:42px;padding:0 14px;border-radius:11px;border:1px solid rgba(39,220,231,.22);background:rgba(7,25,35,.78);color:#9eb0bb;font-size:10px;white-space:nowrap;box-sizing:border-box}
+    [class*="st-key-apex_fk_prev_day"],[class*="st-key-apex_fk_next_day"]{margin:0!important}
+    [class*="st-key-apex_fk_prev_day"] button,[class*="st-key-apex_fk_next_day"] button{min-height:42px!important;width:48px!important;min-width:48px!important;padding:0!important;border-radius:11px!important;border:1px solid rgba(39,220,231,.28)!important;background:linear-gradient(145deg,rgba(8,29,40,.90),rgba(4,16,24,.96))!important;color:#dbe7ec!important;font-size:21px!important;line-height:1!important;box-shadow:none!important;transition:transform .16s ease,border-color .18s ease,background .18s ease,box-shadow .18s ease!important}
+    [class*="st-key-apex_fk_prev_day"] button:hover,[class*="st-key-apex_fk_next_day"] button:hover{transform:translateY(-2px)!important;border-color:rgba(39,220,231,.70)!important;background:rgba(9,40,52,.96)!important;box-shadow:0 0 18px rgba(39,220,231,.09)!important}
+    [class*="st-key-apex_fk_prev_day"] button:active,[class*="st-key-apex_fk_next_day"] button:active{transform:scale(.93)!important}
+    [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_prev_day"]){align-items:center!important;gap:7px!important;margin:8px 0 6px!important}
+    [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_prev_day"])>[data-testid="stColumn"]{min-width:0!important}
     .apex-fk-dayhead{text-align:center;padding:11px 5px 9px;margin:-2px -2px 7px;border-bottom:1px solid rgba(74,128,150,.15);min-height:55px;box-sizing:border-box}.apex-fk-dayname{font-size:9px;color:#8296a2;letter-spacing:.09em;font-weight:800}.apex-fk-daynum{font-size:17px;color:#e8f1f5;font-weight:850;margin-top:2px}.apex-fk-dayhead.selected .apex-fk-dayname,.apex-fk-dayhead.selected .apex-fk-daynum{color:#2adce7}.apex-fk-daycount{font-size:9px;color:#718591;margin-top:3px}
     .apex-fk-empty{min-height:92px;display:flex;align-items:center;justify-content:center;text-align:center;color:#607682;font-size:10px;border:1px dashed rgba(73,126,147,.16);border-radius:10px;background:rgba(4,16,24,.32);padding:10px}
     .apex-fk-more{text-align:center;color:#7f939e;font-size:9px;padding:7px 2px 1px}
@@ -7233,11 +7238,11 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_col_"]){align-items:stretch!important;gap:7px!important;width:100%!important;max-width:100%!important;overflow:visible!important}
     [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_col_"])>[data-testid="stColumn"],
     [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_col_"])>[data-testid="column"]{min-width:0!important;max-width:100%!important;overflow:visible!important}
-    [class*="st-key-apex_fk_col_"]{height:100%!important;min-height:430px!important;padding:8px!important;box-sizing:border-box!important;border:1px solid rgba(55,211,226,.18)!important;border-radius:14px!important;background:linear-gradient(160deg,rgba(7,25,35,.94),rgba(3,14,21,.985))!important;overflow:hidden!important}
+    [class*="st-key-apex_fk_col_"]{height:100%!important;min-height:430px!important;padding:8px!important;box-sizing:border-box!important;border:1px solid rgba(55,211,226,.18)!important;border-radius:14px!important;background:linear-gradient(160deg,rgba(7,25,35,.94),rgba(3,14,21,.985))!important;overflow:hidden!important;animation:apexFkBoardIn .34s cubic-bezier(.22,.8,.25,1) both}
     [class*="st-key-apex_fk_col_selected_"]{border-color:rgba(39,220,231,.58)!important;box-shadow:0 0 20px rgba(39,220,231,.06)!important}
 
     /* Event cards */
-    [class*="st-key-apex_fk_card_"]{position:relative!important;margin-bottom:7px!important;min-width:0!important;max-width:100%!important}
+    [class*="st-key-apex_fk_card_"]{position:relative!important;margin-bottom:7px!important;min-width:0!important;max-width:100%!important;animation:apexFkCardIn .32s cubic-bezier(.22,.8,.25,1) both}
     [class*="st-key-apex_fk_card_"] button{width:100%!important;max-width:100%!important;min-width:0!important;min-height:78px!important;padding:9px 9px 9px 13px!important;border-radius:10px!important;border:1px solid rgba(83,135,158,.17)!important;background:rgba(8,28,39,.80)!important;color:#dce8ed!important;text-align:left!important;justify-content:flex-start!important;white-space:pre-wrap!important;overflow-wrap:anywhere!important;word-break:normal!important;box-shadow:none!important;font-size:9px!important;line-height:1.42!important;font-weight:650!important;transition:transform .16s ease,border-color .16s ease,background .16s ease!important}
     [class*="st-key-apex_fk_card_"] button p{margin:0!important;width:100%!important;max-width:100%!important;text-align:left!important;white-space:pre-wrap!important;overflow-wrap:anywhere!important}
     [class*="st-key-apex_fk_card_"]::before{content:"";position:absolute;left:6px;top:13px;width:5px;height:5px;border-radius:50%;background:#35d2e3;z-index:3;pointer-events:none}
@@ -7246,13 +7251,23 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     [class*="st-key-apex_fk_card_"] button:active{transform:scale(.985)!important}
 
     /* Make the existing full Event Details dialog visually match the Kanban concept. */
-    div[data-testid="stDialog"]>div[role="dialog"]{border:1px solid rgba(39,220,231,.34)!important;border-radius:18px!important;background:linear-gradient(160deg,rgba(7,25,35,.99),rgba(2,12,19,.995))!important;box-shadow:0 28px 90px rgba(0,0,0,.55)!important;max-width:900px!important}
-    div[data-testid="stDialog"]::before{backdrop-filter:blur(8px)!important;-webkit-backdrop-filter:blur(8px)!important}
+    div[data-testid="stDialog"]>div[role="dialog"]{border:1px solid rgba(39,220,231,.34)!important;border-radius:18px!important;background:linear-gradient(160deg,rgba(7,25,35,.99),rgba(2,12,19,.995))!important;box-shadow:0 28px 90px rgba(0,0,0,.55)!important;max-width:900px!important;animation:apexFkModalIn .28s cubic-bezier(.22,.8,.25,1) both!important}
+    div[data-testid="stDialog"]::before{backdrop-filter:blur(8px)!important;-webkit-backdrop-filter:blur(8px)!important;animation:apexFkOverlayIn .22s ease both!important}
+    .apex-fk-hero,.apex-fk-legend,.apex-fk-board-toolbar{animation:apexFkFadeIn .30s ease both}
+    @keyframes apexFkFadeIn{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+    @keyframes apexFkBoardIn{from{opacity:0;transform:translateX(10px) scale(.992)}to{opacity:1;transform:none}}
+    @keyframes apexFkCardIn{from{opacity:0;transform:translateY(8px) scale(.985)}to{opacity:1;transform:none}}
+    @keyframes apexFkOverlayIn{from{opacity:0}to{opacity:1}}
+    @keyframes apexFkModalIn{from{opacity:0;transform:translateY(18px) scale(.975)}to{opacity:1;transform:none}}
 
     @media(max-width:768px){
       .apex-fk-hero{align-items:flex-start;flex-direction:column;margin-bottom:10px}.apex-fk-title{font-size:24px}.apex-fk-week{padding:5px 8px}.apex-fk-sub{font-size:10px}
       .apex-fk-board-label{margin-top:8px}
-      [class*="st-key-apex_fk_calendar_picker"] [data-testid="stDateInput"]{max-width:100%!important;width:100%!important;margin-left:0!important}
+      .apex-fk-board-toolbar{gap:7px;margin:7px 0 8px}.apex-fk-board-range{min-height:40px;padding:0 9px;font-size:9px}
+      [class*="st-key-apex_fk_prev_day"] button,[class*="st-key-apex_fk_next_day"] button{width:42px!important;min-width:42px!important;min-height:40px!important;font-size:19px!important}
+      [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_prev_day"]){display:grid!important;grid-template-columns:minmax(0,1fr) 42px minmax(112px,150px) 42px!important;align-items:center!important;gap:6px!important;width:100%!important}
+      [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_prev_day"])>[data-testid="stColumn"]{width:auto!important;min-width:0!important;max-width:none!important;flex:none!important}
+      .apex-fk-board-label{margin:0!important;min-height:40px!important}
       [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_col_"]){display:flex!important;flex-direction:row!important;flex-wrap:nowrap!important;gap:8px!important;overflow-x:auto!important;overflow-y:hidden!important;scroll-snap-type:x proximity!important;padding:1px 2px 10px!important;-webkit-overflow-scrolling:touch!important;scrollbar-width:thin!important}
       [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_col_"])>[data-testid="stColumn"],
       [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_col_"])>[data-testid="column"]{display:block!important;flex:0 0 210px!important;width:210px!important;min-width:210px!important;max-width:210px!important;scroll-snap-align:start!important}
@@ -7261,7 +7276,7 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
       .apex-fk-dayhead{min-height:50px;padding:8px 4px}.apex-fk-daynum{font-size:16px}
       div[data-testid="stDialog"]>div[role="dialog"]{width:calc(100vw - 18px)!important;max-width:calc(100vw - 18px)!important;max-height:92vh!important;margin:auto!important;border-radius:15px!important}
     }
-    @media(prefers-reduced-motion:reduce){[class*="st-key-apex_fk_"] button{transition:none!important}}
+    @media(prefers-reduced-motion:reduce){[class*="st-key-apex_fk_"] button{transition:none!important}[class*="st-key-apex_fk_col_"],[class*="st-key-apex_fk_card_"],.apex-fk-hero,.apex-fk-legend,.apex-fk-board-toolbar,div[data-testid="stDialog"]>div[role="dialog"],div[data-testid="stDialog"]::before{animation:none!important}}
     </style>
     """)
 
@@ -7302,7 +7317,6 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
         if st.button("Today", key="apex_fk_today", use_container_width=True):
             st.session_state[board_start_key] = today_local
             st.session_state[sel_date_key] = today_local
-            st.session_state["apex_fk_calendar_jump"] = today_local
             st.session_state.pop(selected_key, None)
             st.rerun()
 
@@ -7314,27 +7328,32 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     </div>
     """)
 
-    # Calendar jump control: placed in the exact right-side area above the board.
-    # It shifts only the seven-day presentation window and reuses the existing
-    # Forex Factory range ingestion + Forecaster event pipeline.
-    board_title_col, calendar_col = st.columns([4, 1], gap="small")
-    with board_title_col:
+    # Day-by-day board navigation. The calendar picker was intentionally removed.
+    # Each arrow shifts the rolling seven-day window exactly one day while reusing
+    # the existing Forex Factory range ingestion and Forecaster intelligence logic.
+    nav_title_col, prev_col, range_col, next_col = st.columns([5, .55, 1.7, .55], gap="small")
+    with nav_title_col:
         render_html('<div class="apex-fk-board-label"><b>7-Day Event Board</b></div>')
-    with calendar_col:
-        with st.container(key="apex_fk_calendar_picker"):
-            jump_date = st.date_input(
-                "Calendar",
-                value=board_start,
-                min_value=today_local,
-                max_value=today_local + timedelta(days=7),
-                key="apex_fk_calendar_jump",
-                label_visibility="collapsed",
-            )
-    if jump_date != board_start:
-        st.session_state[board_start_key] = jump_date
-        st.session_state[sel_date_key] = jump_date
-        st.session_state.pop(selected_key, None)
-        st.rerun()
+    with prev_col:
+        with st.container(key="apex_fk_prev_day"):
+            prev_disabled = board_start <= today_local
+            if st.button("‹", key="apex_fk_prev_day_btn", use_container_width=True, disabled=prev_disabled, help="Previous day"):
+                new_start = max(today_local, board_start - timedelta(days=1))
+                st.session_state[board_start_key] = new_start
+                st.session_state[sel_date_key] = new_start
+                st.session_state.pop(selected_key, None)
+                st.rerun()
+    with range_col:
+        render_html(f'<div class="apex-fk-board-range">{board_start.strftime("%d %b")} — {board_end.strftime("%d %b")}</div>')
+    with next_col:
+        with st.container(key="apex_fk_next_day"):
+            next_disabled = board_start >= today_local + timedelta(days=60)
+            if st.button("›", key="apex_fk_next_day_btn", use_container_width=True, disabled=next_disabled, help="Next day"):
+                new_start = min(today_local + timedelta(days=60), board_start + timedelta(days=1))
+                st.session_state[board_start_key] = new_start
+                st.session_state[sel_date_key] = new_start
+                st.session_state.pop(selected_key, None)
+                st.rerun()
 
     # Seven true Kanban columns. On phones the board scrolls horizontally instead
     # of crushing cards into unreadable narrow columns.
