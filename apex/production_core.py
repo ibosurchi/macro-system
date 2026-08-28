@@ -719,9 +719,12 @@ def fetch_forex_factory_calendar_range(start_date, end_date) -> list[dict]:
             elif "low" in impact_blob or "yellow" in impact_blob:
                 impact = "Low"
             else:
-                # Non-economic / holiday rows are intentionally left out of
-                # the macro Forecaster unless FF exposes a recognized impact.
-                continue
+                # FF occasionally changes the impact icon markup (or strips the
+                # icon title for future dates).  Do not delete a valid scheduled
+                # economic event just because the visual impact marker could not
+                # be parsed.  Keep it visible as Low; known High/Medium markers
+                # above still retain their correct classification.
+                impact = "Low"
 
             time_text = _ff_clean_cell(tr.select_one(".calendar__time"))
             if time_text:
@@ -765,34 +768,59 @@ def fetch_forex_factory_calendar_range(start_date, end_date) -> list[dict]:
 
 
 def fetch_forex_factory_calendar_rolling(days: int = 7, tz_offset: int = 3) -> list[dict]:
-    """Return a rolling Today + N-1 day Forex Factory window.
+    """Return a true rolling Today + N-1 day Forex Factory window.
 
-    The range advances automatically every local calendar day.  Exact-range
-    HTML is primary because it can span two FF weekly files.  Weekly JSON feeds
-    are only a fallback if the range page is temporarily unavailable.
+    Strategy:
+      1) exact range page (fast path),
+      2) each calendar day separately (robust future-date fallback),
+      3) current/next weekly JSON feeds (last fallback).
+
+    Calendar retrieval is deterministic and independent from the AI master switch.
     """
     safe_days = max(1, min(14, int(days or 7)))
     today_local = (datetime.utcnow() + timedelta(hours=tz_offset)).date()
     end_local = today_local + timedelta(days=safe_days - 1)
+
+    def _dedupe(items):
+        seen = set()
+        out = []
+        for row in items or []:
+            key = (
+                str(row.get("country", "")).upper().strip(),
+                re.sub(r"\\s+", " ", str(row.get("title", "")).strip().lower()),
+                str(row.get("date", "")),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(dict(row))
+        return out
+
+    # Fast path: one request for the complete rolling window.
     rows = fetch_forex_factory_calendar_range(today_local, end_local)
     if rows:
-        return rows
+        return _dedupe(rows)
 
-    # Fallback: merge current + next weekly feeds, then let the normal event
-    # normalizer filter by local dates.  Dedupe by title/currency/date.
+    # Important fallback for future dates.  FF's range response can occasionally
+    # be empty/blocked while the individual day pages are already populated.
+    daily_rows = []
+    for i in range(safe_days):
+        day = today_local + timedelta(days=i)
+        try:
+            batch = fetch_forex_factory_calendar_range(day, day)
+        except Exception:
+            batch = []
+        if batch:
+            daily_rows.extend(batch)
+    if daily_rows:
+        return _dedupe(daily_rows)
+
+    # Final fallback: merge weekly JSON feeds.  These are useful when FF's HTML
+    # is temporarily protected by anti-bot/CDN rules.
     combined = []
     for batch in (fetch_forex_factory_calendar(), fetch_forex_factory_calendar_week(1)):
-        for row in batch or []:
-            combined.append(dict(row))
-    seen = set()
-    out = []
-    for row in combined:
-        key = (str(row.get("country", "")), str(row.get("title", "")), str(row.get("date", "")))
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(row)
-    return out
+        combined.extend(dict(row) for row in (batch or []))
+    return _dedupe(combined)
 
 def _supabase_enabled() -> bool:
     return bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY)
