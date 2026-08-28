@@ -2957,9 +2957,9 @@ def fetch_all_instant_news(channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> list
 # All pages are readers only. A singleton background supervisor creates one
 # combined request when relevant news / macro observations / Forecaster inputs
 # change. Page navigation and Streamlit reruns never call the provider.
-AI_BATCH_STATE_FILE = str(PROJECT_ROOT / "ai_batch_state.json")
+AI_BATCH_STATE_FILE = str(PROJECT_ROOT / "ai_batch_state_v2.json")
 AI_BATCH_PROCESS_LOCK_FILE = str(PROJECT_ROOT / ".apexmacro_ai_batch.lock")
-_AI_BATCH_STATE_ID = "shared_ai_batch_v1"
+_AI_BATCH_STATE_ID = "shared_ai_batch_v2"
 _AI_BATCH_LOCK = threading.RLock()
 _AI_BATCH_MEMORY: dict | None = None
 _AI_BATCH_MEMORY_LOADED_AT = 0.0
@@ -2968,6 +2968,7 @@ _AI_BATCH_SUPERVISOR_RUNNING = False
 _AI_BATCH_REQUEST_INFLIGHT = False
 _AI_BATCH_POLL_SECONDS = 60
 _AI_BATCH_ERROR_BACKOFF_SECONDS = 15 * 60
+_AI_BATCH_FIRST_RESULT_RETRY_SECONDS = 2 * 60
 _AI_BATCH_MACRO_REFRESH_SECONDS = 15 * 60
 _AI_BATCH_MACRO_CACHE = {"at": 0.0, "data": {}}
 
@@ -3236,7 +3237,14 @@ def _run_shared_ai_batch_once() -> None:
             return
         if state.get("last_attempt_signature") == signature:
             last_attempt = float(state.get("last_attempt_at", 0) or 0)
-            if time.time() - last_attempt < _AI_BATCH_ERROR_BACKOFF_SECONDS:
+            # A failed very-first batch must not leave the whole desk stuck on
+            # "preparing" for the normal 15-minute steady-state backoff.
+            # Retry the bootstrap batch after two minutes until the first valid
+            # shared result exists. Once a valid result exists, retain the long
+            # backoff so provider errors cannot create repeated paid requests.
+            has_result = isinstance(state.get("result"), dict) and bool(state.get("result"))
+            backoff = _AI_BATCH_ERROR_BACKOFF_SECONDS if has_result else _AI_BATCH_FIRST_RESULT_RETRY_SECONDS
+            if time.time() - last_attempt < backoff:
                 return
 
         provider, url, model, resolved_key = _ai_runtime(DEFAULT_AI_KEY, DEFAULT_AI_PROVIDER, DEFAULT_AI_MODEL)
@@ -3362,7 +3370,11 @@ def get_openrouter_analysis(
     state = _ai_batch_load_state()
     result = state.get("result", {}) if isinstance(state, dict) else {}
     summary = str(result.get("summary", "")).strip() if isinstance(result, dict) else ""
-    return summary or "Background AI is preparing the first shared news/data snapshot in the background."
+    if summary:
+        return summary
+    if state.get("last_error"):
+        return "Background AI bootstrap is retrying after a provider error; cached macro rules remain active."
+    return "Background AI is preparing the first shared news/data snapshot in the background."
 
 
 def _is_gold_relevant_news(article: dict) -> bool:
@@ -3593,7 +3605,8 @@ def get_multi_asset_news_intelligence(news_text: str, api_key: str=DEFAULT_AI_KE
     state=_ai_batch_load_state(); result=state.get("result",{}) if isinstance(state,dict) else {}
     raw=result.get("assets",{}) if isinstance(result,dict) else {}
     if not isinstance(raw,dict) or not raw:
-        return {"summary":"Background AI is preparing the first shared news/data snapshot in the background.","assets":empty,"active":False}
+        status = "Background AI bootstrap is retrying after a provider error; cached macro rules remain active." if state.get("last_error") else "Background AI is preparing the first shared news/data snapshot in the background."
+        return {"summary":status,"assets":empty,"active":False}
     clean=dict(empty)
     for asset in assets:
         if isinstance(raw.get(asset),dict): clean[asset]=dict(raw[asset])
