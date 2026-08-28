@@ -7145,6 +7145,7 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
 
     today_local = (datetime.now(timezone.utc) + timedelta(hours=tz_info["offset"])).date()
     board_start_key = "apex_forecaster_board_start"
+    nav_direction_key = "apex_forecaster_nav_direction"
     board_start = st.session_state.get(board_start_key, today_local)
     if not isinstance(board_start, _date) or board_start < today_local or board_start > today_local + timedelta(days=60):
         board_start = today_local
@@ -7221,15 +7222,19 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     .apex-fk-title{margin-top:6px;color:#f3f7fa;font-size:clamp(25px,3vw,38px);font-weight:850;line-height:1.08;letter-spacing:-.7px}
     .apex-fk-sub{margin-top:8px;color:#8fa1ae;font-size:12px}.apex-fk-week{color:#91a5b1;font-size:11px;border:1px solid rgba(55,211,226,.20);background:rgba(5,20,29,.78);border-radius:999px;padding:7px 11px;white-space:nowrap}
     .apex-fk-legend{display:flex;align-items:center;gap:15px;flex-wrap:wrap;margin:8px 0 13px;color:#91a3ae;font-size:10px}.apex-fk-leg{display:flex;align-items:center;gap:5px}.apex-fk-dot{display:inline-block;width:6px;height:6px;border-radius:50%}.apex-fk-dot.high{background:#b04ce4}.apex-fk-dot.medium{background:#ffb822}.apex-fk-dot.low{background:#35d2e3}
-    .apex-fk-board-label{display:flex;align-items:center;justify-content:flex-start;gap:12px;margin:12px 0 8px;min-height:42px}.apex-fk-board-label b{color:#eaf2f5;font-size:13px}
-    .apex-fk-board-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:10px 0 8px;min-height:46px}
-    .apex-fk-board-range{display:flex;align-items:center;justify-content:center;min-height:42px;padding:0 14px;border-radius:11px;border:1px solid rgba(39,220,231,.22);background:rgba(7,25,35,.78);color:#9eb0bb;font-size:10px;white-space:nowrap;box-sizing:border-box}
+    .apex-fk-board-label{display:flex;align-items:center;justify-content:flex-start;gap:12px;margin:0;min-height:44px}.apex-fk-board-label b{color:#eaf2f5;font-size:13px}
+    .apex-fk-board-range{display:flex;align-items:center;justify-content:center;gap:8px;min-height:42px;padding:0 14px;border-radius:11px;border:1px solid rgba(39,220,231,.22);background:linear-gradient(145deg,rgba(8,29,40,.88),rgba(4,16,24,.96));color:#a7bac4;font-size:10px;white-space:nowrap;box-sizing:border-box;box-shadow:inset 0 1px 0 rgba(255,255,255,.018)}
+    .apex-fk-range-icon{width:17px;height:17px;border:1px solid rgba(190,216,226,.58);border-radius:4px;display:inline-flex;align-items:center;justify-content:center;color:#c9d7de;font-size:9px;line-height:1}
+    [class*="st-key-apex_fk_board_nav"]{margin:0!important;padding:0!important}
     [class*="st-key-apex_fk_prev_day"],[class*="st-key-apex_fk_next_day"]{margin:0!important}
-    [class*="st-key-apex_fk_prev_day"] button,[class*="st-key-apex_fk_next_day"] button{min-height:42px!important;width:48px!important;min-width:48px!important;padding:0!important;border-radius:11px!important;border:1px solid rgba(39,220,231,.28)!important;background:linear-gradient(145deg,rgba(8,29,40,.90),rgba(4,16,24,.96))!important;color:#dbe7ec!important;font-size:21px!important;line-height:1!important;box-shadow:none!important;transition:transform .16s ease,border-color .18s ease,background .18s ease,box-shadow .18s ease!important}
-    [class*="st-key-apex_fk_prev_day"] button:hover,[class*="st-key-apex_fk_next_day"] button:hover{transform:translateY(-2px)!important;border-color:rgba(39,220,231,.70)!important;background:rgba(9,40,52,.96)!important;box-shadow:0 0 18px rgba(39,220,231,.09)!important}
-    [class*="st-key-apex_fk_prev_day"] button:active,[class*="st-key-apex_fk_next_day"] button:active{transform:scale(.93)!important}
-    [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_prev_day"]){align-items:center!important;gap:7px!important;margin:8px 0 6px!important}
-    [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_prev_day"])>[data-testid="stColumn"]{min-width:0!important}
+    [class*="st-key-apex_fk_prev_day"] button,[class*="st-key-apex_fk_next_day"] button{min-height:42px!important;width:48px!important;min-width:48px!important;padding:0!important;border-radius:11px!important;border:1px solid rgba(39,220,231,.32)!important;background:linear-gradient(145deg,rgba(8,29,40,.94),rgba(4,16,24,.98))!important;color:#dbe7ec!important;font-size:21px!important;line-height:1!important;box-shadow:0 0 0 rgba(39,220,231,0)!important;transition:transform .16s ease,border-color .18s ease,background .18s ease,box-shadow .18s ease!important}
+    [class*="st-key-apex_fk_next_day"] button{border-color:rgba(183,78,231,.42)!important;color:#dec8ed!important}
+    [class*="st-key-apex_fk_prev_day"] button:hover{transform:translateX(-2px)!important;border-color:rgba(39,220,231,.72)!important;background:rgba(9,40,52,.96)!important;box-shadow:0 0 18px rgba(39,220,231,.10)!important}
+    [class*="st-key-apex_fk_next_day"] button:hover{transform:translateX(2px)!important;border-color:rgba(183,78,231,.72)!important;background:rgba(32,18,45,.96)!important;box-shadow:0 0 18px rgba(183,78,231,.10)!important}
+    [class*="st-key-apex_fk_prev_day"] button:active,[class*="st-key-apex_fk_next_day"] button:active{transform:scale(.91)!important}
+    [class*="st-key-apex_fk_board_nav"] [data-testid="stHorizontalBlock"]{display:grid!important;grid-template-columns:48px minmax(150px,1fr) 48px!important;align-items:center!important;gap:7px!important;width:100%!important;margin:0!important}
+    [class*="st-key-apex_fk_board_nav"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"],
+    [class*="st-key-apex_fk_board_nav"] [data-testid="stHorizontalBlock"]>[data-testid="column"]{width:auto!important;min-width:0!important;max-width:none!important;flex:none!important}
     .apex-fk-dayhead{text-align:center;padding:11px 5px 9px;margin:-2px -2px 7px;border-bottom:1px solid rgba(74,128,150,.15);min-height:55px;box-sizing:border-box}.apex-fk-dayname{font-size:9px;color:#8296a2;letter-spacing:.09em;font-weight:800}.apex-fk-daynum{font-size:17px;color:#e8f1f5;font-weight:850;margin-top:2px}.apex-fk-dayhead.selected .apex-fk-dayname,.apex-fk-dayhead.selected .apex-fk-daynum{color:#2adce7}.apex-fk-daycount{font-size:9px;color:#718591;margin-top:3px}
     .apex-fk-empty{min-height:92px;display:flex;align-items:center;justify-content:center;text-align:center;color:#607682;font-size:10px;border:1px dashed rgba(73,126,147,.16);border-radius:10px;background:rgba(4,16,24,.32);padding:10px}
     .apex-fk-more{text-align:center;color:#7f939e;font-size:9px;padding:7px 2px 1px}
@@ -7253,21 +7258,25 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     /* Make the existing full Event Details dialog visually match the Kanban concept. */
     div[data-testid="stDialog"]>div[role="dialog"]{border:1px solid rgba(39,220,231,.34)!important;border-radius:18px!important;background:linear-gradient(160deg,rgba(7,25,35,.99),rgba(2,12,19,.995))!important;box-shadow:0 28px 90px rgba(0,0,0,.55)!important;max-width:900px!important;animation:apexFkModalIn .28s cubic-bezier(.22,.8,.25,1) both!important}
     div[data-testid="stDialog"]::before{backdrop-filter:blur(8px)!important;-webkit-backdrop-filter:blur(8px)!important;animation:apexFkOverlayIn .22s ease both!important}
-    .apex-fk-hero,.apex-fk-legend,.apex-fk-board-toolbar{animation:apexFkFadeIn .30s ease both}
+    .apex-fk-hero,.apex-fk-legend{animation:apexFkFadeIn .30s ease both}
+    [class*="st-key-apex_fk_col_prev_"]{animation-name:apexFkBoardPrevIn!important}
+    [class*="st-key-apex_fk_col_next_"]{animation-name:apexFkBoardNextIn!important}
+    [class*="st-key-apex_fk_col_today_"]{animation-name:apexFkBoardTodayIn!important}
     @keyframes apexFkFadeIn{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
-    @keyframes apexFkBoardIn{from{opacity:0;transform:translateX(10px) scale(.992)}to{opacity:1;transform:none}}
+    @keyframes apexFkBoardIn{from{opacity:0;transform:translateY(7px) scale(.992)}to{opacity:1;transform:none}}
+    @keyframes apexFkBoardPrevIn{from{opacity:0;transform:translateX(-18px) scale(.992)}to{opacity:1;transform:none}}
+    @keyframes apexFkBoardNextIn{from{opacity:0;transform:translateX(18px) scale(.992)}to{opacity:1;transform:none}}
+    @keyframes apexFkBoardTodayIn{from{opacity:0;transform:translateY(-7px) scale(.992)}to{opacity:1;transform:none}}
     @keyframes apexFkCardIn{from{opacity:0;transform:translateY(8px) scale(.985)}to{opacity:1;transform:none}}
     @keyframes apexFkOverlayIn{from{opacity:0}to{opacity:1}}
     @keyframes apexFkModalIn{from{opacity:0;transform:translateY(18px) scale(.975)}to{opacity:1;transform:none}}
 
     @media(max-width:768px){
       .apex-fk-hero{align-items:flex-start;flex-direction:column;margin-bottom:10px}.apex-fk-title{font-size:24px}.apex-fk-week{padding:5px 8px}.apex-fk-sub{font-size:10px}
-      .apex-fk-board-label{margin-top:8px}
-      .apex-fk-board-toolbar{gap:7px;margin:7px 0 8px}.apex-fk-board-range{min-height:40px;padding:0 9px;font-size:9px}
+      .apex-fk-board-label{margin:0!important;min-height:36px!important}
+      .apex-fk-board-range{min-height:40px;padding:0 8px;font-size:9px}.apex-fk-range-icon{width:15px;height:15px;font-size:8px}
       [class*="st-key-apex_fk_prev_day"] button,[class*="st-key-apex_fk_next_day"] button{width:42px!important;min-width:42px!important;min-height:40px!important;font-size:19px!important}
-      [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_prev_day"]){display:grid!important;grid-template-columns:minmax(0,1fr) 42px minmax(112px,150px) 42px!important;align-items:center!important;gap:6px!important;width:100%!important}
-      [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_prev_day"])>[data-testid="stColumn"]{width:auto!important;min-width:0!important;max-width:none!important;flex:none!important}
-      .apex-fk-board-label{margin:0!important;min-height:40px!important}
+      [class*="st-key-apex_fk_board_nav"] [data-testid="stHorizontalBlock"]{grid-template-columns:42px minmax(126px,1fr) 42px!important;gap:6px!important}
       [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_col_"]){display:flex!important;flex-direction:row!important;flex-wrap:nowrap!important;gap:8px!important;overflow-x:auto!important;overflow-y:hidden!important;scroll-snap-type:x proximity!important;padding:1px 2px 10px!important;-webkit-overflow-scrolling:touch!important;scrollbar-width:thin!important}
       [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_col_"])>[data-testid="stColumn"],
       [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_col_"])>[data-testid="column"]{display:block!important;flex:0 0 210px!important;width:210px!important;min-width:210px!important;max-width:210px!important;scroll-snap-align:start!important}
@@ -7276,7 +7285,7 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
       .apex-fk-dayhead{min-height:50px;padding:8px 4px}.apex-fk-daynum{font-size:16px}
       div[data-testid="stDialog"]>div[role="dialog"]{width:calc(100vw - 18px)!important;max-width:calc(100vw - 18px)!important;max-height:92vh!important;margin:auto!important;border-radius:15px!important}
     }
-    @media(prefers-reduced-motion:reduce){[class*="st-key-apex_fk_"] button{transition:none!important}[class*="st-key-apex_fk_col_"],[class*="st-key-apex_fk_card_"],.apex-fk-hero,.apex-fk-legend,.apex-fk-board-toolbar,div[data-testid="stDialog"]>div[role="dialog"],div[data-testid="stDialog"]::before{animation:none!important}}
+    @media(prefers-reduced-motion:reduce){[class*="st-key-apex_fk_"] button{transition:none!important}[class*="st-key-apex_fk_col_"],[class*="st-key-apex_fk_card_"],.apex-fk-hero,.apex-fk-legend,div[data-testid="stDialog"]>div[role="dialog"],div[data-testid="stDialog"]::before{animation:none!important}}
     </style>
     """)
 
@@ -7317,6 +7326,7 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
         if st.button("Today", key="apex_fk_today", use_container_width=True):
             st.session_state[board_start_key] = today_local
             st.session_state[sel_date_key] = today_local
+            st.session_state[nav_direction_key] = "today"
             st.session_state.pop(selected_key, None)
             st.rerun()
 
@@ -7328,32 +7338,37 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     </div>
     """)
 
-    # Day-by-day board navigation. The calendar picker was intentionally removed.
-    # Each arrow shifts the rolling seven-day window exactly one day while reusing
-    # the existing Forex Factory range ingestion and Forecaster intelligence logic.
-    nav_title_col, prev_col, range_col, next_col = st.columns([5, .55, 1.7, .55], gap="small")
+    # Day-by-day board navigation. The old date picker stays removed. The controls
+    # are intentionally grouped together on the far right to match the visual
+    # reference: previous arrow + compact date range + next arrow.
+    nav_title_col, nav_controls_col = st.columns([5.6, 2.4], gap="small")
     with nav_title_col:
         render_html('<div class="apex-fk-board-label"><b>7-Day Event Board</b></div>')
-    with prev_col:
-        with st.container(key="apex_fk_prev_day"):
-            prev_disabled = board_start <= today_local
-            if st.button("‹", key="apex_fk_prev_day_btn", use_container_width=True, disabled=prev_disabled, help="Previous day"):
-                new_start = max(today_local, board_start - timedelta(days=1))
-                st.session_state[board_start_key] = new_start
-                st.session_state[sel_date_key] = new_start
-                st.session_state.pop(selected_key, None)
-                st.rerun()
-    with range_col:
-        render_html(f'<div class="apex-fk-board-range">{board_start.strftime("%d %b")} — {board_end.strftime("%d %b")}</div>')
-    with next_col:
-        with st.container(key="apex_fk_next_day"):
-            next_disabled = board_start >= today_local + timedelta(days=60)
-            if st.button("›", key="apex_fk_next_day_btn", use_container_width=True, disabled=next_disabled, help="Next day"):
-                new_start = min(today_local + timedelta(days=60), board_start + timedelta(days=1))
-                st.session_state[board_start_key] = new_start
-                st.session_state[sel_date_key] = new_start
-                st.session_state.pop(selected_key, None)
-                st.rerun()
+    with nav_controls_col:
+        with st.container(key="apex_fk_board_nav"):
+            prev_col, range_col, next_col = st.columns([.48, 1.75, .48], gap="small")
+            with prev_col:
+                with st.container(key="apex_fk_prev_day"):
+                    prev_disabled = board_start <= today_local
+                    if st.button("‹", key="apex_fk_prev_day_btn", use_container_width=True, disabled=prev_disabled):
+                        new_start = max(today_local, board_start - timedelta(days=1))
+                        st.session_state[board_start_key] = new_start
+                        st.session_state[sel_date_key] = new_start
+                        st.session_state[nav_direction_key] = "prev"
+                        st.session_state.pop(selected_key, None)
+                        st.rerun()
+            with range_col:
+                render_html(f'<div class="apex-fk-board-range"><span class="apex-fk-range-icon">▣</span>{board_start.strftime("%d %b")} — {board_end.strftime("%d %b")}</div>')
+            with next_col:
+                with st.container(key="apex_fk_next_day"):
+                    next_disabled = board_start >= today_local + timedelta(days=60)
+                    if st.button("›", key="apex_fk_next_day_btn", use_container_width=True, disabled=next_disabled):
+                        new_start = min(today_local + timedelta(days=60), board_start + timedelta(days=1))
+                        st.session_state[board_start_key] = new_start
+                        st.session_state[sel_date_key] = new_start
+                        st.session_state[nav_direction_key] = "next"
+                        st.session_state.pop(selected_key, None)
+                        st.rerun()
 
     # Seven true Kanban columns. On phones the board scrolls horizontally instead
     # of crushing cards into unreadable narrow columns.
@@ -7363,7 +7378,10 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
         is_selected_day = day_date == selected_date
         state = "selected" if is_selected_day else ("today" if day_date == today_local else "normal")
         with board_cols[day_idx]:
-            with st.container(key=f"apex_fk_col_{state}_{day_date:%Y_%m_%d}"):
+            nav_direction = str(st.session_state.get(nav_direction_key, "default"))
+            if nav_direction not in {"prev", "next", "today"}:
+                nav_direction = "default"
+            with st.container(key=f"apex_fk_col_{nav_direction}_{state}_{day_date:%Y_%m_%d}"):
                 count_text = "No events" if not day_events else ("1 event" if len(day_events) == 1 else f"{len(day_events)} events")
                 render_html(f"""
                 <div class="apex-fk-dayhead {'selected' if is_selected_day else ''}">
