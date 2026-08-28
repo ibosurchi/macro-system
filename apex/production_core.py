@@ -4866,25 +4866,35 @@ def _three_way_probabilities(composite: float, conflict: float, evidence_quality
 
 def _load_forecaster_history() -> dict:
     with _FORECAST_HISTORY_LOCK:
-        try:
-            with open(FORECAST_HISTORY_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return data if isinstance(data, dict) else {"records": {}}
-        except Exception:
-            return {"records": {}}
+        data = _load_persistent_state("forecaster_history_v2", FORECAST_HISTORY_FILE, {"records": {}})
+        return data if isinstance(data, dict) else {"records": {}}
 
 
 def _save_forecaster_history(data: dict) -> None:
     with _FORECAST_HISTORY_LOCK:
-        try:
-            tmp = FORECAST_HISTORY_FILE + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-                f.flush(); os.fsync(f.fileno())
-            os.replace(tmp, FORECAST_HISTORY_FILE)
-        except Exception:
-            pass
+        _save_persistent_state("forecaster_history_v2", FORECAST_HISTORY_FILE, data)
 
+
+def _forecast_reason(nowcast: dict) -> str:
+    probs = nowcast.get("probabilities", {}) or {}
+    winner = max(probs, key=probs.get) if probs else str(nowcast.get("outcome_key", "inline"))
+    conf = float(nowcast.get("confidence", 0) or 0)
+    eq = float(nowcast.get("evidence_quality", 0) or 0)
+    conflict = float(nowcast.get("conflict_score", 0) or 0)
+    parts = [f"Model favored {winner} ({conf:.0f}% confidence)"]
+    parts.append("evidence quality was weak" if eq < .35 else ("evidence quality was moderate" if eq < .60 else "evidence quality was strong"))
+    if conflict >= .45: parts.append("signals were conflicting")
+    elif conflict >= .20: parts.append("some signal conflict was present")
+    parts.append(f"{len(nowcast.get('precursor_results', []) or [])} precursor series and {len(nowcast.get('correlated_articles', []) or [])} relevant headlines were available")
+    return "; ".join(parts) + "."
+
+
+def _resolution_reason(rec: dict, outcome: str, actual: str, forecast: str) -> str:
+    predicted = str(rec.get("predicted_outcome", ""))
+    if predicted == outcome:
+        return f"Correct: model predicted {predicted}; release was {outcome} (actual {actual} vs forecast {forecast})."
+    context = str(rec.get("prediction_reason", "")).strip()
+    return f"Wrong: model predicted {predicted}; release was {outcome} (actual {actual} vs forecast {forecast})." + (f" Pre-release context: {context}" if context else "")
 
 def _history_learning_adjustment(event: dict) -> tuple[float, int]:
     """Conservative calibration from completed same-family forecasts; no self-modifying business logic."""
@@ -4917,6 +4927,7 @@ def _record_forecaster_snapshot(event: dict, nowcast: dict, actual: str = "") ->
             "evidence_quality": nowcast.get("evidence_quality", 0),
             "precursors": nowcast.get("precursor_results", []),
             "news_sources": [((a.get("source") or {}).get("name", "") if isinstance(a.get("source"), dict) else str(a.get("source", ""))) for a in nowcast.get("correlated_articles", [])],
+            "prediction_reason": _forecast_reason(nowcast),
             "resolved": False,
         }
         records[code] = rec
@@ -4928,7 +4939,8 @@ def _record_forecaster_snapshot(event: dict, nowcast: dict, actual: str = "") ->
             rec.update({"actual": actual, "actual_outcome": outcome, "resolved": True,
                         "resolved_at_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
                         "correct": rec.get("predicted_outcome") == outcome,
-                        "absolute_error": abs(av - fv)})
+                        "absolute_error": abs(av - fv),
+                        "resolution_reason": _resolution_reason(rec, outcome, actual, str(event.get("forecast_str", "")))})
     _save_forecaster_history(data)
 
 
@@ -5305,6 +5317,10 @@ def _forecaster_background_worker(events: list[dict], fred_key: str, channel_nam
                     all_news,
                     actual_override=effective_actual,
                 )
+                try:
+                    _record_forecaster_snapshot(ev, nowcast, actual=effective_actual)
+                except Exception:
+                    pass
 
                 with _FORECASTER_BG_LOCK:
                     _FORECASTER_BG_CACHE[code] = {
@@ -7922,6 +7938,26 @@ def render_admin_key_generator() -> None:
         st.code(generated_key, language="text")
         st.info("📋 Key has been saved to your VIP Client Registry below.")
 
+    st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
+    perf = _forecaster_performance()
+    hist_rows = list(_load_forecaster_history().get("records", {}).values())
+    resolved_rows = [r for r in hist_rows if r.get("resolved")]
+    wrong_rows = [r for r in resolved_rows if not r.get("correct")]
+    pending_rows = [r for r in hist_rows if not r.get("resolved")]
+    render_html('<div class="sec-title">FORECASTER PERFORMANCE &amp; AUDIT</div>')
+    p1, p2, p3, p4, p5 = st.columns(5)
+    p1.metric("Analyses", len(hist_rows)); p2.metric("Resolved", len(resolved_rows)); p3.metric("Correct", perf.get("correct", 0)); p4.metric("Wrong", len(wrong_rows)); p5.metric("Accuracy", f"{perf.get('accuracy', 0.0):.1f}%")
+    st.caption(f"Pending releases: {len(pending_rows)}. Forecasts are frozen before release and scored after Actual is published.")
+    if resolved_rows:
+        audit = []
+        for r in sorted(resolved_rows, key=lambda x: str(x.get("resolved_at_utc", "")), reverse=True):
+            audit.append({"Event": r.get("title", ""), "Currency": r.get("currency", ""), "Forecast": r.get("forecast", ""), "Actual": r.get("actual", ""), "Prediction": str(r.get("predicted_outcome", "")).title(), "Outcome": str(r.get("actual_outcome", "")).title(), "Result": "Correct" if r.get("correct") else "Wrong", "Confidence": f"{float(r.get('confidence', 0) or 0):.0f}%", "Why": r.get("resolution_reason") or r.get("prediction_reason", "")})
+        st.dataframe(audit, use_container_width=True, hide_index=True)
+        with st.expander("Performance by event family", expanded=False):
+            fam_rows = [{"Event family": fam, "Resolved": stats.get("n", 0), "Accuracy": f"{stats.get('accuracy', 0.0):.1f}%"} for fam, stats in sorted((perf.get("by_family") or {}).items())]
+            if fam_rows: st.dataframe(fam_rows, use_container_width=True, hide_index=True)
+    else:
+        st.info("No completed forecast has been scored yet. Records resolve automatically when Actual values are published.")
     st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
     render_html('<div class="sec-title">VIP Client Registry &amp; Subscription Database</div>')
     
