@@ -136,67 +136,39 @@ def _ai_headers(api_key: str, title: str) -> dict:
     }
 
 
-# Final provider-level billing guard. This is intentionally below every trigger
-# layer: regardless of which worker/session reaches _post_ai_chat, only one paid
-# provider request may START inside the hard cooldown window.
+# Final provider-level billing guard. This sits below every trigger layer.
+#
+# IMPORTANT: Streamlit can run more than one process/container. A local file lock
+# alone cannot protect RUAPI spending across those replicas. v11 therefore uses
+# BOTH a local flock and a durable Supabase-backed lease. The lease is reserved
+# BEFORE the HTTP call, then re-read after a short election window. Only the
+# winning replica may contact the provider.
 _AI_PROVIDER_GATE_LOCK_FILE = str(PROJECT_ROOT / ".apexmacro_ai_provider_gate.lock")
-_AI_PROVIDER_GATE_STATE_FILE = str(PROJECT_ROOT / "ai_provider_gate_v1.json")
+_AI_PROVIDER_GATE_STATE_FILE = str(PROJECT_ROOT / "ai_provider_gate_v2.json")
+_AI_PROVIDER_GATE_STATE_ID = "ai_provider_gate_v2"
 _AI_PROVIDER_HARD_MIN_SECONDS = 90.0
+_AI_PROVIDER_LEASE_SECONDS = 180.0
+_AI_PROVIDER_ELECTION_SECONDS = 2.5
 
 
-def _provider_gate_enter() -> tuple[object, float]:
-    """Cross-process serialized provider gate. Returns an open locked handle.
-
-    The lock is held for the whole HTTP request. A waiting process can only
-    continue after the first finishes, then it re-checks the durable start time
-    and is rejected if the 90-second hard minimum has not elapsed.
-    """
-    handle = open(_AI_PROVIDER_GATE_LOCK_FILE, "a+", encoding="utf-8")
+def _provider_gate_state_read() -> dict:
     try:
-        import fcntl
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        raw = _load_persistent_state(_AI_PROVIDER_GATE_STATE_ID, _AI_PROVIDER_GATE_STATE_FILE, {})
+        return dict(raw) if isinstance(raw, dict) else {}
     except Exception:
-        # Linux/Streamlit production supports fcntl. If locking is unavailable,
-        # keep the handle open and still enforce the durable timestamp below.
-        pass
-
-    now_ts = time.time()
-    last_started = 0.0
-    try:
-        state_path = Path(_AI_PROVIDER_GATE_STATE_FILE)
-        if state_path.exists():
-            raw = json.loads(state_path.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                last_started = float(raw.get("last_started_at", 0.0) or 0.0)
-    except Exception:
-        last_started = 0.0
-
-    remaining = _AI_PROVIDER_HARD_MIN_SECONDS - (now_ts - last_started)
-    if last_started > 0 and remaining > 0:
         try:
-            import fcntl
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            path = Path(_AI_PROVIDER_GATE_STATE_FILE)
+            raw = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+            return dict(raw) if isinstance(raw, dict) else {}
         except Exception:
-            pass
-        handle.close()
-        raise RuntimeError(f"AI_PROVIDER_HARD_COOLDOWN:{remaining:.1f}")
-
-    # Reserve the paid slot BEFORE contacting the provider. Even a timeout/error
-    # cannot cause another worker to immediately create a second billable call.
-    try:
-        tmp = Path(_AI_PROVIDER_GATE_STATE_FILE + ".tmp")
-        tmp.write_text(json.dumps({
-            "last_started_at": now_ts,
-            "last_started_at_iso": datetime.now(timezone.utc).isoformat(),
-            "pid": os.getpid(),
-        }), encoding="utf-8")
-        os.replace(str(tmp), _AI_PROVIDER_GATE_STATE_FILE)
-    except Exception:
-        pass
-    return handle, now_ts
+            return {}
 
 
-def _provider_gate_exit(handle: object | None) -> None:
+def _provider_gate_state_write(payload: dict) -> None:
+    _save_persistent_state(_AI_PROVIDER_GATE_STATE_ID, _AI_PROVIDER_GATE_STATE_FILE, dict(payload or {}))
+
+
+def _provider_gate_unlock_local(handle: object | None) -> None:
     if handle is None:
         return
     try:
@@ -209,6 +181,78 @@ def _provider_gate_exit(handle: object | None) -> None:
     except Exception:
         pass
 
+
+def _provider_gate_enter() -> dict:
+    """Acquire the one global paid-AI slot.
+
+    The returned ticket keeps the local process lock open for the HTTP request.
+    Supabase provides the cross-container lease. A short write/read election
+    prevents two replicas that started together from both becoming winners.
+    """
+    handle = open(_AI_PROVIDER_GATE_LOCK_FILE, "a+", encoding="utf-8")
+    try:
+        import fcntl
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    except Exception:
+        pass
+
+    now_ts = time.time()
+    state = _provider_gate_state_read()
+    last_started = float(state.get("last_started_at", 0.0) or 0.0)
+    lease_until = float(state.get("lease_until", 0.0) or 0.0)
+
+    remaining = _AI_PROVIDER_HARD_MIN_SECONDS - (now_ts - last_started)
+    if last_started > 0 and remaining > 0:
+        _provider_gate_unlock_local(handle)
+        raise RuntimeError(f"AI_PROVIDER_HARD_COOLDOWN:{remaining:.1f}")
+
+    if lease_until > now_ts:
+        _provider_gate_unlock_local(handle)
+        raise RuntimeError(f"AI_PROVIDER_GLOBAL_LEASE:{lease_until - now_ts:.1f}")
+
+    token_seed = f"{os.getpid()}:{threading.get_ident()}:{time.time_ns()}"
+    lease_token = hashlib.sha256(token_seed.encode("utf-8")).hexdigest()[:24]
+    reserved = {
+        **state,
+        "last_started_at": now_ts,
+        "last_started_at_iso": datetime.now(timezone.utc).isoformat(),
+        "lease_owner": lease_token,
+        "lease_until": now_ts + _AI_PROVIDER_LEASE_SECONDS,
+        "pid": os.getpid(),
+    }
+    _provider_gate_state_write(reserved)
+
+    # Election window: if another Streamlit replica writes after us, only the
+    # final durable owner survives this verification. Losers never reach RUAPI.
+    time.sleep(_AI_PROVIDER_ELECTION_SECONDS)
+    verify = _provider_gate_state_read()
+    if str(verify.get("lease_owner", "")) != lease_token:
+        _provider_gate_unlock_local(handle)
+        raise RuntimeError("AI_PROVIDER_GLOBAL_LEASE:90.0")
+
+    verify_started = float(verify.get("last_started_at", 0.0) or 0.0)
+    if abs(verify_started - now_ts) > 0.001:
+        _provider_gate_unlock_local(handle)
+        raise RuntimeError("AI_PROVIDER_GLOBAL_LEASE:90.0")
+
+    return {"handle": handle, "token": lease_token, "started_at": now_ts}
+
+
+def _provider_gate_exit(ticket: dict | None) -> None:
+    if not isinstance(ticket, dict):
+        return
+    token = str(ticket.get("token", ""))
+    try:
+        state = _provider_gate_state_read()
+        if token and str(state.get("lease_owner", "")) == token:
+            state["lease_until"] = 0.0
+            state["lease_owner"] = ""
+            state["last_finished_at"] = time.time()
+            state["last_finished_at_iso"] = datetime.now(timezone.utc).isoformat()
+            _provider_gate_state_write(state)
+    except Exception:
+        pass
+    _provider_gate_unlock_local(ticket.get("handle"))
 
 def _post_ai_chat(
     provider: str,
@@ -239,14 +283,14 @@ def _post_ai_chat(
         ],
         "temperature": temperature,
     }
-    gate_handle = None
+    gate_ticket = None
     try:
-        gate_handle, _ = _provider_gate_enter()
+        gate_ticket = _provider_gate_enter()
         response = requests.post(url, headers=headers, json=payload, timeout=timeout)
     except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout, requests.exceptions.ConnectionError) as exc:
         raise RuntimeError(f"{provider} temporarily unavailable.") from exc
     finally:
-        _provider_gate_exit(gate_handle)
+        _provider_gate_exit(gate_ticket)
 
     if response.ok:
         return response
@@ -3866,7 +3910,14 @@ If evidence is insufficient, say so explicitly."""
             "macro_data": macro_snapshot, "live_price_context": price_context,
             "events": [{"code": e.get("code"), "title": e.get("title"), "currency": e.get("currency"), "forecast": e.get("forecast"), "previous": e.get("previous"), "actual": e.get("actual")} for e in event_rows],
         })
-        attempt_state = {**state, "last_attempt_signature": signature, "last_attempt_at": time.time()}
+        reserve_ts = time.time()
+        attempt_state = {
+            **state,
+            "last_attempt_signature": signature,
+            "last_attempt_at": reserve_ts,
+            "last_paid_reserved_at": reserve_ts,
+            "last_paid_reserved_at_iso": datetime.now(timezone.utc).isoformat(),
+        }
         _ai_batch_save_state(attempt_state)
 
         response = _post_ai_chat(
@@ -3917,7 +3968,7 @@ If evidence is insufficient, say so explicitly."""
         })
     except Exception as exc:
         err = str(exc)
-        if err.startswith("AI_PROVIDER_HARD_COOLDOWN:"):
+        if err.startswith("AI_PROVIDER_HARD_COOLDOWN:") or err.startswith("AI_PROVIDER_GLOBAL_LEASE:"):
             try:
                 remaining = float(err.split(":", 1)[1])
             except Exception:
@@ -3926,9 +3977,9 @@ If evidence is insufficient, say so explicitly."""
             state["provider_gate_blocked_at"] = time.time()
             state["provider_gate_remaining_seconds"] = round(max(0.0, remaining), 1)
             _ai_batch_save_state(state)
-            _ai_audit_append("blocked", "Paid AI request blocked by final 90-second provider gate", {
+            _ai_audit_append("blocked", "Paid AI request blocked by global provider billing gate", {
                 "remaining_seconds": round(max(0.0, remaining), 1),
-                "rule": "provider-level hard minimum",
+                "rule": "90-second hard minimum + cross-container durable lease",
             })
         else:
             state = _ai_batch_load_state()
