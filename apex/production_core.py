@@ -25,6 +25,7 @@ import xml.etree.ElementTree as ET
 import urllib.request
 from urllib.parse import quote
 from email.utils import parsedate_to_datetime
+from html import escape
 
 # Stable repository root: persistence files remain in their original project-root locations.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
