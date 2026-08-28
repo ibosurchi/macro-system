@@ -631,6 +631,169 @@ def fetch_forex_factory_calendar_week(week_offset: int = 0) -> list[dict]:
                            "previous": row.get("previous", ""), "actual": row.get("actual", "")})
     return normalized
 
+
+@st.cache_data(ttl=600, show_spinner=False)
+def fetch_forex_factory_calendar_range(start_date, end_date) -> list[dict]:
+    """Fetch an exact Forex Factory calendar date range from the public calendar page.
+
+    This is used by the Forecaster's rolling 7-day window so the UI is not tied
+    to a fixed Monday-Sunday weekly JSON file.  Returned rows are normalized to
+    the same shape as the weekly JSON feed.  Times published by Forex Factory
+    are interpreted in Europe/London and converted to UTC ISO timestamps.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        if isinstance(start_date, datetime):
+            start_date = start_date.date()
+        if isinstance(end_date, datetime):
+            end_date = end_date.date()
+        if not start_date or not end_date or end_date < start_date:
+            return []
+
+        def _ff_range_date(d):
+            return f"{d.strftime('%b').lower()}{d.day}.{d.year}"
+
+        url = (
+            "https://www.forexfactory.com/calendar?range="
+            f"{_ff_range_date(start_date)}-{_ff_range_date(end_date)}"
+        )
+        r = requests.get(
+            url,
+            timeout=14,
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; ApexMacro/1.0)",
+                "Accept": "text/html,application/xhtml+xml,*/*",
+                "Cache-Control": "no-cache",
+            },
+        )
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text or "", "html.parser")
+        london = ZoneInfo("Europe/London")
+        utc = timezone.utc
+        rows: list[dict] = []
+        current_date = None
+        last_clock_text = ""
+
+        for tr in soup.select("tr.calendar__row, tr[data-event-id]"):
+            date_cell = tr.select_one(".calendar__date")
+            date_text = _ff_clean_cell(date_cell)
+            if date_text:
+                # Typical labels are "Tue Sep 1"; the requested range gives us
+                # the correct year even around New Year boundaries.
+                m = re.search(r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)?\\s*([A-Za-z]{3})\\s+(\\d{1,2})", date_text)
+                if m:
+                    mon, day = m.group(1), int(m.group(2))
+                    candidate_years = [start_date.year, end_date.year]
+                    parsed = None
+                    for year in dict.fromkeys(candidate_years):
+                        try:
+                            d = datetime.strptime(f"{mon} {day} {year}", "%b %d %Y").date()
+                            if start_date - timedelta(days=1) <= d <= end_date + timedelta(days=1):
+                                parsed = d
+                                break
+                        except Exception:
+                            pass
+                    current_date = parsed
+                last_clock_text = ""
+
+            if current_date is None or not (start_date <= current_date <= end_date):
+                continue
+
+            currency = _ff_clean_cell(tr.select_one(".calendar__currency")).upper()
+            title = _ff_clean_cell(tr.select_one(".calendar__event"))
+            if not currency or not title:
+                continue
+
+            impact_cell = tr.select_one(".calendar__impact")
+            impact_blob = " ".join([
+                _ff_clean_cell(impact_cell),
+                str(impact_cell.get("title", "") if impact_cell else ""),
+                " ".join(impact_cell.get("class", []) if impact_cell else []),
+                " ".join(str(x.get("title", "")) for x in (impact_cell.select("span, i") if impact_cell else [])),
+                str(tr.get("class", "")),
+            ]).lower()
+            if "high" in impact_blob or "red" in impact_blob:
+                impact = "High"
+            elif "medium" in impact_blob or "orange" in impact_blob:
+                impact = "Medium"
+            elif "low" in impact_blob or "yellow" in impact_blob:
+                impact = "Low"
+            else:
+                # Non-economic / holiday rows are intentionally left out of
+                # the macro Forecaster unless FF exposes a recognized impact.
+                continue
+
+            time_text = _ff_clean_cell(tr.select_one(".calendar__time"))
+            if time_text:
+                last_clock_text = time_text
+            else:
+                time_text = last_clock_text
+
+            # Scheduled times are precise.  Forex Factory can also publish
+            # "Tentative"/"All Day"; keep those visible using a neutral midday
+            # timestamp rather than silently deleting the catalyst.
+            local_dt = None
+            clock_match = re.search(r"(\\d{1,2}):(\\d{2})\\s*(am|pm)", time_text, re.I)
+            if clock_match:
+                hh = int(clock_match.group(1))
+                mm = int(clock_match.group(2))
+                ap = clock_match.group(3).lower()
+                if ap == "pm" and hh != 12:
+                    hh += 12
+                if ap == "am" and hh == 12:
+                    hh = 0
+                local_dt = datetime.combine(current_date, datetime.min.time()).replace(hour=hh, minute=mm, tzinfo=london)
+            else:
+                local_dt = datetime.combine(current_date, datetime.min.time()).replace(hour=12, minute=0, tzinfo=london)
+
+            utc_dt = local_dt.astimezone(utc)
+            rows.append({
+                "title": title,
+                "country": currency,
+                "impact": impact,
+                "date": utc_dt.isoformat(),
+                "forecast": _ff_clean_cell(tr.select_one(".calendar__forecast")),
+                "previous": _ff_clean_cell(tr.select_one(".calendar__previous")),
+                "actual": _ff_clean_cell(tr.select_one(".calendar__actual")),
+                "ff_time_label": time_text,
+                "source": "Forex Factory",
+                "source_url": url,
+            })
+        return rows
+    except Exception:
+        return []
+
+
+def fetch_forex_factory_calendar_rolling(days: int = 7, tz_offset: int = 3) -> list[dict]:
+    """Return a rolling Today + N-1 day Forex Factory window.
+
+    The range advances automatically every local calendar day.  Exact-range
+    HTML is primary because it can span two FF weekly files.  Weekly JSON feeds
+    are only a fallback if the range page is temporarily unavailable.
+    """
+    safe_days = max(1, min(14, int(days or 7)))
+    today_local = (datetime.utcnow() + timedelta(hours=tz_offset)).date()
+    end_local = today_local + timedelta(days=safe_days - 1)
+    rows = fetch_forex_factory_calendar_range(today_local, end_local)
+    if rows:
+        return rows
+
+    # Fallback: merge current + next weekly feeds, then let the normal event
+    # normalizer filter by local dates.  Dedupe by title/currency/date.
+    combined = []
+    for batch in (fetch_forex_factory_calendar(), fetch_forex_factory_calendar_week(1)):
+        for row in batch or []:
+            combined.append(dict(row))
+    seen = set()
+    out = []
+    for row in combined:
+        key = (str(row.get("country", "")), str(row.get("title", "")), str(row.get("date", "")))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+    return out
+
 def _supabase_enabled() -> bool:
     return bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY)
 
@@ -6819,7 +6982,7 @@ def _show_forecaster_event_dialog(
 
 
 def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict | None = None) -> None:
-    """Catalyst Forecaster UI: weekly catalyst rail -> timeline -> intelligence panel/dialog."""
+    """Catalyst Forecaster UI: rolling 7-day catalyst rail -> timeline -> intelligence panel/dialog."""
     from datetime import date as _date
 
     if "selected_tz" not in st.session_state or st.session_state["selected_tz"] not in SUPPORTED_TIMEZONES:
@@ -6833,22 +6996,24 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     selected_key = "APEX_FORECASTER_SELECTED_EVENT"
     snapshot_key = "APEX_FORECASTER_EVENT_SNAPSHOT"
     sel_date_key = "apex_forecaster_selected_date"
-    week_offset_key = "apex_forecaster_week_offset"
-    if week_offset_key not in st.session_state:
-        st.session_state[week_offset_key] = 0
-
-    # Preserve the current source/data pipeline and snapshot behavior.
+    # Rolling calendar: always Today + next 6 local days.  This moves forward
+    # automatically every day and is independent of the AI master switch.
     if not st.session_state.get(selected_key):
         _forecaster_radar_refresh_tick()
 
-    week_offset = int(st.session_state.get(week_offset_key, 0) or 0)
-    week_feed = fetch_forex_factory_calendar_week(week_offset)
-    events = get_upcoming_catalyst_events(tz_info["offset"], tz_info["label"], ff_events_override=week_feed)
-    snapshot_week_key = f"{snapshot_key}_{week_offset}"
+    today_local = (datetime.utcnow() + timedelta(hours=tz_info["offset"])).date()
+    rolling_end = today_local + timedelta(days=6)
+    rolling_feed = fetch_forex_factory_calendar_rolling(7, tz_info["offset"])
+    events = get_upcoming_catalyst_events(tz_info["offset"], tz_info["label"], ff_events_override=rolling_feed)
+    events = [
+        ev for ev in events
+        if ev.get("datetime_obj") and today_local <= ev["datetime_obj"].date() <= rolling_end
+    ]
+    snapshot_rolling_key = f"{snapshot_key}_rolling_{today_local.isoformat()}"
     if events:
-        st.session_state[snapshot_week_key] = events
-    elif st.session_state.get(snapshot_week_key):
-        events = st.session_state[snapshot_week_key]
+        st.session_state[snapshot_rolling_key] = events
+    elif st.session_state.get(snapshot_rolling_key):
+        events = st.session_state[snapshot_rolling_key]
 
     actuals_cache = load_actuals_cache()
     actuals_changed = False
@@ -6878,25 +7043,19 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
         day_events.sort(key=lambda e: e.get("datetime_obj") or datetime.max)
 
     all_event_dates = sorted(events_by_date)
-    today_local = (datetime.utcnow() + timedelta(hours=tz_info["offset"])).date()
 
     if sel_date_key not in st.session_state or not isinstance(st.session_state[sel_date_key], _date):
-        if today_local in events_by_date:
-            st.session_state[sel_date_key] = today_local
-        elif all_event_dates:
-            future = [d for d in all_event_dates if d >= today_local]
-            st.session_state[sel_date_key] = future[0] if future else all_event_dates[0]
-        else:
-            st.session_state[sel_date_key] = today_local
+        st.session_state[sel_date_key] = today_local
 
     selected_date: _date = st.session_state[sel_date_key]
-    target_week_start = (today_local - timedelta(days=today_local.weekday())) + timedelta(days=7 * week_offset)
-    if not (target_week_start <= selected_date <= target_week_start + timedelta(days=6)):
-        selected_date = target_week_start
+    if not (today_local <= selected_date <= rolling_end):
+        selected_date = today_local
         st.session_state[sel_date_key] = selected_date
-    week_start = selected_date - timedelta(days=selected_date.weekday())
-    week_days = [week_start + timedelta(days=i) for i in range(7)]
-    week_end = week_days[-1]
+
+    # Exactly seven rolling local dates: today plus the next six days.
+    week_start = today_local
+    week_days = [today_local + timedelta(days=i) for i in range(7)]
+    week_end = rolling_end
 
     # This CSS is intentionally scoped to the new Forecaster keys/classes so it
     # cannot alter the approved UI of the other ApexMacro pages.
@@ -6987,23 +7146,12 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     </div>
     """)
 
-    nav_prev, nav_today, nav_next = st.columns([1, 1, 1], gap="small")
-    with nav_prev:
-        if st.button("← Previous Week", key="apex_fc2_prev_week", use_container_width=True):
-            st.session_state[week_offset_key] = max(-1, week_offset - 1)
-            st.session_state[sel_date_key] = (today_local - timedelta(days=today_local.weekday())) + timedelta(days=7 * st.session_state[week_offset_key])
-            st.session_state.pop(selected_key, None)
-            st.rerun()
+    nav_info, nav_today = st.columns([3, 1], gap="small")
+    with nav_info:
+        render_html('<div style="padding:10px 12px;color:#8fa1ae;font-size:11px;border:1px solid rgba(83,135,158,.16);border-radius:10px;background:rgba(7,25,35,.52)">Rolling 7-day calendar · refreshes automatically each day</div>')
     with nav_today:
         if st.button("Today", key="apex_fc2_today", use_container_width=True):
-            st.session_state[week_offset_key] = 0
             st.session_state[sel_date_key] = today_local
-            st.session_state.pop(selected_key, None)
-            st.rerun()
-    with nav_next:
-        if st.button("Next Week →", key="apex_fc2_next_week", use_container_width=True):
-            st.session_state[week_offset_key] = min(1, week_offset + 1)
-            st.session_state[sel_date_key] = (today_local - timedelta(days=today_local.weekday())) + timedelta(days=7 * st.session_state[week_offset_key])
             st.session_state.pop(selected_key, None)
             st.rerun()
 
@@ -7011,7 +7159,7 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
         st.session_state[sel_date_key] = day_value
         st.session_state.pop(selected_key, None)
 
-    # Seven-day rail, matching the new timeline concept instead of a classic month calendar.
+    # Rolling seven-day rail: today + next six days.
     week_cols = st.columns(7, gap="small")
     for idx, day_date in enumerate(week_days):
         day_events = events_by_date.get(day_date, [])
