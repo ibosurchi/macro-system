@@ -5756,8 +5756,8 @@ def _normalize_forex_factory_actual(value: object) -> str:
 
 def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3)", ff_events_override: list[dict] | None = None) -> list[dict]:
     """
-    Forex Factory is the sole calendar source. All High, Medium, and Low
-    impact events are preserved for the Catalyst Forecaster calendar.
+    Forex Factory is the sole calendar source. Only High Impact
+    economic events are allowed into the Catalyst Forecaster.
     Existing precursor/Nowcast logic is preserved where a title matches
     the legacy catalyst map.
     """
@@ -5771,10 +5771,9 @@ def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3
 
     for ff in ff_events:
         raw_impact = str(ff.get("impact", "")).strip().title()
-        if raw_impact in {"High", "Medium", "Low"}:
-            impact_level = raw_impact
-        else:
-            impact_level = "Low"
+        if raw_impact not in {"High", "Red", "High Impact"}:
+            continue
+        impact_level = "High"
 
         title = str(ff.get("title", "")).strip()
         currency = str(ff.get("country", "")).strip().upper()
@@ -7337,20 +7336,11 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
                     args=(day_date,),
                 )
                 if day_events:
-                    # One marker per impact CATEGORY (not one marker per event).
-                    # This keeps the week rail clean and prevents repeated purple/yellow dots
-                    # from being mistaken for duplicate events.
-                    present_impacts = []
-                    for impact_name, dot_cls in (("High", "high"), ("Medium", "medium"), ("Low", "low")):
-                        if any(str(d_ev.get("impact", "")).title() == impact_name for d_ev in day_events):
-                            present_impacts.append(f'<span class="apex-fc2-dot {dot_cls}"></span>')
-                    render_html(f'<div class="apex-fc2-dots">{"".join(present_impacts)}</div>')
+                    render_html('<div class="apex-fc2-dots"><span class="apex-fc2-dot high"></span></div>')
 
     render_html("""
     <div class="apex-fc2-legend">
-      <span><i class="apex-fc2-dot high"></i>High Impact</span>
-      <span><i class="apex-fc2-dot medium"></i>Medium Impact</span>
-      <span><i class="apex-fc2-dot low"></i>Low Impact</span>
+      <span><i class="apex-fc2-dot high"></i>High Impact Catalyst</span>
     </div>
     """)
 
@@ -7381,7 +7371,7 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
             """)
 
             if not sel_events:
-                render_html('<div class="apex-fc2-empty">No scheduled macro catalysts for this date.</div>')
+                render_html('<div class="apex-fc2-empty">No High Impact macro catalysts scheduled for this date.</div>')
             else:
                 for idx, sev in enumerate(sel_events):
                     code = str(sev.get("code", "")).strip()
