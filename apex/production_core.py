@@ -2506,12 +2506,86 @@ def _entry_price_decimals(price: float) -> int:
     return 5
 
 
-def _build_macro_entry_plan(df: pd.DataFrame, macro_regime: str, macro_score: float | None) -> dict:
+def _get_asset_relevant_currencies(asset_key: str) -> set[str]:
+    k = str(asset_key or "").upper()
+    if "GOLD" in k or "XAU" in k: return {"USD"}
+    if "OIL" in k or "WTI" in k or "BRENT" in k: return {"USD"}
+    if "NASDAQ" in k or "NQ" in k or "QQQ" in k or "SPX" in k: return {"USD"}
+    if "EURUSD" in k: return {"EUR", "USD"}
+    if "GBPUSD" in k: return {"GBP", "USD"}
+    if "USDJPY" in k: return {"USD", "JPY"}
+    if "USDCAD" in k: return {"USD", "CAD"}
+    if "AUDUSD" in k: return {"AUD", "USD"}
+    if "NZDUSD" in k: return {"NZD", "USD"}
+    if "USDCHF" in k: return {"USD", "CHF"}
+    return {"USD"}
+
+
+def _calculate_dynamic_event_safety(asset_key: str) -> tuple[int, str, bool]:
+    """
+    Evaluate upcoming High Impact economic calendar events for the asset's relevant currencies.
+    Returns (event_points: 0-10, safety_desc, is_blocked_by_event)
+    """
+    relevant_curs = _get_asset_relevant_currencies(asset_key)
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    # Use the cached rolling calendar to inspect High-Impact events within the next 24 hours
+    events = fetch_forex_factory_calendar_rolling(3, 0)
+    if not events:
+        return 10, "Clear Calendar — High Event Safety", False
+
+    nearest_min_diff = 999999.0
+    nearest_event = None
+
+    for ev in events:
+        impact = str(ev.get("impact", "")).title()
+        if impact not in {"High", "Red", "High Impact"}:
+            continue
+        cur = str(ev.get("country", ev.get("currency", ""))).upper()
+        if cur not in relevant_curs:
+            continue
+        date_raw = str(ev.get("date", "")).strip()
+        if not date_raw:
+            continue
+        try:
+            p_dt = datetime.fromisoformat(date_raw.replace("Z", "+00:00")).astimezone(timezone.utc).replace(tzinfo=None)
+            diff_min = (p_dt - now_utc).total_seconds() / 60.0
+            # Relevant window: from -15m post-release to +720m (12h pre-release)
+            if -15.0 <= diff_min <= 720.0:
+                if abs(diff_min) < abs(nearest_min_diff):
+                    nearest_min_diff = diff_min
+                    nearest_event = ev
+        except Exception:
+            continue
+
+    if nearest_event is None:
+        return 10, "Clear Calendar — High Event Safety", False
+
+    ev_title = nearest_event.get("title", "High Impact Catalyst")
+    ev_cur = nearest_event.get("country", nearest_event.get("currency", ""))
+
+    # Window 1: Release Imminent (-10m to +30m) -> 0 points, Hard BLOCK
+    if -10.0 <= nearest_min_diff <= 30.0:
+        return 0, f"HIGH EVENT RISK: {ev_cur} {ev_title} (within {int(abs(nearest_min_diff))}m)", True
+
+    # Window 2: Close Proximity (+30m to +120m) -> 3 points
+    if 30.0 < nearest_min_diff <= 120.0:
+        return 3, f"Elevated Event Risk: {ev_cur} {ev_title} in {int(nearest_min_diff)}m", False
+
+    # Window 3: Same-Session Proximity (+120m to +360m) -> 6 points
+    if 120.0 < nearest_min_diff <= 360.0:
+        return 6, f"Moderate Event Proximity: {ev_cur} {ev_title} in {round(nearest_min_diff/60, 1)}h", False
+
+    # Window 4: > 6h -> 10 points
+    return 10, f"Event Clear (>6h until {ev_cur} {ev_title})", False
+
+
+def _build_macro_entry_plan(df: pd.DataFrame, macro_regime: str, macro_score: float | None, asset_key: str = "") -> dict:
     """Find a rules-based entry zone; macro chooses direction, price chooses location.
 
-    This is deliberately deterministic: no AI-generated prices.  It combines
+    This is deliberately deterministic: no AI-generated prices. It combines
     prior swing support/resistance, broken levels, impulse origin, ATR-sized
-    zones and short-term rejection/structure confirmation.
+    zones, short-term rejection/structure confirmation, and dynamic High-Impact Event Safety.
     """
     neutral = {
         "direction": "WAIT", "status": "NO MACRO EDGE", "status_icon": "⚪",
@@ -2536,7 +2610,7 @@ def _build_macro_entry_plan(df: pd.DataFrame, macro_regime: str, macro_score: fl
     lookback = min(96, len(c)-3)
     start = len(c)-lookback
     candidates: list[tuple[float, str, int]] = []
-    # Confirmed local pivots.  Swing highs are resistance candidates; swing lows are support candidates.
+    # Confirmed local pivots. Swing highs are resistance candidates; swing lows are support candidates.
     for i in range(max(2, start), len(c)-2):
         if h[i] >= max(h[i-2:i+3]):
             if direction < 0 and h[i] >= current - 0.20*atr:
@@ -2613,11 +2687,13 @@ def _build_macro_entry_plan(df: pd.DataFrame, macro_regime: str, macro_score: fl
     macro_strength = min(1.0, abs(float(macro_score or 0.0)) / 0.45)
     macro_points = int(round(24 + 16*macro_strength))
     zone_points = int(min(30, 12 + min(18, evidence)))
-    event_points = 7  # conservative neutral allowance; live event engine remains a separate macro layer
+    event_points, event_safety_text, event_blocked = _calculate_dynamic_event_safety(asset_key)
     entry_score = int(min(100, macro_points + zone_points + confirmation_points + event_points))
 
     if invalid:
         status, icon = "INVALIDATED", "🔴"
+    elif event_blocked:
+        status, icon = "EVENT LOCK — HIGH RISK IMMINENT", "⚠️"
     elif in_zone and confirmation_points >= 10 and entry_score >= 70:
         status, icon = "ENTRY READY", "🟢"
     elif in_zone:
@@ -2632,13 +2708,15 @@ def _build_macro_entry_plan(df: pd.DataFrame, macro_regime: str, macro_score: fl
     confirmation_text = []
     if rejection: confirmation_text.append("price rejection")
     if micro: confirmation_text.append("micro structure aligned")
+    if event_blocked: confirmation_text.append(event_safety_text)
     if not confirmation_text: confirmation_text.append("confirmation not present yet")
     return {
         "direction": "BUY" if direction > 0 else "SELL", "status": status, "status_icon": icon,
         "zone_low": float(zone_low), "zone_high": float(zone_high), "invalidation": float(invalidation),
         "entry_score": entry_score, "zone_score": zone_points, "confirmation_score": confirmation_points,
         "macro_points": macro_points, "event_points": event_points, "confluences": reasons[:5],
-        "confirmation": ", ".join(confirmation_text), "atr": atr, "current_analysis_price": current,
+        "confirmation": ", ".join(confirmation_text), "event_safety_desc": event_safety_text,
+        "atr": atr, "current_analysis_price": current,
     }
 
 def _tactical_label(score: float) -> str:
@@ -2773,7 +2851,7 @@ def compute_tactical_move(asset_key: str, macro_score: float | None = None) -> d
         macro_regime = str((GLOBAL_ALERT_STATE.get(asset_key) or {}).get("confirmed_regime") or "Neutral")
 
     confidence = int(min(95, max(50, 52 + abs(score) * 45 + (5 if abs(breakout_component) else 0))))
-    entry_plan = _build_macro_entry_plan(analysis_df, macro_regime, macro_score)
+    entry_plan = _build_macro_entry_plan(analysis_df, macro_regime, macro_score, asset_key=asset_key)
     last_ts = int(df["ts"].iloc[-1])
     return {
         "key": asset_key,
@@ -3633,8 +3711,33 @@ _AI_AUDIT_LOCK = threading.RLock()
 _AI_AUDIT_MAX_ENTRIES = 600
 _AI_PRICE_AUDIT_STATE_FILE = str(PROJECT_ROOT / "ai_price_validation_v1.json")
 _AI_PRICE_AUDIT_STATE_ID = "ai_price_validation_v1"
-_AI_PRICE_CONFIRM_MOVE_PCT = 0.15
+_AI_PRICE_CONFIRM_MOVE_PCT = 0.18
 _AI_PRICE_VALIDATION_MAX_AGE_SECONDS = 6 * 60 * 60
+
+# Volatility-adaptive price confirmation thresholds per asset class
+_ASSET_VOLATILITY_CONFIRM_THRESHOLDS = {
+    "Nasdaq": 0.35,
+    "Oil": 0.40,
+    "Gold": 0.25,
+    "USD/JPY": 0.20,
+    "GBP/USD": 0.18,
+    "AUD/USD": 0.18,
+    "NZD/USD": 0.20,
+    "USD/CAD": 0.16,
+    "EUR/USD": 0.12,
+    "USD/CHF": 0.12,
+    "USD": 0.14,
+    "DXY": 0.14,
+}
+
+
+def _get_asset_confirmation_threshold(asset: str) -> float:
+    """Return volatility-calibrated percentage move required to confirm AI direction."""
+    a_clean = str(asset or "").strip()
+    for k, v in _ASSET_VOLATILITY_CONFIRM_THRESHOLDS.items():
+        if k.lower() in a_clean.lower() or a_clean.lower() in k.lower():
+            return v
+    return _AI_PRICE_CONFIRM_MOVE_PCT
 
 
 def _ai_audit_append(kind: str, message: str, details: dict | None = None) -> None:
@@ -3689,7 +3792,7 @@ def _ai_price_validation_save(state: dict) -> None:
 
 
 def _register_ai_price_decisions(result: dict, price_context: dict) -> None:
-    """Freeze AI direction + market price at decision time so later moves can be audited honestly."""
+    """Freeze AI direction + market price at decision time with an immutable volatility-relative threshold."""
     assets = result.get("assets", {}) if isinstance(result, dict) else {}
     if not isinstance(assets, dict):
         return
@@ -3713,6 +3816,7 @@ def _register_ai_price_decisions(result: dict, price_context: dict) -> None:
             })
             continue
         direction = "Bullish" if score > 0 else "Bearish"
+        confirm_threshold = _get_asset_confirmation_threshold(asset)
         # Older unresolved calls for the same asset are superseded, not silently counted.
         for row in pending:
             if row.get("asset") == asset and row.get("status") == "pending":
@@ -3723,10 +3827,11 @@ def _register_ai_price_decisions(result: dict, price_context: dict) -> None:
             "asset": asset, "direction": direction, "score": score,
             "confidence": float(a.get("confidence", 0) or 0), "reason": str(a.get("reason", ""))[:700],
             "decision_at": now_ts, "decision_price": price, "status": "pending",
+            "confirm_threshold_pct": confirm_threshold,
             "price_confirmation_at_decision": str(pc.get("price_confirmation", "Neutral")),
         }
         pending.append(decision)
-        _ai_audit_append("ai_decision", f"{asset} AI {direction} frozen at market price {price}", decision)
+        _ai_audit_append("ai_decision", f"{asset} AI {direction} frozen at market price {price} (Threshold: ±{confirm_threshold}%)", decision)
     state["pending"] = pending[-250:]
     _ai_price_validation_save(state)
 
@@ -3756,12 +3861,13 @@ def _check_ai_price_validations() -> None:
             continue
         move = ((current / start) - 1.0) * 100.0
         signed = move if row.get("direction") == "Bullish" else -move
-        if signed >= _AI_PRICE_CONFIRM_MOVE_PCT:
+        threshold = float(row.get("confirm_threshold_pct") or _get_asset_confirmation_threshold(row.get("asset", "")))
+        if signed >= threshold:
             row.update({"status":"confirmed", "resolved_at":now_ts, "resolved_price":current, "move_pct":round(move,4)})
-            _ai_audit_append("price_confirmed", f"{row.get('asset')} AI {row.get('direction')} confirmed by later price", dict(row)); changed=True
-        elif signed <= -_AI_PRICE_CONFIRM_MOVE_PCT:
+            _ai_audit_append("price_confirmed", f"{row.get('asset')} AI {row.get('direction')} confirmed by later price ({move:+.2f}% vs {threshold}%)", dict(row)); changed=True
+        elif signed <= -threshold:
             row.update({"status":"contradicted", "resolved_at":now_ts, "resolved_price":current, "move_pct":round(move,4)})
-            _ai_audit_append("price_contradicted", f"{row.get('asset')} AI {row.get('direction')} contradicted by later price", dict(row)); changed=True
+            _ai_audit_append("price_contradicted", f"{row.get('asset')} AI {row.get('direction')} contradicted by later price ({move:+.2f}% vs -{threshold}%)", dict(row)); changed=True
     if changed:
         state["pending"] = pending[-250:]
         _ai_price_validation_save(state)
@@ -6135,20 +6241,182 @@ _GENERIC_PRECURSORS = {
     ],
 }
 
-# Country-specific replacements where a broad US FRED series would be misleading.
+# Comprehensive Country-Specific Precursor Architecture for USD, EUR, GBP, CAD, JPY, AUD, NZD, CHF
 _CURRENCY_PRECURSOR_OVERRIDES = {
-    "CAD": {
+    "USD": {
+        "inflation": [
+            {"name":"Producer-Price Pressure (PPI)", "series":"PPIACO", "cat":"inflation", "weight":.30},
+            {"name":"10Y Breakeven Inflation Rate", "series":"T10YIE", "cat":"inflation", "weight":.25},
+            {"name":"Crude Oil Energy Input Velocity", "series":"DCOILWTICO", "fallback":"POILWTIUSDM", "cat":"inflation", "weight":.20},
+            {"name":"Retail Demand Momentum", "series":"RSAFS", "cat":"growth", "weight":.15},
+            {"name":"Industrial Output Demand", "series":"INDPRO", "cat":"growth", "weight":.10},
+        ],
         "labor": [
-            {"name":"Canadian employment momentum", "series":"LFEMTTTTCAM647S", "cat":"labor_pos", "weight":.55},
-            {"name":"Canadian unemployment momentum", "series":"LRUN64TTCAM156S", "cat":"labor_neg", "weight":.45},
+            {"name":"Non-Farm Payroll Employment", "series":"PAYEMS", "cat":"labor_pos", "weight":.32},
+            {"name":"Unemployment Rate Trend", "series":"UNRATE", "cat":"labor_neg", "weight":.28},
+            {"name":"Initial Jobless Claims Velocity", "series":"ICSA", "cat":"labor_neg", "weight":.24},
+            {"name":"Industrial Production Backdrop", "series":"INDPRO", "cat":"growth", "weight":.16},
         ],
         "growth": [
-            {"name":"Canadian employment momentum", "series":"LFEMTTTTCAM647S", "cat":"labor_pos", "weight":.35},
-            {"name":"Canadian unemployment momentum", "series":"LRUN64TTCAM156S", "cat":"labor_neg", "weight":.25},
-            {"name":"WTI/Canada terms-of-trade proxy", "series":"DCOILWTICO", "fallback":"POILWTIUSDM", "cat":"growth", "weight":.25},
-            {"name":"US industrial-demand spillover", "series":"INDPRO", "cat":"growth", "weight":.15},
+            {"name":"Industrial Production Momentum", "series":"INDPRO", "cat":"growth", "weight":.30},
+            {"name":"Retail Demand Momentum", "series":"RSAFS", "cat":"growth", "weight":.28},
+            {"name":"Real Disposable Income", "series":"DSPIC96", "cat":"growth", "weight":.22},
+            {"name":"Capacity Utilization", "series":"TCU", "cat":"growth", "weight":.20},
         ],
-    }
+        "policy": [
+            {"name":"Core PCE Deflator Pressure", "series":"PCEPILFE", "cat":"inflation", "weight":.35},
+            {"name":"Unemployment Rate Trend", "series":"UNRATE", "cat":"labor_neg", "weight":.25},
+            {"name":"10Y Breakeven Expectations", "series":"T10YIE", "cat":"inflation", "weight":.25},
+            {"name":"Trade-Weighted USD Index", "series":"DTWEXBGS", "cat":"growth", "weight":.15},
+        ],
+    },
+    "EUR": {
+        "inflation": [
+            {"name":"Euro Area Harmonized CPI (HICP)", "series":"CP0000EZ19M086NEST", "fallback":"DEUCPIALLMINMEI", "cat":"inflation", "weight":.40},
+            {"name":"Germany Producer Prices (PPI)", "series":"DEUPPIALLMINMEI", "fallback":"PPIACO", "cat":"inflation", "weight":.30},
+            {"name":"Brent/WTI Energy Cost Velocity", "series":"DCOILWTICO", "fallback":"POILWTIUSDM", "cat":"inflation", "weight":.30},
+        ],
+        "labor": [
+            {"name":"Euro Area Harmonized Unemployment", "series":"LRHUTTTTEZM156S", "fallback":"LRHUTTTTDEQ156S", "cat":"labor_neg", "weight":.50},
+            {"name":"German Employment/Jobless Trend", "series":"LRHUTTTTDEQ156S", "cat":"labor_neg", "weight":.30},
+            {"name":"Eurozone Industrial Production", "series":"EA19PRMNTO01GYS", "fallback":"DEUPROINDQISMEI", "cat":"growth", "weight":.20},
+        ],
+        "growth": [
+            {"name":"Germany Industrial Production", "series":"DEUPROINDQISMEI", "fallback":"EA19PRMNTO01GYS", "cat":"growth", "weight":.40},
+            {"name":"Euro Area Retail Trade Volume", "series":"SLRSTT01EZM661S", "cat":"growth", "weight":.35},
+            {"name":"Energy & Terms-of-Trade Input", "series":"DCOILWTICO", "fallback":"POILWTIUSDM", "cat":"growth", "weight":.25},
+        ],
+        "policy": [
+            {"name":"Euro Area Core HICP Inflation", "series":"CP0000EZ19M086NEST", "cat":"inflation", "weight":.45},
+            {"name":"Eurozone Unemployment Pressure", "series":"LRHUTTTTEZM156S", "cat":"labor_neg", "weight":.35},
+            {"name":"Germany Manufacturing Backbone", "series":"DEUPROINDQISMEI", "cat":"growth", "weight":.20},
+        ],
+    },
+    "GBP": {
+        "inflation": [
+            {"name":"UK Consumer Price Inflation (CPI)", "series":"GBRCPIALLMINMEI", "cat":"inflation", "weight":.45},
+            {"name":"UK Producer Output Prices (PPI)", "series":"GBRPPIALLMINMEI", "cat":"inflation", "weight":.30},
+            {"name":"UK Energy Import Cost Momentum", "series":"DCOILWTICO", "fallback":"POILWTIUSDM", "cat":"inflation", "weight":.25},
+        ],
+        "labor": [
+            {"name":"UK Harmonized Unemployment Rate", "series":"LMUNRRTTGBM156S", "cat":"labor_neg", "weight":.55},
+            {"name":"UK Employment Growth Momentum", "series":"LREM64TTGBM156S", "cat":"labor_pos", "weight":.45},
+        ],
+        "growth": [
+            {"name":"UK Industrial Production Output", "series":"GBRPROINDMISMEI", "cat":"growth", "weight":.40},
+            {"name":"UK Retail Sales Volume Index", "series":"SLRSTT01GBM661S", "cat":"growth", "weight":.35},
+            {"name":"UK Labor Demand Backdrop", "series":"LMUNRRTTGBM156S", "cat":"labor_neg", "weight":.25},
+        ],
+        "policy": [
+            {"name":"UK Headline/Core Inflation", "series":"GBRCPIALLMINMEI", "cat":"inflation", "weight":.45},
+            {"name":"UK Unemployment Level", "series":"LMUNRRTTGBM156S", "cat":"labor_neg", "weight":.35},
+            {"name":"UK Industrial Output Activity", "series":"GBRPROINDMISMEI", "cat":"growth", "weight":.20},
+        ],
+    },
+    "CAD": {
+        "inflation": [
+            {"name":"Canada Consumer Price Index (CPI)", "series":"CANCPIALLMINMEI", "cat":"inflation", "weight":.40},
+            {"name":"Canada Industrial Product Price (PPI)", "series":"CANPPIALLMINMEI", "cat":"inflation", "weight":.30},
+            {"name":"WTI Crude Energy Terms-of-Trade", "series":"DCOILWTICO", "fallback":"POILWTIUSDM", "cat":"inflation", "weight":.30},
+        ],
+        "labor": [
+            {"name":"Canadian Employment Momentum", "series":"LFEMTTTTCAM647S", "cat":"labor_pos", "weight":.55},
+            {"name":"Canadian Unemployment Momentum", "series":"LRUN64TTCAM156S", "cat":"labor_neg", "weight":.45},
+        ],
+        "growth": [
+            {"name":"Canadian Industrial Output", "series":"CANPROINDMISMEI", "cat":"growth", "weight":.35},
+            {"name":"Canadian Employment Momentum", "series":"LFEMTTTTCAM647S", "cat":"labor_pos", "weight":.25},
+            {"name":"WTI/Canada Terms-of-Trade Proxy", "series":"DCOILWTICO", "fallback":"POILWTIUSDM", "cat":"growth", "weight":.25},
+            {"name":"Canada Retail Trade Activity", "series":"SLRSTT01CAM661S", "cat":"growth", "weight":.15},
+        ],
+        "policy": [
+            {"name":"Canada Core CPI Pressure", "series":"CANCPIALLMINMEI", "cat":"inflation", "weight":.45},
+            {"name":"Canada Unemployment Slack", "series":"LRUN64TTCAM156S", "cat":"labor_neg", "weight":.35},
+            {"name":"WTI Energy Balance", "series":"DCOILWTICO", "cat":"growth", "weight":.20},
+        ],
+    },
+    "JPY": {
+        "inflation": [
+            {"name":"Japan National CPI Inflation", "series":"JPNCPIALLMINMEI", "cat":"inflation", "weight":.50},
+            {"name":"Japan Corporate Goods Prices (CGPI/PPI)", "series":"JPNPPIALLMINMEI", "cat":"inflation", "weight":.30},
+            {"name":"Imported Energy Cost Pressure", "series":"DCOILWTICO", "fallback":"POILWTIUSDM", "cat":"inflation", "weight":.20},
+        ],
+        "labor": [
+            {"name":"Japan Unemployment Rate", "series":"LRUN64TTJPM156S", "cat":"labor_neg", "weight":.60},
+            {"name":"Japan Industrial Activity Backdrop", "series":"JPNPROINDMISMEI", "cat":"growth", "weight":.40},
+        ],
+        "growth": [
+            {"name":"Japan Industrial Production Output", "series":"JPNPROINDMISMEI", "cat":"growth", "weight":.45},
+            {"name":"Japan Retail Trade Turnover", "series":"SLRSTT01JPM661S", "cat":"growth", "weight":.35},
+            {"name":"Japan Labor Tightness", "series":"LRUN64TTJPM156S", "cat":"labor_neg", "weight":.20},
+        ],
+        "policy": [
+            {"name":"Japan Inflation & Price Velocity", "series":"JPNCPIALLMINMEI", "cat":"inflation", "weight":.50},
+            {"name":"Japan Industrial Output Momentum", "series":"JPNPROINDMISMEI", "cat":"growth", "weight":.30},
+            {"name":"Japan Unemployment Metric", "series":"LRUN64TTJPM156S", "cat":"labor_neg", "weight":.20},
+        ],
+    },
+    "AUD": {
+        "inflation": [
+            {"name":"Australia Consumer Price Index", "series":"AUSCPIALLQINMEI", "cat":"inflation", "weight":.45},
+            {"name":"Australia Producer Price Index", "series":"AUSPPIALLQINMEI", "cat":"inflation", "weight":.30},
+            {"name":"Global Commodity/Energy Input", "series":"DCOILWTICO", "fallback":"POILWTIUSDM", "cat":"inflation", "weight":.25},
+        ],
+        "labor": [
+            {"name":"Australia Unemployment Rate", "series":"LRUN64TTAUM156S", "cat":"labor_neg", "weight":.55},
+            {"name":"Australia Employment Growth", "series":"LFEMTTTTAUM647S", "cat":"labor_pos", "weight":.45},
+        ],
+        "growth": [
+            {"name":"Australia Industrial Production", "series":"AUSPROINDQISMEI", "cat":"growth", "weight":.40},
+            {"name":"Australia Retail Trade Volume", "series":"SLRSTT01AUM661S", "cat":"growth", "weight":.35},
+            {"name":"Commodity Terms of Trade", "series":"DCOILWTICO", "cat":"growth", "weight":.25},
+        ],
+        "policy": [
+            {"name":"Australia Trimmed Mean/CPI", "series":"AUSCPIALLQINMEI", "cat":"inflation", "weight":.45},
+            {"name":"Australia Unemployment Rate", "series":"LRUN64TTAUM156S", "cat":"labor_neg", "weight":.35},
+            {"name":"Australia Industrial Momentum", "series":"AUSPROINDQISMEI", "cat":"growth", "weight":.20},
+        ],
+    },
+    "NZD": {
+        "inflation": [
+            {"name":"New Zealand CPI Inflation", "series":"NZLCPIALLQINMEI", "cat":"inflation", "weight":.50},
+            {"name":"Commodity & Agricultural Inputs", "series":"DCOILWTICO", "fallback":"POILWTIUSDM", "cat":"inflation", "weight":.50},
+        ],
+        "labor": [
+            {"name":"New Zealand Unemployment Rate", "series":"LRUN64TTNZQ156S", "cat":"labor_neg", "weight":.55},
+            {"name":"New Zealand Employment Level", "series":"LFEMTTTTNZQ647S", "cat":"labor_pos", "weight":.45},
+        ],
+        "growth": [
+            {"name":"New Zealand Industrial Output", "series":"NZLPROINDQISMEI", "cat":"growth", "weight":.40},
+            {"name":"New Zealand Retail Turnover", "series":"SLRSTT01NZM661S", "cat":"growth", "weight":.35},
+            {"name":"Commodity Terms of Trade", "series":"DCOILWTICO", "cat":"growth", "weight":.25},
+        ],
+        "policy": [
+            {"name":"New Zealand CPI Inflation", "series":"NZLCPIALLQINMEI", "cat":"inflation", "weight":.50},
+            {"name":"New Zealand Labor Conditions", "series":"LRUN64TTNZQ156S", "cat":"labor_neg", "weight":.50},
+        ],
+    },
+    "CHF": {
+        "inflation": [
+            {"name":"Switzerland CPI Inflation", "series":"CHECPIALLMINMEI", "cat":"inflation", "weight":.50},
+            {"name":"Switzerland PPI Production Prices", "series":"CHEPPIALLMINMEI", "cat":"inflation", "weight":.30},
+            {"name":"Energy & Import Cost Velocity", "series":"DCOILWTICO", "cat":"inflation", "weight":.20},
+        ],
+        "labor": [
+            {"name":"Switzerland Unemployment Rate", "series":"LRUN64TTCHM156S", "cat":"labor_neg", "weight":.70},
+            {"name":"Swiss Production Backdrop", "series":"CHEPROINDQISMEI", "cat":"growth", "weight":.30},
+        ],
+        "growth": [
+            {"name":"Switzerland Industrial Output", "series":"CHEPROINDQISMEI", "cat":"growth", "weight":.45},
+            {"name":"Switzerland Retail Turnover", "series":"SLRSTT01CHM661S", "cat":"growth", "weight":.35},
+            {"name":"Labor Stability Proxy", "series":"LRUN64TTCHM156S", "cat":"growth", "weight":.20},
+        ],
+        "policy": [
+            {"name":"Swiss Headline/Core Inflation", "series":"CHECPIALLMINMEI", "cat":"inflation", "weight":.50},
+            {"name":"Swiss Industrial Growth", "series":"CHEPROINDQISMEI", "cat":"growth", "weight":.30},
+            {"name":"Swiss Unemployment Stability", "series":"LRUN64TTCHM156S", "cat":"labor_neg", "weight":.20},
+        ],
+    },
 }
 
 FORECAST_EVIDENCE_ARCHIVE_FILE = str(PROJECT_ROOT / "forecaster_evidence_archive.json")
@@ -6370,6 +6638,37 @@ def _history_learning_adjustment(event: dict) -> tuple[float, int]:
     return max(.82, min(1.08, acc / .60)), len(rows)
 
 
+def calculate_standardized_surprise(actual_val: float, consensus_val: float, history_rows: list[dict] | None = None) -> tuple[float, float]:
+    """
+    Standardized Surprise = (Actual - Consensus) / sigma_historical_consensus_error
+    Returns (standardized_z_score, raw_surprise).
+    Z-scores are winsorized to [-3.5, 3.5] to protect against extreme outliers.
+    """
+    raw_surprise = actual_val - consensus_val
+    if not history_rows or len(history_rows) < 3:
+        return round(max(-3.5, min(3.5, raw_surprise)), 3), round(raw_surprise, 4)
+
+    historical_errors = []
+    for r in history_rows:
+        act = _safe_numeric_release(str(r.get("first_print_actual") or r.get("actual") or ""))
+        con = _safe_numeric_release(str(r.get("forecast") or r.get("consensus") or ""))
+        if act is not None and con is not None:
+            historical_errors.append(act - con)
+
+    if len(historical_errors) < 3:
+        return round(max(-3.5, min(3.5, raw_surprise)), 3), round(raw_surprise, 4)
+
+    mean_err = sum(historical_errors) / len(historical_errors)
+    variance = sum((x - mean_err) ** 2 for x in historical_errors) / len(historical_errors)
+    sigma = variance ** 0.5
+    if sigma <= 1e-6:
+        sigma = 1.0
+
+    z_score = raw_surprise / sigma
+    clamped_z = max(-3.5, min(3.5, z_score))
+    return round(float(clamped_z), 3), round(raw_surprise, 4)
+
+
 def _record_forecaster_snapshot(event: dict, nowcast: dict, actual: str = "") -> None:
     code = str(event.get("code", "")).strip()
     if not code:
@@ -6391,38 +6690,103 @@ def _record_forecaster_snapshot(event: dict, nowcast: dict, actual: str = "") ->
             "precursors": nowcast.get("precursor_results", []),
             "news_sources": [((a.get("source") or {}).get("name", "") if isinstance(a.get("source"), dict) else str(a.get("source", ""))) for a in nowcast.get("correlated_articles", [])],
             "prediction_reason": _forecast_reason(nowcast),
+            "first_print_actual": "",
+            "latest_revised_actual": "",
             "resolved": False,
         }
         records[code] = rec
-    if actual and not rec.get("resolved"):
+
+    if actual:
         av = _safe_numeric_release(actual); fv = _safe_numeric_release(event.get("forecast_str", ""))
+        is_first_resolution = not bool(rec.get("resolved"))
+        if is_first_resolution:
+            rec["first_print_actual"] = str(actual).strip()
+        rec["latest_revised_actual"] = str(actual).strip()
+
         if av is not None and fv is not None:
             eps = max(1e-9, abs(fv) * 1e-6)
             outcome = "beat" if av > fv + eps else ("miss" if av < fv - eps else "inline")
             model_est = rec.get("model_estimate")
             try:
-                model_err = abs(av - float(model_est)) if model_est is not None else None
+                model_err = round(abs(av - float(model_est)), 4) if model_est is not None else None
             except Exception:
                 model_err = None
-            rec.update({"actual": actual, "actual_outcome": outcome, "resolved": True,
-                        "resolved_at_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-                        "correct": rec.get("predicted_outcome") == outcome,
-                        "absolute_error": model_err,
-                        "consensus_error": abs(av - fv),
-                        "resolution_reason": _resolution_reason(rec, outcome, actual, str(event.get("forecast_str", "")))})
+            consensus_err = round(abs(av - fv), 4)
+
+            # Compute standardized surprise z-score against same-event history
+            hist_rows = _same_event_history(event, 12)
+            std_z, raw_surp = calculate_standardized_surprise(av, fv, hist_rows)
+
+            rec.update({
+                "actual": rec.get("first_print_actual") or actual,
+                "first_print_actual": rec.get("first_print_actual") or actual,
+                "latest_revised_actual": actual,
+                "actual_outcome": outcome,
+                "resolved": True,
+                "resolved_at_utc": rec.get("resolved_at_utc") or (datetime.utcnow().isoformat(timespec="seconds") + "Z"),
+                "correct": rec.get("predicted_outcome") == outcome,
+                "model_error": model_err,
+                "absolute_error": model_err,
+                "consensus_error": consensus_err,
+                "raw_surprise": raw_surp,
+                "standardized_surprise_z": std_z,
+                "resolution_reason": _resolution_reason(rec, outcome, rec.get("first_print_actual") or actual, str(event.get("forecast_str", ""))),
+            })
     _save_forecaster_history(data)
 
 
 def _forecaster_performance() -> dict:
+    """Comprehensive objective benchmark of ApexMacro Nowcasts vs Market Consensus."""
     rows = list(_load_forecaster_history().get("records", {}).values())
     done = [r for r in rows if r.get("resolved")]
     correct = sum(1 for r in done if r.get("correct"))
-    by = {}
+
+    model_errs = []
+    cons_errs = []
     for r in done:
-        fam = r.get("family", "general"); x = by.setdefault(fam, [0, 0]); x[0] += 1; x[1] += int(bool(r.get("correct")))
-    return {"total": len(rows), "resolved": len(done), "correct": correct,
-            "accuracy": (100.0 * correct / len(done)) if done else 0.0,
-            "by_family": {k: {"n": v[0], "accuracy": 100.0*v[1]/v[0]} for k,v in by.items()}}
+        try:
+            if r.get("model_error") is not None:
+                model_errs.append(float(r["model_error"]))
+        except Exception:
+            pass
+        try:
+            if r.get("consensus_error") is not None:
+                cons_errs.append(float(r["consensus_error"]))
+        except Exception:
+            pass
+
+    mean_model_err = round(sum(model_errs) / len(model_errs), 4) if model_errs else None
+    mean_cons_err = round(sum(cons_errs) / len(cons_errs), 4) if cons_errs else None
+
+    def _median(arr):
+        if not arr: return None
+        s = sorted(arr)
+        n = len(s)
+        mid = n // 2
+        return round(s[mid] if n % 2 == 1 else (s[mid-1] + s[mid]) / 2.0, 4)
+
+    median_model_err = _median(model_errs)
+    median_cons_err = _median(cons_errs)
+
+    by_family = {}
+    by_currency = {}
+    for r in done:
+        fam = r.get("family", "general"); cur = str(r.get("currency", "USD")).upper()
+        xf = by_family.setdefault(fam, [0, 0]); xf[0] += 1; xf[1] += int(bool(r.get("correct")))
+        xc = by_currency.setdefault(cur, [0, 0]); xc[0] += 1; xc[1] += int(bool(r.get("correct")))
+
+    return {
+        "total": len(rows),
+        "resolved": len(done),
+        "correct": correct,
+        "accuracy": round(100.0 * correct / len(done), 1) if done else 0.0,
+        "mean_model_error": mean_model_err,
+        "mean_consensus_error": mean_cons_err,
+        "median_model_error": median_model_err,
+        "median_consensus_error": median_cons_err,
+        "by_family": {k: {"n": v[0], "accuracy": round(100.0*v[1]/v[0], 1)} for k,v in by_family.items()},
+        "by_currency": {k: {"n": v[0], "accuracy": round(100.0*v[1]/v[0], 1)} for k,v in by_currency.items()},
+    }
 
 
 def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_override: str = "") -> dict:
@@ -7321,7 +7685,7 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
 
     nav_info, nav_today = st.columns([3, 1], gap="small")
     with nav_info:
-        render_html(f'<div style="padding:10px 12px;color:#8fa1ae;font-size:11px;border:1px solid rgba(83,135,158,.16);border-radius:10px;background:rgba(7,25,35,.52)">Rolling 7-day board · {total_events} catalysts · refreshes automatically each day</div>')
+        render_html(f'<div style="padding:10px 12px;color:#8fa1ae;font-size:11px;border:1px solid rgba(83,135,158,.16);border-radius:10px;background:rgba(7,25,35,.52)">Rolling 7-day board · {total_events} High Impact catalysts · refreshes automatically each day</div>')
     with nav_today:
         if st.button("Today", key="apex_fk_today", use_container_width=True):
             st.session_state[board_start_key] = today_local
@@ -7332,9 +7696,7 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
 
     render_html("""
     <div class="apex-fk-legend">
-      <span class="apex-fk-leg"><i class="apex-fk-dot high"></i>High Impact</span>
-      <span class="apex-fk-leg"><i class="apex-fk-dot medium"></i>Medium Impact</span>
-      <span class="apex-fk-leg"><i class="apex-fk-dot low"></i>Low Impact</span>
+      <span class="apex-fk-leg"><i class="apex-fk-dot high"></i>High Impact Catalyst</span>
     </div>
     """)
 
@@ -7382,7 +7744,7 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
             if nav_direction not in {"prev", "next", "today"}:
                 nav_direction = "default"
             with st.container(key=f"apex_fk_col_{nav_direction}_{state}_{day_date:%Y_%m_%d}"):
-                count_text = "No events" if not day_events else ("1 event" if len(day_events) == 1 else f"{len(day_events)} events")
+                count_text = "No events" if not day_events else ("1 High Impact event" if len(day_events) == 1 else f"{len(day_events)} High Impact events")
                 render_html(f"""
                 <div class="apex-fk-dayhead {'selected' if is_selected_day else ''}">
                   <div class="apex-fk-dayname">{day_date.strftime('%a').upper()}</div>
@@ -7391,7 +7753,7 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
                 </div>
                 """)
                 if not day_events:
-                    render_html('<div class="apex-fk-empty">No scheduled catalysts</div>')
+                    render_html('<div class="apex-fk-empty">No High Impact macro catalysts scheduled.</div>')
                 else:
                     # Keep the board readable; all events remain available and no data is altered.
                     for ev_idx, sev in enumerate(day_events):
@@ -7405,8 +7767,10 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
                         title = str(sev.get("title", ""))
                         forecast = sev.get("forecast_str", "—") or "—"
                         previous = sev.get("prev_str", "—") or "—"
+                        actual_val = str(sev.get("actual_str") or actuals_cache.get(code, "")).strip()
+                        act_disp = actual_val if (actual_val and actual_val != "—") else "Pending"
                         safe_key = re.sub(r"[^a-zA-Z0-9_]", "_", code)[:52] or f"{day_idx}_{ev_idx}"
-                        card_label = f"{event_time} · {flag} {cur}\n{title}\nF {forecast}  ·  P {previous}"
+                        card_label = f"{event_time} · {flag} {cur}\n{title}\nF: {forecast}  ·  P: {previous}\nActual: {act_disp}"
                         with st.container(key=f"apex_fk_card_{impact_key}_{day_idx}_{safe_key}"):
                             if st.button(card_label, key=f"apex_fk_btn_{day_idx}_{safe_key}", use_container_width=True):
                                 st.session_state[sel_date_key] = day_date
