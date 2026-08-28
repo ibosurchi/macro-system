@@ -2066,7 +2066,11 @@ def _tactical_symbol_config(asset_key: str) -> dict[str, object] | None:
 
 @st.cache_data(ttl=55, show_spinner=False)
 def _fetch_tactical_price_series(symbol: str) -> pd.DataFrame | None:
-    """Fetch 5-minute market prices. Failure is silent so the macro engine remains fully independent."""
+    """Fetch 5-minute OHLC market data for the tactical/entry engine.
+
+    OHLC is intentionally kept here (rather than close-only data) so support,
+    resistance, rejection and invalidation zones are derived from real candles.
+    """
     if not symbol:
         return None
     try:
@@ -2079,7 +2083,7 @@ def _fetch_tactical_price_series(symbol: str) -> pd.DataFrame | None:
                 "includePrePost": "true",
                 "events": "div,splits",
             },
-            headers={"User-Agent": "Mozilla/5.0 ApexMacro Tactical/15.0"},
+            headers={"User-Agent": "Mozilla/5.0 ApexMacro Entry/16.0"},
             timeout=REQUEST_TIMEOUT,
         )
         response.raise_for_status()
@@ -2089,28 +2093,193 @@ def _fetch_tactical_price_series(symbol: str) -> pd.DataFrame | None:
             return None
         timestamps = result.get("timestamp") or []
         quote_data = ((((result.get("indicators") or {}).get("quote")) or [{}])[0])
+        opens = quote_data.get("open") or []
+        highs = quote_data.get("high") or []
+        lows = quote_data.get("low") or []
         closes = quote_data.get("close") or []
+        volumes = quote_data.get("volume") or []
         if not timestamps or not closes:
             return None
         rows = []
-        for ts, close in zip(timestamps, closes):
+        for i, (ts, close) in enumerate(zip(timestamps, closes)):
             try:
                 if close is None:
                     continue
-                value = float(close)
-                if not np.isfinite(value) or value <= 0:
+                c = float(close)
+                o = float(opens[i]) if i < len(opens) and opens[i] is not None else c
+                h = float(highs[i]) if i < len(highs) and highs[i] is not None else max(o, c)
+                l = float(lows[i]) if i < len(lows) and lows[i] is not None else min(o, c)
+                v = float(volumes[i]) if i < len(volumes) and volumes[i] is not None else 0.0
+                if not all(np.isfinite(x) for x in (o, h, l, c)) or min(o, h, l, c) <= 0:
                     continue
-                rows.append((int(ts), value))
+                rows.append((int(ts), o, max(h, o, c), min(l, o, c), c, max(v, 0.0)))
             except Exception:
                 continue
         if len(rows) < 40:
             return None
-        df = pd.DataFrame(rows, columns=["ts", "close"])
-        df = df.drop_duplicates("ts").sort_values("ts").reset_index(drop=True)
-        return df
+        df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "volume"])
+        return df.drop_duplicates("ts").sort_values("ts").reset_index(drop=True)
     except Exception:
         return None
 
+
+def _tactical_analysis_ohlc(df: pd.DataFrame, invert: bool) -> pd.DataFrame:
+    """Return OHLC in the asset-strength convention used by ApexMacro."""
+    out = df.copy()
+    if not invert:
+        return out
+    old_high = out["high"].astype(float).copy()
+    old_low = out["low"].astype(float).copy()
+    out["open"] = 1.0 / np.maximum(out["open"].astype(float), 1e-12)
+    out["close"] = 1.0 / np.maximum(out["close"].astype(float), 1e-12)
+    out["high"] = 1.0 / np.maximum(old_low, 1e-12)
+    out["low"] = 1.0 / np.maximum(old_high, 1e-12)
+    return out
+
+
+def _entry_price_decimals(price: float) -> int:
+    price = abs(float(price or 0.0))
+    if price >= 1000: return 1
+    if price >= 100: return 2
+    if price >= 10: return 3
+    if price >= 1: return 4
+    return 5
+
+
+def _build_macro_entry_plan(df: pd.DataFrame, macro_regime: str, macro_score: float | None) -> dict:
+    """Find a rules-based entry zone; macro chooses direction, price chooses location.
+
+    This is deliberately deterministic: no AI-generated prices.  It combines
+    prior swing support/resistance, broken levels, impulse origin, ATR-sized
+    zones and short-term rejection/structure confirmation.
+    """
+    neutral = {
+        "direction": "WAIT", "status": "NO MACRO EDGE", "status_icon": "⚪",
+        "zone_low": None, "zone_high": None, "invalidation": None,
+        "entry_score": 0, "zone_score": 0, "confirmation_score": 0,
+        "macro_points": 0, "event_points": 0, "confluences": [],
+        "confirmation": "Macro direction is neutral; no entry is allowed.",
+    }
+    if macro_regime not in {"Bullish", "Bearish"} or len(df) < 45:
+        return neutral
+
+    direction = 1 if macro_regime == "Bullish" else -1
+    o = df["open"].astype(float).to_numpy(); h = df["high"].astype(float).to_numpy()
+    l = df["low"].astype(float).to_numpy(); c = df["close"].astype(float).to_numpy()
+    current = float(c[-1])
+    prev_close = np.r_[c[0], c[:-1]]
+    tr = np.maximum(h-l, np.maximum(np.abs(h-prev_close), np.abs(l-prev_close)))
+    atr = float(pd.Series(tr).rolling(14, min_periods=5).mean().iloc[-1])
+    if not np.isfinite(atr) or atr <= 0:
+        atr = max(current * 0.0015, 1e-8)
+
+    lookback = min(96, len(c)-3)
+    start = len(c)-lookback
+    candidates: list[tuple[float, str, int]] = []
+    # Confirmed local pivots.  Swing highs are resistance candidates; swing lows are support candidates.
+    for i in range(max(2, start), len(c)-2):
+        if h[i] >= max(h[i-2:i+3]):
+            if direction < 0 and h[i] >= current - 0.20*atr:
+                candidates.append((float(h[i]), "Previous swing resistance", 10))
+        if l[i] <= min(l[i-2:i+3]):
+            if direction > 0 and l[i] <= current + 0.20*atr:
+                candidates.append((float(l[i]), "Previous swing support", 10))
+
+    # Broken support/resistance: a formerly defended level that price crossed and may retest.
+    recent = slice(max(0, len(c)-72), len(c)-3)
+    if direction < 0:
+        prior_support = float(np.percentile(l[recent], 35))
+        if prior_support > current + 0.15*atr:
+            candidates.append((prior_support, "Broken support → resistance", 18))
+    else:
+        prior_resistance = float(np.percentile(h[recent], 65))
+        if prior_resistance < current - 0.15*atr:
+            candidates.append((prior_resistance, "Broken resistance → support", 18))
+
+    # Origin of the strongest recent impulse in the macro direction.
+    returns = np.diff(c) / np.maximum(c[:-1], 1e-12)
+    tail_start = max(0, len(returns)-48)
+    segment = returns[tail_start:]
+    if len(segment):
+        idx = tail_start + (int(np.argmin(segment)) if direction < 0 else int(np.argmax(segment)))
+        impulse_level = float(max(o[idx], c[idx]) if direction < 0 else min(o[idx], c[idx]))
+        candidates.append((impulse_level, "Origin of strong directional impulse", 16))
+
+    # EMA value is a secondary confluence, never the sole reason for an entry.
+    ema20 = float(pd.Series(c).ewm(span=20, adjust=False).mean().iloc[-1])
+    if (direction < 0 and ema20 >= current) or (direction > 0 and ema20 <= current):
+        candidates.append((ema20, "Short-term dynamic level", 6))
+
+    valid = []
+    for level, reason, weight in candidates:
+        dist = (level-current) * direction * -1  # positive when level is on retracement side
+        if -0.25*atr <= dist <= 5.0*atr:
+            valid.append((level, reason, weight))
+    if not valid:
+        neutral.update({"direction": "BUY" if direction > 0 else "SELL", "status": "WAIT FOR RETRACEMENT", "status_icon": "🟡", "confirmation": "Macro direction exists, but no high-quality price zone is close enough."})
+        return neutral
+
+    # Cluster nearby evidence and select the strongest/nearest cluster.
+    cluster_radius = max(atr * 0.75, current * 0.0004)
+    clusters = []
+    for seed, _, _ in valid:
+        members = [x for x in valid if abs(x[0]-seed) <= cluster_radius]
+        reasons = list(dict.fromkeys(x[1] for x in members))
+        evidence = sum(x[2] for x in members) + min(8, max(0, len(reasons)-1)*3)
+        center = float(np.average([x[0] for x in members], weights=[max(1, x[2]) for x in members]))
+        retrace_distance = abs(center-current) / max(atr, 1e-12)
+        quality = evidence - max(0.0, retrace_distance-2.5)*2.0
+        clusters.append((quality, center, reasons, evidence))
+    _, center, reasons, evidence = max(clusters, key=lambda x: x[0])
+
+    half = max(atr*0.32, current*0.00025)
+    zone_low, zone_high = center-half, center+half
+    # Invalidation lives beyond the zone plus volatility buffer, not at an arbitrary fixed distance.
+    invalidation = zone_high + 0.55*atr if direction < 0 else zone_low - 0.55*atr
+
+    in_zone = zone_low <= current <= zone_high
+    distance = (zone_low-current) if direction < 0 else (current-zone_high)
+    approaching = 0 < distance <= 1.25*atr
+    moved_past = (current < zone_low-1.8*atr) if direction < 0 else (current > zone_high+1.8*atr)
+    invalid = current > invalidation if direction < 0 else current < invalidation
+
+    # Rejection + micro structure confirmation.
+    last_body = abs(c[-1]-o[-1]); last_range = max(h[-1]-l[-1], 1e-12)
+    upper_wick = h[-1]-max(o[-1], c[-1]); lower_wick = min(o[-1], c[-1])-l[-1]
+    rejection = (upper_wick > max(last_body, 0.25*last_range)) if direction < 0 else (lower_wick > max(last_body, 0.25*last_range))
+    micro = (c[-1] < c[-2] and c[-2] <= c[-3]) if direction < 0 else (c[-1] > c[-2] and c[-2] >= c[-3])
+    confirmation_points = (10 if rejection else 0) + (10 if micro else 0)
+
+    macro_strength = min(1.0, abs(float(macro_score or 0.0)) / 0.45)
+    macro_points = int(round(24 + 16*macro_strength))
+    zone_points = int(min(30, 12 + min(18, evidence)))
+    event_points = 7  # conservative neutral allowance; live event engine remains a separate macro layer
+    entry_score = int(min(100, macro_points + zone_points + confirmation_points + event_points))
+
+    if invalid:
+        status, icon = "INVALIDATED", "🔴"
+    elif in_zone and confirmation_points >= 10 and entry_score >= 70:
+        status, icon = "ENTRY READY", "🟢"
+    elif in_zone:
+        status, icon = "IN ZONE — WAIT CONFIRMATION", "🟠"
+    elif approaching:
+        status, icon = "APPROACHING ZONE", "🟡"
+    elif moved_past:
+        status, icon = "DO NOT CHASE — WAIT RETRACEMENT", "⛔"
+    else:
+        status, icon = "WAIT FOR ZONE", "🟡"
+
+    confirmation_text = []
+    if rejection: confirmation_text.append("price rejection")
+    if micro: confirmation_text.append("micro structure aligned")
+    if not confirmation_text: confirmation_text.append("confirmation not present yet")
+    return {
+        "direction": "BUY" if direction > 0 else "SELL", "status": status, "status_icon": icon,
+        "zone_low": float(zone_low), "zone_high": float(zone_high), "invalidation": float(invalidation),
+        "entry_score": entry_score, "zone_score": zone_points, "confirmation_score": confirmation_points,
+        "macro_points": macro_points, "event_points": event_points, "confluences": reasons[:5],
+        "confirmation": ", ".join(confirmation_text), "atr": atr, "current_analysis_price": current,
+    }
 
 def _tactical_label(score: float) -> str:
     if score >= 0.62:
@@ -2167,10 +2336,8 @@ def compute_tactical_move(asset_key: str, macro_score: float | None = None) -> d
     if df is None or df.empty or len(df) < 40:
         return None
 
-    closes = df["close"].astype(float).to_numpy()
-    if bool(cfg.get("invert")):
-        # Invert USDXXX pairs so positive movement always means target-currency strength.
-        closes = 1.0 / np.maximum(closes, 1e-12)
+    analysis_df = _tactical_analysis_ohlc(df, bool(cfg.get("invert")))
+    closes = analysis_df["close"].astype(float).to_numpy()
 
     def ret(bars: int) -> float:
         if len(closes) <= bars or closes[-1-bars] == 0:
@@ -2246,6 +2413,7 @@ def compute_tactical_move(asset_key: str, macro_score: float | None = None) -> d
         macro_regime = str((GLOBAL_ALERT_STATE.get(asset_key) or {}).get("confirmed_regime") or "Neutral")
 
     confidence = int(min(95, max(50, 52 + abs(score) * 45 + (5 if abs(breakout_component) else 0))))
+    entry_plan = _build_macro_entry_plan(analysis_df, macro_regime, macro_score)
     last_ts = int(df["ts"].iloc[-1])
     return {
         "key": asset_key,
@@ -2265,48 +2433,58 @@ def compute_tactical_move(asset_key: str, macro_score: float | None = None) -> d
         "ret_4h": r240,
         "confidence": confidence,
         "last_price": float(df["close"].iloc[-1]),
+        "analysis_price": float(closes[-1]),
+        "entry_plan": entry_plan,
         "market_ts": last_ts,
     }
 
 
 def render_tactical_move_panel(asset_key: str, macro_score: float | None = None) -> None:
-    """Compact dashboard card that clearly separates live price action from Macro Outlook."""
+    """Render the Macro Entry Zone engine while preserving the old public function name."""
     tactical = compute_tactical_move(asset_key, macro_score)
-    render_html('<div class="sec-title">Tactical Move — Live Price Action</div>')
+    render_html('<div class="sec-title">Macro Entry Zone — Tactical Execution</div>')
     if not tactical:
-        st.caption("Live tactical price data is temporarily unavailable. Macro Outlook remains fully active.")
+        st.caption("Live entry-zone price data is temporarily unavailable. Macro Outlook remains fully active.")
         return
-    label = tactical["label"]
-    if "Bullish" in label:
-        color = "#00ffa3"
-    elif "Bearish" in label:
-        color = "#ff5e75"
-    else:
-        color = "#ffd166"
+    plan = tactical.get("entry_plan") or {}
+    status = str(plan.get("status") or "WAIT")
+    icon = str(plan.get("status_icon") or "⚪")
+    direction = str(plan.get("direction") or "WAIT")
+    if status == "ENTRY READY": color = "#00ffa3"
+    elif status in {"INVALIDATED", "DO NOT CHASE — WAIT RETRACEMENT"}: color = "#ff5e75"
+    else: color = "#ffd166"
+
+    zl, zh, inv = plan.get("zone_low"), plan.get("zone_high"), plan.get("invalidation")
+    px = float(tactical.get("analysis_price") or tactical.get("last_price") or 0.0)
+    dec = _entry_price_decimals(px)
+    zone_text = f"{float(zl):.{dec}f} – {float(zh):.{dec}f}" if zl is not None and zh is not None else "Waiting for valid zone"
+    inv_text = f"{float(inv):.{dec}f}" if inv is not None else "—"
+    reasons = plan.get("confluences") or []
+    reason_html = "".join(f"<div>✓ {escape(str(x))}</div>" for x in reasons) or "<div>Waiting for price-location confluence.</div>"
     render_html(f"""
     <div class="comp-box" style="text-align:left;padding:17px 19px;border-color:rgba(0,245,255,.20);">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
         <div>
-          <div style="font-size:10px;font-weight:850;letter-spacing:1.4px;color:#8fa3b4;text-transform:uppercase;">SHORT-TERM PRICE ACTION</div>
-          <div style="font-size:20px;font-weight:950;color:{color};margin-top:5px;">{tactical['label_icon']} {label}</div>
+          <div style="font-size:10px;font-weight:850;letter-spacing:1.4px;color:#8fa3b4;text-transform:uppercase;">MACRO DIRECTION + PRICE LOCATION</div>
+          <div style="font-size:20px;font-weight:950;color:{color};margin-top:5px;">{icon} {escape(status)}</div>
+          <div style="font-size:11px;color:#b8c9d5;margin-top:5px;">Direction: <b style="color:#ecf7ff;">{escape(direction)}</b> &nbsp;•&nbsp; Macro: <b style="color:#ecf7ff;">{escape(str(tactical['macro_regime']))}</b></div>
         </div>
-        <div style="font-size:10px;color:#8fa3b4;text-align:right;">Confidence<br><b style="color:#ecf7ff;font-size:14px;">{tactical['confidence']}%</b></div>
+        <div style="font-size:10px;color:#8fa3b4;text-align:right;">Entry Score<br><b style="color:#ecf7ff;font-size:14px;">{int(plan.get('entry_score') or 0)}/100</b></div>
       </div>
       <div style="height:1px;background:rgba(255,255,255,.08);margin:13px 0;"></div>
-      <div style="font-size:11px;color:#b8c9d5;line-height:1.75;">
-        <b style="color:#ecf7ff;">Momentum:</b> {tactical['momentum']}<br>
-        <b style="color:#ecf7ff;">Structure:</b> {tactical['structure']}<br>
-        <b style="color:#ecf7ff;">15m:</b> {tactical['ret_15m']*100:+.2f}% &nbsp;•&nbsp;
-        <b style="color:#ecf7ff;">1h:</b> {tactical['ret_1h']*100:+.2f}% &nbsp;•&nbsp;
-        <b style="color:#ecf7ff;">4h:</b> {tactical['ret_4h']*100:+.2f}%
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:9px;">
+        <div style="padding:10px;border-radius:10px;background:rgba(255,255,255,.035);"><span style="font-size:9px;color:#7890a2;">ENTRY ZONE</span><br><b style="color:#ecf7ff;">{zone_text}</b></div>
+        <div style="padding:10px;border-radius:10px;background:rgba(255,255,255,.035);"><span style="font-size:9px;color:#7890a2;">CURRENT PRICE</span><br><b style="color:#ecf7ff;">{px:.{dec}f}</b></div>
+        <div style="padding:10px;border-radius:10px;background:rgba(255,255,255,.035);"><span style="font-size:9px;color:#7890a2;">INVALIDATION</span><br><b style="color:#ff8a9b;">{inv_text}</b></div>
       </div>
-      <div style="margin-top:11px;padding:9px 11px;border-radius:10px;background:rgba(255,255,255,.035);font-size:10.5px;color:#8fa3b4;">
-        {tactical['interpretation']}
+      <div style="margin-top:11px;font-size:10.5px;color:#9fb3c1;line-height:1.7;">{reason_html}</div>
+      <div style="margin-top:11px;padding:9px 11px;border-radius:10px;background:rgba(255,255,255,.035);font-size:10px;color:#8fa3b4;">
+        Macro {int(plan.get('macro_points') or 0)}/40 &nbsp;•&nbsp; Price Zone {int(plan.get('zone_score') or 0)}/30 &nbsp;•&nbsp; Confirmation {int(plan.get('confirmation_score') or 0)}/20 &nbsp;•&nbsp; Event Safety {int(plan.get('event_points') or 0)}/10<br>
+        Confirmation: {escape(str(plan.get('confirmation') or 'Waiting'))}
       </div>
-      <div style="margin-top:8px;font-size:9.5px;color:#607586;">Tactical Move tracks live short-term price action and does not alter the Macro Outlook model.</div>
+      <div style="margin-top:8px;font-size:9.5px;color:#607586;">Macro chooses direction. Deterministic candle structure chooses location. The engine will not chase an extended move.</div>
     </div>
     """)
-
 
 def _load_tactical_state() -> dict[str, dict]:
     data = _load_persistent_state("tactical_move_state", TACTICAL_STATE_FILE, {})
@@ -2318,102 +2496,54 @@ def _save_tactical_state(state: dict[str, dict]) -> None:
 
 
 def _update_tactical_alert_state(state: dict[str, dict], tactical: dict, now_ts: float) -> bool:
-    """Return True only for a new, meaningful strong tactical move; suppress one-minute noise/spam."""
+    """Alert once when a macro-aligned entry zone becomes confirmed and ready."""
     key = str(tactical.get("key", ""))
-    label = str(tactical.get("label", "Neutral"))
-    strong = label if label in {"Strong Bullish", "Strong Bearish"} else ""
-
-    if key == "Gold" and label in {"Bullish", "Bearish"}:
-        ret15 = float(tactical.get("ret_15m", 0.0))
-        ret1h = float(tactical.get("ret_1h", 0.0))
-        confidence = int(tactical.get("confidence", 0))
-        structure = str(tactical.get("structure", ""))
-        same_direction = (
-            (ret15 > 0 and ret1h > 0)
-            if label == "Bullish"
-            else (ret15 < 0 and ret1h < 0)
-        )
-        meaningful_move = abs(ret1h) >= 0.0035
-        structural_move = structure in {"Upside Breakout", "Downside Breakdown"}
-        if confidence >= 68 and same_direction and (meaningful_move or structural_move):
-            strong = label
-
-    stt = state.setdefault(key, {
-        "active": "", "candidate": "", "candidate_since": None,
-        "non_strong_since": None, "last_alert_ts": 0.0,
-    })
-
-    if not strong:
-        stt["candidate"] = ""
-        stt["candidate_since"] = None
-        if stt.get("active"):
-            if stt.get("non_strong_since") is None:
-                stt["non_strong_since"] = float(now_ts)
-            elif float(now_ts) - float(stt.get("non_strong_since") or now_ts) >= 600.0:
-                stt["active"] = ""
-                stt["non_strong_since"] = None
+    plan = tactical.get("entry_plan") or {}
+    status = str(plan.get("status") or "WAIT")
+    direction = str(plan.get("direction") or "WAIT")
+    zl, zh = plan.get("zone_low"), plan.get("zone_high")
+    zone_id = ""
+    if zl is not None and zh is not None:
+        zone_id = f"{direction}:{float(zl):.6g}:{float(zh):.6g}"
+    stt = state.setdefault(key, {"active_entry": "", "last_alert_ts": 0.0, "last_status": ""})
+    stt["last_status"] = status
+    if status != "ENTRY READY" or not zone_id:
+        if status in {"INVALIDATED", "DO NOT CHASE — WAIT RETRACEMENT", "NO MACRO EDGE"}:
+            stt["active_entry"] = ""
         return False
-
-    stt["non_strong_since"] = None
-    if stt.get("active") == strong:
-        stt["candidate"] = ""
-        stt["candidate_since"] = None
+    if stt.get("active_entry") == zone_id:
         return False
-
-    structure_now = str(tactical.get("structure", ""))
-    score_now = abs(float(tactical.get("score", 0.0)))
-    confidence_now = int(tactical.get("confidence", 0))
-    ret1h_now = abs(float(tactical.get("ret_1h", 0.0)))
-
-    immediate = score_now >= 0.78 and structure_now in {"Upside Breakout", "Downside Breakdown"}
-    if key == "Gold" and strong:
-        immediate = immediate or (
-            confidence_now >= 72
-            and (
-                (score_now >= 0.42 and structure_now in {"Upside Breakout", "Downside Breakdown"})
-                or ret1h_now >= 0.006
-            )
-        )
-    if stt.get("candidate") != strong:
-        stt["candidate"] = strong
-        stt["candidate_since"] = float(now_ts)
-        if not immediate:
-            return False
-
-    candidate_since = float(stt.get("candidate_since") or now_ts)
-    required_persistence = 60.0 if key == "Gold" else 180.0
-    if not immediate and float(now_ts) - candidate_since < required_persistence:
-        return False
-
-    # Prevent repeated same-direction alerts during noisy reconnects/restarts.
     last_alert = float(stt.get("last_alert_ts") or 0.0)
-    if last_alert and float(now_ts) - last_alert < 900.0 and stt.get("active") == strong:
+    if last_alert and float(now_ts)-last_alert < 300.0:
         return False
-
-    stt["active"] = strong
-    stt["candidate"] = ""
-    stt["candidate_since"] = None
+    stt["active_entry"] = zone_id
     stt["last_alert_ts"] = float(now_ts)
     return True
 
-
 def _build_tactical_alert_msg(tactical: dict) -> str:
+    plan = tactical.get("entry_plan") or {}
+    px = float(tactical.get("analysis_price") or tactical.get("last_price") or 0.0)
+    dec = _entry_price_decimals(px)
+    zl, zh, inv = plan.get("zone_low"), plan.get("zone_high"), plan.get("invalidation")
+    zone = f"{float(zl):.{dec}f} - {float(zh):.{dec}f}" if zl is not None and zh is not None else "N/A"
+    invalid = f"{float(inv):.{dec}f}" if inv is not None else "N/A"
+    reasons = ", ".join(str(x) for x in (plan.get("confluences") or [])[:3]) or "Macro + price structure"
     return (
-        "⚡ *APEXMACRO — TACTICAL MOVE*\n"
+        "🎯 *APEXMACRO — MACRO ENTRY ZONE*\n"
         "━━━━━━━━━━━━━━━━━━━\n"
-        f"{tactical['icon']} *Asset:* `{tactical['display_name']}`\n\n"
-        f"🏛️ *Macro Outlook:* `{tactical['macro_regime']}`\n"
-        f"🎯 *Tactical Move:* `{tactical['label']}`\n"
-        f"🚦 *Momentum:* `{tactical['momentum']}`\n"
-        f"🧱 *Structure:* `{tactical['structure']}`\n\n"
-        f"⏱ *15m:* `{tactical['ret_15m']*100:+.2f}%`  |  *1h:* `{tactical['ret_1h']*100:+.2f}%`  |  *4h:* `{tactical['ret_4h']*100:+.2f}%`\n"
-        f"📌 *Interpretation:* {tactical['interpretation']}\n"
-        f"💹 *Price Source:* `{tactical.get('symbol', 'Live Market')}`\n\n"
-        "_This alert can fire before the broader Macro Outlook changes; price action and macro regime are intentionally tracked as separate layers._\n"
+        f"{tactical['icon']} *Asset:* `{tactical['display_name']}`\n"
+        f"🏛️ *Macro Direction:* `{tactical['macro_regime']}`\n"
+        f"➡️ *Setup:* `{plan.get('direction', 'WAIT')}`\n\n"
+        f"🎯 *Entry Zone:* `{zone}`\n"
+        f"💹 *Current:* `{px:.{dec}f}`\n"
+        f"🛡️ *Invalidation:* `{invalid}`\n"
+        f"⭐ *Entry Score:* `{int(plan.get('entry_score') or 0)}/100`\n\n"
+        f"🧱 *Confluence:* {reasons}\n"
+        f"✅ *Confirmation:* {plan.get('confirmation', 'Confirmed')}\n\n"
+        "_Macro selects direction; price structure selects the entry zone. Extended moves are not chased._\n"
         "━━━━━━━━━━━━━━━━━━━\n"
-        "⚡ *ApexMacro Institutional Terminal v15.0*"
+        "⚡ *ApexMacro Institutional Terminal*"
     )
-
 
 def send_personalized_tactical_alert(tactical: dict) -> list[dict]:
     if not TELEGRAM_BOT_TOKEN or not tactical:
@@ -2481,7 +2611,7 @@ def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHAN
             forex_lines.append(f"  {meta['flag']} {cur} Macro Outlook: {_emoji(score)}")
             tactical = compute_tactical_move(cur, score)
             if tactical:
-                forex_lines.append(f"     Tactical Move: {tactical['label_icon']} {tactical['label']} | 1h {tactical['ret_1h']*100:+.2f}%")
+                plan = tactical.get('entry_plan') or {}; forex_lines.append(f"     Entry Zone: {plan.get('status_icon','⚪')} {plan.get('status','WAIT')} | {plan.get('direction','WAIT')} | Score {int(plan.get('entry_score') or 0)}/100")
         except Exception: pass
     if forex_lines: lines.extend(["", "🌐 *Forex Macro Outlook*", *forex_lines])
     market_lines = []; ry_val_str = "N/A"
@@ -2490,14 +2620,16 @@ def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHAN
             score, ry_val_str, _ = _calc_gold_score_only(fred_key, channel_name)
             market_lines.append(f"  🥇 Gold (XAUUSD) Macro Outlook: {_emoji(score or 0.0)}")
             tactical = compute_tactical_move("Gold", score or 0.0)
-            if tactical: market_lines.append(f"     Tactical Move: {tactical['label_icon']} {tactical['label']} | 1h {tactical['ret_1h']*100:+.2f}%")
+            if tactical:
+                plan = tactical.get('entry_plan') or {}; market_lines.append(f"     Entry Zone: {plan.get('status_icon','⚪')} {plan.get('status','WAIT')} | {plan.get('direction','WAIT')} | Score {int(plan.get('entry_score') or 0)}/100")
         except Exception: pass
     if "Oil" in selected:
         try:
             score, _ = _calc_oil_score_only(fred_key, channel_name)
             market_lines.append(f"  🛢️ Oil (WTI) Macro Outlook: {_emoji(score or 0.0)}")
             tactical = compute_tactical_move("Oil", score or 0.0)
-            if tactical: market_lines.append(f"     Tactical Move: {tactical['label_icon']} {tactical['label']} | 1h {tactical['ret_1h']*100:+.2f}%")
+            if tactical:
+                plan = tactical.get('entry_plan') or {}; market_lines.append(f"     Entry Zone: {plan.get('status_icon','⚪')} {plan.get('status','WAIT')} | {plan.get('direction','WAIT')} | Score {int(plan.get('entry_score') or 0)}/100")
         except Exception: pass
     if "NDX" in selected:
         try:
@@ -2505,7 +2637,8 @@ def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHAN
             if score is not None:
                 market_lines.append(f"  📊 Nasdaq-100 (NDX) Macro Outlook: {_emoji(score)}")
                 tactical = compute_tactical_move("NDX", score)
-                if tactical: market_lines.append(f"     Tactical Move: {tactical['label_icon']} {tactical['label']} | 1h {tactical['ret_1h']*100:+.2f}%")
+                if tactical:
+                    plan = tactical.get('entry_plan') or {}; market_lines.append(f"     Entry Zone: {plan.get('status_icon','⚪')} {plan.get('status','WAIT')} | {plan.get('direction','WAIT')} | Score {int(plan.get('entry_score') or 0)}/100")
         except Exception: pass
     if market_lines: lines.extend(["", "🏅 *Macro Outlook — Commodities & Equity*", *market_lines])
     if not forex_lines and not market_lines: return ""
