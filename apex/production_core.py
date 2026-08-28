@@ -136,6 +136,80 @@ def _ai_headers(api_key: str, title: str) -> dict:
     }
 
 
+# Final provider-level billing guard. This is intentionally below every trigger
+# layer: regardless of which worker/session reaches _post_ai_chat, only one paid
+# provider request may START inside the hard cooldown window.
+_AI_PROVIDER_GATE_LOCK_FILE = str(PROJECT_ROOT / ".apexmacro_ai_provider_gate.lock")
+_AI_PROVIDER_GATE_STATE_FILE = str(PROJECT_ROOT / "ai_provider_gate_v1.json")
+_AI_PROVIDER_HARD_MIN_SECONDS = 90.0
+
+
+def _provider_gate_enter() -> tuple[object, float]:
+    """Cross-process serialized provider gate. Returns an open locked handle.
+
+    The lock is held for the whole HTTP request. A waiting process can only
+    continue after the first finishes, then it re-checks the durable start time
+    and is rejected if the 90-second hard minimum has not elapsed.
+    """
+    handle = open(_AI_PROVIDER_GATE_LOCK_FILE, "a+", encoding="utf-8")
+    try:
+        import fcntl
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    except Exception:
+        # Linux/Streamlit production supports fcntl. If locking is unavailable,
+        # keep the handle open and still enforce the durable timestamp below.
+        pass
+
+    now_ts = time.time()
+    last_started = 0.0
+    try:
+        state_path = Path(_AI_PROVIDER_GATE_STATE_FILE)
+        if state_path.exists():
+            raw = json.loads(state_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                last_started = float(raw.get("last_started_at", 0.0) or 0.0)
+    except Exception:
+        last_started = 0.0
+
+    remaining = _AI_PROVIDER_HARD_MIN_SECONDS - (now_ts - last_started)
+    if last_started > 0 and remaining > 0:
+        try:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
+        handle.close()
+        raise RuntimeError(f"AI_PROVIDER_HARD_COOLDOWN:{remaining:.1f}")
+
+    # Reserve the paid slot BEFORE contacting the provider. Even a timeout/error
+    # cannot cause another worker to immediately create a second billable call.
+    try:
+        tmp = Path(_AI_PROVIDER_GATE_STATE_FILE + ".tmp")
+        tmp.write_text(json.dumps({
+            "last_started_at": now_ts,
+            "last_started_at_iso": datetime.now(timezone.utc).isoformat(),
+            "pid": os.getpid(),
+        }), encoding="utf-8")
+        os.replace(str(tmp), _AI_PROVIDER_GATE_STATE_FILE)
+    except Exception:
+        pass
+    return handle, now_ts
+
+
+def _provider_gate_exit(handle: object | None) -> None:
+    if handle is None:
+        return
+    try:
+        import fcntl
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except Exception:
+        pass
+    try:
+        handle.close()
+    except Exception:
+        pass
+
+
 def _post_ai_chat(
     provider: str,
     url: str,
@@ -165,10 +239,14 @@ def _post_ai_chat(
         ],
         "temperature": temperature,
     }
+    gate_handle = None
     try:
+        gate_handle, _ = _provider_gate_enter()
         response = requests.post(url, headers=headers, json=payload, timeout=timeout)
     except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout, requests.exceptions.ConnectionError) as exc:
         raise RuntimeError(f"{provider} temporarily unavailable.") from exc
+    finally:
+        _provider_gate_exit(gate_handle)
 
     if response.ok:
         return response
@@ -3838,11 +3916,26 @@ If evidence is insufficient, say so explicitly."""
             "events": result.get("events", {}), "live_price_context": price_context,
         })
     except Exception as exc:
-        state = _ai_batch_load_state()
-        state["last_error"] = str(exc)[:500]
-        state["last_error_at"] = time.time()
-        _ai_batch_save_state(state)
-        _ai_audit_append("error", "Shared AI request/analysis failed", {"error": str(exc)[:500]})
+        err = str(exc)
+        if err.startswith("AI_PROVIDER_HARD_COOLDOWN:"):
+            try:
+                remaining = float(err.split(":", 1)[1])
+            except Exception:
+                remaining = _AI_PROVIDER_HARD_MIN_SECONDS
+            state = _ai_batch_load_state()
+            state["provider_gate_blocked_at"] = time.time()
+            state["provider_gate_remaining_seconds"] = round(max(0.0, remaining), 1)
+            _ai_batch_save_state(state)
+            _ai_audit_append("blocked", "Paid AI request blocked by final 90-second provider gate", {
+                "remaining_seconds": round(max(0.0, remaining), 1),
+                "rule": "provider-level hard minimum",
+            })
+        else:
+            state = _ai_batch_load_state()
+            state["last_error"] = err[:500]
+            state["last_error_at"] = time.time()
+            _ai_batch_save_state(state)
+            _ai_audit_append("error", "Shared AI request/analysis failed", {"error": err[:500]})
     finally:
         _release_ai_batch_process_lock(process_lock_fd)
         with _AI_BATCH_LOCK:
