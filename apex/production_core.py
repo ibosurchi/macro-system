@@ -2962,6 +2962,8 @@ AI_BATCH_PROCESS_LOCK_FILE = str(PROJECT_ROOT / ".apexmacro_ai_batch.lock")
 _AI_BATCH_STATE_ID = "shared_ai_batch_v1"
 _AI_BATCH_LOCK = threading.RLock()
 _AI_BATCH_MEMORY: dict | None = None
+_AI_BATCH_MEMORY_LOADED_AT = 0.0
+_AI_BATCH_MEMORY_REFRESH_SECONDS = 5.0
 _AI_BATCH_SUPERVISOR_RUNNING = False
 _AI_BATCH_REQUEST_INFLIGHT = False
 _AI_BATCH_POLL_SECONDS = 60
@@ -2970,27 +2972,42 @@ _AI_BATCH_MACRO_REFRESH_SECONDS = 15 * 60
 _AI_BATCH_MACRO_CACHE = {"at": 0.0, "data": {}}
 
 
-def _ai_batch_load_state() -> dict:
-    global _AI_BATCH_MEMORY
+def _ai_batch_load_state(force_refresh: bool = False) -> dict:
+    """Read shared AI state, periodically refreshing across Streamlit processes.
+
+    The previous process-local forever-cache could leave one web session showing
+    "AI not ready" even after another worker had already written the first
+    successful batch. A short metadata refresh keeps page navigation provider-free
+    while allowing every session/process to see the shared background result.
+    """
+    global _AI_BATCH_MEMORY, _AI_BATCH_MEMORY_LOADED_AT
+    now_ts = time.time()
     with _AI_BATCH_LOCK:
-        if isinstance(_AI_BATCH_MEMORY, dict):
+        if (
+            not force_refresh
+            and isinstance(_AI_BATCH_MEMORY, dict)
+            and now_ts - float(_AI_BATCH_MEMORY_LOADED_AT or 0.0) < _AI_BATCH_MEMORY_REFRESH_SECONDS
+        ):
             return dict(_AI_BATCH_MEMORY)
     try:
         state = _load_persistent_state(_AI_BATCH_STATE_ID, AI_BATCH_STATE_FILE, {})
         if not isinstance(state, dict):
             state = {}
     except Exception:
-        state = {}
+        with _AI_BATCH_LOCK:
+            state = dict(_AI_BATCH_MEMORY) if isinstance(_AI_BATCH_MEMORY, dict) else {}
     with _AI_BATCH_LOCK:
         _AI_BATCH_MEMORY = dict(state)
+        _AI_BATCH_MEMORY_LOADED_AT = now_ts
     return dict(state)
 
 
 def _ai_batch_save_state(state: dict) -> None:
-    global _AI_BATCH_MEMORY
+    global _AI_BATCH_MEMORY, _AI_BATCH_MEMORY_LOADED_AT
     payload = dict(state or {})
     with _AI_BATCH_LOCK:
         _AI_BATCH_MEMORY = payload
+        _AI_BATCH_MEMORY_LOADED_AT = time.time()
     try:
         _save_persistent_state(_AI_BATCH_STATE_ID, AI_BATCH_STATE_FILE, payload)
     except Exception:
@@ -3230,7 +3247,7 @@ def _run_shared_ai_batch_once() -> None:
         if process_lock_fd is None:
             return
         # Another process may have completed the same signature just before we got the lock.
-        latest_state = _ai_batch_load_state()
+        latest_state = _ai_batch_load_state(force_refresh=True)
         if latest_state.get("signature") == signature and isinstance(latest_state.get("result"), dict):
             _release_ai_batch_process_lock(process_lock_fd)
             return
@@ -3345,7 +3362,7 @@ def get_openrouter_analysis(
     state = _ai_batch_load_state()
     result = state.get("result", {}) if isinstance(state, dict) else {}
     summary = str(result.get("summary", "")).strip() if isinstance(result, dict) else ""
-    return summary or "Background AI is waiting for the first changed news/data snapshot."
+    return summary or "Background AI is preparing the first shared news/data snapshot in the background."
 
 
 def _is_gold_relevant_news(article: dict) -> bool:
@@ -3576,7 +3593,7 @@ def get_multi_asset_news_intelligence(news_text: str, api_key: str=DEFAULT_AI_KE
     state=_ai_batch_load_state(); result=state.get("result",{}) if isinstance(state,dict) else {}
     raw=result.get("assets",{}) if isinstance(result,dict) else {}
     if not isinstance(raw,dict) or not raw:
-        return {"summary":"Background AI is waiting for the first changed news/data snapshot.","assets":empty,"active":False}
+        return {"summary":"Background AI is preparing the first shared news/data snapshot in the background.","assets":empty,"active":False}
     clean=dict(empty)
     for asset in assets:
         if isinstance(raw.get(asset),dict): clean[asset]=dict(raw[asset])
@@ -4911,7 +4928,7 @@ def get_causal_macro_ai_analysis(event: dict, nowcast: dict, articles: list, api
     events = result.get("events", {}) if isinstance(result, dict) else {}
     item = events.get(code) if isinstance(events, dict) else None
     if not isinstance(item, dict):
-        return {"status": "deferred", "raw": "Background AI is waiting for changed event/news/data evidence."}
+        return {"status": "deferred", "raw": "Background AI is preparing the shared event/news/data snapshot in the background."}
     try:
         normalized = _normalize_causal_ai_payload(dict(item), int(item.get("source_count", 0) or 0))
     except Exception:
