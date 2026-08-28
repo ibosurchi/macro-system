@@ -7138,20 +7138,33 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     selected_key = "APEX_FORECASTER_SELECTED_EVENT"
     snapshot_key = "APEX_FORECASTER_EVENT_SNAPSHOT"
     sel_date_key = "apex_forecaster_selected_date"
-    # Rolling calendar: always Today + next 6 local days.  This moves forward
-    # automatically every day and is independent of the AI master switch.
+    # Forecaster board window. The default remains Today + 6 days, but the
+    # presentation can jump forward by date without changing any event logic.
     if not st.session_state.get(selected_key):
         _forecaster_radar_refresh_tick()
 
     today_local = (datetime.now(timezone.utc) + timedelta(hours=tz_info["offset"])).date()
-    rolling_end = today_local + timedelta(days=6)
-    rolling_feed = fetch_forex_factory_calendar_rolling(7, tz_info["offset"])
-    events = get_upcoming_catalyst_events(tz_info["offset"], tz_info["label"], ff_events_override=rolling_feed)
+    board_start_key = "apex_forecaster_board_start"
+    board_start = st.session_state.get(board_start_key, today_local)
+    if not isinstance(board_start, _date) or board_start < today_local or board_start > today_local + timedelta(days=7):
+        board_start = today_local
+        st.session_state[board_start_key] = board_start
+    board_end = board_start + timedelta(days=6)
+
+    # Keep the existing robust rolling fetch for the default window. For a user-
+    # selected future window, use the existing Forex Factory range fetcher only.
+    # No strategy, scoring, nowcast or causal-intelligence behavior is changed.
+    if board_start == today_local:
+        board_feed = fetch_forex_factory_calendar_rolling(7, tz_info["offset"])
+    else:
+        board_feed = fetch_forex_factory_calendar_range(board_start, board_end)
+
+    events = get_upcoming_catalyst_events(tz_info["offset"], tz_info["label"], ff_events_override=board_feed)
     events = [
         ev for ev in events
-        if ev.get("datetime_obj") and today_local <= ev["datetime_obj"].date() <= rolling_end
+        if ev.get("datetime_obj") and board_start <= ev["datetime_obj"].date() <= board_end
     ]
-    snapshot_rolling_key = f"{snapshot_key}_rolling_{today_local.isoformat()}"
+    snapshot_rolling_key = f"{snapshot_key}_rolling_{board_start.isoformat()}"
     if events:
         st.session_state[snapshot_rolling_key] = events
     elif st.session_state.get(snapshot_rolling_key):
@@ -7190,14 +7203,14 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
         st.session_state[sel_date_key] = today_local
 
     selected_date: _date = st.session_state[sel_date_key]
-    if not (today_local <= selected_date <= rolling_end):
-        selected_date = today_local
+    if not (board_start <= selected_date <= board_end):
+        selected_date = board_start
         st.session_state[sel_date_key] = selected_date
 
-    # Exactly seven rolling local dates: today plus the next six days.
-    week_start = today_local
-    week_days = [today_local + timedelta(days=i) for i in range(7)]
-    week_end = rolling_end
+    # Exactly seven dates anchored to the selected board start date.
+    week_start = board_start
+    week_days = [board_start + timedelta(days=i) for i in range(7)]
+    week_end = board_end
 
     # Presentation-only Kanban redesign. All event ingestion, forecasting,
     # AI, persistence, admin overrides and background workers above remain unchanged.
@@ -7208,7 +7221,10 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     .apex-fk-title{margin-top:6px;color:#f3f7fa;font-size:clamp(25px,3vw,38px);font-weight:850;line-height:1.08;letter-spacing:-.7px}
     .apex-fk-sub{margin-top:8px;color:#8fa1ae;font-size:12px}.apex-fk-week{color:#91a5b1;font-size:11px;border:1px solid rgba(55,211,226,.20);background:rgba(5,20,29,.78);border-radius:999px;padding:7px 11px;white-space:nowrap}
     .apex-fk-legend{display:flex;align-items:center;gap:15px;flex-wrap:wrap;margin:8px 0 13px;color:#91a3ae;font-size:10px}.apex-fk-leg{display:flex;align-items:center;gap:5px}.apex-fk-dot{display:inline-block;width:6px;height:6px;border-radius:50%}.apex-fk-dot.high{background:#b04ce4}.apex-fk-dot.medium{background:#ffb822}.apex-fk-dot.low{background:#35d2e3}
-    .apex-fk-board-label{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:12px 0 8px}.apex-fk-board-label b{color:#eaf2f5;font-size:13px}.apex-fk-board-label span{color:#7f929e;font-size:10px}
+    .apex-fk-board-label{display:flex;align-items:center;justify-content:flex-start;gap:12px;margin:12px 0 8px;min-height:42px}.apex-fk-board-label b{color:#eaf2f5;font-size:13px}
+    [class*="st-key-apex_fk_calendar_picker"]{margin:3px 0 7px!important}
+    [class*="st-key-apex_fk_calendar_picker"] [data-testid="stDateInput"]{max-width:220px!important;margin-left:auto!important}
+    [class*="st-key-apex_fk_calendar_picker"] [data-baseweb="input"]{min-height:42px!important;border-radius:11px!important;border-color:rgba(39,220,231,.28)!important;background:rgba(7,25,35,.82)!important}
     .apex-fk-dayhead{text-align:center;padding:11px 5px 9px;margin:-2px -2px 7px;border-bottom:1px solid rgba(74,128,150,.15);min-height:55px;box-sizing:border-box}.apex-fk-dayname{font-size:9px;color:#8296a2;letter-spacing:.09em;font-weight:800}.apex-fk-daynum{font-size:17px;color:#e8f1f5;font-weight:850;margin-top:2px}.apex-fk-dayhead.selected .apex-fk-dayname,.apex-fk-dayhead.selected .apex-fk-daynum{color:#2adce7}.apex-fk-daycount{font-size:9px;color:#718591;margin-top:3px}
     .apex-fk-empty{min-height:92px;display:flex;align-items:center;justify-content:center;text-align:center;color:#607682;font-size:10px;border:1px dashed rgba(73,126,147,.16);border-radius:10px;background:rgba(4,16,24,.32);padding:10px}
     .apex-fk-more{text-align:center;color:#7f939e;font-size:9px;padding:7px 2px 1px}
@@ -7236,6 +7252,7 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     @media(max-width:768px){
       .apex-fk-hero{align-items:flex-start;flex-direction:column;margin-bottom:10px}.apex-fk-title{font-size:24px}.apex-fk-week{padding:5px 8px}.apex-fk-sub{font-size:10px}
       .apex-fk-board-label{margin-top:8px}
+      [class*="st-key-apex_fk_calendar_picker"] [data-testid="stDateInput"]{max-width:100%!important;width:100%!important;margin-left:0!important}
       [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_col_"]){display:flex!important;flex-direction:row!important;flex-wrap:nowrap!important;gap:8px!important;overflow-x:auto!important;overflow-y:hidden!important;scroll-snap-type:x proximity!important;padding:1px 2px 10px!important;-webkit-overflow-scrolling:touch!important;scrollbar-width:thin!important}
       [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_col_"])>[data-testid="stColumn"],
       [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_col_"])>[data-testid="column"]{display:block!important;flex:0 0 210px!important;width:210px!important;min-width:210px!important;max-width:210px!important;scroll-snap-align:start!important}
@@ -7283,7 +7300,9 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
         render_html(f'<div style="padding:10px 12px;color:#8fa1ae;font-size:11px;border:1px solid rgba(83,135,158,.16);border-radius:10px;background:rgba(7,25,35,.52)">Rolling 7-day board · {total_events} catalysts · refreshes automatically each day</div>')
     with nav_today:
         if st.button("Today", key="apex_fk_today", use_container_width=True):
+            st.session_state[board_start_key] = today_local
             st.session_state[sel_date_key] = today_local
+            st.session_state["apex_fk_calendar_jump"] = today_local
             st.session_state.pop(selected_key, None)
             st.rerun()
 
@@ -7293,8 +7312,29 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
       <span class="apex-fk-leg"><i class="apex-fk-dot medium"></i>Medium Impact</span>
       <span class="apex-fk-leg"><i class="apex-fk-dot low"></i>Low Impact</span>
     </div>
-    <div class="apex-fk-board-label"><b>7-Day Event Board</b><span>Tap a catalyst to open Event Details</span></div>
     """)
+
+    # Calendar jump control: placed in the exact right-side area above the board.
+    # It shifts only the seven-day presentation window and reuses the existing
+    # Forex Factory range ingestion + Forecaster event pipeline.
+    board_title_col, calendar_col = st.columns([4, 1], gap="small")
+    with board_title_col:
+        render_html('<div class="apex-fk-board-label"><b>7-Day Event Board</b></div>')
+    with calendar_col:
+        with st.container(key="apex_fk_calendar_picker"):
+            jump_date = st.date_input(
+                "Calendar",
+                value=board_start,
+                min_value=today_local,
+                max_value=today_local + timedelta(days=7),
+                key="apex_fk_calendar_jump",
+                label_visibility="collapsed",
+            )
+    if jump_date != board_start:
+        st.session_state[board_start_key] = jump_date
+        st.session_state[sel_date_key] = jump_date
+        st.session_state.pop(selected_key, None)
+        st.rerun()
 
     # Seven true Kanban columns. On phones the board scrolls horizontally instead
     # of crushing cards into unreadable narrow columns.
