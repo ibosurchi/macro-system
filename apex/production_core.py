@@ -7199,95 +7199,65 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     week_days = [today_local + timedelta(days=i) for i in range(7)]
     week_end = rolling_end
 
-    # This CSS is intentionally scoped to the new Forecaster keys/classes so it
-    # cannot alter the approved UI of the other ApexMacro pages.
+    # Presentation-only Kanban redesign. All event ingestion, forecasting,
+    # AI, persistence, admin overrides and background workers above remain unchanged.
     render_html("""
     <style>
-    .apex-fc2-hero{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin:2px 0 16px;padding:2px 2px 6px}
-    .apex-fc2-kicker{font-size:11px;font-weight:800;letter-spacing:.16em;color:#28dce7;text-transform:uppercase}
-    .apex-fc2-title{margin-top:6px;max-width:780px;color:#f3f7fa;font-size:clamp(24px,3vw,38px);font-weight:800;line-height:1.08;letter-spacing:-.7px}
-    .apex-fc2-sub{margin-top:8px;color:#8fa1ae;font-size:12px}
-    .apex-fc2-weekmeta{flex:0 0 auto;color:#8fa1ae;font-size:11px;border:1px solid rgba(83,135,158,.20);background:rgba(6,22,31,.74);border-radius:999px;padding:7px 10px}
-    .apex-fc2-section-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 12px}
-    .apex-fc2-section-title{font-size:14px;font-weight:800;color:#eef5f8}
-    .apex-fc2-count{font-size:10px;white-space:nowrap;flex:0 0 auto;color:#9fb0ba;border:1px solid rgba(83,135,158,.20);background:rgba(7,25,35,.78);border-radius:999px;padding:5px 9px}
-    .apex-fc2-empty{padding:22px 16px;border:1px dashed rgba(83,135,158,.22);border-radius:14px;color:#8295a2;text-align:center;background:rgba(5,18,27,.48)}
-    .apex-fc2-dots{display:flex;align-items:center;justify-content:center;gap:4px;height:9px;margin-top:-5px;margin-bottom:4px}
-    .apex-fc2-dot{width:5px;height:5px;border-radius:50%;display:inline-block}.apex-fc2-dot.high{background:#b04ce4}.apex-fc2-dot.medium{background:#ffb822}.apex-fc2-dot.low{background:#35d2e3}
-    .apex-fc2-legend{display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin:10px 0 0;color:#8fa1ae;font-size:10px}.apex-fc2-legend span{display:flex;align-items:center;gap:5px}
-    .apex-fc2-detail-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:10px}.apex-fc2-detail-kicker{font-size:10px;color:#28dce7;font-weight:800;letter-spacing:.1em;text-transform:uppercase}.apex-fc2-detail-title{font-size:19px;color:#f2f7fa;font-weight:800;line-height:1.25;margin-top:5px}.apex-fc2-detail-time{font-size:11px;color:#91a3af;margin-top:5px}
-    .apex-fc2-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0}.apex-fc2-metric{padding:10px;border:1px solid rgba(83,135,158,.16);background:rgba(7,25,35,.74);border-radius:10px}.apex-fc2-metric-label{font-size:9px;color:#7e909c}.apex-fc2-metric-value{margin-top:4px;font-size:13px;font-weight:750;color:#eef5f8}
-    .apex-fc2-insight{padding:11px;border-top:1px solid rgba(83,135,158,.14);color:#91a3af;font-size:11px;line-height:1.5}.apex-fc2-insight b{display:block;color:#dce7ec;font-size:11px;margin-bottom:4px}
+    .apex-fk-hero{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin:2px 0 14px;padding:2px 2px 5px}
+    .apex-fk-kicker{font-size:11px;font-weight:850;letter-spacing:.16em;color:#28dce7;text-transform:uppercase}
+    .apex-fk-title{margin-top:6px;color:#f3f7fa;font-size:clamp(25px,3vw,38px);font-weight:850;line-height:1.08;letter-spacing:-.7px}
+    .apex-fk-sub{margin-top:8px;color:#8fa1ae;font-size:12px}.apex-fk-week{color:#91a5b1;font-size:11px;border:1px solid rgba(55,211,226,.20);background:rgba(5,20,29,.78);border-radius:999px;padding:7px 11px;white-space:nowrap}
+    .apex-fk-legend{display:flex;align-items:center;gap:15px;flex-wrap:wrap;margin:8px 0 13px;color:#91a3ae;font-size:10px}.apex-fk-leg{display:flex;align-items:center;gap:5px}.apex-fk-dot{display:inline-block;width:6px;height:6px;border-radius:50%}.apex-fk-dot.high{background:#b04ce4}.apex-fk-dot.medium{background:#ffb822}.apex-fk-dot.low{background:#35d2e3}
+    .apex-fk-board-label{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:12px 0 8px}.apex-fk-board-label b{color:#eaf2f5;font-size:13px}.apex-fk-board-label span{color:#7f929e;font-size:10px}
+    .apex-fk-dayhead{text-align:center;padding:11px 5px 9px;margin:-2px -2px 7px;border-bottom:1px solid rgba(74,128,150,.15);min-height:55px;box-sizing:border-box}.apex-fk-dayname{font-size:9px;color:#8296a2;letter-spacing:.09em;font-weight:800}.apex-fk-daynum{font-size:17px;color:#e8f1f5;font-weight:850;margin-top:2px}.apex-fk-dayhead.selected .apex-fk-dayname,.apex-fk-dayhead.selected .apex-fk-daynum{color:#2adce7}.apex-fk-daycount{font-size:9px;color:#718591;margin-top:3px}
+    .apex-fk-empty{min-height:92px;display:flex;align-items:center;justify-content:center;text-align:center;color:#607682;font-size:10px;border:1px dashed rgba(73,126,147,.16);border-radius:10px;background:rgba(4,16,24,.32);padding:10px}
+    .apex-fk-more{text-align:center;color:#7f939e;font-size:9px;padding:7px 2px 1px}
 
-    /* Week rail */
-    [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fc2_day_"]){width:100%!important;max-width:100%!important;gap:8px!important;overflow:hidden!important}
-    [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fc2_day_"])>[data-testid="stColumn"],
-    [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fc2_day_"])>[data-testid="column"]{min-width:0!important;max-width:100%!important}
-    [class*="st-key-apex_fc2_day_"] button{min-height:82px!important;padding:9px 4px!important;border-radius:13px!important;border:1px solid rgba(83,135,158,.17)!important;background:linear-gradient(145deg,rgba(10,31,42,.82),rgba(4,17,25,.94))!important;color:#9fb0ba!important;white-space:pre-line!important;line-height:1.25!important;font-size:11px!important;font-weight:700!important;box-shadow:none!important;transition:transform .18s ease,border-color .18s ease,background .18s ease!important}
-    [class*="st-key-apex_fc2_day_"] button p{white-space:pre-line!important;text-align:center!important;margin:0!important}
-    [class*="st-key-apex_fc2_day_selected_"] button{border-color:rgba(39,220,231,.85)!important;background:linear-gradient(145deg,rgba(12,68,78,.72),rgba(5,28,37,.95))!important;color:#2be0e9!important;box-shadow:0 0 18px rgba(39,220,231,.10)!important}
-    [class*="st-key-apex_fc2_day_today_"] button{border-color:rgba(39,220,231,.34)!important}
-    [class*="st-key-apex_fc2_day_"] button:hover{transform:translateY(-2px)!important;border-color:rgba(39,220,231,.50)!important;color:#eaf6f8!important}
+    /* The exact seven-column board. Desktop stays seven columns; mobile becomes a clean horizontal board. */
+    [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_col_"]){align-items:stretch!important;gap:7px!important;width:100%!important;max-width:100%!important;overflow:visible!important}
+    [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_col_"])>[data-testid="stColumn"],
+    [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_col_"])>[data-testid="column"]{min-width:0!important;max-width:100%!important;overflow:visible!important}
+    [class*="st-key-apex_fk_col_"]{height:100%!important;min-height:430px!important;padding:8px!important;box-sizing:border-box!important;border:1px solid rgba(55,211,226,.18)!important;border-radius:14px!important;background:linear-gradient(160deg,rgba(7,25,35,.94),rgba(3,14,21,.985))!important;overflow:hidden!important}
+    [class*="st-key-apex_fk_col_selected_"]{border-color:rgba(39,220,231,.58)!important;box-shadow:0 0 20px rgba(39,220,231,.06)!important}
 
-    /* Main two-column intelligence composition */
-    [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fc2_timeline_col"]){align-items:stretch!important;gap:14px!important;width:100%!important;max-width:100%!important;overflow:visible!important}
-    [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fc2_timeline_col"])>[data-testid="stColumn"],
-    [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fc2_timeline_col"])>[data-testid="column"]{min-width:0!important;max-width:100%!important;overflow:hidden!important}
-    [class*="st-key-apex_fc2_timeline_col"],[class*="st-key-apex_fc2_detail_col"]{height:100%!important;min-width:0!important;max-width:100%!important;overflow:hidden!important;border:1px solid rgba(83,135,158,.17)!important;background:linear-gradient(145deg,rgba(6,22,31,.94),rgba(3,13,20,.98))!important;border-radius:17px!important;padding:15px!important;box-sizing:border-box!important}
-    [class*="st-key-apex_fc2_timeline_col"] *,[class*="st-key-apex_fc2_detail_col"] *{min-width:0}
+    /* Event cards */
+    [class*="st-key-apex_fk_card_"]{position:relative!important;margin-bottom:7px!important;min-width:0!important;max-width:100%!important}
+    [class*="st-key-apex_fk_card_"] button{width:100%!important;max-width:100%!important;min-width:0!important;min-height:78px!important;padding:9px 9px 9px 13px!important;border-radius:10px!important;border:1px solid rgba(83,135,158,.17)!important;background:rgba(8,28,39,.80)!important;color:#dce8ed!important;text-align:left!important;justify-content:flex-start!important;white-space:pre-wrap!important;overflow-wrap:anywhere!important;word-break:normal!important;box-shadow:none!important;font-size:9px!important;line-height:1.42!important;font-weight:650!important;transition:transform .16s ease,border-color .16s ease,background .16s ease!important}
+    [class*="st-key-apex_fk_card_"] button p{margin:0!important;width:100%!important;max-width:100%!important;text-align:left!important;white-space:pre-wrap!important;overflow-wrap:anywhere!important}
+    [class*="st-key-apex_fk_card_"]::before{content:"";position:absolute;left:6px;top:13px;width:5px;height:5px;border-radius:50%;background:#35d2e3;z-index:3;pointer-events:none}
+    [class*="st-key-apex_fk_card_high_"]::before{background:#b04ce4}[class*="st-key-apex_fk_card_medium_"]::before{background:#ffb822}[class*="st-key-apex_fk_card_low_"]::before{background:#35d2e3}
+    [class*="st-key-apex_fk_card_"] button:hover{transform:translateY(-2px)!important;border-color:rgba(39,220,231,.48)!important;background:rgba(9,36,48,.94)!important}
+    [class*="st-key-apex_fk_card_"] button:active{transform:scale(.985)!important}
 
-    /* Event timeline cards */
-    [class*="st-key-apex_fc2_event_"]:not([class*="st-key-apex_fc2_event_btn_"]){position:relative!important;margin:0 0 11px 22px!important;width:calc(100% - 22px)!important;max-width:calc(100% - 22px)!important;box-sizing:border-box!important;overflow:visible!important}
-    [class*="st-key-apex_fc2_event_"]:not([class*="st-key-apex_fc2_event_btn_"])::before{content:"";position:absolute;left:-18px;top:0;bottom:-12px;width:1px;background:rgba(83,135,158,.16)}
-    [class*="st-key-apex_fc2_event_"]:not([class*="st-key-apex_fc2_event_btn_"])::after{content:"";position:absolute;left:-22px;top:19px;width:9px;height:9px;border-radius:50%;background:#b04ce4;box-shadow:0 0 0 4px #061721}
-    [class*="st-key-apex_fc2_event_medium_"]:not([class*="st-key-apex_fc2_event_btn_"])::after{background:#ffb822}[class*="st-key-apex_fc2_event_low_"]:not([class*="st-key-apex_fc2_event_btn_"])::after{background:#35d2e3}
-    [class*="st-key-apex_fc2_event_"] button{width:100%!important;max-width:100%!important;min-width:0!important;min-height:108px!important;padding:12px 13px!important;border-radius:13px!important;border:1px solid rgba(83,135,158,.17)!important;background:rgba(7,25,35,.78)!important;color:#eaf1f4!important;text-align:left!important;justify-content:flex-start!important;white-space:pre-wrap!important;overflow-wrap:anywhere!important;word-break:normal!important;box-shadow:none!important;font-size:11px!important;line-height:1.46!important;font-weight:650!important;transition:transform .16s ease,border-color .16s ease,background .16s ease!important}
-    [class*="st-key-apex_fc2_event_"] button p{text-align:left!important;white-space:pre-wrap!important;overflow-wrap:anywhere!important;margin:0!important;width:100%!important;max-width:100%!important}
-    [class*="st-key-apex_fc2_event_selected_"] button{border-color:rgba(39,220,231,.60)!important;background:linear-gradient(145deg,rgba(8,38,49,.92),rgba(4,20,29,.98))!important}
-    [class*="st-key-apex_fc2_event_"] button:hover{transform:translateY(-2px)!important;border-color:rgba(39,220,231,.45)!important;background:rgba(8,33,44,.90)!important}
-
-    [class*="st-key-apex_fc2_open_full"] button{width:100%!important;min-height:44px!important;margin-top:10px!important;border-radius:10px!important;border:1px solid rgba(39,220,231,.44)!important;background:linear-gradient(90deg,rgba(24,205,219,.18),rgba(24,205,219,.08))!important;color:#37e4ec!important;font-weight:800!important;box-shadow:none!important}
+    /* Make the existing full Event Details dialog visually match the Kanban concept. */
+    div[data-testid="stDialog"]>div[role="dialog"]{border:1px solid rgba(39,220,231,.34)!important;border-radius:18px!important;background:linear-gradient(160deg,rgba(7,25,35,.99),rgba(2,12,19,.995))!important;box-shadow:0 28px 90px rgba(0,0,0,.55)!important;max-width:900px!important}
+    div[data-testid="stDialog"]::before{backdrop-filter:blur(8px)!important;-webkit-backdrop-filter:blur(8px)!important}
 
     @media(max-width:768px){
-      .apex-fc2-hero{align-items:flex-start;flex-direction:column;margin-bottom:12px;width:100%;max-width:100%}.apex-fc2-title{font-size:23px}.apex-fc2-weekmeta{padding:5px 8px}
-      .apex-fc2-section-head{align-items:flex-start}.apex-fc2-section-title{min-width:0;overflow-wrap:anywhere}.apex-fc2-count{white-space:nowrap!important}
-      [class*="st-key-apex_fc2_day_"] button{min-height:66px!important;padding:7px 2px!important;border-radius:9px!important;font-size:9px!important}
-      .apex-fc2-dots{gap:2px;margin-top:-7px}.apex-fc2-dot{width:4px;height:4px}
-      [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fc2_day_"]){gap:4px!important;width:100%!important;max-width:100%!important}
-
-      /* Force the two Streamlit columns to become true full-width rows on phones.
-         The parent stColumn widths/flex-basis must be overridden, not only the keyed inner containers. */
-      [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fc2_timeline_col"]){display:flex!important;flex-direction:column!important;flex-wrap:nowrap!important;align-items:stretch!important;gap:12px!important;width:100%!important;max-width:100%!important;overflow:visible!important}
-      [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fc2_timeline_col"]) > [data-testid="stColumn"],
-      [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fc2_timeline_col"]) > [data-testid="column"]{display:block!important;flex:1 1 100%!important;flex-basis:100%!important;width:100%!important;min-width:0!important;max-width:100%!important;overflow:visible!important}
-      [class*="st-key-apex_fc2_timeline_col"],[class*="st-key-apex_fc2_detail_col"]{display:block!important;width:100%!important;min-width:0!important;max-width:100%!important;padding:12px!important;overflow:hidden!important;box-sizing:border-box!important}
-      [class*="st-key-apex_fc2_detail_col"]{order:initial!important;margin-top:0!important}
-
-      [class*="st-key-apex_fc2_event_"]:not([class*="st-key-apex_fc2_event_btn_"]){margin-left:17px!important;width:calc(100% - 17px)!important;max-width:calc(100% - 17px)!important}
-      [class*="st-key-apex_fc2_event_"] button{min-height:104px!important;padding:11px!important;font-size:10px!important;line-height:1.42!important}
-      .apex-fc2-detail-title{font-size:16px;overflow-wrap:anywhere}.apex-fc2-detail-time{overflow-wrap:anywhere}.apex-fc2-metrics{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.apex-fc2-metric{padding:8px;min-width:0}.apex-fc2-metric-label{font-size:8px;overflow-wrap:normal;word-break:normal}.apex-fc2-metric-value{font-size:12px;overflow-wrap:anywhere}
-      .apex-fc2-insight{overflow-wrap:anywhere}
+      .apex-fk-hero{align-items:flex-start;flex-direction:column;margin-bottom:10px}.apex-fk-title{font-size:24px}.apex-fk-week{padding:5px 8px}.apex-fk-sub{font-size:10px}
+      .apex-fk-board-label{margin-top:8px}
+      [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_col_"]){display:flex!important;flex-direction:row!important;flex-wrap:nowrap!important;gap:8px!important;overflow-x:auto!important;overflow-y:hidden!important;scroll-snap-type:x proximity!important;padding:1px 2px 10px!important;-webkit-overflow-scrolling:touch!important;scrollbar-width:thin!important}
+      [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_col_"])>[data-testid="stColumn"],
+      [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_col_"])>[data-testid="column"]{display:block!important;flex:0 0 210px!important;width:210px!important;min-width:210px!important;max-width:210px!important;scroll-snap-align:start!important}
+      [class*="st-key-apex_fk_col_"]{min-height:370px!important;padding:7px!important;border-radius:12px!important}
+      [class*="st-key-apex_fk_card_"] button{min-height:72px!important;font-size:9px!important;padding:8px 8px 8px 12px!important}
+      .apex-fk-dayhead{min-height:50px;padding:8px 4px}.apex-fk-daynum{font-size:16px}
+      div[data-testid="stDialog"]>div[role="dialog"]{width:calc(100vw - 18px)!important;max-width:calc(100vw - 18px)!important;max-height:92vh!important;margin:auto!important;border-radius:15px!important}
     }
-    @media(max-width:390px){
-      [class*="st-key-apex_fc2_day_"] button{min-height:61px!important;font-size:8px!important;padding:6px 1px!important}
-      .apex-fc2-title{font-size:21px}.apex-fc2-sub{font-size:10px}
-    }
-    @media(prefers-reduced-motion:reduce){[class*="st-key-apex_fc2_"] button{transition:none!important}}
+    @media(prefers-reduced-motion:reduce){[class*="st-key-apex_fk_"] button{transition:none!important}}
     </style>
     """)
 
     week_label = f"{week_start.strftime('%d %b')} — {week_end.strftime('%d %b %Y')}"
+    total_events = sum(len(events_by_date.get(d, [])) for d in week_days)
     render_html(f"""
-    <div class="apex-fc2-hero">
-      <div>
-        <div class="apex-fc2-kicker">CATALYST FORECASTER</div>
-        <div class="apex-fc2-title">Macro events, organized by market relevance.</div>
-        <div class="apex-fc2-sub">Live catalyst timeline · {tz_info['label']}</div>
-      </div>
-      <div class="apex-fc2-weekmeta">{week_label}</div>
+    <div class="apex-fk-hero">
+      <div><div class="apex-fk-kicker">CATALYST FORECASTER</div><div class="apex-fk-title">Weekly Catalyst Board</div><div class="apex-fk-sub">Scan the week. Open any event for full causal intelligence · {tz_info['label']}</div></div>
+      <div class="apex-fk-week">{week_label}</div>
     </div>
     """)
 
+    # Preserve the existing admin-only diagnostics exactly as functionality.
     is_admin_user = bool(auth_user and auth_user.get("is_admin"))
     if is_admin_user:
         diag = get_forex_factory_diagnostics()
@@ -7310,147 +7280,63 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
 
     nav_info, nav_today = st.columns([3, 1], gap="small")
     with nav_info:
-        render_html('<div style="padding:10px 12px;color:#8fa1ae;font-size:11px;border:1px solid rgba(83,135,158,.16);border-radius:10px;background:rgba(7,25,35,.52)">Rolling 7-day calendar · refreshes automatically each day</div>')
+        render_html(f'<div style="padding:10px 12px;color:#8fa1ae;font-size:11px;border:1px solid rgba(83,135,158,.16);border-radius:10px;background:rgba(7,25,35,.52)">Rolling 7-day board · {total_events} catalysts · refreshes automatically each day</div>')
     with nav_today:
-        if st.button("Today", key="apex_fc2_today", use_container_width=True):
+        if st.button("Today", key="apex_fk_today", use_container_width=True):
             st.session_state[sel_date_key] = today_local
             st.session_state.pop(selected_key, None)
             st.rerun()
 
-    def _select_fc2_date(day_value: _date) -> None:
-        st.session_state[sel_date_key] = day_value
-        st.session_state.pop(selected_key, None)
-
-    # Rolling seven-day rail: today + next six days.
-    week_cols = st.columns(7, gap="small")
-    for idx, day_date in enumerate(week_days):
-        day_events = events_by_date.get(day_date, [])
-        state = "selected" if day_date == selected_date else ("today" if day_date == today_local else "normal")
-        with week_cols[idx]:
-            with st.container(key=f"apex_fc2_day_{state}_{day_date:%Y_%m_%d}"):
-                st.button(
-                    f"{day_date.strftime('%a').upper()}\n{day_date.day}",
-                    key=f"apex_fc2_day_btn_{day_date:%Y_%m_%d}",
-                    use_container_width=True,
-                    on_click=_select_fc2_date,
-                    args=(day_date,),
-                )
-                if day_events:
-                    render_html('<div class="apex-fc2-dots"><span class="apex-fc2-dot high"></span></div>')
-
     render_html("""
-    <div class="apex-fc2-legend">
-      <span><i class="apex-fc2-dot high"></i>High Impact Catalyst</span>
+    <div class="apex-fk-legend">
+      <span class="apex-fk-leg"><i class="apex-fk-dot high"></i>High Impact</span>
+      <span class="apex-fk-leg"><i class="apex-fk-dot medium"></i>Medium Impact</span>
+      <span class="apex-fk-leg"><i class="apex-fk-dot low"></i>Low Impact</span>
     </div>
+    <div class="apex-fk-board-label"><b>7-Day Event Board</b><span>Tap a catalyst to open Event Details</span></div>
     """)
 
-    selected_date = st.session_state[sel_date_key]
-    sel_events = events_by_date.get(selected_date, [])
-
-    # Keep the detail panel selection tied to the currently selected date.
-    selected_code = str(st.session_state.get(selected_key, "") or "")
-    selected_event = next((ev for ev in sel_events if str(ev.get("code", "")) == selected_code), None)
-    if selected_event is None and sel_events:
-        selected_event = sel_events[0]
-        st.session_state[selected_key] = str(selected_event.get("code", ""))
-
-    def _select_fc2_event(code_value: str) -> None:
-        st.session_state[selected_key] = code_value
-
-    left_col, right_col = st.columns([1.35, 0.65], gap="medium")
-
-    with left_col:
-        with st.container(key="apex_fc2_timeline_col"):
-            date_title = selected_date.strftime("%A, %d %B %Y")
-            count_label = "1 catalyst" if len(sel_events) == 1 else f"{len(sel_events)} catalysts"
-            render_html(f"""
-            <div class="apex-fc2-section-head">
-              <div class="apex-fc2-section-title">{date_title}</div>
-              <div class="apex-fc2-count">{count_label}</div>
-            </div>
-            """)
-
-            if not sel_events:
-                render_html('<div class="apex-fc2-empty">No High Impact macro catalysts scheduled for this date.</div>')
-            else:
-                for idx, sev in enumerate(sel_events):
-                    code = str(sev.get("code", "")).strip()
-                    cur = sev.get("currency", "USD")
-                    flag = currency_flags.get(cur, "🌐")
-                    impact = str(sev.get("impact", "High")).title()
-                    impact_key = impact.lower() if impact.lower() in {"high", "medium", "low"} else "low"
-                    dt = sev.get("datetime_obj")
-                    event_time = dt.strftime("%H:%M") if dt else "—"
-                    saved = str(actuals_cache.get(code, "")).strip()
-                    published = _normalize_forex_factory_actual(sev.get("actual_str", ""))
-                    actual = saved or published or "—"
-                    forecast = sev.get("forecast_str", "—") or "—"
-                    previous = sev.get("prev_str", "—") or "—"
-                    title = str(sev.get("title", ""))
-                    safe_key = re.sub(r"[^a-zA-Z0-9_]", "_", code)[:60] or f"event_{idx}"
-                    selected_marker = "selected_" if selected_event is sev or (selected_event and str(selected_event.get("code", "")) == code) else ""
-                    label = (
-                        f"{event_time}  ·  {flag} {cur}  ·  {impact.upper()} IMPACT\n\n"
-                        f"{title}\n\n"
-                        f"ACTUAL  {actual}     FORECAST  {forecast}     PREVIOUS  {previous}"
-                    )
-                    with st.container(key=f"apex_fc2_event_{selected_marker}{impact_key}_{safe_key}"):
-                        st.button(
-                            label,
-                            key=f"apex_fc2_event_btn_{safe_key}",
-                            use_container_width=True,
-                            on_click=_select_fc2_event,
-                            args=(code,),
-                        )
-
-    with right_col:
-        with st.container(key="apex_fc2_detail_col"):
-            if selected_event is None:
-                render_html("""
-                <div class="apex-fc2-detail-kicker">Catalyst Intelligence</div>
-                <div class="apex-fc2-detail-title">Select a catalyst</div>
-                <div class="apex-fc2-detail-time">Choose an event from the timeline to inspect it.</div>
-                """)
-            else:
-                code = str(selected_event.get("code", "")).strip()
-                cur = selected_event.get("currency", "USD")
-                flag = currency_flags.get(cur, "🌐")
-                impact = str(selected_event.get("impact", "High")).title()
-                dt = selected_event.get("datetime_obj")
-                event_time = dt.strftime("%H:%M") if dt else "—"
-                saved = str(actuals_cache.get(code, "")).strip()
-                published = _normalize_forex_factory_actual(selected_event.get("actual_str", ""))
-                actual = saved or published or "—"
-                forecast = selected_event.get("forecast_str", "—") or "—"
-                previous = selected_event.get("prev_str", "—") or "—"
-                title = str(selected_event.get("title", ""))
-
-                # Read-only side summary. The full existing Causal Intelligence UI
-                # remains available in the existing dialog opened below.
+    # Seven true Kanban columns. On phones the board scrolls horizontally instead
+    # of crushing cards into unreadable narrow columns.
+    board_cols = st.columns(7, gap="small")
+    for day_idx, day_date in enumerate(week_days):
+        day_events = events_by_date.get(day_date, [])
+        is_selected_day = day_date == selected_date
+        state = "selected" if is_selected_day else ("today" if day_date == today_local else "normal")
+        with board_cols[day_idx]:
+            with st.container(key=f"apex_fk_col_{state}_{day_date:%Y_%m_%d}"):
+                count_text = "No events" if not day_events else ("1 event" if len(day_events) == 1 else f"{len(day_events)} events")
                 render_html(f"""
-                <div class="apex-fc2-detail-top">
-                  <div>
-                    <div class="apex-fc2-detail-kicker">Catalyst Intelligence</div>
-                    <div class="apex-fc2-detail-title">{title}</div>
-                    <div class="apex-fc2-detail-time">{event_time} · {flag} {cur} · {impact} Impact</div>
-                  </div>
+                <div class="apex-fk-dayhead {'selected' if is_selected_day else ''}">
+                  <div class="apex-fk-dayname">{day_date.strftime('%a').upper()}</div>
+                  <div class="apex-fk-daynum">{day_date.day}</div>
+                  <div class="apex-fk-daycount">{count_text}</div>
                 </div>
-                <div class="apex-fc2-metrics">
-                  <div class="apex-fc2-metric"><div class="apex-fc2-metric-label">ACTUAL</div><div class="apex-fc2-metric-value">{actual}</div></div>
-                  <div class="apex-fc2-metric"><div class="apex-fc2-metric-label">FORECAST</div><div class="apex-fc2-metric-value">{forecast}</div></div>
-                  <div class="apex-fc2-metric"><div class="apex-fc2-metric-label">PREVIOUS</div><div class="apex-fc2-metric-value">{previous}</div></div>
-                </div>
-                <div class="apex-fc2-insight"><b>Institutional workflow</b>Open the complete intelligence view for nowcast, evidence, causal analysis, contradictions, cross-source confirmation and cross-asset implications.</div>
                 """)
-                if st.button("Open full intelligence", key=f"apex_fc2_open_full_{re.sub(r'[^a-zA-Z0-9_]', '_', code)[:60]}", use_container_width=True):
-                    _show_forecaster_event_dialog(
-                        selected_event,
-                        fred_key,
-                        channel_name,
-                        auth_user,
-                        actuals_cache,
-                        currency_flags,
-                    )
+                if not day_events:
+                    render_html('<div class="apex-fk-empty">No scheduled catalysts</div>')
+                else:
+                    # Keep the board readable; all events remain available and no data is altered.
+                    for ev_idx, sev in enumerate(day_events):
+                        code = str(sev.get("code", "")).strip()
+                        cur = sev.get("currency", "USD")
+                        flag = currency_flags.get(cur, "🌐")
+                        impact = str(sev.get("impact", "High")).title()
+                        impact_key = impact.lower() if impact.lower() in {"high", "medium", "low"} else "low"
+                        dt = sev.get("datetime_obj")
+                        event_time = dt.strftime("%H:%M") if dt else "—"
+                        title = str(sev.get("title", ""))
+                        forecast = sev.get("forecast_str", "—") or "—"
+                        previous = sev.get("prev_str", "—") or "—"
+                        safe_key = re.sub(r"[^a-zA-Z0-9_]", "_", code)[:52] or f"{day_idx}_{ev_idx}"
+                        card_label = f"{event_time} · {flag} {cur}\n{title}\nF {forecast}  ·  P {previous}"
+                        with st.container(key=f"apex_fk_card_{impact_key}_{day_idx}_{safe_key}"):
+                            if st.button(card_label, key=f"apex_fk_btn_{day_idx}_{safe_key}", use_container_width=True):
+                                st.session_state[sel_date_key] = day_date
+                                st.session_state[selected_key] = code
+                                _show_forecaster_event_dialog(
+                                    sev, fred_key, channel_name, auth_user, actuals_cache, currency_flags
+                                )
 
 def _tron_headers() -> dict[str, str]:
     headers = {"Accept": "application/json", "User-Agent": "ApexMacro-VIP-Payments/1.0"}
