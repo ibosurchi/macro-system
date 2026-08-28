@@ -582,6 +582,55 @@ _TACTICAL_STATE_LOCK = threading.RLock()
 # Synchronizes Streamlit/Admin and Telegram worker access to the shared VIP registry.
 _VIP_REGISTRY_LOCK = threading.RLock()
 
+
+def fetch_forex_factory_calendar_week(week_offset: int = 0) -> list[dict]:
+    """Fetch the current/adjacent Forex Factory weekly JSON feed.
+
+    week_offset: -1 = previous week, 0 = current week, 1 = next week.
+    Falls back to the current live feed for offset 0. Adjacent-week failures
+    return an empty list rather than silently showing the wrong week.
+    """
+    if int(week_offset) == 0:
+        return fetch_forex_factory_calendar()
+    feed_name = "ff_calendar_nextweek.json" if int(week_offset) > 0 else "ff_calendar_lastweek.json"
+    urls = [
+        f"https://nfs.faireconomy.media/{feed_name}",
+        f"https://cdn-nfs.faireconomy.media/{feed_name}",
+    ]
+    aliases = {
+        "Red": "High", "Orange": "Medium", "Yellow": "Low",
+        "High Impact": "High", "Medium Impact": "Medium", "Low Impact": "Low",
+    }
+    rows = None
+    for url in urls:
+        try:
+            response = requests.get(url, timeout=10, headers={
+                "User-Agent": "Mozilla/5.0 (compatible; ApexMacro/1.0)",
+                "Accept": "application/json,text/plain,*/*", "Cache-Control": "no-cache",
+            })
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, list) and data:
+                rows = data
+                break
+        except Exception:
+            continue
+    normalized = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        title = str(row.get("title") or row.get("event") or row.get("name") or "").strip()
+        country = str(row.get("country") or row.get("currency") or "").strip().upper()
+        raw_impact = str(row.get("impact") or "").strip()
+        impact = aliases.get(raw_impact.title(), raw_impact.title())
+        raw_date = row.get("date") or row.get("datetime") or row.get("time")
+        if not title or not country or not raw_date:
+            continue
+        normalized.append({**row, "title": title, "country": country, "impact": impact,
+                           "date": raw_date, "forecast": row.get("forecast", ""),
+                           "previous": row.get("previous", ""), "actual": row.get("actual", "")})
+    return normalized
+
 def _supabase_enabled() -> bool:
     return bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY)
 
@@ -5408,7 +5457,7 @@ def _normalize_forex_factory_actual(value: object) -> str:
     return clean
 
 
-def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3)") -> list[dict]:
+def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3)", ff_events_override: list[dict] | None = None) -> list[dict]:
     """
     Forex Factory is the sole calendar source. Only High and Medium
     impact events are allowed into the Catalyst Forecaster.
@@ -5419,7 +5468,7 @@ def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3
     user_now = utc_now + timedelta(hours=tz_offset)
     events = []
 
-    ff_events = fetch_forex_factory_calendar()
+    ff_events = ff_events_override if ff_events_override is not None else fetch_forex_factory_calendar()
     if not ff_events:
         return []
 
@@ -6784,16 +6833,22 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     selected_key = "APEX_FORECASTER_SELECTED_EVENT"
     snapshot_key = "APEX_FORECASTER_EVENT_SNAPSHOT"
     sel_date_key = "apex_forecaster_selected_date"
+    week_offset_key = "apex_forecaster_week_offset"
+    if week_offset_key not in st.session_state:
+        st.session_state[week_offset_key] = 0
 
     # Preserve the current source/data pipeline and snapshot behavior.
     if not st.session_state.get(selected_key):
         _forecaster_radar_refresh_tick()
 
-    events = get_upcoming_catalyst_events(tz_info["offset"], tz_info["label"])
+    week_offset = int(st.session_state.get(week_offset_key, 0) or 0)
+    week_feed = fetch_forex_factory_calendar_week(week_offset)
+    events = get_upcoming_catalyst_events(tz_info["offset"], tz_info["label"], ff_events_override=week_feed)
+    snapshot_week_key = f"{snapshot_key}_{week_offset}"
     if events:
-        st.session_state[snapshot_key] = events
-    elif st.session_state.get(snapshot_key):
-        events = st.session_state[snapshot_key]
+        st.session_state[snapshot_week_key] = events
+    elif st.session_state.get(snapshot_week_key):
+        events = st.session_state[snapshot_week_key]
 
     actuals_cache = load_actuals_cache()
     actuals_changed = False
@@ -6835,6 +6890,10 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
             st.session_state[sel_date_key] = today_local
 
     selected_date: _date = st.session_state[sel_date_key]
+    target_week_start = (today_local - timedelta(days=today_local.weekday())) + timedelta(days=7 * week_offset)
+    if not (target_week_start <= selected_date <= target_week_start + timedelta(days=6)):
+        selected_date = target_week_start
+        st.session_state[sel_date_key] = selected_date
     week_start = selected_date - timedelta(days=selected_date.weekday())
     week_days = [week_start + timedelta(days=i) for i in range(7)]
     week_end = week_days[-1]
@@ -6927,6 +6986,26 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
       <div class="apex-fc2-weekmeta">{week_label}</div>
     </div>
     """)
+
+    nav_prev, nav_today, nav_next = st.columns([1, 1, 1], gap="small")
+    with nav_prev:
+        if st.button("← Previous Week", key="apex_fc2_prev_week", use_container_width=True):
+            st.session_state[week_offset_key] = max(-1, week_offset - 1)
+            st.session_state[sel_date_key] = (today_local - timedelta(days=today_local.weekday())) + timedelta(days=7 * st.session_state[week_offset_key])
+            st.session_state.pop(selected_key, None)
+            st.rerun()
+    with nav_today:
+        if st.button("Today", key="apex_fc2_today", use_container_width=True):
+            st.session_state[week_offset_key] = 0
+            st.session_state[sel_date_key] = today_local
+            st.session_state.pop(selected_key, None)
+            st.rerun()
+    with nav_next:
+        if st.button("Next Week →", key="apex_fc2_next_week", use_container_width=True):
+            st.session_state[week_offset_key] = min(1, week_offset + 1)
+            st.session_state[sel_date_key] = (today_local - timedelta(days=today_local.weekday())) + timedelta(days=7 * st.session_state[week_offset_key])
+            st.session_state.pop(selected_key, None)
+            st.rerun()
 
     def _select_fc2_date(day_value: _date) -> None:
         st.session_state[sel_date_key] = day_value
