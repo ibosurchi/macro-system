@@ -152,6 +152,11 @@ def _post_ai_chat(
     page renders never retry provider calls, preventing one logical refresh from
     becoming two or three billable requests.
     """
+    # Hard billing gate: even if a future code path accidentally reaches this
+    # helper, the provider cannot be contacted while Admin AI Control is OFF.
+    if "is_ai_enabled" in globals() and not is_ai_enabled():
+        raise RuntimeError("AI is disabled by the administrator.")
+
     payload = {
         "model": model,
         "messages": [
@@ -2960,6 +2965,16 @@ def fetch_all_instant_news(channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> list
 AI_BATCH_STATE_FILE = str(PROJECT_ROOT / "ai_batch_state_v2.json")
 AI_BATCH_PROCESS_LOCK_FILE = str(PROJECT_ROOT / ".apexmacro_ai_batch.lock")
 _AI_BATCH_STATE_ID = "shared_ai_batch_v2"
+
+# Master billing control. It is deliberately OFF by default so a fresh deploy
+# cannot spend provider credit until an administrator explicitly enables AI.
+AI_CONTROL_STATE_FILE = str(PROJECT_ROOT / "ai_control_state.json")
+_AI_CONTROL_STATE_ID = "ai_control_state_v1"
+_AI_CONTROL_LOCK = threading.RLock()
+_AI_CONTROL_MEMORY: dict | None = None
+_AI_CONTROL_MEMORY_LOADED_AT = 0.0
+_AI_CONTROL_REFRESH_SECONDS = 3.0
+
 _AI_BATCH_LOCK = threading.RLock()
 _AI_BATCH_MEMORY: dict | None = None
 _AI_BATCH_MEMORY_LOADED_AT = 0.0
@@ -2971,6 +2986,80 @@ _AI_BATCH_ERROR_BACKOFF_SECONDS = 15 * 60
 _AI_BATCH_FIRST_RESULT_RETRY_SECONDS = 2 * 60
 _AI_BATCH_MACRO_REFRESH_SECONDS = 15 * 60
 _AI_BATCH_MACRO_CACHE = {"at": 0.0, "data": {}}
+_AI_BATCH_WAKE_EVENT = threading.Event()
+
+
+def _ai_control_load_state(force_refresh: bool = False) -> dict:
+    """Read the durable master AI switch shared by every Streamlit process."""
+    global _AI_CONTROL_MEMORY, _AI_CONTROL_MEMORY_LOADED_AT
+    now_ts = time.time()
+    with _AI_CONTROL_LOCK:
+        if (
+            not force_refresh
+            and isinstance(_AI_CONTROL_MEMORY, dict)
+            and now_ts - float(_AI_CONTROL_MEMORY_LOADED_AT or 0.0) < _AI_CONTROL_REFRESH_SECONDS
+        ):
+            return dict(_AI_CONTROL_MEMORY)
+    try:
+        state = _load_persistent_state(
+            _AI_CONTROL_STATE_ID,
+            AI_CONTROL_STATE_FILE,
+            {"enabled": False, "updated_at": 0.0, "updated_by": "default-off"},
+        )
+        if not isinstance(state, dict):
+            state = {"enabled": False}
+    except Exception:
+        state = {"enabled": False}
+    with _AI_CONTROL_LOCK:
+        _AI_CONTROL_MEMORY = dict(state)
+        _AI_CONTROL_MEMORY_LOADED_AT = now_ts
+    return dict(state)
+
+
+def is_ai_enabled(force_refresh: bool = False) -> bool:
+    """Single source of truth for whether paid AI requests are permitted."""
+    return bool(_ai_control_load_state(force_refresh=force_refresh).get("enabled", False))
+
+
+def set_ai_enabled(enabled: bool, updated_by: str = "ADMINISTRATOR") -> dict:
+    """Persist the admin switch and wake the supervisor without making a request here."""
+    global _AI_CONTROL_MEMORY, _AI_CONTROL_MEMORY_LOADED_AT
+    payload = {
+        "enabled": bool(enabled),
+        "updated_at": time.time(),
+        "updated_at_iso": datetime.now(timezone.utc).isoformat(),
+        "updated_by": str(updated_by or "ADMINISTRATOR")[:120],
+    }
+    try:
+        _save_persistent_state(_AI_CONTROL_STATE_ID, AI_CONTROL_STATE_FILE, payload)
+    finally:
+        with _AI_CONTROL_LOCK:
+            _AI_CONTROL_MEMORY = dict(payload)
+            _AI_CONTROL_MEMORY_LOADED_AT = time.time()
+
+    # If AI is re-enabled before any successful result exists, discard only the
+    # failed-attempt timer so the first background batch can start immediately.
+    if enabled:
+        state = _ai_batch_load_state(force_refresh=True)
+        if not (isinstance(state.get("result"), dict) and bool(state.get("result"))):
+            state.pop("last_attempt_signature", None)
+            state.pop("last_attempt_at", None)
+            state.pop("last_error", None)
+            state.pop("last_error_at", None)
+            _ai_batch_save_state(state)
+    _AI_BATCH_WAKE_EVENT.set()
+    return payload
+
+
+def get_ai_control_state() -> dict:
+    state = _ai_control_load_state(force_refresh=True)
+    batch = _ai_batch_load_state(force_refresh=True)
+    return {
+        **state,
+        "has_result": isinstance(batch.get("result"), dict) and bool(batch.get("result")),
+        "last_ai_update": batch.get("updated_at_iso", ""),
+        "last_error": batch.get("last_error", ""),
+    }
 
 
 def _ai_batch_load_state(force_refresh: bool = False) -> dict:
@@ -3204,7 +3293,7 @@ def _run_shared_ai_batch_once() -> None:
     """Make at most one billable request for one changed evidence snapshot."""
     global _AI_BATCH_REQUEST_INFLIGHT
     process_lock_fd = None
-    if not DEFAULT_AI_KEY:
+    if not DEFAULT_AI_KEY or not is_ai_enabled():
         return
     with _AI_BATCH_LOCK:
         if _AI_BATCH_REQUEST_INFLIGHT:
@@ -3246,6 +3335,11 @@ def _run_shared_ai_batch_once() -> None:
             backoff = _AI_BATCH_ERROR_BACKOFF_SECONDS if has_result else _AI_BATCH_FIRST_RESULT_RETRY_SECONDS
             if time.time() - last_attempt < backoff:
                 return
+
+        # Admin may switch AI OFF while data/news are being collected. Re-check
+        # immediately before the only billable operation.
+        if not is_ai_enabled(force_refresh=True):
+            return
 
         provider, url, model, resolved_key = _ai_runtime(DEFAULT_AI_KEY, DEFAULT_AI_PROVIDER, DEFAULT_AI_MODEL)
         if not resolved_key:
@@ -3327,20 +3421,28 @@ def _shared_ai_supervisor_loop() -> None:
     global _AI_BATCH_SUPERVISOR_RUNNING
     try:
         while True:
-            _run_shared_ai_batch_once()
-            time.sleep(_AI_BATCH_POLL_SECONDS)
+            if is_ai_enabled(force_refresh=True):
+                _run_shared_ai_batch_once()
+            # Event wake-up makes Admin Enable immediate; ordinary polling still
+            # checks for meaningful changed news/data without page-triggered calls.
+            _AI_BATCH_WAKE_EVENT.wait(timeout=_AI_BATCH_POLL_SECONDS)
+            _AI_BATCH_WAKE_EVENT.clear()
     finally:
         with _AI_BATCH_LOCK:
             _AI_BATCH_SUPERVISOR_RUNNING = False
 
 
 def start_shared_background_ai_worker() -> None:
-    """Start one process-local supervisor. It is independent of page navigation."""
+    """Start one process-local supervisor. Page navigation never contacts AI."""
     global _AI_BATCH_SUPERVISOR_RUNNING
     if not DEFAULT_AI_KEY:
         return
     with _AI_BATCH_LOCK:
         if _AI_BATCH_SUPERVISOR_RUNNING:
+            # A fresh page run can still wake an enabled worker if its first
+            # shared result has not been produced yet.
+            if is_ai_enabled() and not get_shared_background_ai_state().get("result"):
+                _AI_BATCH_WAKE_EVENT.set()
             return
         _AI_BATCH_SUPERVISOR_RUNNING = True
     threading.Thread(
@@ -3348,6 +3450,8 @@ def start_shared_background_ai_worker() -> None:
         daemon=True,
         name="ApexMacroSharedAI",
     ).start()
+    if is_ai_enabled():
+        _AI_BATCH_WAKE_EVENT.set()
 
 
 def _shared_ai_asset(asset: str) -> dict:
@@ -3367,6 +3471,8 @@ def get_openrouter_analysis(
     cache_version: str = AI_CACHE_VERSION,
 ) -> str:
     """Read the shared background summary; never make a page-triggered AI request."""
+    if not is_ai_enabled():
+        return "AI is paused by the administrator to prevent provider spending. Rule-based and macro analysis remain active."
     state = _ai_batch_load_state()
     result = state.get("result", {}) if isinstance(state, dict) else {}
     summary = str(result.get("summary", "")).strip() if isinstance(result, dict) else ""
@@ -3483,6 +3589,12 @@ def get_openrouter_gold_signal(
     cache_version: str = AI_CACHE_VERSION,
 ) -> dict:
     """Read Gold from the one shared background AI batch."""
+    if not is_ai_enabled():
+        return {
+            "direction": "Neutral", "score": 0.0, "confidence": 0.0,
+            "horizon": "Paused", "reason": "AI is paused by the administrator; Gold rules and macro data remain active.",
+            "active": False,
+        }
     item = _shared_ai_asset("Gold")
     if not item:
         return {
@@ -3602,6 +3714,9 @@ def get_multi_asset_news_intelligence(news_text: str, api_key: str=DEFAULT_AI_KE
     """Read all asset judgments from the one shared background AI batch."""
     assets=["USD","EUR","GBP","CAD","JPY","AUD","NZD","CHF","Gold","Oil","Nasdaq"]
     empty={a:{"score":0.0,"confidence":0.0,"reason":"Background AI not ready.","horizon":"Unknown"} for a in assets}
+    if not is_ai_enabled():
+        paused={a:{"score":0.0,"confidence":0.0,"reason":"AI paused by administrator; deterministic rules remain active.","horizon":"Paused"} for a in assets}
+        return {"summary":"AI is paused by the administrator to prevent provider spending. Rule-based and macro analysis remain active.","assets":paused,"active":False}
     state=_ai_batch_load_state(); result=state.get("result",{}) if isinstance(state,dict) else {}
     raw=result.get("assets",{}) if isinstance(result,dict) else {}
     if not isinstance(raw,dict) or not raw:
@@ -4935,6 +5050,8 @@ def get_causal_macro_ai_analysis(event: dict, nowcast: dict, articles: list, api
     """Read event Causal Intelligence from the shared background batch only."""
     if str(event.get("impact", "")).title() != "High":
         return {"status": "skipped", "raw": "Causal AI is enabled for High Impact events only."}
+    if not is_ai_enabled():
+        return {"status": "disabled", "raw": "Causal AI is paused by the administrator to prevent provider spending. Quantitative Nowcast remains active."}
     code = str(event.get("code", "")).strip()
     state = _ai_batch_load_state()
     result = state.get("result", {}) if isinstance(state, dict) else {}
@@ -4954,6 +5071,13 @@ def render_causal_macro_ai_panel(analysis: dict) -> None:
     # Compact visual layer for the existing causal AI output. No model logic is changed.
     if analysis.get("status") != "ok":
         if analysis.get("status") == "skipped":
+            return
+        if analysis.get("status") == "disabled":
+            render_html(
+                '<div class="fc-ai" style="border-color:rgba(255,209,102,.24);color:#ffd166;">'
+                '⏸️ Causal Macro Intelligence is paused by Admin. '
+                'No paid AI requests are being sent; the quantitative Nowcast remains active.</div>'
+            )
             return
         if analysis.get("status") in {"updating", "deferred"}:
             render_html(
@@ -5402,6 +5526,9 @@ def _show_forecaster_event_dialog(
     if causal_ai.get("status") == "ok":
         ai_text = causal_ai.get("event_assessment", "") or nowcast.get("outcome_desc", "")
         ai_updated = "Live Causal Macro Engine"
+    elif causal_ai.get("status") == "disabled":
+        ai_text = nowcast.get("outcome_desc", "") + " (Causal AI paused by Admin; no provider request is being sent.)"
+        ai_updated = "AI Paused"
     elif causal_ai.get("status") in {"updating", "deferred"}:
         ai_text = nowcast.get("outcome_desc", "") + " (Causal AI synthesis updating in background...)"
         ai_updated = "Updating..."
@@ -7725,6 +7852,43 @@ def render_admin_key_generator() -> None:
       <div style="font-size:11.5px;color:#8fa3b4;">Manage your VIP client licenses, dual-device bindings (1 Mobile + 1 PC), assign Telegram IDs, and generate secure cryptographic keys.</div>
     </div>
     """)
+
+    # Durable master switch for all paid AI traffic. Fresh deployments default
+    # to OFF, which means every market/Forecaster page keeps deterministic
+    # analysis active but cannot contact RUAPI/OpenRouter.
+    ai_ctl = get_ai_control_state()
+    ai_on = bool(ai_ctl.get("enabled"))
+    status_color = "#00ffa3" if ai_on else "#ffd166"
+    status_text = "AI ON — background change detection active" if ai_on else "AI OFF — provider spending blocked"
+    last_update = str(ai_ctl.get("last_ai_update") or "No successful shared AI batch yet")
+    render_html(f"""
+    <div style="background:rgba(10,20,29,.92);border:1px solid rgba(255,209,102,.24);border-radius:14px;padding:16px 18px;margin-bottom:14px;">
+      <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap;">
+        <div>
+          <div style="font-size:12px;font-weight:900;color:#dceaf4;letter-spacing:.5px;">🤖 MASTER AI BILLING CONTROL</div>
+          <div style="font-size:10.5px;color:#8fa3b4;margin-top:4px;">One switch controls all paid AI requests across Forex, Gold, Oil, Nasdaq, Dashboard and Forecaster.</div>
+        </div>
+        <div style="font-size:11px;font-weight:900;color:{status_color};">● {status_text}</div>
+      </div>
+      <div style="font-size:9.8px;color:#718899;margin-top:8px;">Last successful shared AI update: {last_update}</div>
+    </div>
+    """)
+    ai_c1, ai_c2 = st.columns(2)
+    with ai_c1:
+        if st.button("▶ Enable AI", type="primary" if not ai_on else "secondary", use_container_width=True, disabled=ai_on, key="admin_enable_master_ai"):
+            set_ai_enabled(True, "ADMINISTRATOR")
+            start_shared_background_ai_worker()
+            st.success("AI enabled. The first/changed shared snapshot will be analyzed once in the background.")
+            time.sleep(0.25)
+            st.rerun()
+    with ai_c2:
+        if st.button("⏸ Disable AI / Stop Spending", type="primary" if ai_on else "secondary", use_container_width=True, disabled=not ai_on, key="admin_disable_master_ai"):
+            set_ai_enabled(False, "ADMINISTRATOR")
+            st.warning("AI disabled. New paid provider requests are blocked; rule-based and macro analysis remain active.")
+            time.sleep(0.25)
+            st.rerun()
+    st.caption("AI is OFF by default on a fresh deployment. Enabling it does not make page navigation billable; only the background changed-data/news snapshot can create one shared request.")
+    st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
 
     g1, g2, g3 = st.columns([2, 2, 1.5])
     with g1:

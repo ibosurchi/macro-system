@@ -14,3 +14,6 @@ def initialize_background_services() -> None:
 
 def prepare_page() -> None:
     apply_global_styles()
+    # Defensive route-level health check: only ensures the singleton supervisor
+    # exists. It never performs a paid request on page navigation.
+    core.start_shared_background_ai_worker()
