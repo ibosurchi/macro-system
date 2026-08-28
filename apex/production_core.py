@@ -100,6 +100,12 @@ FOREX_FACTORY_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek
 _FOREX_FACTORY_LAST_GOOD_EVENTS: list[dict] = []
 _FOREX_FACTORY_LAST_GOOD_AT = 0.0
 _FOREX_FACTORY_LAST_GOOD_LOCK = threading.RLock()
+_FF_NORMAL_REFRESH_SECONDS = 15 * 60
+_FF_RELEASE_REFRESH_SECONDS = 45
+FF_HISTORY_FILE = str(PROJECT_ROOT / "forex_factory_high_impact_history.json")
+FF_SCHEDULE_FILE = str(PROJECT_ROOT / "forex_factory_schedule_state.json")
+_FF_HISTORY_LOCK = threading.RLock()
+_FF_SCHEDULE_LOCK = threading.RLock()
 
 
 def _ai_runtime(
@@ -446,7 +452,7 @@ def _normalize_causal_ai_payload(parsed: dict, source_count: int) -> dict:
     return result
 
 
-def fetch_forex_factory_calendar() -> list[dict]:
+def fetch_forex_factory_calendar(force_refresh: bool = False) -> list[dict]:
     """
     Load and normalize the live Forex Factory/Faireconomy weekly calendar.
 
@@ -455,6 +461,13 @@ def fetch_forex_factory_calendar() -> list[dict]:
     non-empty response is available.
     """
     global _FOREX_FACTORY_LAST_GOOD_EVENTS, _FOREX_FACTORY_LAST_GOOD_AT
+
+    # Ordinary page reruns read the last good snapshot.  Release-time monitoring
+    # can explicitly bypass this cache with force_refresh=True.
+    with _FOREX_FACTORY_LAST_GOOD_LOCK:
+        if (not force_refresh and _FOREX_FACTORY_LAST_GOOD_EVENTS and
+                time.time() - _FOREX_FACTORY_LAST_GOOD_AT < _FF_NORMAL_REFRESH_SECONDS):
+            return [dict(item) for item in _FOREX_FACTORY_LAST_GOOD_EVENTS]
 
     urls = [
         FOREX_FACTORY_CALENDAR_URL,
@@ -2834,6 +2847,7 @@ def _get_daemon_controller():
         "seen_weekend_news": set(),
         "process_lock": None,
         "last_forecaster_warm": 0.0,
+        "last_ff_history_backfill": 0.0,
     }
 
 def start_background_alert_daemon(fred_key: str, channel_name: str) -> None:
@@ -2906,6 +2920,23 @@ def start_background_alert_daemon(fred_key: str, channel_name: str) -> None:
                                 channel_name,
                                 load_actuals_cache(),
                             )
+                    except Exception:
+                        pass
+
+                # Release-time Actual watcher: only performs a forced network refresh when a
+                # High-Impact event is due/recently released.  No manual Actual entry required.
+                try:
+                    live_fc_events = get_upcoming_catalyst_events(3, "KRD (UTC+3)")
+                    _ff_release_actual_watcher(live_fc_events)
+                except Exception:
+                    pass
+
+                # Historical bootstrap is deliberately slow: two monthly pages per day until
+                # roughly one year of High-Impact Actual/Forecast/Previous history is seeded.
+                if time.time() - float(ctrl.get("last_ff_history_backfill", 0.0)) >= 24 * 3600:
+                    ctrl["last_ff_history_backfill"] = time.time()
+                    try:
+                        _ff_backfill_high_impact_history(days=370, max_chunks=2)
                     except Exception:
                         pass
             except Exception:
@@ -5295,6 +5326,18 @@ CATALYST_PRECURSOR_MAP = {
             {"name": "Real Disposable Personal Income", "series": "DSPIC96", "cat": "growth", "weight": 0.25},
         ],
     },
+    "CAD_GDP_MM": {
+        "title": "GDP m/m",
+        "currency": "CAD",
+        "impact": "High",
+        "keywords": ["canada gdp", "canadian gdp", "gdp m/m", "monthly gdp", "canada growth", "statistics canada"],
+        "forecast_str": "—", "prev_str": "—", "consensus_bias": "Canada Monthly GDP Consensus",
+        "precursors": [
+            {"name": "Canadian Employment Momentum", "series": "LFEMTTTTCAM647S", "cat": "labor_pos", "weight": 0.40},
+            {"name": "Canadian Unemployment Momentum", "series": "LRUN64TTCAM156S", "cat": "labor_neg", "weight": 0.35},
+            {"name": "WTI Commodity Demand Proxy", "series": "DCOILWTICO", "cat": "growth", "weight": 0.25, "fallback": "POILWTIUSDM"},
+        ],
+    },
     "US_PCE": {
         "title": "Core PCE Price Index m/m",
         "currency": "USD",
@@ -5518,6 +5561,160 @@ def _safe_numeric_release(value: object) -> float | None:
         return None
 
 
+
+def _ff_history_load() -> dict:
+    with _FF_HISTORY_LOCK:
+        data = _load_persistent_state("forex_factory_high_impact_history_v1", FF_HISTORY_FILE, {"records": [], "last_backfill_utc": ""})
+        return data if isinstance(data, dict) else {"records": [], "last_backfill_utc": ""}
+
+
+def _ff_history_save(data: dict) -> None:
+    with _FF_HISTORY_LOCK:
+        _save_persistent_state("forex_factory_high_impact_history_v1", FF_HISTORY_FILE, data)
+
+
+def _ff_clean_cell(node) -> str:
+    if node is None:
+        return ""
+    return " ".join(node.get_text(" ", strip=True).split())
+
+
+def _ff_parse_historical_html(html_text: str) -> list[dict]:
+    """Parse Forex Factory calendar rows.  Fail closed if their HTML layout changes."""
+    soup = BeautifulSoup(html_text or "", "html.parser")
+    rows = []
+    current_date = ""
+    for tr in soup.select("tr.calendar__row, tr[data-event-id]"):
+        date_cell = tr.select_one(".calendar__date")
+        if date_cell and _ff_clean_cell(date_cell):
+            current_date = _ff_clean_cell(date_cell)
+        currency = _ff_clean_cell(tr.select_one(".calendar__currency")).upper()
+        title = _ff_clean_cell(tr.select_one(".calendar__event"))
+        if not currency or not title:
+            continue
+        impact_cell = tr.select_one(".calendar__impact")
+        impact_blob = " ".join([
+            _ff_clean_cell(impact_cell),
+            str(impact_cell.get("title", "") if impact_cell else ""),
+            " ".join(impact_cell.get("class", []) if impact_cell else []),
+            " ".join(str(x.get("title", "")) for x in (impact_cell.select("span, i") if impact_cell else [])),
+            str(tr.get("class", "")),
+        ]).lower()
+        # Historical archive is intentionally High Impact only.
+        if "high" not in impact_blob and "red" not in impact_blob:
+            continue
+        actual = _ff_clean_cell(tr.select_one(".calendar__actual"))
+        forecast = _ff_clean_cell(tr.select_one(".calendar__forecast"))
+        previous = _ff_clean_cell(tr.select_one(".calendar__previous"))
+        time_txt = _ff_clean_cell(tr.select_one(".calendar__time"))
+        if not actual:
+            continue
+        rows.append({
+            "event_identity": f"{currency}|{_normalize_catalyst_title(title)}",
+            "currency": currency, "title": title, "date_label": current_date, "time_label": time_txt,
+            "actual": actual, "forecast": forecast, "previous": previous,
+            "source": "Forex Factory", "captured_at_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        })
+    return rows
+
+
+def _ff_backfill_high_impact_history(days: int = 370, max_chunks: int = 2) -> int:
+    """Low-frequency historical bootstrap.  At most two 30-day pages per daemon pass."""
+    state = _ff_history_load()
+    existing = list(state.get("records") or [])
+    done_ranges = set(state.get("done_ranges") or [])
+    today = datetime.utcnow().date()
+    added = 0
+    chunks = []
+    end = today - timedelta(days=1)
+    floor = today - timedelta(days=max(60, int(days)))
+    while end >= floor:
+        start = max(floor, end - timedelta(days=29))
+        key = f"{start.isoformat()}:{end.isoformat()}"
+        if key not in done_ranges:
+            chunks.append((start, end, key))
+        end = start - timedelta(days=1)
+    for start, end, key in chunks[:max_chunks]:
+        try:
+            def ffdate(d): return d.strftime("%b%d.%Y").lower()
+            url = f"https://www.forexfactory.com/calendar?range={ffdate(start)}-{ffdate(end)}"
+            r = requests.get(url, timeout=14, headers={"User-Agent":"Mozilla/5.0 (compatible; ApexMacro/1.0)", "Accept":"text/html,*/*"})
+            r.raise_for_status()
+            parsed = _ff_parse_historical_html(r.text)
+            seen = {f"{x.get('event_identity')}|{x.get('date_label')}|{x.get('time_label')}|{x.get('actual')}" for x in existing}
+            for row in parsed:
+                k=f"{row.get('event_identity')}|{row.get('date_label')}|{row.get('time_label')}|{row.get('actual')}"
+                if k not in seen:
+                    seen.add(k); existing.append(row); added += 1
+            done_ranges.add(key)
+        except Exception:
+            # Never mark a failed/blocked range complete; a later daily pass can retry.
+            break
+    state["records"] = existing[-5000:]
+    state["done_ranges"] = sorted(done_ranges)
+    state["last_backfill_utc"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    _ff_history_save(state)
+    return added
+
+
+def _ff_external_same_event_history(event: dict, limit: int = 12) -> list[dict]:
+    ident = _event_identity(event)
+    out=[]
+    for r in (_ff_history_load().get("records") or []):
+        if str(r.get("event_identity", "")) != ident:
+            continue
+        av=_safe_numeric_release(r.get("actual")); fv=_safe_numeric_release(r.get("forecast"))
+        if av is None or fv is None:
+            continue
+        eps=max(1e-9, abs(fv)*1e-6)
+        outcome="beat" if av>fv+eps else ("miss" if av<fv-eps else "inline")
+        out.append({**r, "actual_outcome":outcome, "resolved":True, "external_history":True})
+    return out[-limit:][::-1]
+
+
+def _ff_release_actual_watcher(events: list[dict]) -> int:
+    """At release time, refresh the public weekly feed and persist new Actual prints automatically."""
+    now_local = get_current_time(3)
+    pending=[]
+    for ev in events or []:
+        if str(ev.get("impact", "")).title() != "High":
+            continue
+        dt=ev.get("datetime_obj")
+        if not isinstance(dt, datetime):
+            continue
+        sec=(now_local - dt.replace(tzinfo=None)).total_seconds()
+        if -45 <= sec <= 12*60 and not _normalize_forex_factory_actual(ev.get("actual_str", "")):
+            pending.append(ev)
+    if not pending:
+        return 0
+    fresh = fetch_forex_factory_calendar(force_refresh=True)
+    by_code={}
+    for ff in fresh:
+        try:
+            raw=str(ff.get("date", "")); d=datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if d.tzinfo is not None: d=d.astimezone(timezone.utc).replace(tzinfo=None)
+            code=_build_ff_event_code(str(ff.get("country", "")).upper(), str(ff.get("title", "")), d)
+            by_code[code]=ff
+        except Exception:
+            continue
+    cache=load_actuals_cache(); changed=0
+    for ev in pending:
+        ff=by_code.get(str(ev.get("code", "")), {})
+        actual=_normalize_forex_factory_actual(ff.get("actual", ""))
+        if actual and actual != str(cache.get(ev.get("code"), "")).strip():
+            cache[ev["code"]]=actual; changed += 1
+            ev["actual_str"]=actual
+            try:
+                nc=compute_event_nowcast(ev, DEFAULT_FRED_KEY, fetch_all_instant_news(DEFAULT_TELEGRAM_CHANNEL), actual_override=actual)
+                _record_forecaster_snapshot(ev, nc, actual=actual)
+            except Exception:
+                pass
+    if changed:
+        save_actuals_cache(cache)
+        try: _AI_BATCH_WAKE_EVENT.set()
+        except Exception: pass
+    return changed
+
 def _event_family(event: dict) -> str:
     title = _normalize_catalyst_title(event.get("title", ""))
     if any(k in title for k in ("pce", "cpi", "inflation", "price index", "ppi")):
@@ -5534,6 +5731,165 @@ def _event_family(event: dict) -> str:
         return "energy"
     return "general"
 
+
+
+# v14 — universal High-Impact evidence engine.  The same framework is used for every
+# High-Impact calendar event; event families only choose economically related inputs.
+_GENERIC_PRECURSORS = {
+    "inflation": [
+        {"name":"Producer-price pressure", "series":"PPIACO", "cat":"inflation", "weight":.28},
+        {"name":"10Y breakeven inflation", "series":"T10YIE", "cat":"inflation", "weight":.24},
+        {"name":"Oil/energy pressure", "series":"DCOILWTICO", "fallback":"POILWTIUSDM", "cat":"inflation", "weight":.20},
+        {"name":"Consumer-demand momentum", "series":"RSAFS", "cat":"growth", "weight":.16},
+        {"name":"Industrial-price/demand backdrop", "series":"INDPRO", "cat":"growth", "weight":.12},
+    ],
+    "labor": [
+        {"name":"Employment trend", "series":"PAYEMS", "cat":"labor_pos", "weight":.30},
+        {"name":"Unemployment trend", "series":"UNRATE", "cat":"labor_neg", "weight":.28},
+        {"name":"Initial claims trend", "series":"ICSA", "cat":"labor_neg", "weight":.24},
+        {"name":"Activity backdrop", "series":"INDPRO", "cat":"growth", "weight":.18},
+    ],
+    "growth": [
+        {"name":"Industrial-production momentum", "series":"INDPRO", "cat":"growth", "weight":.28},
+        {"name":"Retail-demand momentum", "series":"RSAFS", "cat":"growth", "weight":.25},
+        {"name":"Real-income momentum", "series":"DSPIC96", "cat":"growth", "weight":.22},
+        {"name":"Employment backdrop", "series":"PAYEMS", "cat":"labor_pos", "weight":.15},
+        {"name":"Oil/activity proxy", "series":"DCOILWTICO", "fallback":"POILWTIUSDM", "cat":"growth", "weight":.10},
+    ],
+    "activity": [
+        {"name":"Industrial-production momentum", "series":"INDPRO", "cat":"growth", "weight":.35},
+        {"name":"Manufacturing capacity/use", "series":"TCU", "cat":"growth", "weight":.25},
+        {"name":"Retail-demand momentum", "series":"RSAFS", "cat":"growth", "weight":.20},
+        {"name":"Employment backdrop", "series":"PAYEMS", "cat":"labor_pos", "weight":.20},
+    ],
+    "energy": [
+        {"name":"WTI price momentum", "series":"DCOILWTICO", "fallback":"POILWTIUSDM", "cat":"growth", "weight":.45},
+        {"name":"Industrial-demand backdrop", "series":"INDPRO", "cat":"growth", "weight":.30},
+        {"name":"USD/rate demand backdrop", "series":"DTWEXBGS", "cat":"growth", "weight":.25},
+    ],
+    "policy": [
+        {"name":"Core inflation pressure", "series":"PCEPILFE", "cat":"inflation", "weight":.30},
+        {"name":"Unemployment trend", "series":"UNRATE", "cat":"labor_neg", "weight":.25},
+        {"name":"10Y breakeven inflation", "series":"T10YIE", "cat":"inflation", "weight":.25},
+        {"name":"Industrial activity", "series":"INDPRO", "cat":"growth", "weight":.20},
+    ],
+    "general": [
+        {"name":"Industrial activity", "series":"INDPRO", "cat":"growth", "weight":.30},
+        {"name":"Retail demand", "series":"RSAFS", "cat":"growth", "weight":.25},
+        {"name":"Employment trend", "series":"PAYEMS", "cat":"labor_pos", "weight":.25},
+        {"name":"Inflation expectations", "series":"T10YIE", "cat":"inflation", "weight":.20},
+    ],
+}
+
+# Country-specific replacements where a broad US FRED series would be misleading.
+_CURRENCY_PRECURSOR_OVERRIDES = {
+    "CAD": {
+        "labor": [
+            {"name":"Canadian employment momentum", "series":"LFEMTTTTCAM647S", "cat":"labor_pos", "weight":.55},
+            {"name":"Canadian unemployment momentum", "series":"LRUN64TTCAM156S", "cat":"labor_neg", "weight":.45},
+        ],
+        "growth": [
+            {"name":"Canadian employment momentum", "series":"LFEMTTTTCAM647S", "cat":"labor_pos", "weight":.35},
+            {"name":"Canadian unemployment momentum", "series":"LRUN64TTCAM156S", "cat":"labor_neg", "weight":.25},
+            {"name":"WTI/Canada terms-of-trade proxy", "series":"DCOILWTICO", "fallback":"POILWTIUSDM", "cat":"growth", "weight":.25},
+            {"name":"US industrial-demand spillover", "series":"INDPRO", "cat":"growth", "weight":.15},
+        ],
+    }
+}
+
+FORECAST_EVIDENCE_ARCHIVE_FILE = str(PROJECT_ROOT / "forecaster_evidence_archive.json")
+_FORECAST_EVIDENCE_ARCHIVE_LOCK = threading.RLock()
+
+def _universal_precursors(event: dict) -> list:
+    """Return event-specific inputs when known, otherwise a family template for every High-Impact event."""
+    meta = event.get("meta", {}) or {}
+    explicit = list(meta.get("precursors") or [])
+    family = _event_family(event)
+    cur = str(meta.get("currency", event.get("currency", ""))).upper()
+    fallback = list((_CURRENCY_PRECURSOR_OVERRIDES.get(cur, {}) or {}).get(family) or _GENERIC_PRECURSORS.get(family) or _GENERIC_PRECURSORS["general"])
+    # Preserve curated inputs, then fill gaps from the universal family model without duplicate series.
+    out, seen = [], set()
+    for row in explicit + fallback:
+        sid = str(row.get("series", ""))
+        if not sid or sid in seen: continue
+        seen.add(sid); out.append(dict(row))
+    # Normalize weights so the evidence score is comparable across event types.
+    total = sum(max(0.0, float(x.get("weight", 0) or 0)) for x in out) or 1.0
+    for x in out: x["weight"] = max(0.0, float(x.get("weight", 0) or 0)) / total
+    return out[:6]
+
+def _event_identity(event: dict) -> str:
+    return f"{str(event.get('currency','')).upper()}|{_normalize_catalyst_title(event.get('title',''))}"
+
+def _same_event_history(event: dict, limit: int = 8) -> list:
+    """Merge ApexMacro frozen outcomes with external Forex Factory release history."""
+    ident = _event_identity(event)
+    rows=[]
+    for r in (_load_forecaster_history().get("records", {}) or {}).values():
+        if str(r.get("event_identity", "")) == ident and r.get("resolved"):
+            rows.append(r)
+    rows.sort(key=lambda r: str(r.get("resolved_at_utc", "")), reverse=True)
+    # Internal frozen records win; external history fills the long pre-ApexMacro gap.
+    seen={(str(r.get("actual", "")), str(r.get("forecast", "")), str(r.get("resolved_at_utc", ""))[:10]) for r in rows}
+    for r in _ff_external_same_event_history(event, max(limit, 12)):
+        key=(str(r.get("actual", "")), str(r.get("forecast", "")), str(r.get("date_label", "")))
+        if key not in seen:
+            rows.append(r)
+    return rows[:limit]
+
+def _history_release_signal(event: dict) -> tuple[float, list]:
+    """Score repeat-indicator Actual-vs-consensus behavior; no invented historical releases."""
+    rows=_same_event_history(event, 8)
+    vals=[]
+    for i,r in enumerate(rows):
+        out=str(r.get("actual_outcome", ""))
+        v=1.0 if out=="beat" else (-1.0 if out=="miss" else 0.0)
+        vals.append((v, 1.0/(1.0+i*.35)))
+    if not vals: return 0.0, rows
+    den=sum(w for _,w in vals) or 1.0
+    return sum(v*w for v,w in vals)/den, rows
+
+def _load_evidence_archive() -> dict:
+    with _FORECAST_EVIDENCE_ARCHIVE_LOCK:
+        d=_load_persistent_state("forecaster_evidence_archive_v1", FORECAST_EVIDENCE_ARCHIVE_FILE, {"events":{}})
+        return d if isinstance(d,dict) else {"events":{}}
+
+def _save_evidence_archive(d: dict) -> None:
+    with _FORECAST_EVIDENCE_ARCHIVE_LOCK:
+        _save_persistent_state("forecaster_evidence_archive_v1", FORECAST_EVIDENCE_ARCHIVE_FILE, d)
+
+def _archive_event_news(event: dict, current_articles: list) -> list:
+    """Persist relevant headlines so the next release can inspect news since the previous release."""
+    now=datetime.utcnow()
+    ident=_event_identity(event)
+    d=_load_evidence_archive(); bucket=d.setdefault("events",{}).setdefault(ident,{"articles":[]})
+    old=list(bucket.get("articles") or [])
+    seen={str(x.get("fingerprint", "")) for x in old}
+    for a in current_articles or []:
+        fp=hashlib.sha1(f"{a.get('title','')}|{a.get('publishedAt','')}".encode("utf-8","ignore")).hexdigest()[:20]
+        if fp in seen: continue
+        seen.add(fp)
+        old.append({"fingerprint":fp,"title":str(a.get("title",""))[:500],"description":str(a.get("description",""))[:900],
+                    "publishedAt":str(a.get("publishedAt","")),"source":a.get("source",{}),"captured_at_utc":now.isoformat(timespec="seconds")+"Z"})
+    cutoff=now-timedelta(days=90)
+    def keep(x):
+        try: return datetime.fromisoformat(str(x.get("captured_at_utc","")).replace("Z","+00:00")).replace(tzinfo=None)>=cutoff
+        except Exception: return True
+    old=[x for x in old if keep(x)][-250:]
+    bucket["articles"]=old; _save_evidence_archive(d)
+    # Previous release boundary comes from our frozen/resolved same-event history.
+    hist=_same_event_history(event, 2)
+    boundary=None
+    if hist:
+        try: boundary=datetime.fromisoformat(str(hist[0].get("resolved_at_utc","")).replace("Z","+00:00")).replace(tzinfo=None)
+        except Exception: boundary=None
+    if boundary is None: return old[-80:]
+    out=[]
+    for x in old:
+        try: dt=datetime.fromisoformat(str(x.get("captured_at_utc","")).replace("Z","+00:00")).replace(tzinfo=None)
+        except Exception: dt=now
+        if dt>=boundary: out.append(x)
+    return out[-80:]
 
 _EVENT_MODEL_PROFILES = {
     # Quant/news/surprise weights plus minimum evidence and ambiguity controls.
@@ -5570,6 +5926,31 @@ def _verified_event_news(event: dict, articles: list) -> tuple[list, float]:
             ambiguity += 1.0
         verified.append(item)
     return verified[:12], min(1.0, ambiguity / max(1, len(verified)))
+
+
+def _consensus_relative_adjustment(event: dict, composite: float) -> tuple[float, float, float | None]:
+    """Anchor the directional nowcast to consensus instead of treating positive momentum as an automatic beat.
+
+    Returns adjusted composite, consensus hurdle, and a conservative numeric model estimate
+    for percentage-style releases. The estimate is diagnostic and is frozen pre-release.
+    """
+    fv = _safe_numeric_release(event.get("forecast_str", ""))
+    pv = _safe_numeric_release(event.get("prev_str", ""))
+    if fv is None:
+        return float(composite), 0.0, None
+    hurdle = 0.0
+    if pv is not None:
+        gap = fv - pv
+        scale = max(0.10, abs(fv) * 0.50, abs(pv) * 0.50)
+        hurdle = max(-0.35, min(0.35, gap / max(scale, 1e-9) * 0.18))
+    adjusted = max(-1.0, min(1.0, float(composite) - hurdle))
+    # Do not manufacture false precision: only create a numeric estimate for percent releases.
+    raw = f"{event.get('forecast_str','')} {event.get('prev_str','')}"
+    estimate = None
+    if "%" in raw:
+        step = max(0.05, min(0.25, abs(fv) * 0.20 + 0.05))
+        estimate = round(fv + adjusted * step, 2)
+    return adjusted, hurdle, estimate
 
 
 def _three_way_probabilities(composite: float, conflict: float, evidence_quality: float, inline_prior: float) -> dict:
@@ -5611,7 +5992,7 @@ def _forecast_reason(nowcast: dict) -> str:
     parts.append("evidence quality was weak" if eq < .35 else ("evidence quality was moderate" if eq < .60 else "evidence quality was strong"))
     if conflict >= .45: parts.append("signals were conflicting")
     elif conflict >= .20: parts.append("some signal conflict was present")
-    parts.append(f"{len(nowcast.get('precursor_results', []) or [])} precursor series and {len(nowcast.get('correlated_articles', []) or [])} relevant headlines were available")
+    parts.append(f"{len(nowcast.get('precursor_results', []) or [])} precursor series, {len(nowcast.get('correlated_articles', []) or [])} relevant headlines, and {len(nowcast.get('same_release_history', []) or [])} prior same-release Actuals were available")
     return "; ".join(parts) + "."
 
 
@@ -5647,8 +6028,10 @@ def _record_forecaster_snapshot(event: dict, nowcast: dict, actual: str = "") ->
             "event_code": code, "title": event.get("title", ""), "currency": event.get("currency", ""),
             "family": _event_family(event), "forecast": event.get("forecast_str", ""), "previous": event.get("prev_str", ""),
             "captured_at_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "event_identity": _event_identity(event),
             "predicted_outcome": max(probs, key=probs.get) if probs else nowcast.get("outcome_key", "inline"),
             "probabilities": probs, "confidence": nowcast.get("confidence", 0),
+            "model_estimate": nowcast.get("model_estimate"), "consensus_hurdle": nowcast.get("consensus_hurdle", 0),
             "composite": nowcast.get("nowcast_composite", 0), "conflict_score": nowcast.get("conflict_score", 0),
             "evidence_quality": nowcast.get("evidence_quality", 0),
             "precursors": nowcast.get("precursor_results", []),
@@ -5662,10 +6045,16 @@ def _record_forecaster_snapshot(event: dict, nowcast: dict, actual: str = "") ->
         if av is not None and fv is not None:
             eps = max(1e-9, abs(fv) * 1e-6)
             outcome = "beat" if av > fv + eps else ("miss" if av < fv - eps else "inline")
+            model_est = rec.get("model_estimate")
+            try:
+                model_err = abs(av - float(model_est)) if model_est is not None else None
+            except Exception:
+                model_err = None
             rec.update({"actual": actual, "actual_outcome": outcome, "resolved": True,
                         "resolved_at_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
                         "correct": rec.get("predicted_outcome") == outcome,
-                        "absolute_error": abs(av - fv),
+                        "absolute_error": model_err,
+                        "consensus_error": abs(av - fv),
                         "resolution_reason": _resolution_reason(rec, outcome, actual, str(event.get("forecast_str", "")))})
     _save_forecaster_history(data)
 
@@ -5684,7 +6073,7 @@ def _forecaster_performance() -> dict:
 
 def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_override: str = "") -> dict:
     meta = event.get("meta", {}) or {}
-    precursors = meta.get("precursors", [])
+    precursors = _universal_precursors(event) if str(event.get("impact", meta.get("impact", ""))).lower() == "high" else list(meta.get("precursors", []) or [])
     family = _event_family(event)
     profile = _EVENT_MODEL_PROFILES.get(family, _EVENT_MODEL_PROFILES["general"])
 
@@ -5708,6 +6097,18 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_ove
     base_precursor_score = precursor_score_sum / precursor_weight_sum if precursor_weight_sum else 0.0
 
     correlated_articles, news_ambiguity = _verified_event_news(event, all_news)
+    # High-Impact events accumulate relevant news from the previous release through now.
+    if str(event.get("impact", meta.get("impact", ""))).lower() == "high":
+        archived_window = _archive_event_news(event, correlated_articles)
+        archived_verified, archived_ambiguity = _verified_event_news(event, archived_window)
+        merged, seen_news = [], set()
+        for a in list(correlated_articles) + list(archived_verified):
+            k = _normalize_catalyst_title(a.get("title", ""))
+            if k and k not in seen_news:
+                seen_news.add(k); merged.append(a)
+        correlated_articles = merged[:24]
+        news_ambiguity = max(news_ambiguity, archived_ambiguity)
+    history_signal, same_release_history = _history_release_signal(event)
     cur = meta.get("currency", event.get("currency", "USD"))
     verified_for_score = [a for a in correlated_articles if not a.get("_numeric_ambiguous")]
     news_sentiment_pts = 0.0
@@ -5721,12 +6122,18 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_ove
     cross_conflict = 1.0 if base_precursor_score * news_sentiment_pts < -0.005 else 0.0
     conflict_score = min(1.0, .65 * precursor_conflict + .25 * cross_conflict + .10 * news_ambiguity)
 
-    evidence_quality = min(1.0, .18 + .16 * len(precursor_results) + .07 * min(5, len(verified_for_score)))
+    evidence_quality = min(1.0, .14 + .13 * len(precursor_results) + .055 * min(8, len(verified_for_score)) + .035 * min(4, len(same_release_history)))
     surprise_factor = .20 if base_precursor_score > .15 else (-.20 if base_precursor_score < -.15 else 0.0)
     nowcast_composite = (profile["precursor"] * base_precursor_score +
                          profile["news"] * (news_sentiment_pts / .50) +
                          profile["surprise"] * surprise_factor)
     nowcast_composite *= (1.0 - profile["conflict"] * conflict_score)
+    # Previous Actual-vs-consensus outcomes are evidence, not destiny.  Give them a capped
+    # 15% contribution only when the same indicator has resolved history.
+    if same_release_history:
+        nowcast_composite = max(-1.0, min(1.0, 0.85 * nowcast_composite + 0.15 * history_signal))
+    # Forecast the surprise relative to consensus, not merely the absolute direction of the economy.
+    nowcast_composite, consensus_hurdle, model_estimate = _consensus_relative_adjustment(event, nowcast_composite)
 
     calibration, learning_n = _history_learning_adjustment(event)
     probabilities = _three_way_probabilities(nowcast_composite, conflict_score, evidence_quality, profile["inline_prior"])
@@ -5763,9 +6170,12 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_ove
               "confidence": confidence_val, "outcome_desc": outcome_desc, "currency_action_en": currency_action_en,
               "currency_action_color": currency_action_color, "currency_action_desc_en": currency_action_desc_en,
               "gold_implication": gold_implication, "usd_implication": usd_implication, "oil_implication": oil_implication,
+              "consensus_hurdle": consensus_hurdle, "model_estimate": model_estimate,
               "nasdaq_implication": nasdaq_implication, "probabilities": probabilities, "outcome_key": outcome_key,
               "conflict_score": round(conflict_score, 3), "evidence_quality": round(evidence_quality, 3),
-              "event_family": family, "learning_sample": learning_n, "news_ambiguity": round(news_ambiguity, 3)}
+              "event_family": family, "learning_sample": learning_n, "news_ambiguity": round(news_ambiguity, 3),
+              "same_release_history": same_release_history, "history_release_signal": round(history_signal, 3),
+              "evidence_framework": "universal_high_impact_v15_ff_history_actual" if str(event.get("impact", meta.get("impact", ""))).lower() == "high" else "legacy"}
 
     # Once an official print exists, classify Beat/In-line/Miss correctly, including exact consensus matches.
     if actual_override:
