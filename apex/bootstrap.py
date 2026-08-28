@@ -10,6 +10,7 @@ def initialize_background_services() -> None:
             core.DEFAULT_FRED_KEY,
             core.DEFAULT_TELEGRAM_CHANNEL,
         )
+    core.start_shared_background_ai_worker()
 
 def prepare_page() -> None:
     apply_global_styles()

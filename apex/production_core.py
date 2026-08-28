@@ -146,13 +146,11 @@ def _post_ai_chat(
     temperature: float,
     timeout: int,
 ):
-    """
-    Send an OpenAI-compatible chat request with bounded retry behavior.
+    """Send exactly ONE provider request.
 
-    RUAPI behavior:
-    - normal request first
-    - one minimal-payload retry on HTTP 400
-    - retry on read/connect timeout or transient 5xx
+    ApexMacro's shared background AI engine owns refresh/retry timing. Foreground
+    page renders never retry provider calls, preventing one logical refresh from
+    becoming two or three billable requests.
     """
     payload = {
         "model": model,
@@ -162,81 +160,26 @@ def _post_ai_chat(
         ],
         "temperature": temperature,
     }
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+    except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout, requests.exceptions.ConnectionError) as exc:
+        raise RuntimeError(f"{provider} temporarily unavailable.") from exc
 
-    max_attempts = 3 if str(provider).upper() == "RUAPI" else 2
-    last_error = None
+    if response.ok:
+        return response
 
-    for attempt in range(max_attempts):
-        try:
-            response = requests.post(
-                url,
-                headers=headers,
-                json=payload,
-                timeout=timeout,
-            )
-
-            # Some RUAPI/model combinations reject optional parameters or system role.
-            if str(provider).upper() == "RUAPI" and response.status_code == 400:
-                minimal_prompt = (
-                    f"{system_prompt.strip()}\n\n"
-                    f"USER REQUEST / EVIDENCE:\n{user_prompt.strip()}"
-                )
-                minimal_payload = {
-                    "model": model,
-                    "messages": [
-                        {"role": "user", "content": minimal_prompt}
-                    ],
-                }
-                response = requests.post(
-                    url,
-                    headers=headers,
-                    json=minimal_payload,
-                    timeout=timeout,
-                )
-
-            if response.ok:
-                return response
-
-            # Retry only transient gateway/server errors.
-            if response.status_code in {408, 425, 429, 500, 502, 503, 504} and attempt < max_attempts - 1:
-                time.sleep(1.5 * (attempt + 1))
-                continue
-
-            detail = ""
-            try:
-                body = response.json()
-                if isinstance(body, dict):
-                    err = body.get("error", body)
-                    if isinstance(err, dict):
-                        detail = str(err.get("message") or err.get("detail") or err)
-                    else:
-                        detail = str(err)
-                else:
-                    detail = str(body)
-            except Exception:
-                detail = str(response.text or "").strip()
-
-            detail = re.sub(r"\s+", " ", detail)[:500]
-            provider_label = str(provider or "AI")
-            if detail:
-                raise RuntimeError(
-                    f"{provider_label} HTTP {response.status_code}: {detail}"
-                )
-            response.raise_for_status()
-
-        except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout, requests.exceptions.ConnectionError) as exc:
-            last_error = exc
-            if attempt < max_attempts - 1:
-                time.sleep(1.5 * (attempt + 1))
-                continue
-            raise RuntimeError(
-                f"{provider} temporarily unavailable after {max_attempts} attempts."
-            ) from exc
-
-    if last_error:
-        raise RuntimeError(f"{provider} temporarily unavailable.") from last_error
-    raise RuntimeError(f"{provider} request failed.")
-
+    detail = ""
+    try:
+        body = response.json()
+        if isinstance(body, dict):
+            err = body.get("error", body)
+            detail = str(err.get("message") or err.get("detail") or err) if isinstance(err, dict) else str(err)
+        else:
+            detail = str(body)
+    except Exception:
+        detail = str(response.text or "").strip()
+    detail = re.sub(r"\s+", " ", detail)[:500]
+    raise RuntimeError(f"{provider} HTTP {response.status_code}: {detail}" if detail else f"{provider} HTTP {response.status_code}")
 
 def _ai_message_content(response_json: dict) -> str:
     """Extract text from an OpenAI-compatible chat-completions response."""
@@ -3008,7 +2951,389 @@ def fetch_all_instant_news(channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> list
     return _rank_news_articles(deduped)
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+# ============================================================
+# SHARED BACKGROUND AI ENGINE — ONE REQUEST FOR THE WHOLE DESK
+# ============================================================
+# All pages are readers only. A singleton background supervisor creates one
+# combined request when relevant news / macro observations / Forecaster inputs
+# change. Page navigation and Streamlit reruns never call the provider.
+AI_BATCH_STATE_FILE = str(PROJECT_ROOT / "ai_batch_state.json")
+AI_BATCH_PROCESS_LOCK_FILE = str(PROJECT_ROOT / ".apexmacro_ai_batch.lock")
+_AI_BATCH_STATE_ID = "shared_ai_batch_v1"
+_AI_BATCH_LOCK = threading.RLock()
+_AI_BATCH_MEMORY: dict | None = None
+_AI_BATCH_SUPERVISOR_RUNNING = False
+_AI_BATCH_REQUEST_INFLIGHT = False
+_AI_BATCH_POLL_SECONDS = 60
+_AI_BATCH_ERROR_BACKOFF_SECONDS = 15 * 60
+_AI_BATCH_MACRO_REFRESH_SECONDS = 15 * 60
+_AI_BATCH_MACRO_CACHE = {"at": 0.0, "data": {}}
+
+
+def _ai_batch_load_state() -> dict:
+    global _AI_BATCH_MEMORY
+    with _AI_BATCH_LOCK:
+        if isinstance(_AI_BATCH_MEMORY, dict):
+            return dict(_AI_BATCH_MEMORY)
+    try:
+        state = _load_persistent_state(_AI_BATCH_STATE_ID, AI_BATCH_STATE_FILE, {})
+        if not isinstance(state, dict):
+            state = {}
+    except Exception:
+        state = {}
+    with _AI_BATCH_LOCK:
+        _AI_BATCH_MEMORY = dict(state)
+    return dict(state)
+
+
+def _ai_batch_save_state(state: dict) -> None:
+    global _AI_BATCH_MEMORY
+    payload = dict(state or {})
+    with _AI_BATCH_LOCK:
+        _AI_BATCH_MEMORY = payload
+    try:
+        _save_persistent_state(_AI_BATCH_STATE_ID, AI_BATCH_STATE_FILE, payload)
+    except Exception:
+        pass
+
+
+def get_shared_background_ai_state() -> dict:
+    """Read the latest background AI result without ever contacting the provider."""
+    return _ai_batch_load_state()
+
+
+def _acquire_ai_batch_process_lock(stale_seconds: int = 180) -> int | None:
+    """Cross-process guard so multiple Streamlit sessions cannot duplicate one paid batch."""
+    path = AI_BATCH_PROCESS_LOCK_FILE
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, f"{os.getpid()} {time.time()}".encode("utf-8"))
+        return fd
+    except FileExistsError:
+        try:
+            if time.time() - os.path.getmtime(path) > stale_seconds:
+                os.unlink(path)
+                fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(fd, f"{os.getpid()} {time.time()}".encode("utf-8"))
+                return fd
+        except Exception:
+            pass
+        return None
+    except Exception:
+        return None
+
+
+def _release_ai_batch_process_lock(fd: int | None) -> None:
+    if fd is None:
+        return
+    try:
+        os.close(fd)
+    except Exception:
+        pass
+    try:
+        os.unlink(AI_BATCH_PROCESS_LOCK_FILE)
+    except Exception:
+        pass
+
+
+def _ai_batch_news_rows(articles: list, limit: int = 20) -> list[dict]:
+    """Stable news fingerprint: same headlines do not retrigger AI merely because freshness scores age."""
+    prepared = []
+    for a in deduplicate_news_articles(list(articles or [])):
+        if not isinstance(a, dict):
+            continue
+        source = a.get("source", {})
+        source_name = source.get("name", "Unknown Source") if isinstance(source, dict) else str(source)
+        published_raw = str(a.get("publishedAt", ""))[:80]
+        dt = _parse_news_datetime(published_raw)
+        stamp = dt.timestamp() if dt is not None else 0.0
+        prepared.append((stamp, str(a.get("title", "")).lower(), {
+            "source": str(source_name)[:80],
+            "published": published_raw,
+            "title": str(a.get("title", ""))[:240],
+            "description": str(a.get("description", ""))[:360],
+        }))
+    prepared.sort(key=lambda row: (row[0], row[1]), reverse=True)
+    return [row[2] for row in prepared[:max(1, int(limit))]]
+
+
+def _ai_batch_macro_snapshot() -> dict:
+    """Compact data fingerprint; refreshed at most every 15 minutes."""
+    now_ts = time.time()
+    with _AI_BATCH_LOCK:
+        if now_ts - float(_AI_BATCH_MACRO_CACHE.get("at", 0)) < _AI_BATCH_MACRO_REFRESH_SECONDS:
+            return dict(_AI_BATCH_MACRO_CACHE.get("data", {}))
+
+    snapshot = {}
+    if DEFAULT_FRED_KEY:
+        for currency, cfg in CURRENCY_SERIES.items():
+            cur = {}
+            indicators = cfg.get("indicators", {})
+            names = cfg.get("key_indicators", []) or list(indicators)[:4]
+            for name in names[:4]:
+                spec = indicators.get(name, {})
+                sid = spec.get("series")
+                if not sid:
+                    continue
+                df = fetch_fred(sid, DEFAULT_FRED_KEY, limit=2)
+                if df is not None and not df.empty:
+                    row = df.iloc[-1]
+                    cur[name] = {"date": str(row.get("date", "")), "value": round(float(row.get("value", 0.0)), 6)}
+            if cur:
+                snapshot[currency] = cur
+
+        extra = {
+            "Gold Real Yield": GOLD_SERIES.get("real_yield"),
+            "WTI": OIL_SERIES.get("wti"),
+            "Nasdaq100": "NASDAQ100",
+        }
+        for name, sid in extra.items():
+            if not sid:
+                continue
+            df = fetch_fred(sid, DEFAULT_FRED_KEY, limit=2)
+            if df is not None and not df.empty:
+                row = df.iloc[-1]
+                snapshot[name] = {"date": str(row.get("date", "")), "value": round(float(row.get("value", 0.0)), 6)}
+
+    with _AI_BATCH_LOCK:
+        _AI_BATCH_MACRO_CACHE["at"] = now_ts
+        _AI_BATCH_MACRO_CACHE["data"] = dict(snapshot)
+    return snapshot
+
+
+def _ai_batch_event_rows(events: list, all_news: list, actuals: dict, limit: int = 14) -> list[dict]:
+    rows = []
+    now_local = datetime.utcnow() + timedelta(hours=3)
+    candidates = []
+    for ev in events or []:
+        if str(ev.get("impact", "")).title() != "High":
+            continue
+        dt = ev.get("datetime_obj")
+        if isinstance(dt, datetime):
+            try:
+                delta = (dt.replace(tzinfo=None) - now_local).total_seconds()
+                if delta < -(48 * 3600) or delta > 10 * 24 * 3600:
+                    continue
+            except Exception:
+                pass
+        candidates.append(ev)
+
+    for ev in candidates[:limit]:
+        code = str(ev.get("code", "")).strip()
+        if not code:
+            continue
+        saved = str((actuals or {}).get(code, "")).strip()
+        published = _normalize_forex_factory_actual(ev.get("actual_str", ""))
+        actual = saved or published
+        try:
+            nowcast = compute_event_nowcast(ev, DEFAULT_FRED_KEY, all_news, actual_override=actual) if DEFAULT_FRED_KEY else {}
+        except Exception:
+            nowcast = {}
+        rel_news = _forecaster_relevant_ai_articles(ev, all_news) if "_forecaster_relevant_ai_articles" in globals() else []
+        rows.append({
+            "code": code,
+            "title": str(ev.get("title", ""))[:180],
+            "currency": str(ev.get("currency", ""))[:12],
+            "impact": str(ev.get("impact", ""))[:20],
+            "date": str(ev.get("date_str", ""))[:80],
+            "time": str(ev.get("time_str", ""))[:80],
+            "forecast": str(ev.get("forecast_str", ""))[:80],
+            "previous": str(ev.get("prev_str", ""))[:80],
+            "actual": str(actual)[:80],
+            "quantitative_nowcast": {
+                "bias": nowcast.get("bias_label", ""),
+                "confidence": nowcast.get("confidence", 0),
+                "composite": nowcast.get("nowcast_composite", 0),
+                "probabilities": nowcast.get("probabilities", {}),
+                "conflict": nowcast.get("conflict_score", 0),
+                "evidence_quality": nowcast.get("evidence_quality", 0),
+                "family": nowcast.get("event_family", ""),
+            },
+            "relevant_news": _ai_batch_news_rows(rel_news, 5),
+        })
+    return rows
+
+
+def _ai_batch_signature(news_rows: list, macro_snapshot: dict, event_rows: list) -> str:
+    payload = {"news": news_rows, "macro": macro_snapshot, "events": event_rows}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def _normalize_shared_asset_payload(raw: dict) -> dict:
+    assets = ["USD", "EUR", "GBP", "CAD", "JPY", "AUD", "NZD", "CHF", "Gold", "Oil", "Nasdaq"]
+    out = {}
+    raw = raw if isinstance(raw, dict) else {}
+    for asset in assets:
+        item = raw.get(asset, {}) if isinstance(raw.get(asset, {}), dict) else {}
+        try:
+            score = float(np.clip(float(item.get("score", 0.0)), -1.0, 1.0))
+        except Exception:
+            score = 0.0
+        try:
+            confidence = float(np.clip(float(item.get("confidence", 0.0)), 0.0, 100.0))
+        except Exception:
+            confidence = 0.0
+        out[asset] = {
+            "score": score,
+            "confidence": confidence,
+            "reason": str(item.get("reason", ""))[:300],
+            "horizon": str(item.get("horizon", "1-3 Days"))[:40],
+        }
+    return out
+
+
+def _run_shared_ai_batch_once() -> None:
+    """Make at most one billable request for one changed evidence snapshot."""
+    global _AI_BATCH_REQUEST_INFLIGHT
+    process_lock_fd = None
+    if not DEFAULT_AI_KEY:
+        return
+    with _AI_BATCH_LOCK:
+        if _AI_BATCH_REQUEST_INFLIGHT:
+            return
+        _AI_BATCH_REQUEST_INFLIGHT = True
+
+    try:
+        try:
+            all_news = fetch_all_instant_news(DEFAULT_TELEGRAM_CHANNEL)
+        except Exception:
+            all_news = []
+        news_rows = _ai_batch_news_rows(all_news, 20)
+        macro_snapshot = _ai_batch_macro_snapshot()
+        try:
+            events = get_upcoming_catalyst_events()
+        except Exception:
+            events = []
+        try:
+            actuals = load_actuals_cache()
+        except Exception:
+            actuals = {}
+        event_rows = _ai_batch_event_rows(events, all_news, actuals, 14)
+
+        if not news_rows and not macro_snapshot and not event_rows:
+            return
+
+        signature = _ai_batch_signature(news_rows, macro_snapshot, event_rows)
+        state = _ai_batch_load_state()
+        if state.get("signature") == signature and isinstance(state.get("result"), dict):
+            return
+        if state.get("last_attempt_signature") == signature:
+            last_attempt = float(state.get("last_attempt_at", 0) or 0)
+            if time.time() - last_attempt < _AI_BATCH_ERROR_BACKOFF_SECONDS:
+                return
+
+        provider, url, model, resolved_key = _ai_runtime(DEFAULT_AI_KEY, DEFAULT_AI_PROVIDER, DEFAULT_AI_MODEL)
+        if not resolved_key:
+            return
+
+        process_lock_fd = _acquire_ai_batch_process_lock()
+        if process_lock_fd is None:
+            return
+        # Another process may have completed the same signature just before we got the lock.
+        latest_state = _ai_batch_load_state()
+        if latest_state.get("signature") == signature and isinstance(latest_state.get("result"), dict):
+            _release_ai_batch_process_lock(process_lock_fd)
+            return
+
+        system_prompt = """You are ApexMacro's ONE shared institutional AI judge. One response must serve the entire desk.
+Use ONLY supplied evidence; never invent facts. Return ONE valid JSON object and no markdown.
+
+Required top-level keys: summary, assets, events.
+assets MUST contain USD, EUR, GBP, CAD, JPY, AUD, NZD, CHF, Gold, Oil, Nasdaq.
+For each asset return: score (-1 to +1), confidence (0-100), reason, horizon. Judge each asset separately.
+Use macro observations plus current news. Gold: real yields/USD/safe haven/central-bank demand. Oil: supply/demand/OPEC/geopolitics/inventories. Nasdaq: yields/Fed/growth/earnings/semiconductors/risk appetite.
+
+events MUST be an object keyed by the supplied event code. For every supplied event return exactly these keys:
+event_assessment, causal_chain, facts, supporting_evidence, contradictions, nowcast, confidence, confidence_reason, cross_source_confirmation, usd, gold, oil, nasdaq, invalidation, source_count.
+The four list fields causal_chain, facts, supporting_evidence, contradictions must be arrays. Confidence is integer 0-100. Respect the supplied quantitative nowcast; do not create release values.
+If evidence is insufficient, say so explicitly."""
+
+        user_payload = {
+            "news": news_rows,
+            "macro_data": macro_snapshot,
+            "high_impact_forecaster_events": event_rows,
+        }
+        attempt_state = {**state, "last_attempt_signature": signature, "last_attempt_at": time.time()}
+        _ai_batch_save_state(attempt_state)
+
+        response = _post_ai_chat(
+            provider=provider,
+            url=url,
+            headers=_ai_headers(resolved_key, "ApexMacro Shared Background AI"),
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=json.dumps(user_payload, ensure_ascii=False, separators=(",", ":")),
+            temperature=0.1,
+            timeout=75,
+        )
+        raw = _ai_message_content(response.json())
+        parsed = _extract_json_object(raw)
+        if not isinstance(parsed, dict):
+            raise RuntimeError(f"{provider} returned unstructured batch output")
+
+        clean_events = parsed.get("events", {}) if isinstance(parsed.get("events", {}), dict) else {}
+        result = {
+            "summary": str(parsed.get("summary", ""))[:1800],
+            "assets": _normalize_shared_asset_payload(parsed.get("assets", {})),
+            "events": clean_events,
+        }
+        _ai_batch_save_state({
+            "signature": signature,
+            "updated_at": time.time(),
+            "updated_at_iso": datetime.now(timezone.utc).isoformat(),
+            "last_attempt_signature": signature,
+            "last_attempt_at": time.time(),
+            "provider": provider,
+            "model": model,
+            "result": result,
+        })
+    except Exception as exc:
+        state = _ai_batch_load_state()
+        state["last_error"] = str(exc)[:500]
+        state["last_error_at"] = time.time()
+        _ai_batch_save_state(state)
+    finally:
+        _release_ai_batch_process_lock(process_lock_fd)
+        with _AI_BATCH_LOCK:
+            _AI_BATCH_REQUEST_INFLIGHT = False
+
+
+def _shared_ai_supervisor_loop() -> None:
+    global _AI_BATCH_SUPERVISOR_RUNNING
+    try:
+        while True:
+            _run_shared_ai_batch_once()
+            time.sleep(_AI_BATCH_POLL_SECONDS)
+    finally:
+        with _AI_BATCH_LOCK:
+            _AI_BATCH_SUPERVISOR_RUNNING = False
+
+
+def start_shared_background_ai_worker() -> None:
+    """Start one process-local supervisor. It is independent of page navigation."""
+    global _AI_BATCH_SUPERVISOR_RUNNING
+    if not DEFAULT_AI_KEY:
+        return
+    with _AI_BATCH_LOCK:
+        if _AI_BATCH_SUPERVISOR_RUNNING:
+            return
+        _AI_BATCH_SUPERVISOR_RUNNING = True
+    threading.Thread(
+        target=_shared_ai_supervisor_loop,
+        daemon=True,
+        name="ApexMacroSharedAI",
+    ).start()
+
+
+def _shared_ai_asset(asset: str) -> dict:
+    state = _ai_batch_load_state()
+    result = state.get("result", {}) if isinstance(state, dict) else {}
+    assets = result.get("assets", {}) if isinstance(result, dict) else {}
+    item = assets.get(asset, {}) if isinstance(assets, dict) else {}
+    return dict(item) if isinstance(item, dict) else {}
+
+
+@st.cache_data(ttl=30, show_spinner=False)
 def get_openrouter_analysis(
     news_text: str,
     api_key: str = DEFAULT_AI_KEY,
@@ -3016,37 +3341,11 @@ def get_openrouter_analysis(
     model_hint: str = DEFAULT_AI_MODEL,
     cache_version: str = AI_CACHE_VERSION,
 ) -> str:
-    if not news_text or not api_key:
-        return "AI analysis unavailable."
-
-    provider, url, model, resolved_key = _ai_runtime(api_key, provider_hint, model_hint)
-    if not resolved_key:
-        return f"{provider} AI key is unavailable."
-
-    system_prompt = (
-        "You are an institutional financial analyst and macro strategist. "
-        "Analyze ONLY the supplied live-news items. Respect source names and timestamps, prioritize the freshest "
-        "high-impact developments, and treat cross-source confirmation as stronger evidence than a single headline. "
-        "Do not invent missing facts and do not treat stale or undated items as breaking news. "
-        "Provide a concise 2-3 sentence executive summary highlighting the immediate directional impact on "
-        "Gold (XAUUSD), US Dollar (USD), Crude Oil, and Nasdaq-100 when relevant."
-    )
-
-    try:
-        response = _post_ai_chat(
-            provider=provider,
-            url=url,
-            headers=_ai_headers(resolved_key, "ApexMacro Desk"),
-            model=model,
-            system_prompt=system_prompt,
-            user_prompt=news_text,
-            temperature=0.2,
-            timeout=45,
-        )
-        content = _ai_message_content(response.json())
-        return content or "Could not generate AI analysis at the moment."
-    except Exception as e:
-        return f"{provider} AI Error: {str(e)}"
+    """Read the shared background summary; never make a page-triggered AI request."""
+    state = _ai_batch_load_state()
+    result = state.get("result", {}) if isinstance(state, dict) else {}
+    summary = str(result.get("summary", "")).strip() if isinstance(result, dict) else ""
+    return summary or "Background AI is waiting for the first changed news/data snapshot."
 
 
 def _is_gold_relevant_news(article: dict) -> bool:
@@ -3146,7 +3445,7 @@ def _gold_rule_based_news_points(articles: list) -> float:
     return float(np.clip(score, -0.50, 0.50))
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def get_openrouter_gold_signal(
     news_text: str,
     api_key: str = DEFAULT_AI_KEY,
@@ -3154,69 +3453,24 @@ def get_openrouter_gold_signal(
     model_hint: str = DEFAULT_AI_MODEL,
     cache_version: str = AI_CACHE_VERSION,
 ) -> dict:
-    default = {
-        "direction": "Neutral",
-        "score": 0.0,
-        "confidence": 0.0,
-        "horizon": "Unknown",
-        "reason": "Gold AI signal is temporarily unavailable.",
-        "active": False,
-    }
-    if not news_text or not api_key:
-        return default
-
-    provider, url, model, resolved_key = _ai_runtime(api_key, provider_hint, model_hint)
-    if not resolved_key:
-        return default
-
-    system_prompt = (
-        "You are the Gold intelligence analyst for an institutional macro terminal. "
-        "Assess ONLY the directional impact of the supplied CURRENT news on Gold/XAUUSD. "
-        "Use supplied source names and timestamps: prioritize fresher high-quality reports, look for cross-source "
-        "confirmation, and lower confidence when evidence is stale, undated, contradictory, or single-source. "
-        "Reason through real yields, USD/DXY, Federal Reserve expectations, inflation, "
-        "safe-haven/geopolitical demand, central-bank demand and ETF flows. "
-        "Do not treat generic positive/negative words as Gold direction and do not invent facts not present in the feed. "
-        "Return ONLY valid JSON with keys: direction, score, confidence, horizon, reason. "
-        "direction must be Bullish, Neutral or Bearish. "
-        "score must be from -1.0 to +1.0. confidence must be from 0 to 100. "
-        "horizon must be Intraday, 1-3 Days, or Multi-Day. "
-        "reason must be one concise sentence."
-    )
-
-    try:
-        response = _post_ai_chat(
-            provider=provider,
-            url=url,
-            headers=_ai_headers(resolved_key, "ApexMacro Gold Intelligence"),
-            model=model,
-            system_prompt=system_prompt,
-            user_prompt=news_text,
-            temperature=0.1,
-            timeout=45,
-        )
-        content = _ai_message_content(response.json())
-        content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.I | re.S).strip()
-        parsed = json.loads(content)
-
-        direction = str(parsed.get("direction", "Neutral")).strip().title()
-        if direction not in {"Bullish", "Neutral", "Bearish"}:
-            direction = "Neutral"
-
-        score = float(np.clip(float(parsed.get("score", 0.0)), -1.0, 1.0))
-        confidence = float(np.clip(float(parsed.get("confidence", 0.0)), 0.0, 100.0))
-
+    """Read Gold from the one shared background AI batch."""
+    item = _shared_ai_asset("Gold")
+    if not item:
         return {
-            "direction": direction,
-            "score": score,
-            "confidence": confidence,
-            "horizon": str(parsed.get("horizon", "Unknown"))[:40],
-            "reason": str(parsed.get("reason", ""))[:280],
-            "active": True,
+            "direction": "Neutral", "score": 0.0, "confidence": 0.0,
+            "horizon": "Unknown", "reason": "Background AI has not produced a Gold update yet.",
+            "active": False,
         }
-    except Exception as exc:
-        default["reason"] = f"{provider} Gold AI unavailable: {str(exc)[:220]}"
-        return default
+    score = float(item.get("score", 0.0) or 0.0)
+    direction = "Bullish" if score > 0.12 else "Bearish" if score < -0.12 else "Neutral"
+    return {
+        "direction": direction,
+        "score": score,
+        "confidence": float(item.get("confidence", 0.0) or 0.0),
+        "horizon": str(item.get("horizon", "1-3 Days")),
+        "reason": str(item.get("reason", ""))[:280],
+        "active": True,
+    }
 
 
 def _gold_news_intelligence(articles: list) -> dict:
@@ -3314,25 +3568,20 @@ def _asset_rule_news_score(articles: list, asset: str) -> float:
         score += local
     return float(np.clip(score,-0.50,0.50))
 
-@st.cache_data(ttl=21600, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def get_multi_asset_news_intelligence(news_text: str, api_key: str=DEFAULT_AI_KEY, provider_hint: str=DEFAULT_AI_PROVIDER, model_hint: str=DEFAULT_AI_MODEL, cache_version: str=AI_CACHE_VERSION) -> dict:
-    """ONE cached provider request returns separate intelligence for every tracked asset."""
+    """Read all asset judgments from the one shared background AI batch."""
     assets=["USD","EUR","GBP","CAD","JPY","AUD","NZD","CHF","Gold","Oil","Nasdaq"]
-    empty={a:{"score":0.0,"confidence":0.0,"reason":"No material asset-specific news signal."} for a in assets}
-    if not news_text or not api_key: return {"summary":"AI analysis unavailable.","assets":empty,"active":False}
-    provider,url,model,resolved_key=_ai_runtime(api_key,provider_hint,model_hint)
-    if not resolved_key: return {"summary":f"{provider} AI key is unavailable.","assets":empty,"active":False}
-    system_prompt=("You are the institutional multi-asset news judge for ApexMacro. Analyze ONLY the supplied CURRENT headlines. Return ONE JSON response covering USD, EUR, GBP, CAD, JPY, AUD, NZD, CHF, Gold, Oil and Nasdaq separately. A headline may affect several assets, but never copy generic sentiment across assets. Judge causal relevance: central-bank expectations, inflation/growth/labor, yields and FX for currencies; real yields/USD/safe-haven/central-bank demand for Gold; supply/demand/OPEC/geopolitics/inventories for Oil; yields/Fed/growth/earnings/semiconductors/risk appetite for Nasdaq. For each asset return score -1.0 to +1.0, confidence 0 to 100, and one short reason. If no material relevance, score MUST be 0 and confidence low. Also return a concise 2-3 sentence summary. Respect timestamps and source quality; invent nothing. Return ONLY JSON shaped as {\"summary\":\"...\",\"assets\":{\"USD\":{\"score\":0,\"confidence\":0,\"reason\":\"...\"},...}}")
-    try:
-        response=_post_ai_chat(provider=provider,url=url,headers=_ai_headers(resolved_key,"ApexMacro Multi-Asset News"),model=model,system_prompt=system_prompt,user_prompt=news_text,temperature=0.1,timeout=45)
-        content=_ai_message_content(response.json()); content=re.sub(r"^```(?:json)?\s*|\s*```$","",content,flags=re.I|re.S).strip(); parsed=json.loads(content)
-        raw=parsed.get("assets",{}) if isinstance(parsed,dict) else {}; clean={}
-        for asset in assets:
-            item=raw.get(asset,{}) if isinstance(raw,dict) else {}
-            clean[asset]={"score":float(np.clip(float(item.get("score",0.0)),-1.0,1.0)),"confidence":float(np.clip(float(item.get("confidence",0.0)),0.0,100.0)),"reason":str(item.get("reason",""))[:240]}
-        return {"summary":str(parsed.get("summary",""))[:1200],"assets":clean,"active":True}
-    except Exception as exc:
-        return {"summary":f"{provider} AI Error: {str(exc)[:300]}","assets":empty,"active":False}
+    empty={a:{"score":0.0,"confidence":0.0,"reason":"Background AI not ready.","horizon":"Unknown"} for a in assets}
+    state=_ai_batch_load_state(); result=state.get("result",{}) if isinstance(state,dict) else {}
+    raw=result.get("assets",{}) if isinstance(result,dict) else {}
+    if not isinstance(raw,dict) or not raw:
+        return {"summary":"Background AI is waiting for the first changed news/data snapshot.","assets":empty,"active":False}
+    clean=dict(empty)
+    for asset in assets:
+        if isinstance(raw.get(asset),dict): clean[asset]=dict(raw[asset])
+    return {"summary":str(result.get("summary",""))[:1200],"assets":clean,"active":True}
+
 
 @st.cache_data(ttl=300, show_spinner=False)
 def analyze_news_rule_based(articles: list) -> dict:
@@ -4651,162 +4900,24 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_ove
     return result
 
 
-@st.cache_data(ttl=21600, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def get_causal_macro_ai_analysis(event: dict, nowcast: dict, articles: list, api_key: str = DEFAULT_AI_KEY, provider_hint: str = DEFAULT_AI_PROVIDER, model_hint: str = DEFAULT_AI_MODEL, cache_version: str = AI_CACHE_VERSION) -> dict:
-    """Event-specific causal AI layer. Keeps the existing quantitative nowcast intact."""
-    if not api_key:
-        return {"status": "unavailable", "raw": f"{DEFAULT_AI_PROVIDER} API key is unavailable. Check Streamlit Secrets."}
-
-    impact = str(event.get("impact", "")).title()
-    if impact != "High":
+    """Read event Causal Intelligence from the shared background batch only."""
+    if str(event.get("impact", "")).title() != "High":
         return {"status": "skipped", "raw": "Causal AI is enabled for High Impact events only."}
-
-    meta = event.get("meta", {}) or {}
-    title = event.get("title", "Unknown event")
-    currency = meta.get("currency") or event.get("currency", "USD")
-    forecast = event.get("forecast_str", "—")
-    previous = event.get("prev_str", "—")
-
-    precursor_lines = []
-    for p in (nowcast.get("precursor_results") or []):
-        precursor_lines.append(
-            f"- {p.get('name','Unknown')}: latest={p.get('latest','—')}, "
-            f"MoM={p.get('mom','—')}%, signal_score={p.get('score','—')}"
-        )
-    precursor_text = "\n".join(precursor_lines) or "No mapped FRED precursor series are currently available."
-
-    relevant = []
-    event_keywords = [str(k).lower() for k in (meta.get("keywords") or [])]
-    for a in (articles or []):
-        blob = f"{a.get('title','')} {a.get('description','')}".lower()
-        if not event_keywords or any(k in blob for k in event_keywords):
-            relevant.append(a)
-    relevant = relevant[:10]
-
-    news_lines = []
-    for a in relevant:
-        source = a.get("source", {})
-        source_name = source.get("name", "Institutional Wire") if isinstance(source, dict) else str(source)
-        news_lines.append(
-            f"- [{source_name}] {a.get('publishedAt','')}: {a.get('title','')} — {a.get('description','')}"
-        )
-    news_text = "\n".join(news_lines) or "No event-specific live news evidence is currently available."
-
-    system_prompt = """You are an institutional-grade macro-econometric strategist.
-Analyze one upcoming HIGH-impact economic catalyst using ONLY the supplied evidence.
-
-Rules:
-1. Never invent economic data, consensus, dates, news, historical releases, or relationships.
-2. Clearly separate FACTS from INFERENCES.
-3. Build an event-specific causal chain. Do not force Labour→PPI→CPI logic onto speeches or unrelated events.
-4. For inflation events consider relevant upstream costs/wages/demand; for labour events consider claims/JOLTS/PMI employment when supplied; for growth events consider consumption/production/PMI when supplied; for central-bank/speech events focus on policy/rates/inflation/growth language in supplied news.
-5. Identify supporting evidence and contradictory evidence.
-6. Assess cross-source confirmation only from sources actually supplied.
-7. Give a Beat/Miss/In-line nowcast only when the event has a measurable consensus. For speeches or non-numeric events, use Bullish/Bearish/Neutral policy-impact bias instead.
-8. Confidence must reflect evidence quality and contradictions; do not manufacture precision.
-9. Any numeric value found in news must match the exact event metric, period and unit before it can be treated as release evidence. If identity is ambiguous, use it only as context and explicitly flag the ambiguity.
-10. Treat the quantitative three-way probabilities and conflict score as anchors; if you disagree, explain the supplied evidence causing the disagreement.
-11. Do not provide investment advice. Keep the report concise and institutional.
-
-Return ONLY valid JSON with these keys:
-event_assessment, causal_chain, facts, supporting_evidence, contradictions,
-nowcast, confidence, confidence_reason, cross_source_confirmation,
-usd, gold, oil, nasdaq, invalidation, source_count.
-Each of causal_chain, facts, supporting_evidence, contradictions must be an array of short strings.
-confidence must be an integer 0-100.
-Your entire response MUST begin with { and end with }. Do not use markdown fences and do not add any text outside the JSON object.
-"""
-
-    user_prompt = f"""EVENT
-Title: {title}
-Currency: {currency}
-Impact: {impact}
-Time: {event.get('date_str','')} {event.get('time_str','')}
-Forecast/Consensus: {forecast}
-Previous: {previous}
-
-EXISTING QUANTITATIVE NOWCAST (use as evidence, not as a replacement)
-Bias: {nowcast.get('bias_label','')}
-Confidence: {nowcast.get('confidence','')}%
-Composite: {nowcast.get('nowcast_composite','')}
-Precursor score: {nowcast.get('base_precursor_score','')}
-News sentiment points: {nowcast.get('news_sentiment_pts','')}
-Three-way probabilities: {nowcast.get('probabilities',{})}
-Conflict score: {nowcast.get('conflict_score','')}
-Evidence quality: {nowcast.get('evidence_quality','')}
-Event model family: {nowcast.get('event_family','')}
-
-FRED / MACRO PRECURSORS
-{precursor_text}
-
-EVENT-RELEVANT LIVE NEWS
-{news_text}
-"""
-
-    provider, url, model, resolved_key = _ai_runtime(api_key, provider_hint, model_hint)
-    if not resolved_key:
-        return {"status": "unavailable", "raw": "AI API key is unavailable."}
-
-    headers = _ai_headers(resolved_key, "ApexMacro Causal Macro Intelligence")
+    code = str(event.get("code", "")).strip()
+    state = _ai_batch_load_state()
+    result = state.get("result", {}) if isinstance(state, dict) else {}
+    events = result.get("events", {}) if isinstance(result, dict) else {}
+    item = events.get(code) if isinstance(events, dict) else None
+    if not isinstance(item, dict):
+        return {"status": "deferred", "raw": "Background AI is waiting for changed event/news/data evidence."}
     try:
-        response = _post_ai_chat(
-            provider=provider,
-            url=url,
-            headers=headers,
-            model=model,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            temperature=0.15,
-            timeout=60,
-        )
-        data = response.json()
-        raw = _ai_message_content(data)
-        parsed = _extract_json_object(raw)
-
-        # Claude-compatible gateways may occasionally wrap JSON in prose.
-        # If no JSON object can be recovered, make ONE compact repair request.
-        if parsed is None and raw:
-            repair_system = (
-                "Convert the supplied model output into ONE valid JSON object only. "
-                "Do not add facts, commentary, markdown, or explanation. "
-                "Preserve only information already present in the supplied output. "
-                "Required keys: event_assessment, causal_chain, facts, supporting_evidence, "
-                "contradictions, nowcast, confidence, confidence_reason, cross_source_confirmation, "
-                "usd, gold, oil, nasdaq, invalidation, source_count."
-            )
-            repair_response = _post_ai_chat(
-                provider=provider,
-                url=url,
-                headers=headers,
-                model=model,
-                system_prompt=repair_system,
-                user_prompt=raw[:8000],
-                temperature=0.0,
-                timeout=45,
-            )
-            repair_raw = _ai_message_content(repair_response.json())
-            parsed = _extract_json_object(repair_raw)
-
-        if parsed is None:
-            return {
-                "status": "error",
-                "raw": (
-                    f"{provider} returned a response that could not be converted to structured JSON. "
-                    "The quantitative nowcast remains active."
-                ),
-            }
-
-        parsed = _normalize_causal_ai_payload(parsed, len(relevant))
-        parsed["status"] = "ok"
-        return parsed
-    except Exception as exc:
-        err_text = str(exc)
-        if "temporarily unavailable" in err_text.lower() or "timed out" in err_text.lower():
-            return {
-                "status": "error",
-                "raw": f"{provider} is temporarily unavailable. The quantitative nowcast remains active and AI will retry automatically."
-            }
-        return {"status": "error", "raw": f"{provider} causal analysis error: {err_text[:300]}"}
+        normalized = _normalize_causal_ai_payload(dict(item), int(item.get("source_count", 0) or 0))
+    except Exception:
+        normalized = dict(item)
+    normalized["status"] = "ok"
+    return normalized
 
 
 def render_causal_macro_ai_panel(analysis: dict) -> None:
