@@ -8239,45 +8239,135 @@ def render_admin_key_generator() -> None:
     else:
         st.info("No completed forecast has been scored yet. Records resolve automatically when Actual values are published.")
     st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
-    render_html('<div class="sec-title">AI ACTIVITY &amp; EVIDENCE LOG</div>')
+    render_html('<div class="sec-title">AI ACTIVITY — SIMPLE VIEW</div>')
     ai_logs = get_ai_activity_log(250)
     state_now = get_shared_background_ai_state()
+
+    def _admin_local_time(entry):
+        try:
+            ts = float(entry.get("time", 0) or 0)
+            if ts > 0:
+                return datetime.fromtimestamp(ts, timezone.utc).astimezone(timezone(timedelta(hours=3))).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            pass
+        return str(entry.get("time_iso", ""))[:19].replace("T", " ")
+
+    def _admin_kind_label(kind):
+        return {
+            "control": "⚙️ کۆنترۆڵ",
+            "trigger": "🚨 هەواڵ/داتای گرنگ",
+            "ignored": "⚪ پشتگوێخراو",
+            "request": "🤖 نێردرا بۆ AI",
+            "success": "✅ وەڵامی AI",
+            "error": "❌ هەڵە",
+        }.get(str(kind), str(kind).upper())
+
     lc1, lc2, lc3, lc4 = st.columns(4)
-    lc1.metric("Log Entries", len(ai_logs))
-    lc2.metric("Last Gate Score", int(state_now.get("last_trigger_score", 0) or 0))
-    lc3.metric("Pending Score", int(state_now.get("pending_trigger_score", 0) or 0))
-    lc4.metric("Provider", str(state_now.get("model", "—")))
-    st.caption("This audit shows what the free news gate detected, what was ignored or queued, exactly what evidence was sent to AI, and what the shared model concluded. Page navigation does not create log requests.")
+    lc1.metric("تۆمارەکان", len(ai_logs))
+    lc2.metric("دوایین نمرە", int(state_now.get("last_trigger_score", 0) or 0))
+    lc3.metric("نمرەی چاوەڕوان", int(state_now.get("pending_trigger_score", 0) or 0))
+    lc4.metric("مۆدێل", str(state_now.get("model", "—")))
+    st.caption("کاتەکان بە کاتی عێراق (+03:00) پیشان دەدرێن. لێرە بە سادەیی دەبینیت سیستەم چی بینیوە، بۆچی AI بانگ کراوە یان نەکراوە، چی بۆ AI نێردراوە و AI چی وەڵامی داوەتەوە.")
+
     log_c1, log_c2 = st.columns([1, 1])
     with log_c1:
-        kind_filter = st.multiselect("Show log types", ["control", "trigger", "ignored", "request", "success", "error"], default=["control", "trigger", "ignored", "request", "success", "error"], key="admin_ai_log_types")
+        simple_filter = st.selectbox("چی پیشان بدرێت؟", ["هەمووی", "تەنها گرنگەکان", "تەنها داواکاری و وەڵامی AI", "تەنها پشتگوێخراوەکان", "تەنها هەڵەکان"], key="admin_ai_simple_filter")
     with log_c2:
-        if st.button("Clear AI activity log", use_container_width=True, key="admin_clear_ai_log"):
-            clear_ai_activity_log(); st.success("AI activity log cleared."); time.sleep(0.15); st.rerun()
-    filtered_logs = [x for x in ai_logs if x.get("kind") in set(kind_filter)]
-    if filtered_logs:
-        summary_rows = []
-        for x in filtered_logs[:120]:
-            d = x.get("details", {}) if isinstance(x.get("details"), dict) else {}
-            summary_rows.append({
-                "Time (UTC)": str(x.get("time_iso", ""))[:19].replace("T", " "),
-                "Type": str(x.get("kind", "")).upper(),
-                "Message": x.get("message", ""),
-                "Score": d.get("scan_score", d.get("trigger_score", d.get("max_score", ""))),
-                "News": len(d.get("new_news", d.get("news", [])) or []),
-            })
-        st.dataframe(summary_rows, use_container_width=True, hide_index=True)
-        with st.expander("Inspect detailed AI evidence and conclusions", expanded=False):
-            chosen = st.selectbox(
-                "Log entry",
-                options=list(range(min(len(filtered_logs), 120))),
-                format_func=lambda i: f"{str(filtered_logs[i].get('time_iso',''))[:19]} · {str(filtered_logs[i].get('kind','')).upper()} · {str(filtered_logs[i].get('message',''))[:90]}",
-                key="admin_ai_log_entry",
-            )
-            selected_log = filtered_logs[chosen]
-            st.json(selected_log, expanded=True)
+        if st.button("🗑️ پاککردنەوەی تۆمار", use_container_width=True, key="admin_clear_ai_log"):
+            clear_ai_activity_log(); st.success("تۆمارەکان پاککرانەوە."); time.sleep(0.15); st.rerun()
+
+    if simple_filter == "تەنها گرنگەکان":
+        filtered_logs = [x for x in ai_logs if x.get("kind") in {"trigger", "request", "success", "error"}]
+    elif simple_filter == "تەنها داواکاری و وەڵامی AI":
+        filtered_logs = [x for x in ai_logs if x.get("kind") in {"request", "success"}]
+    elif simple_filter == "تەنها پشتگوێخراوەکان":
+        filtered_logs = [x for x in ai_logs if x.get("kind") == "ignored"]
+    elif simple_filter == "تەنها هەڵەکان":
+        filtered_logs = [x for x in ai_logs if x.get("kind") == "error"]
     else:
-        st.info("No AI activity has been logged yet. Enable AI or wait for the free evidence gate to observe new headlines/data.")
+        filtered_logs = ai_logs
+
+    if filtered_logs:
+        st.markdown("#### دوایین چالاکییەکان")
+        for idx, x in enumerate(filtered_logs[:35]):
+            d = x.get("details", {}) if isinstance(x.get("details"), dict) else {}
+            kind = str(x.get("kind", ""))
+            score = d.get("scan_score", d.get("trigger_score", d.get("max_score", "")))
+            news_items = d.get("new_news", d.get("news", [])) or []
+            title = f"{_admin_kind_label(kind)}  •  {_admin_local_time(x)}"
+            if score != "" and score is not None:
+                title += f"  •  نمرە {score}/100"
+            with st.expander(title, expanded=(idx == 0)):
+                if kind == "trigger":
+                    action = str(d.get("action", ""))
+                    action_ku = "یەکسەر شیکردنەوە" if "immediate" in action else ("چاوەڕوانی نزیکەی ٩٠ چرکە" if "90" in action else ("کۆکردنەوە بۆ ١٥ خولەک" if "15" in action else action))
+                    st.markdown(f"**بڕیاری سیستەم:** {action_ku or 'هەڵسەنگاندن کرا'}")
+                    st.markdown(f"**نمرەی گرنگی:** {d.get('scan_score', score)}/100")
+                    if news_items:
+                        st.markdown("**هەواڵە نوێکان:**")
+                        for n in news_items[:10]:
+                            if isinstance(n, dict):
+                                st.write(f"• {n.get('title','—')} — نمرە {n.get('score','—')}/100")
+                                if n.get("source"): st.caption(f"سەرچاوە: {n.get('source')} | هۆکار: {n.get('reason','—')}")
+                    reasons = d.get("reasons", []) or []
+                    if reasons:
+                        with st.expander("بۆچی ئەم نمرەیە درا؟", expanded=False):
+                            for r in reasons[:12]: st.write(f"• {r}")
+                elif kind == "ignored":
+                    st.markdown("**ئەنجام:** هیچ داواکارییەکی پارەدار بۆ AI نەنێردرا، چونکە هەواڵەکان نمرەی پێویستیان نەهێنا.")
+                    if news_items:
+                        for n in news_items[:10]:
+                            if isinstance(n, dict): st.write(f"• {n.get('title','—')} — نمرە {n.get('score','—')}/100")
+                elif kind == "request":
+                    st.markdown(f"**ئەنجام:** یەک داواکاری هاوبەش نێردرا بۆ `{d.get('model', state_now.get('model','AI'))}`.")
+                    st.markdown(f"**ژمارەی هەواڵ:** {d.get('news_count', len(news_items))}")
+                    if news_items:
+                        with st.expander("📰 ببینە کام هەواڵانە بۆ AI نێردران", expanded=False):
+                            for n in news_items[:20]:
+                                if isinstance(n, dict): st.write(f"• {n.get('title','—')} ({n.get('source','—')})")
+                    macro = d.get("macro_data", {}) or {}
+                    if macro:
+                        with st.expander("📊 داتای ماکرۆی نێردراو", expanded=False): st.json(macro, expanded=False)
+                    prices = d.get("live_price_context", {}) or {}
+                    if prices:
+                        with st.expander("📈 داتای نرخ بۆ پشتڕاستکردنەوە", expanded=False): st.json(prices, expanded=False)
+                    events = d.get("events", []) or []
+                    if events:
+                        with st.expander("📅 ڕووداوە ئابوورییەکان", expanded=False): st.dataframe(events, use_container_width=True, hide_index=True)
+                elif kind == "success":
+                    st.success("AI شیکردنەوەکەی بە سەرکەوتوویی تەواو کرد.")
+                    if d.get("summary"): st.markdown(f"**پوختەی AI:** {d.get('summary')}")
+                    assets = d.get("assets", {}) or {}
+                    if assets:
+                        rows=[]
+                        for asset, a in assets.items():
+                            if isinstance(a, dict):
+                                sc=float(a.get("score",0) or 0)
+                                direction="🟢 Bullish" if sc > 0.12 else ("🔴 Bearish" if sc < -0.12 else "⚖️ Neutral")
+                                rows.append({"بازاڕ": asset, "بڕیار": direction, "دڵنیایی": f"{float(a.get('confidence',0) or 0):.0f}%", "ماوە": a.get("horizon",""), "هۆکار": a.get("reason","")})
+                        st.dataframe(rows, use_container_width=True, hide_index=True)
+                    prices = d.get("live_price_context", {}) or {}
+                    if prices:
+                        with st.expander("📈 پشتڕاستکردنەوەی نرخ کە AI بینی", expanded=False): st.json(prices, expanded=False)
+                    events = d.get("events", {}) or {}
+                    if events:
+                        with st.expander("📅 شیکردنەوەی ڕووداوەکان", expanded=False):
+                            for code, ev in list(events.items())[:15]:
+                                if isinstance(ev, dict):
+                                    st.markdown(f"**{code}** — {ev.get('event_assessment','')}")
+                                    st.caption(f"دڵنیایی: {ev.get('confidence','—')}% | {ev.get('confidence_reason','')}")
+                elif kind == "error":
+                    st.error(f"AI هەڵەی دا: {d.get('error', x.get('message','Unknown error'))}")
+                elif kind == "control":
+                    st.info("AI چالاک کرا." if d.get("enabled") else "AI ناچالاک کرا و داواکاری پارەدار وەستێنرا.")
+                else:
+                    st.write(x.get("message", ""))
+
+        with st.expander("🛠️ داتای تەکنیکی (تەنها بۆ پشکنین)", expanded=False):
+            chosen = st.selectbox("تۆمارێک هەڵبژێرە", options=list(range(min(len(filtered_logs), 120))), format_func=lambda i: f"{_admin_local_time(filtered_logs[i])} · {_admin_kind_label(filtered_logs[i].get('kind'))}", key="admin_ai_log_entry")
+            st.json(filtered_logs[chosen], expanded=False)
+    else:
+        st.info("هێشتا هیچ تۆمارێک نییە بۆ ئەم پاڵاوتنە.")
 
     st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
     render_html('<div class="sec-title">VIP Client Registry &amp; Subscription Database</div>')
