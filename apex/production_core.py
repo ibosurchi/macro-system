@@ -2996,6 +2996,10 @@ AI_AUDIT_LOG_FILE = str(PROJECT_ROOT / "ai_activity_log_v1.json")
 _AI_AUDIT_STATE_ID = "ai_activity_log_v1"
 _AI_AUDIT_LOCK = threading.RLock()
 _AI_AUDIT_MAX_ENTRIES = 600
+_AI_PRICE_AUDIT_STATE_FILE = str(PROJECT_ROOT / "ai_price_validation_v1.json")
+_AI_PRICE_AUDIT_STATE_ID = "ai_price_validation_v1"
+_AI_PRICE_CONFIRM_MOVE_PCT = 0.15
+_AI_PRICE_VALIDATION_MAX_AGE_SECONDS = 6 * 60 * 60
 
 
 def _ai_audit_append(kind: str, message: str, details: dict | None = None) -> None:
@@ -3032,6 +3036,94 @@ def clear_ai_activity_log() -> None:
             _save_persistent_state(_AI_AUDIT_STATE_ID, AI_AUDIT_LOG_FILE, {"entries": []})
     except Exception:
         pass
+
+
+def _ai_price_validation_load() -> dict:
+    try:
+        state = _load_persistent_state(_AI_PRICE_AUDIT_STATE_ID, _AI_PRICE_AUDIT_STATE_FILE, {"pending": []})
+        return state if isinstance(state, dict) else {"pending": []}
+    except Exception:
+        return {"pending": []}
+
+
+def _ai_price_validation_save(state: dict) -> None:
+    try:
+        _save_persistent_state(_AI_PRICE_AUDIT_STATE_ID, _AI_PRICE_AUDIT_STATE_FILE, state if isinstance(state, dict) else {"pending": []})
+    except Exception:
+        pass
+
+
+def _register_ai_price_decisions(result: dict, price_context: dict) -> None:
+    """Freeze AI direction + market price at decision time so later moves can be audited honestly."""
+    assets = result.get("assets", {}) if isinstance(result, dict) else {}
+    if not isinstance(assets, dict):
+        return
+    state = _ai_price_validation_load()
+    pending = list(state.get("pending", [])) if isinstance(state, dict) else []
+    now_ts = time.time()
+    for asset in ("Gold", "USD", "Nasdaq", "Oil"):
+        a = assets.get(asset, {}) if isinstance(assets.get(asset, {}), dict) else {}
+        pc = price_context.get(asset, {}) if isinstance(price_context.get(asset, {}), dict) else {}
+        try:
+            score = float(a.get("score", 0) or 0)
+            price = float(pc.get("last", 0) or 0)
+        except Exception:
+            continue
+        if not price or abs(score) <= 0.12:
+            continue
+        direction = "Bullish" if score > 0 else "Bearish"
+        # Older unresolved calls for the same asset are superseded, not silently counted.
+        for row in pending:
+            if row.get("asset") == asset and row.get("status") == "pending":
+                row["status"] = "superseded"
+                row["resolved_at"] = now_ts
+        decision = {
+            "id": hashlib.sha256(f"{asset}|{now_ts}|{price}|{score}".encode()).hexdigest()[:16],
+            "asset": asset, "direction": direction, "score": score,
+            "confidence": float(a.get("confidence", 0) or 0), "reason": str(a.get("reason", ""))[:700],
+            "decision_at": now_ts, "decision_price": price, "status": "pending",
+            "price_confirmation_at_decision": str(pc.get("price_confirmation", "Neutral")),
+        }
+        pending.append(decision)
+        _ai_audit_append("ai_decision", f"{asset} AI {direction} frozen at market price {price}", decision)
+    state["pending"] = pending[-250:]
+    _ai_price_validation_save(state)
+
+
+def _check_ai_price_validations() -> None:
+    """Free price-only follow-up. Never calls AI; records whether an earlier AI direction was confirmed later."""
+    state = _ai_price_validation_load()
+    pending = list(state.get("pending", [])) if isinstance(state, dict) else []
+    if not any(r.get("status") == "pending" for r in pending):
+        return
+    prices = _ai_batch_price_context()
+    now_ts = time.time()
+    changed = False
+    for row in pending:
+        if row.get("status") != "pending":
+            continue
+        age = now_ts - float(row.get("decision_at", now_ts) or now_ts)
+        if age > _AI_PRICE_VALIDATION_MAX_AGE_SECONDS:
+            row["status"] = "expired"; row["resolved_at"] = now_ts; changed = True
+            continue
+        pc = prices.get(row.get("asset"), {}) if isinstance(prices, dict) else {}
+        try:
+            current = float(pc.get("last", 0) or 0); start = float(row.get("decision_price", 0) or 0)
+        except Exception:
+            continue
+        if not current or not start:
+            continue
+        move = ((current / start) - 1.0) * 100.0
+        signed = move if row.get("direction") == "Bullish" else -move
+        if signed >= _AI_PRICE_CONFIRM_MOVE_PCT:
+            row.update({"status":"confirmed", "resolved_at":now_ts, "resolved_price":current, "move_pct":round(move,4)})
+            _ai_audit_append("price_confirmed", f"{row.get('asset')} AI {row.get('direction')} confirmed by later price", dict(row)); changed=True
+        elif signed <= -_AI_PRICE_CONFIRM_MOVE_PCT:
+            row.update({"status":"contradicted", "resolved_at":now_ts, "resolved_price":current, "move_pct":round(move,4)})
+            _ai_audit_append("price_contradicted", f"{row.get('asset')} AI {row.get('direction')} contradicted by later price", dict(row)); changed=True
+    if changed:
+        state["pending"] = pending[-250:]
+        _ai_price_validation_save(state)
 
 
 def _ai_control_load_state(force_refresh: bool = False) -> dict:
@@ -3665,6 +3757,7 @@ If evidence is insufficient, say so explicitly."""
             "last_trigger_consumed_score": state.get("pending_trigger_score", state.get("last_trigger_score", 0)),
             "last_trigger_consumed_reasons": state.get("pending_trigger_reasons", state.get("last_trigger_reasons", [])),
         })
+        _register_ai_price_decisions(result, price_context)
         _ai_audit_append("success", "Shared AI analysis completed successfully", {
             "provider": provider, "model": model, "summary": result.get("summary", ""),
             "assets": result.get("assets", {}), "event_count": len(result.get("events", {}) or {}),
@@ -3686,6 +3779,7 @@ def _shared_ai_supervisor_loop() -> None:
     global _AI_BATCH_SUPERVISOR_RUNNING
     try:
         while True:
+            _check_ai_price_validations()
             if is_ai_enabled(force_refresh=True):
                 _run_shared_ai_batch_once()
             # Event wake-up makes Admin Enable immediate; ordinary polling still
@@ -8259,6 +8353,9 @@ def render_admin_key_generator() -> None:
             "ignored": "⚪ پشتگوێخراو",
             "request": "🤖 نێردرا بۆ AI",
             "success": "✅ وەڵامی AI",
+            "ai_decision": "🧠 بڕیاری AI + نرخی ئەو ساتە",
+            "price_confirmed": "🎯 پێشبینی پشتڕاست کرایەوە",
+            "price_contradicted": "⚠️ نرخ دژ بە پێشبینی چوو",
             "error": "❌ هەڵە",
         }.get(str(kind), str(kind).upper())
 
@@ -8277,9 +8374,9 @@ def render_admin_key_generator() -> None:
             clear_ai_activity_log(); st.success("تۆمارەکان پاککرانەوە."); time.sleep(0.15); st.rerun()
 
     if simple_filter == "تەنها گرنگەکان":
-        filtered_logs = [x for x in ai_logs if x.get("kind") in {"trigger", "request", "success", "error"}]
+        filtered_logs = [x for x in ai_logs if x.get("kind") in {"trigger", "request", "success", "ai_decision", "price_confirmed", "price_contradicted", "error"}]
     elif simple_filter == "تەنها داواکاری و وەڵامی AI":
-        filtered_logs = [x for x in ai_logs if x.get("kind") in {"request", "success"}]
+        filtered_logs = [x for x in ai_logs if x.get("kind") in {"request", "success", "ai_decision", "price_confirmed", "price_contradicted"}]
     elif simple_filter == "تەنها پشتگوێخراوەکان":
         filtered_logs = [x for x in ai_logs if x.get("kind") == "ignored"]
     elif simple_filter == "تەنها هەڵەکان":
@@ -8356,6 +8453,29 @@ def render_admin_key_generator() -> None:
                                 if isinstance(ev, dict):
                                     st.markdown(f"**{code}** — {ev.get('event_assessment','')}")
                                     st.caption(f"دڵنیایی: {ev.get('confidence','—')}% | {ev.get('confidence_reason','')}")
+                elif kind == "ai_decision":
+                    direction_ku = "🟢 هەڵکشان" if d.get("direction") == "Bullish" else "🔴 دابەزین"
+                    st.markdown(f"**{d.get('asset','بازاڕ')} — بڕیاری AI:** {direction_ku}")
+                    st.markdown(f"**نرخی بازاڕ لە هەمان ساتدا:** `{d.get('decision_price','—')}`")
+                    st.markdown(f"**دڵنیایی:** {float(d.get('confidence',0) or 0):.0f}%")
+                    st.markdown(f"**دۆخ:** ⏳ چاوەڕوانی پشتڕاستکردنەوەی نرخ")
+                    if d.get("reason"): st.caption(f"هۆکار: {d.get('reason')}")
+                    st.info("ئەم نرخە لە هەمان ساتی دەرچوونی بڕیاری AI تۆمار کراوە؛ بۆیە دواتر دەتوانرێت بزانرێت AI پێش جووڵەکە بووە یان دوای ئەوە.")
+                elif kind in {"price_confirmed", "price_contradicted"}:
+                    ok = kind == "price_confirmed"
+                    direction_ku = "هەڵکشان" if d.get("direction") == "Bullish" else "دابەزین"
+                    if ok: st.success(f"🎯 پێشبینی {direction_ku}ی {d.get('asset','بازاڕ')} دواتر لەلایەن نرخەوە پشتڕاست کرایەوە.")
+                    else: st.warning(f"⚠️ نرخ دژ بە پێشبینی {direction_ku}ی {d.get('asset','بازاڕ')} جوڵاوە.")
+                    c1,c2,c3=st.columns(3)
+                    c1.metric("نرخی کاتی بڕیار", d.get("decision_price","—"))
+                    c2.metric("نرخی دواتر", d.get("resolved_price","—"))
+                    c3.metric("گۆڕانی نرخ", f"{float(d.get('move_pct',0) or 0):+.3f}%")
+                    try:
+                        dt1=datetime.fromtimestamp(float(d.get("decision_at",0)), timezone.utc).astimezone(timezone(timedelta(hours=3))).strftime("%H:%M:%S")
+                        dt2=datetime.fromtimestamp(float(d.get("resolved_at",0)), timezone.utc).astimezone(timezone(timedelta(hours=3))).strftime("%H:%M:%S")
+                        st.caption(f"کاتی بڕیاری AI: {dt1}  →  کاتی پشتڕاستکردنەوە: {dt2} (کاتی عێراق)")
+                    except Exception: pass
+                    if d.get("reason"): st.caption(f"هۆکاری بڕیاری سەرەتایی: {d.get('reason')}")
                 elif kind == "error":
                     st.error(f"AI هەڵەی دا: {d.get('error', x.get('message','Unknown error'))}")
                 elif kind == "control":
