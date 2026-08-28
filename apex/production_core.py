@@ -3061,7 +3061,7 @@ def _register_ai_price_decisions(result: dict, price_context: dict) -> None:
     state = _ai_price_validation_load()
     pending = list(state.get("pending", [])) if isinstance(state, dict) else []
     now_ts = time.time()
-    for asset in ("Gold", "USD", "Nasdaq", "Oil"):
+    for asset in ("Gold", "USD", "Nasdaq", "Oil", "EUR", "GBP", "CAD", "JPY", "AUD", "NZD", "CHF"):
         a = assets.get(asset, {}) if isinstance(assets.get(asset, {}), dict) else {}
         pc = price_context.get(asset, {}) if isinstance(price_context.get(asset, {}), dict) else {}
         try:
@@ -3069,7 +3069,13 @@ def _register_ai_price_decisions(result: dict, price_context: dict) -> None:
             price = float(pc.get("last", 0) or 0)
         except Exception:
             continue
-        if not price or abs(score) <= 0.12:
+        if abs(score) <= 0.12:
+            continue
+        if not price:
+            _ai_audit_append("price_missing", f"{asset} AI decision exists but live price was unavailable", {
+                "asset": asset, "score": score, "confidence": float(a.get("confidence", 0) or 0),
+                "reason": str(a.get("reason", ""))[:700], "decision_at": now_ts,
+            })
             continue
         direction = "Bullish" if score > 0 else "Bearish"
         # Older unresolved calls for the same asset are superseded, not silently counted.
@@ -3400,29 +3406,46 @@ def _ai_batch_event_rows(events: list, all_news: list, actuals: dict, limit: int
 
 
 def _ai_batch_price_context() -> dict:
-    """Free live-price confirmation context for AI; price changes alone never trigger billing."""
-    configs = {
-        "Gold": "XAUUSD=X",
-        "Oil": "CL=F",
-        "Nasdaq": "NQ=F",
-        "USD": "DX-Y.NYB",
-    }
+    """Free live-price confirmation context for AI; price changes alone never trigger billing.
+
+    Uses the same tactical symbol registry as the UI. Gold explicitly falls back from
+    XAUUSD=X to GC=F so a temporary Yahoo spot-feed gap cannot silently remove Gold
+    from the AI decision/price audit.
+    """
+    asset_keys = ["Gold", "Oil", "NDX", "USD", "EUR", "GBP", "CAD", "JPY", "AUD", "NZD", "CHF"]
     out = {}
-    for asset, symbol in configs.items():
-        try:
-            df = _fetch_tactical_price_series(symbol)
-            if df is None or df.empty or "close" not in df.columns:
+    for asset_key in asset_keys:
+        cfg = _tactical_symbol_config(asset_key) or {}
+        output_asset = "Nasdaq" if asset_key == "NDX" else asset_key
+        symbols = [cfg.get("symbol")] + list(cfg.get("fallback_symbols", []) or [])
+        invert = bool(cfg.get("invert", False))
+        for symbol in [x for x in symbols if x]:
+            try:
+                df = _fetch_tactical_price_series(str(symbol))
+                if df is None or df.empty or "close" not in df.columns:
+                    continue
+                closes = pd.to_numeric(df["close"], errors="coerce").dropna()
+                if closes.empty:
+                    continue
+                raw_last = float(closes.iloc[-1])
+                raw_prev = float(closes.iloc[-2]) if len(closes) >= 2 else raw_last
+                raw_old = float(closes.iloc[-13]) if len(closes) >= 13 else raw_last
+                if not raw_last or not raw_prev or not raw_old:
+                    continue
+                # For USDXXX pairs, invert the movement so the signal represents the target currency.
+                ret_1 = ((raw_last / raw_prev) - 1.0) * 100.0
+                ret_12 = ((raw_last / raw_old) - 1.0) * 100.0
+                if invert:
+                    ret_1, ret_12 = -ret_1, -ret_12
+                trend = "Bullish" if ret_12 > 0.20 else "Bearish" if ret_12 < -0.20 else "Neutral"
+                out[output_asset] = {
+                    "symbol": str(symbol), "last": round(raw_last, 5),
+                    "short_change_pct": round(ret_1, 4), "trend_change_pct": round(ret_12, 4),
+                    "price_confirmation": trend, "fallback_used": str(symbol) != str(cfg.get("symbol")),
+                }
+                break
+            except Exception:
                 continue
-            closes = pd.to_numeric(df["close"], errors="coerce").dropna()
-            if closes.empty:
-                continue
-            last = float(closes.iloc[-1])
-            ret_1 = ((last / float(closes.iloc[-2])) - 1.0) * 100.0 if len(closes) >= 2 and float(closes.iloc[-2]) else 0.0
-            ret_12 = ((last / float(closes.iloc[-13])) - 1.0) * 100.0 if len(closes) >= 13 and float(closes.iloc[-13]) else 0.0
-            trend = "Bullish" if ret_12 > 0.20 else "Bearish" if ret_12 < -0.20 else "Neutral"
-            out[asset] = {"symbol": symbol, "last": round(last, 5), "short_change_pct": round(ret_1, 4), "trend_change_pct": round(ret_12, 4), "price_confirmation": trend}
-        except Exception:
-            continue
     return out
 
 
@@ -8374,9 +8397,9 @@ def render_admin_key_generator() -> None:
             clear_ai_activity_log(); st.success("تۆمارەکان پاککرانەوە."); time.sleep(0.15); st.rerun()
 
     if simple_filter == "تەنها گرنگەکان":
-        filtered_logs = [x for x in ai_logs if x.get("kind") in {"trigger", "request", "success", "ai_decision", "price_confirmed", "price_contradicted", "error"}]
+        filtered_logs = [x for x in ai_logs if x.get("kind") in {"trigger", "request", "success", "ai_decision", "price_confirmed", "price_contradicted", "price_missing", "error"}]
     elif simple_filter == "تەنها داواکاری و وەڵامی AI":
-        filtered_logs = [x for x in ai_logs if x.get("kind") in {"request", "success", "ai_decision", "price_confirmed", "price_contradicted"}]
+        filtered_logs = [x for x in ai_logs if x.get("kind") in {"request", "success", "ai_decision", "price_confirmed", "price_contradicted", "price_missing"}]
     elif simple_filter == "تەنها پشتگوێخراوەکان":
         filtered_logs = [x for x in ai_logs if x.get("kind") == "ignored"]
     elif simple_filter == "تەنها هەڵەکان":
