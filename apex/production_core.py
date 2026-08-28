@@ -100,12 +100,36 @@ FOREX_FACTORY_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek
 _FOREX_FACTORY_LAST_GOOD_EVENTS: list[dict] = []
 _FOREX_FACTORY_LAST_GOOD_AT = 0.0
 _FOREX_FACTORY_LAST_GOOD_LOCK = threading.RLock()
-_FF_NORMAL_REFRESH_SECONDS = 15 * 60
+_FF_NORMAL_REFRESH_SECONDS = 10 * 60
 _FF_RELEASE_REFRESH_SECONDS = 45
 FF_HISTORY_FILE = str(PROJECT_ROOT / "forex_factory_high_impact_history.json")
 FF_SCHEDULE_FILE = str(PROJECT_ROOT / "forex_factory_schedule_state.json")
 _FF_HISTORY_LOCK = threading.RLock()
 _FF_SCHEDULE_LOCK = threading.RLock()
+
+_FF_BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+}
+
+_FOREX_FACTORY_DIAGNOSTICS: dict[str, object] = {
+    "last_fetch_ts": 0.0,
+    "last_fetch_time": "Never",
+    "tier_used": "None",
+    "tier1_range_count": 0,
+    "tier2_daily_count": 0,
+    "tier3_weekly_count": 0,
+    "tier4_json_count": 0,
+    "total_deduped_events": 0,
+    "last_error": "",
+    "cache_status": "empty",
+    "rolling_window": "",
+    "daily_counts": {},
+}
 
 
 def _ai_runtime(
@@ -452,83 +476,215 @@ def _normalize_causal_ai_payload(parsed: dict, source_count: int) -> dict:
     return result
 
 
+def _get_london_tz():
+    """Return a timezone object for Europe/London without crashing if tzdata is missing on Windows."""
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo("Europe/London")
+    except Exception:
+        now_month = datetime.now(timezone.utc).month
+        if 4 <= now_month <= 9 or now_month in (3, 10):
+            return timezone(timedelta(hours=1))
+        return timezone(timedelta(hours=0))
+
+
+def _ff_clean_cell(node) -> str:
+    """Clean and strip text from HTML node or string."""
+    if node is None:
+        return ""
+    if hasattr(node, "get_text"):
+        raw = node.get_text(separator=" ", strip=True)
+    else:
+        raw = str(node or "")
+    text = re.sub(r"<[^>]+>", " ", raw)
+    text = text.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("—", "")
+    return " ".join(text.split())
+
+
+def _parse_forex_factory_html(html_text: str, start_date, end_date) -> list[dict]:
+    """
+    Multi-layer resilient parser for Forex Factory calendar HTML.
+    Extracts all economic events across table rows, handles carry-over dates,
+    determines impact (High/Medium/Low), and converts London times to UTC ISO.
+    """
+    if not html_text:
+        return []
+    if isinstance(start_date, datetime):
+        start_date = start_date.date()
+    if isinstance(end_date, datetime):
+        end_date = end_date.date()
+    if not start_date or not end_date or end_date < start_date:
+        return []
+
+    london = _get_london_tz()
+    utc = timezone.utc
+    rows: list[dict] = []
+    current_date = None
+    last_clock_text = ""
+
+    # Strategy A: regex parsing of calendar__row blocks (fast and dependency-free)
+    tr_matches = re.findall(r'<tr[^>]*class="[^"]*calendar__row[^"]*"[^>]*>(.*?)</tr>', html_text, re.DOTALL | re.IGNORECASE)
+    if not tr_matches:
+        # Fallback to any tr with data-event-id
+        tr_matches = re.findall(r'<tr[^>]*data-event-id="[^"]*"[^>]*>(.*?)</tr>', html_text, re.DOTALL | re.IGNORECASE)
+
+    for tr in tr_matches:
+        date_match = re.search(r'class="[^"]*calendar__date[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+        date_text = _ff_clean_cell(date_match.group(1)) if date_match else ""
+        if date_text:
+            m = re.search(r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)?\s*([A-Za-z]{3})\s+(\d{1,2})", date_text)
+            if m:
+                mon, day = m.group(1), int(m.group(2))
+                candidate_years = [start_date.year, end_date.year]
+                parsed = None
+                for year in dict.fromkeys(candidate_years):
+                    try:
+                        d = datetime.strptime(f"{mon} {day} {year}", "%b %d %Y").date()
+                        if start_date - timedelta(days=1) <= d <= end_date + timedelta(days=1):
+                            parsed = d
+                            break
+                    except Exception:
+                        pass
+                current_date = parsed
+            last_clock_text = ""
+
+        if current_date is None or not (start_date <= current_date <= end_date):
+            continue
+
+        curr_match = re.search(r'class="[^"]*calendar__currency[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+        currency = _ff_clean_cell(curr_match.group(1)).upper() if curr_match else ""
+
+        event_match = re.search(r'class="[^"]*calendar__event[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+        title = _ff_clean_cell(event_match.group(1)) if event_match else ""
+        if not currency or not title:
+            continue
+
+        impact_match = re.search(r'class="[^"]*calendar__impact[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+        impact_blob = (impact_match.group(0) if impact_match else "").lower()
+        if "high" in impact_blob or "red" in impact_blob or "impact-red" in impact_blob:
+            impact = "High"
+        elif "medium" in impact_blob or "orange" in impact_blob or "impact-ora" in impact_blob:
+            impact = "Medium"
+        elif "low" in impact_blob or "yellow" in impact_blob or "impact-yel" in impact_blob:
+            impact = "Low"
+        else:
+            impact = "Low"
+
+        time_match = re.search(r'class="[^"]*calendar__time[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+        time_text = _ff_clean_cell(time_match.group(1)) if time_match else ""
+        if time_text:
+            last_clock_text = time_text
+        else:
+            time_text = last_clock_text
+
+        clock_match = re.search(r"(\d{1,2}):(\d{2})\s*(am|pm)", time_text, re.I)
+        if clock_match:
+            hh = int(clock_match.group(1))
+            mm = int(clock_match.group(2))
+            ap = clock_match.group(3).lower()
+            if ap == "pm" and hh != 12:
+                hh += 12
+            if ap == "am" and hh == 12:
+                hh = 0
+            local_dt = datetime.combine(current_date, datetime.min.time()).replace(hour=hh, minute=mm, tzinfo=london)
+        else:
+            local_dt = datetime.combine(current_date, datetime.min.time()).replace(hour=12, minute=0, tzinfo=london)
+
+        utc_dt = local_dt.astimezone(utc)
+
+        fc_match = re.search(r'class="[^"]*calendar__forecast[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+        prev_match = re.search(r'class="[^"]*calendar__previous[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+        act_match = re.search(r'class="[^"]*calendar__actual[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+
+        rows.append({
+            "title": title,
+            "country": currency,
+            "impact": impact,
+            "date": utc_dt.isoformat(),
+            "forecast": _ff_clean_cell(fc_match.group(1)) if fc_match else "",
+            "previous": _ff_clean_cell(prev_match.group(1)) if prev_match else "",
+            "actual": _ff_clean_cell(act_match.group(1)) if act_match else "",
+            "ff_time_label": time_text,
+            "source": "Forex Factory",
+        })
+
+    return rows
+
+
 def fetch_forex_factory_calendar(force_refresh: bool = False) -> list[dict]:
     """
-    Load and normalize the live Forex Factory/Faireconomy weekly calendar.
-
-    A transient network failure must never wipe the live Forecaster.
-    The last non-empty calendar is retained in memory and reused until a fresh
-    non-empty response is available.
+    Load and normalize the live Forex Factory weekly calendar.
+    Tries the FairEconomy JSON feed, with immediate fallback to the live HTML calendar.
+    The last non-empty calendar is retained in memory and reused as a safety net.
     """
     global _FOREX_FACTORY_LAST_GOOD_EVENTS, _FOREX_FACTORY_LAST_GOOD_AT
 
-    # Ordinary page reruns read the last good snapshot.  Release-time monitoring
-    # can explicitly bypass this cache with force_refresh=True.
     with _FOREX_FACTORY_LAST_GOOD_LOCK:
         if (not force_refresh and _FOREX_FACTORY_LAST_GOOD_EVENTS and
                 time.time() - _FOREX_FACTORY_LAST_GOOD_AT < _FF_NORMAL_REFRESH_SECONDS):
             return [dict(item) for item in _FOREX_FACTORY_LAST_GOOD_EVENTS]
 
+    normalized = []
+    aliases = {
+        "Red": "High", "Orange": "Medium", "Yellow": "Low",
+        "High Impact": "High", "Medium Impact": "Medium", "Low Impact": "Low",
+    }
+
+    # Step 1: Try JSON feed
     urls = [
         FOREX_FACTORY_CALENDAR_URL,
         "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
-        "https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.json",
     ]
-
-    rows = None
     for url in urls:
         try:
             response = requests.get(
                 url,
-                timeout=10,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (compatible; ApexMacro/1.0)",
-                    "Accept": "application/json,text/plain,*/*",
-                    "Cache-Control": "no-cache",
-                },
+                timeout=8,
+                headers=_FF_BROWSER_HEADERS,
             )
-            response.raise_for_status()
-            data = response.json()
-            if isinstance(data, list) and data:
-                rows = data
-                break
+            if response.status_code == 200:
+                data = response.json()
+                if isinstance(data, list) and data:
+                    for row in data:
+                        if not isinstance(row, dict):
+                            continue
+                        title = str(row.get("title") or row.get("event") or row.get("name") or "").strip()
+                        country = str(row.get("country") or row.get("currency") or "").strip().upper()
+                        raw_impact = str(row.get("impact") or "").strip()
+                        impact = aliases.get(raw_impact.title(), raw_impact.title())
+                        raw_date = row.get("date") or row.get("datetime") or row.get("time")
+                        if not title or not country or not raw_date:
+                            continue
+                        normalized.append({
+                            **row,
+                            "title": title,
+                            "country": country,
+                            "impact": impact or "Low",
+                            "date": raw_date,
+                            "forecast": row.get("forecast", ""),
+                            "previous": row.get("previous", ""),
+                            "actual": row.get("actual", ""),
+                        })
+                    if normalized:
+                        break
         except Exception:
             continue
 
-    normalized = []
-    aliases = {
-        "Red": "High",
-        "Orange": "Medium",
-        "Yellow": "Low",
-        "High Impact": "High",
-        "Medium Impact": "Medium",
-        "Low Impact": "Low",
-    }
-
-    if rows:
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-
-            title = str(row.get("title") or row.get("event") or row.get("name") or "").strip()
-            country = str(row.get("country") or row.get("currency") or "").strip().upper()
-            raw_impact = str(row.get("impact") or "").strip()
-            impact = aliases.get(raw_impact.title(), raw_impact.title())
-            raw_date = row.get("date") or row.get("datetime") or row.get("time")
-
-            if not title or not country or not raw_date:
-                continue
-
-            normalized.append({
-                **row,
-                "title": title,
-                "country": country,
-                "impact": impact,
-                "date": raw_date,
-                "forecast": row.get("forecast", ""),
-                "previous": row.get("previous", ""),
-                "actual": row.get("actual", ""),
-            })
+    # Step 2: Fallback to HTML week page if JSON feed failed
+    if not normalized:
+        try:
+            today_utc = datetime.now(timezone.utc).date()
+            week_start = today_utc - timedelta(days=today_utc.weekday() + 1 if today_utc.weekday() != 6 else 0)
+            week_end = week_start + timedelta(days=6)
+            r = requests.get(
+                "https://www.forexfactory.com/calendar?week=this",
+                timeout=10,
+                headers=_FF_BROWSER_HEADERS,
+            )
+            if r.status_code == 200 and r.text:
+                normalized = _parse_forex_factory_html(r.text, week_start, week_end)
+        except Exception:
+            pass
 
     if normalized:
         with _FOREX_FACTORY_LAST_GOOD_LOCK:
@@ -584,65 +740,33 @@ _VIP_REGISTRY_LOCK = threading.RLock()
 
 
 def fetch_forex_factory_calendar_week(week_offset: int = 0) -> list[dict]:
-    """Fetch the current/adjacent Forex Factory weekly JSON feed.
-
+    """Fetch the current/adjacent Forex Factory weekly calendar.
     week_offset: -1 = previous week, 0 = current week, 1 = next week.
-    Falls back to the current live feed for offset 0. Adjacent-week failures
-    return an empty list rather than silently showing the wrong week.
     """
     if int(week_offset) == 0:
         return fetch_forex_factory_calendar()
-    feed_name = "ff_calendar_nextweek.json" if int(week_offset) > 0 else "ff_calendar_lastweek.json"
-    urls = [
-        f"https://nfs.faireconomy.media/{feed_name}",
-        f"https://cdn-nfs.faireconomy.media/{feed_name}",
-    ]
-    aliases = {
-        "Red": "High", "Orange": "Medium", "Yellow": "Low",
-        "High Impact": "High", "Medium Impact": "Medium", "Low Impact": "Low",
-    }
-    rows = None
-    for url in urls:
-        try:
-            response = requests.get(url, timeout=10, headers={
-                "User-Agent": "Mozilla/5.0 (compatible; ApexMacro/1.0)",
-                "Accept": "application/json,text/plain,*/*", "Cache-Control": "no-cache",
-            })
-            response.raise_for_status()
-            data = response.json()
-            if isinstance(data, list) and data:
-                rows = data
-                break
-        except Exception:
-            continue
-    normalized = []
-    for row in rows or []:
-        if not isinstance(row, dict):
-            continue
-        title = str(row.get("title") or row.get("event") or row.get("name") or "").strip()
-        country = str(row.get("country") or row.get("currency") or "").strip().upper()
-        raw_impact = str(row.get("impact") or "").strip()
-        impact = aliases.get(raw_impact.title(), raw_impact.title())
-        raw_date = row.get("date") or row.get("datetime") or row.get("time")
-        if not title or not country or not raw_date:
-            continue
-        normalized.append({**row, "title": title, "country": country, "impact": impact,
-                           "date": raw_date, "forecast": row.get("forecast", ""),
-                           "previous": row.get("previous", ""), "actual": row.get("actual", "")})
-    return normalized
+
+    week_slug = "next" if int(week_offset) > 0 else "last"
+    url = f"https://www.forexfactory.com/calendar?week={week_slug}"
+    try:
+        r = requests.get(url, timeout=12, headers=_FF_BROWSER_HEADERS)
+        if r.status_code == 200 and r.text:
+            today_utc = datetime.now(timezone.utc).date()
+            delta_weeks = int(week_offset)
+            base_monday = today_utc - timedelta(days=today_utc.weekday())
+            target_start = base_monday + timedelta(weeks=delta_weeks)
+            target_end = target_start + timedelta(days=6)
+            return _parse_forex_factory_html(r.text, target_start, target_end)
+    except Exception:
+        pass
+    return []
 
 
-@st.cache_data(ttl=600, show_spinner=False)
 def fetch_forex_factory_calendar_range(start_date, end_date) -> list[dict]:
     """Fetch an exact Forex Factory calendar date range from the public calendar page.
-
-    This is used by the Forecaster's rolling 7-day window so the UI is not tied
-    to a fixed Monday-Sunday weekly JSON file.  Returned rows are normalized to
-    the same shape as the weekly JSON feed.  Times published by Forex Factory
-    are interpreted in Europe/London and converted to UTC ISO timestamps.
+    Times published by Forex Factory are interpreted in Europe/London and converted to UTC ISO timestamps.
     """
     try:
-        from zoneinfo import ZoneInfo
         if isinstance(start_date, datetime):
             start_date = start_date.date()
         if isinstance(end_date, datetime):
@@ -657,129 +781,65 @@ def fetch_forex_factory_calendar_range(start_date, end_date) -> list[dict]:
             "https://www.forexfactory.com/calendar?range="
             f"{_ff_range_date(start_date)}-{_ff_range_date(end_date)}"
         )
-        r = requests.get(
-            url,
-            timeout=14,
-            headers={
-                "User-Agent": "Mozilla/5.0 (compatible; ApexMacro/1.0)",
-                "Accept": "text/html,application/xhtml+xml,*/*",
-                "Cache-Control": "no-cache",
-            },
-        )
-        r.raise_for_status()
-        soup = BeautifulSoup(r.text or "", "html.parser")
-        london = ZoneInfo("Europe/London")
-        utc = timezone.utc
-        rows: list[dict] = []
-        current_date = None
-        last_clock_text = ""
-
-        for tr in soup.select("tr.calendar__row, tr[data-event-id]"):
-            date_cell = tr.select_one(".calendar__date")
-            date_text = _ff_clean_cell(date_cell)
-            if date_text:
-                # Typical labels are "Tue Sep 1"; the requested range gives us
-                # the correct year even around New Year boundaries.
-                m = re.search(r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)?\\s*([A-Za-z]{3})\\s+(\\d{1,2})", date_text)
-                if m:
-                    mon, day = m.group(1), int(m.group(2))
-                    candidate_years = [start_date.year, end_date.year]
-                    parsed = None
-                    for year in dict.fromkeys(candidate_years):
-                        try:
-                            d = datetime.strptime(f"{mon} {day} {year}", "%b %d %Y").date()
-                            if start_date - timedelta(days=1) <= d <= end_date + timedelta(days=1):
-                                parsed = d
-                                break
-                        except Exception:
-                            pass
-                    current_date = parsed
-                last_clock_text = ""
-
-            if current_date is None or not (start_date <= current_date <= end_date):
-                continue
-
-            currency = _ff_clean_cell(tr.select_one(".calendar__currency")).upper()
-            title = _ff_clean_cell(tr.select_one(".calendar__event"))
-            if not currency or not title:
-                continue
-
-            impact_cell = tr.select_one(".calendar__impact")
-            impact_blob = " ".join([
-                _ff_clean_cell(impact_cell),
-                str(impact_cell.get("title", "") if impact_cell else ""),
-                " ".join(impact_cell.get("class", []) if impact_cell else []),
-                " ".join(str(x.get("title", "")) for x in (impact_cell.select("span, i") if impact_cell else [])),
-                str(tr.get("class", "")),
-            ]).lower()
-            if "high" in impact_blob or "red" in impact_blob:
-                impact = "High"
-            elif "medium" in impact_blob or "orange" in impact_blob:
-                impact = "Medium"
-            elif "low" in impact_blob or "yellow" in impact_blob:
-                impact = "Low"
-            else:
-                # FF occasionally changes the impact icon markup (or strips the
-                # icon title for future dates).  Do not delete a valid scheduled
-                # economic event just because the visual impact marker could not
-                # be parsed.  Keep it visible as Low; known High/Medium markers
-                # above still retain their correct classification.
-                impact = "Low"
-
-            time_text = _ff_clean_cell(tr.select_one(".calendar__time"))
-            if time_text:
-                last_clock_text = time_text
-            else:
-                time_text = last_clock_text
-
-            # Scheduled times are precise.  Forex Factory can also publish
-            # "Tentative"/"All Day"; keep those visible using a neutral midday
-            # timestamp rather than silently deleting the catalyst.
-            local_dt = None
-            clock_match = re.search(r"(\\d{1,2}):(\\d{2})\\s*(am|pm)", time_text, re.I)
-            if clock_match:
-                hh = int(clock_match.group(1))
-                mm = int(clock_match.group(2))
-                ap = clock_match.group(3).lower()
-                if ap == "pm" and hh != 12:
-                    hh += 12
-                if ap == "am" and hh == 12:
-                    hh = 0
-                local_dt = datetime.combine(current_date, datetime.min.time()).replace(hour=hh, minute=mm, tzinfo=london)
-            else:
-                local_dt = datetime.combine(current_date, datetime.min.time()).replace(hour=12, minute=0, tzinfo=london)
-
-            utc_dt = local_dt.astimezone(utc)
-            rows.append({
-                "title": title,
-                "country": currency,
-                "impact": impact,
-                "date": utc_dt.isoformat(),
-                "forecast": _ff_clean_cell(tr.select_one(".calendar__forecast")),
-                "previous": _ff_clean_cell(tr.select_one(".calendar__previous")),
-                "actual": _ff_clean_cell(tr.select_one(".calendar__actual")),
-                "ff_time_label": time_text,
-                "source": "Forex Factory",
-                "source_url": url,
-            })
-        return rows
-    except Exception:
-        return []
+        r = requests.get(url, timeout=14, headers=_FF_BROWSER_HEADERS)
+        if r.status_code == 200 and r.text:
+            return _parse_forex_factory_html(r.text, start_date, end_date)
+    except Exception as e:
+        _FOREX_FACTORY_DIAGNOSTICS["last_error"] = str(e)
+    return []
 
 
-def fetch_forex_factory_calendar_rolling(days: int = 7, tz_offset: int = 3) -> list[dict]:
+def _update_ff_cache_and_diagnostics(events: list[dict], tier_name: str) -> None:
+    """Save successful non-empty calendar events and update diagnostic statistics."""
+    global _FOREX_FACTORY_LAST_GOOD_EVENTS, _FOREX_FACTORY_LAST_GOOD_AT, _FOREX_FACTORY_DIAGNOSTICS
+    with _FOREX_FACTORY_LAST_GOOD_LOCK:
+        _FOREX_FACTORY_LAST_GOOD_EVENTS = [dict(item) for item in events]
+        _FOREX_FACTORY_LAST_GOOD_AT = time.time()
+
+    _save_persistent_state("forex_factory_schedule_state", FF_SCHEDULE_FILE, events)
+
+    counts_by_day: dict[str, int] = {}
+    for ev in events:
+        raw_date = str(ev.get("date", "")).strip()
+        try:
+            d = datetime.fromisoformat(raw_date.replace("Z", "+00:00")).astimezone(timezone(timedelta(hours=3))).date()
+            d_key = d.strftime("%A, %b %d")
+            counts_by_day[d_key] = counts_by_day.get(d_key, 0) + 1
+        except Exception:
+            pass
+
+    _FOREX_FACTORY_DIAGNOSTICS["tier_used"] = tier_name
+    _FOREX_FACTORY_DIAGNOSTICS["total_deduped_events"] = len(events)
+    _FOREX_FACTORY_DIAGNOSTICS["cache_status"] = "live_refreshed"
+    _FOREX_FACTORY_DIAGNOSTICS["daily_counts"] = counts_by_day
+
+
+def get_forex_factory_diagnostics() -> dict[str, object]:
+    """Return a safe snapshot of Forex Factory calendar ingestion health for Admin inspection."""
+    return dict(_FOREX_FACTORY_DIAGNOSTICS)
+
+
+def fetch_forex_factory_calendar_rolling(days: int = 7, tz_offset: int = 3, force_refresh: bool = False) -> list[dict]:
     """Return a true rolling Today + N-1 day Forex Factory window.
-
     Strategy:
-      1) exact range page (fast path),
-      2) each calendar day separately (robust future-date fallback),
-      3) current/next weekly JSON feeds (last fallback).
-
-    Calendar retrieval is deterministic and independent from the AI master switch.
+      Tier 1) exact range page (fast path),
+      Tier 2) each calendar day separately (robust fallback for future dates),
+      Tier 3) weekly pages (week=this and week=next),
+      Tier 4) FairEconomy weekly JSON feed,
+      Tier 5) Persistent/memory cache fallback.
     """
+    global _FOREX_FACTORY_LAST_GOOD_EVENTS, _FOREX_FACTORY_LAST_GOOD_AT, _FOREX_FACTORY_DIAGNOSTICS
+
     safe_days = max(1, min(14, int(days or 7)))
-    today_local = (datetime.utcnow() + timedelta(hours=tz_offset)).date()
+    now_utc = datetime.now(timezone.utc)
+    today_local = (now_utc + timedelta(hours=tz_offset)).date()
     end_local = today_local + timedelta(days=safe_days - 1)
+
+    with _FOREX_FACTORY_LAST_GOOD_LOCK:
+        if (not force_refresh and _FOREX_FACTORY_LAST_GOOD_EVENTS and
+                time.time() - _FOREX_FACTORY_LAST_GOOD_AT < _FF_NORMAL_REFRESH_SECONDS):
+            _FOREX_FACTORY_DIAGNOSTICS["cache_status"] = "memory_hit"
+            return [dict(item) for item in _FOREX_FACTORY_LAST_GOOD_EVENTS]
 
     def _dedupe(items):
         seen = set()
@@ -787,7 +847,7 @@ def fetch_forex_factory_calendar_rolling(days: int = 7, tz_offset: int = 3) -> l
         for row in items or []:
             key = (
                 str(row.get("country", "")).upper().strip(),
-                re.sub(r"\\s+", " ", str(row.get("title", "")).strip().lower()),
+                re.sub(r"\s+", " ", str(row.get("title", "")).strip().lower()),
                 str(row.get("date", "")),
             )
             if key in seen:
@@ -796,31 +856,77 @@ def fetch_forex_factory_calendar_rolling(days: int = 7, tz_offset: int = 3) -> l
             out.append(dict(row))
         return out
 
-    # Fast path: one request for the complete rolling window.
-    rows = fetch_forex_factory_calendar_range(today_local, end_local)
-    if rows:
-        return _dedupe(rows)
+    _FOREX_FACTORY_DIAGNOSTICS["last_fetch_ts"] = time.time()
+    _FOREX_FACTORY_DIAGNOSTICS["last_fetch_time"] = now_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+    _FOREX_FACTORY_DIAGNOSTICS["rolling_window"] = f"{today_local.isoformat()} to {end_local.isoformat()}"
 
-    # Important fallback for future dates.  FF's range response can occasionally
-    # be empty/blocked while the individual day pages are already populated.
+    # ── Tier 1: HTML Range Request ──────────────────────────
+    t1_rows = fetch_forex_factory_calendar_range(today_local, end_local)
+    _FOREX_FACTORY_DIAGNOSTICS["tier1_range_count"] = len(t1_rows)
+    if t1_rows and len(t1_rows) >= 5:
+        deduped = _dedupe(t1_rows)
+        _update_ff_cache_and_diagnostics(deduped, "Tier 1: HTML Range")
+        return deduped
+
+    # ── Tier 2: Individual Day Pages ─────────────────────────
     daily_rows = []
     for i in range(safe_days):
         day = today_local + timedelta(days=i)
         try:
-            batch = fetch_forex_factory_calendar_range(day, day)
+            day_url = f"https://www.forexfactory.com/calendar?day={day.strftime('%b').lower()}{day.day}.{day.year}"
+            r = requests.get(day_url, timeout=8, headers=_FF_BROWSER_HEADERS)
+            if r.status_code == 200 and r.text:
+                batch = _parse_forex_factory_html(r.text, day, day)
+                if batch:
+                    daily_rows.extend(batch)
         except Exception:
-            batch = []
-        if batch:
-            daily_rows.extend(batch)
-    if daily_rows:
-        return _dedupe(daily_rows)
+            pass
+    _FOREX_FACTORY_DIAGNOSTICS["tier2_daily_count"] = len(daily_rows)
+    if daily_rows and len(daily_rows) >= 5:
+        deduped = _dedupe(daily_rows)
+        _update_ff_cache_and_diagnostics(deduped, "Tier 2: Daily Pages")
+        return deduped
 
-    # Final fallback: merge weekly JSON feeds.  These are useful when FF's HTML
-    # is temporarily protected by anti-bot/CDN rules.
-    combined = []
-    for batch in (fetch_forex_factory_calendar(), fetch_forex_factory_calendar_week(1)):
-        combined.extend(dict(row) for row in (batch or []))
-    return _dedupe(combined)
+    # ── Tier 3: Weekly Pages (this + next week) ──────────────
+    weekly_rows = []
+    for w_slug in ("this", "next"):
+        try:
+            w_url = f"https://www.forexfactory.com/calendar?week={w_slug}"
+            r = requests.get(w_url, timeout=10, headers=_FF_BROWSER_HEADERS)
+            if r.status_code == 200 and r.text:
+                w_batch = _parse_forex_factory_html(r.text, today_local, end_local)
+                if w_batch:
+                    weekly_rows.extend(w_batch)
+        except Exception:
+            pass
+    _FOREX_FACTORY_DIAGNOSTICS["tier3_weekly_count"] = len(weekly_rows)
+    if weekly_rows and len(weekly_rows) >= 3:
+        deduped = _dedupe(weekly_rows)
+        _update_ff_cache_and_diagnostics(deduped, "Tier 3: Weekly Pages")
+        return deduped
+
+    # ── Tier 4: Faireconomy JSON Feed ────────────────────────
+    json_rows = fetch_forex_factory_calendar(force_refresh=True)
+    _FOREX_FACTORY_DIAGNOSTICS["tier4_json_count"] = len(json_rows)
+    if json_rows:
+        deduped = _dedupe(json_rows)
+        _update_ff_cache_and_diagnostics(deduped, "Tier 4: FairEconomy JSON")
+        return deduped
+
+    # ── Tier 5: Fallback to Memory & Persistent State Cache ──
+    with _FOREX_FACTORY_LAST_GOOD_LOCK:
+        if _FOREX_FACTORY_LAST_GOOD_EVENTS:
+            _FOREX_FACTORY_DIAGNOSTICS["cache_status"] = "fallback_memory"
+            return [dict(item) for item in _FOREX_FACTORY_LAST_GOOD_EVENTS]
+
+    saved_state = _load_persistent_state("forex_factory_schedule_state", FF_SCHEDULE_FILE, [])
+    if isinstance(saved_state, list) and saved_state:
+        _FOREX_FACTORY_DIAGNOSTICS["cache_status"] = "fallback_disk"
+        return [dict(item) for item in saved_state]
+
+    _FOREX_FACTORY_DIAGNOSTICS["cache_status"] = "empty"
+    return []
+
 
 def _supabase_enabled() -> bool:
     return bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY)
@@ -5650,23 +5756,25 @@ def _normalize_forex_factory_actual(value: object) -> str:
 
 def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3)", ff_events_override: list[dict] | None = None) -> list[dict]:
     """
-    Forex Factory is the sole calendar source. Only High and Medium
-    impact events are allowed into the Catalyst Forecaster.
+    Forex Factory is the sole calendar source. All High, Medium, and Low
+    impact events are preserved for the Catalyst Forecaster calendar.
     Existing precursor/Nowcast logic is preserved where a title matches
     the legacy catalyst map.
     """
-    utc_now = datetime.utcnow()
+    utc_now = datetime.now(timezone.utc).replace(tzinfo=None)
     user_now = utc_now + timedelta(hours=tz_offset)
     events = []
 
-    ff_events = ff_events_override if ff_events_override is not None else fetch_forex_factory_calendar()
+    ff_events = ff_events_override if ff_events_override is not None else fetch_forex_factory_calendar_rolling(7, tz_offset)
     if not ff_events:
         return []
 
     for ff in ff_events:
-        impact_level = str(ff.get("impact", "")).strip().title()
-        if impact_level not in {"High", "Medium"}:
-            continue
+        raw_impact = str(ff.get("impact", "")).strip().title()
+        if raw_impact in {"High", "Medium", "Low"}:
+            impact_level = raw_impact
+        else:
+            impact_level = "Low"
 
         title = str(ff.get("title", "")).strip()
         currency = str(ff.get("country", "")).strip().upper()
@@ -5687,7 +5795,7 @@ def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3
         diff = event_local - user_now
         total_seconds = diff.total_seconds()
         days_away = (event_local.date() - user_now.date()).days
-        if days_away > 10:
+        if days_away > 14:
             continue
 
         # Keep a released catalyst on the live Forecaster radar for 48 hours only.
@@ -5813,57 +5921,56 @@ def _ff_history_save(data: dict) -> None:
         _save_persistent_state("forex_factory_high_impact_history_v1", FF_HISTORY_FILE, data)
 
 
-def _ff_clean_cell(node) -> str:
-    if node is None:
-        return ""
-    return " ".join(node.get_text(" ", strip=True).split())
-
-
 def _ff_parse_historical_html(html_text: str) -> list[dict]:
-    """Parse Forex Factory calendar rows.  Fail closed if their HTML layout changes."""
-    soup = BeautifulSoup(html_text or "", "html.parser")
+    """Parse Forex Factory calendar rows for historical archives."""
+    if not html_text:
+        return []
     rows = []
     current_date = ""
-    for tr in soup.select("tr.calendar__row, tr[data-event-id]"):
-        date_cell = tr.select_one(".calendar__date")
-        if date_cell and _ff_clean_cell(date_cell):
-            current_date = _ff_clean_cell(date_cell)
-        currency = _ff_clean_cell(tr.select_one(".calendar__currency")).upper()
-        title = _ff_clean_cell(tr.select_one(".calendar__event"))
+
+    tr_matches = re.findall(r'<tr[^>]*class="[^"]*calendar__row[^"]*"[^>]*>(.*?)</tr>', html_text, re.DOTALL | re.IGNORECASE)
+    if not tr_matches:
+        tr_matches = re.findall(r'<tr[^>]*data-event-id="[^"]*"[^>]*>(.*?)</tr>', html_text, re.DOTALL | re.IGNORECASE)
+
+    for tr in tr_matches:
+        date_match = re.search(r'class="[^"]*calendar__date[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+        if date_match and _ff_clean_cell(date_match.group(1)):
+            current_date = _ff_clean_cell(date_match.group(1))
+        curr_match = re.search(r'class="[^"]*calendar__currency[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+        currency = _ff_clean_cell(curr_match.group(1)).upper() if curr_match else ""
+        event_match = re.search(r'class="[^"]*calendar__event[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+        title = _ff_clean_cell(event_match.group(1)) if event_match else ""
         if not currency or not title:
             continue
-        impact_cell = tr.select_one(".calendar__impact")
-        impact_blob = " ".join([
-            _ff_clean_cell(impact_cell),
-            str(impact_cell.get("title", "") if impact_cell else ""),
-            " ".join(impact_cell.get("class", []) if impact_cell else []),
-            " ".join(str(x.get("title", "")) for x in (impact_cell.select("span, i") if impact_cell else [])),
-            str(tr.get("class", "")),
-        ]).lower()
-        # Historical archive is intentionally High Impact only.
+        impact_match = re.search(r'class="[^"]*calendar__impact[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+        impact_blob = (impact_match.group(0) if impact_match else "").lower()
         if "high" not in impact_blob and "red" not in impact_blob:
             continue
-        actual = _ff_clean_cell(tr.select_one(".calendar__actual"))
-        forecast = _ff_clean_cell(tr.select_one(".calendar__forecast"))
-        previous = _ff_clean_cell(tr.select_one(".calendar__previous"))
-        time_txt = _ff_clean_cell(tr.select_one(".calendar__time"))
+        act_match = re.search(r'class="[^"]*calendar__actual[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+        fc_match = re.search(r'class="[^"]*calendar__forecast[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+        prev_match = re.search(r'class="[^"]*calendar__previous[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+        time_match = re.search(r'class="[^"]*calendar__time[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+        actual = _ff_clean_cell(act_match.group(1)) if act_match else ""
+        forecast = _ff_clean_cell(fc_match.group(1)) if fc_match else ""
+        previous = _ff_clean_cell(prev_match.group(1)) if prev_match else ""
+        time_txt = _ff_clean_cell(time_match.group(1)) if time_match else ""
         if not actual:
             continue
         rows.append({
             "event_identity": f"{currency}|{_normalize_catalyst_title(title)}",
             "currency": currency, "title": title, "date_label": current_date, "time_label": time_txt,
             "actual": actual, "forecast": forecast, "previous": previous,
-            "source": "Forex Factory", "captured_at_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "source": "Forex Factory", "captured_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds") + "Z",
         })
     return rows
 
 
 def _ff_backfill_high_impact_history(days: int = 370, max_chunks: int = 2) -> int:
-    """Low-frequency historical bootstrap.  At most two 30-day pages per daemon pass."""
+    """Low-frequency historical bootstrap. At most two 30-day pages per daemon pass."""
     state = _ff_history_load()
     existing = list(state.get("records") or [])
     done_ranges = set(state.get("done_ranges") or [])
-    today = datetime.utcnow().date()
+    today = datetime.now(timezone.utc).date()
     added = 0
     chunks = []
     end = today - timedelta(days=1)
@@ -5878,81 +5985,89 @@ def _ff_backfill_high_impact_history(days: int = 370, max_chunks: int = 2) -> in
         try:
             def ffdate(d): return d.strftime("%b%d.%Y").lower()
             url = f"https://www.forexfactory.com/calendar?range={ffdate(start)}-{ffdate(end)}"
-            r = requests.get(url, timeout=14, headers={"User-Agent":"Mozilla/5.0 (compatible; ApexMacro/1.0)", "Accept":"text/html,*/*"})
-            r.raise_for_status()
-            parsed = _ff_parse_historical_html(r.text)
-            seen = {f"{x.get('event_identity')}|{x.get('date_label')}|{x.get('time_label')}|{x.get('actual')}" for x in existing}
-            for row in parsed:
-                k=f"{row.get('event_identity')}|{row.get('date_label')}|{row.get('time_label')}|{row.get('actual')}"
-                if k not in seen:
-                    seen.add(k); existing.append(row); added += 1
-            done_ranges.add(key)
+            r = requests.get(url, timeout=14, headers=_FF_BROWSER_HEADERS)
+            if r.status_code == 200 and r.text:
+                parsed = _ff_parse_historical_html(r.text)
+                seen = {f"{x.get('event_identity')}|{x.get('date_label')}|{x.get('time_label')}|{x.get('actual')}" for x in existing}
+                for row in parsed:
+                    k = f"{row.get('event_identity')}|{row.get('date_label')}|{row.get('time_label')}|{row.get('actual')}"
+                    if k not in seen:
+                        seen.add(k)
+                        existing.append(row)
+                        added += 1
+                done_ranges.add(key)
         except Exception:
-            # Never mark a failed/blocked range complete; a later daily pass can retry.
             break
     state["records"] = existing[-5000:]
     state["done_ranges"] = sorted(done_ranges)
-    state["last_backfill_utc"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    state["last_backfill_utc"] = datetime.now(timezone.utc).isoformat(timespec="seconds") + "Z"
     _ff_history_save(state)
     return added
 
 
 def _ff_external_same_event_history(event: dict, limit: int = 12) -> list[dict]:
     ident = _event_identity(event)
-    out=[]
+    out = []
     for r in (_ff_history_load().get("records") or []):
         if str(r.get("event_identity", "")) != ident:
             continue
-        av=_safe_numeric_release(r.get("actual")); fv=_safe_numeric_release(r.get("forecast"))
+        av = _safe_numeric_release(r.get("actual"))
+        fv = _safe_numeric_release(r.get("forecast"))
         if av is None or fv is None:
             continue
-        eps=max(1e-9, abs(fv)*1e-6)
-        outcome="beat" if av>fv+eps else ("miss" if av<fv-eps else "inline")
-        out.append({**r, "actual_outcome":outcome, "resolved":True, "external_history":True})
+        eps = max(1e-9, abs(fv) * 1e-6)
+        outcome = "beat" if av > fv + eps else ("miss" if av < fv - eps else "inline")
+        out.append({**r, "actual_outcome": outcome, "resolved": True, "external_history": True})
     return out[-limit:][::-1]
 
 
 def _ff_release_actual_watcher(events: list[dict]) -> int:
-    """At release time, refresh the public weekly feed and persist new Actual prints automatically."""
+    """At release time, refresh the live rolling feed and persist new Actual prints automatically."""
     now_local = get_current_time(3)
-    pending=[]
+    pending = []
     for ev in events or []:
         if str(ev.get("impact", "")).title() != "High":
             continue
-        dt=ev.get("datetime_obj")
+        dt = ev.get("datetime_obj")
         if not isinstance(dt, datetime):
             continue
-        sec=(now_local - dt.replace(tzinfo=None)).total_seconds()
-        if -45 <= sec <= 12*60 and not _normalize_forex_factory_actual(ev.get("actual_str", "")):
+        sec = (now_local - dt.replace(tzinfo=None)).total_seconds()
+        if -45 <= sec <= 12 * 60 and not _normalize_forex_factory_actual(ev.get("actual_str", "")):
             pending.append(ev)
     if not pending:
         return 0
-    fresh = fetch_forex_factory_calendar(force_refresh=True)
-    by_code={}
+    fresh = fetch_forex_factory_calendar_rolling(7, 3, force_refresh=True)
+    by_code = {}
     for ff in fresh:
         try:
-            raw=str(ff.get("date", "")); d=datetime.fromisoformat(raw.replace("Z", "+00:00"))
-            if d.tzinfo is not None: d=d.astimezone(timezone.utc).replace(tzinfo=None)
-            code=_build_ff_event_code(str(ff.get("country", "")).upper(), str(ff.get("title", "")), d)
-            by_code[code]=ff
+            raw = str(ff.get("date", ""))
+            d = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if d.tzinfo is not None:
+                d = d.astimezone(timezone.utc).replace(tzinfo=None)
+            code = _build_ff_event_code(str(ff.get("country", "")).upper(), str(ff.get("title", "")), d)
+            by_code[code] = ff
         except Exception:
             continue
-    cache=load_actuals_cache(); changed=0
+    cache = load_actuals_cache()
+    changed = 0
     for ev in pending:
-        ff=by_code.get(str(ev.get("code", "")), {})
-        actual=_normalize_forex_factory_actual(ff.get("actual", ""))
+        ff = by_code.get(str(ev.get("code", "")), {})
+        actual = _normalize_forex_factory_actual(ff.get("actual", ""))
         if actual and actual != str(cache.get(ev.get("code"), "")).strip():
-            cache[ev["code"]]=actual; changed += 1
-            ev["actual_str"]=actual
+            cache[ev["code"]] = actual
+            changed += 1
+            ev["actual_str"] = actual
             try:
-                nc=compute_event_nowcast(ev, DEFAULT_FRED_KEY, fetch_all_instant_news(DEFAULT_TELEGRAM_CHANNEL), actual_override=actual)
+                nc = compute_event_nowcast(ev, DEFAULT_FRED_KEY, fetch_all_instant_news(DEFAULT_TELEGRAM_CHANNEL), actual_override=actual)
                 _record_forecaster_snapshot(ev, nc, actual=actual)
             except Exception:
                 pass
     if changed:
         save_actuals_cache(cache)
-        try: _AI_BATCH_WAKE_EVENT.set()
-        except Exception: pass
+        try:
+            _AI_BATCH_WAKE_EVENT.set()
+        except Exception:
+            pass
     return changed
 
 def _event_family(event: dict) -> str:
@@ -7029,7 +7144,7 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     if not st.session_state.get(selected_key):
         _forecaster_radar_refresh_tick()
 
-    today_local = (datetime.utcnow() + timedelta(hours=tz_info["offset"])).date()
+    today_local = (datetime.now(timezone.utc) + timedelta(hours=tz_info["offset"])).date()
     rolling_end = today_local + timedelta(days=6)
     rolling_feed = fetch_forex_factory_calendar_rolling(7, tz_info["offset"])
     events = get_upcoming_catalyst_events(tz_info["offset"], tz_info["label"], ff_events_override=rolling_feed)
@@ -7173,6 +7288,26 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
       <div class="apex-fc2-weekmeta">{week_label}</div>
     </div>
     """)
+
+    is_admin_user = bool(auth_user and auth_user.get("is_admin"))
+    if is_admin_user:
+        diag = get_forex_factory_diagnostics()
+        with st.expander(f"🛠️ Admin: Forex Factory Ingestion Diagnostics ({diag.get('tier_used', 'Live Active')})", expanded=False):
+            d_col1, d_col2, d_col3 = st.columns(3)
+            with d_col1:
+                st.write(f"**Tier Used:** `{diag.get('tier_used', '—')}`")
+                st.write(f"**Total Events (7 Days):** `{diag.get('total_deduped_events', len(events))}`")
+            with d_col2:
+                st.write(f"**Cache Status:** `{diag.get('cache_status', '—')}`")
+                st.write(f"**Tier 1 (Range) Rows:** `{diag.get('tier1_range_count', 0)}`")
+            with d_col3:
+                st.write(f"**Last Fetch (UTC):** `{diag.get('last_fetch_time', '—')}`")
+                st.write(f"**Tier 2 (Daily) Rows:** `{diag.get('tier2_daily_count', 0)}`")
+            if diag.get("daily_counts"):
+                st.write("**Events per Rolling Day:**", diag.get("daily_counts"))
+            if st.button("🔄 Force Refresh Calendar Now", key="btn_admin_force_ff_refresh"):
+                fetch_forex_factory_calendar_rolling(7, tz_info["offset"], force_refresh=True)
+                st.rerun()
 
     nav_info, nav_today = st.columns([3, 1], gap="small")
     with nav_info:
