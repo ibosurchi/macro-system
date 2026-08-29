@@ -18,12 +18,14 @@ import re
 import feedparser
 from bs4 import BeautifulSoup
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 import hashlib
 import xml.etree.ElementTree as ET
 import urllib.request
 from urllib.parse import quote
 from email.utils import parsedate_to_datetime
+from html import escape
 
 # Stable repository root: persistence files remain in their original project-root locations.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -90,6 +92,7 @@ else:
     DEFAULT_AI_CHAT_URL = f"{DEFAULT_RUAPI_BASE_URL}/chat/completions"
 
 AI_CACHE_VERSION = "ruapi-provider-v2"
+CAUSAL_AI_JUDGE_VERSION = "evidence-judge-v1"
 
 REQUEST_TIMEOUT = 8
 
@@ -98,6 +101,36 @@ FOREX_FACTORY_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek
 _FOREX_FACTORY_LAST_GOOD_EVENTS: list[dict] = []
 _FOREX_FACTORY_LAST_GOOD_AT = 0.0
 _FOREX_FACTORY_LAST_GOOD_LOCK = threading.RLock()
+_FF_NORMAL_REFRESH_SECONDS = 10 * 60
+_FF_RELEASE_REFRESH_SECONDS = 45
+FF_HISTORY_FILE = str(PROJECT_ROOT / "forex_factory_high_impact_history.json")
+FF_SCHEDULE_FILE = str(PROJECT_ROOT / "forex_factory_schedule_state.json")
+_FF_HISTORY_LOCK = threading.RLock()
+_FF_SCHEDULE_LOCK = threading.RLock()
+
+_FF_BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+}
+
+_FOREX_FACTORY_DIAGNOSTICS: dict[str, object] = {
+    "last_fetch_ts": 0.0,
+    "last_fetch_time": "Never",
+    "tier_used": "None",
+    "tier1_range_count": 0,
+    "tier2_daily_count": 0,
+    "tier3_weekly_count": 0,
+    "tier4_json_count": 0,
+    "total_deduped_events": 0,
+    "last_error": "",
+    "cache_status": "empty",
+    "rolling_window": "",
+    "daily_counts": {},
+}
 
 
 def _ai_runtime(
@@ -135,6 +168,124 @@ def _ai_headers(api_key: str, title: str) -> dict:
     }
 
 
+# Final provider-level billing guard. This sits below every trigger layer.
+#
+# IMPORTANT: Streamlit can run more than one process/container. A local file lock
+# alone cannot protect RUAPI spending across those replicas. v11 therefore uses
+# BOTH a local flock and a durable Supabase-backed lease. The lease is reserved
+# BEFORE the HTTP call, then re-read after a short election window. Only the
+# winning replica may contact the provider.
+_AI_PROVIDER_GATE_LOCK_FILE = str(PROJECT_ROOT / ".apexmacro_ai_provider_gate.lock")
+_AI_PROVIDER_GATE_STATE_FILE = str(PROJECT_ROOT / "ai_provider_gate_v2.json")
+_AI_PROVIDER_GATE_STATE_ID = "ai_provider_gate_v2"
+_AI_PROVIDER_HARD_MIN_SECONDS = 90.0
+_AI_PROVIDER_LEASE_SECONDS = 180.0
+_AI_PROVIDER_ELECTION_SECONDS = 2.5
+
+
+def _provider_gate_state_read() -> dict:
+    try:
+        raw = _load_persistent_state(_AI_PROVIDER_GATE_STATE_ID, _AI_PROVIDER_GATE_STATE_FILE, {})
+        return dict(raw) if isinstance(raw, dict) else {}
+    except Exception:
+        try:
+            path = Path(_AI_PROVIDER_GATE_STATE_FILE)
+            raw = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+            return dict(raw) if isinstance(raw, dict) else {}
+        except Exception:
+            return {}
+
+
+def _provider_gate_state_write(payload: dict) -> None:
+    _save_persistent_state(_AI_PROVIDER_GATE_STATE_ID, _AI_PROVIDER_GATE_STATE_FILE, dict(payload or {}))
+
+
+def _provider_gate_unlock_local(handle: object | None) -> None:
+    if handle is None:
+        return
+    try:
+        import fcntl
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except Exception:
+        pass
+    try:
+        handle.close()
+    except Exception:
+        pass
+
+
+def _provider_gate_enter() -> dict:
+    """Acquire the one global paid-AI slot.
+
+    The returned ticket keeps the local process lock open for the HTTP request.
+    Supabase provides the cross-container lease. A short write/read election
+    prevents two replicas that started together from both becoming winners.
+    """
+    handle = open(_AI_PROVIDER_GATE_LOCK_FILE, "a+", encoding="utf-8")
+    try:
+        import fcntl
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    except Exception:
+        pass
+
+    now_ts = time.time()
+    state = _provider_gate_state_read()
+    last_started = float(state.get("last_started_at", 0.0) or 0.0)
+    lease_until = float(state.get("lease_until", 0.0) or 0.0)
+
+    remaining = _AI_PROVIDER_HARD_MIN_SECONDS - (now_ts - last_started)
+    if last_started > 0 and remaining > 0:
+        _provider_gate_unlock_local(handle)
+        raise RuntimeError(f"AI_PROVIDER_HARD_COOLDOWN:{remaining:.1f}")
+
+    if lease_until > now_ts:
+        _provider_gate_unlock_local(handle)
+        raise RuntimeError(f"AI_PROVIDER_GLOBAL_LEASE:{lease_until - now_ts:.1f}")
+
+    token_seed = f"{os.getpid()}:{threading.get_ident()}:{time.time_ns()}"
+    lease_token = hashlib.sha256(token_seed.encode("utf-8")).hexdigest()[:24]
+    reserved = {
+        **state,
+        "last_started_at": now_ts,
+        "last_started_at_iso": datetime.now(timezone.utc).isoformat(),
+        "lease_owner": lease_token,
+        "lease_until": now_ts + _AI_PROVIDER_LEASE_SECONDS,
+        "pid": os.getpid(),
+    }
+    _provider_gate_state_write(reserved)
+
+    # Election window: if another Streamlit replica writes after us, only the
+    # final durable owner survives this verification. Losers never reach RUAPI.
+    time.sleep(_AI_PROVIDER_ELECTION_SECONDS)
+    verify = _provider_gate_state_read()
+    if str(verify.get("lease_owner", "")) != lease_token:
+        _provider_gate_unlock_local(handle)
+        raise RuntimeError("AI_PROVIDER_GLOBAL_LEASE:90.0")
+
+    verify_started = float(verify.get("last_started_at", 0.0) or 0.0)
+    if abs(verify_started - now_ts) > 0.001:
+        _provider_gate_unlock_local(handle)
+        raise RuntimeError("AI_PROVIDER_GLOBAL_LEASE:90.0")
+
+    return {"handle": handle, "token": lease_token, "started_at": now_ts}
+
+
+def _provider_gate_exit(ticket: dict | None) -> None:
+    if not isinstance(ticket, dict):
+        return
+    token = str(ticket.get("token", ""))
+    try:
+        state = _provider_gate_state_read()
+        if token and str(state.get("lease_owner", "")) == token:
+            state["lease_until"] = 0.0
+            state["lease_owner"] = ""
+            state["last_finished_at"] = time.time()
+            state["last_finished_at_iso"] = datetime.now(timezone.utc).isoformat()
+            _provider_gate_state_write(state)
+    except Exception:
+        pass
+    _provider_gate_unlock_local(ticket.get("handle"))
+
 def _post_ai_chat(
     provider: str,
     url: str,
@@ -145,14 +296,17 @@ def _post_ai_chat(
     temperature: float,
     timeout: int,
 ):
-    """
-    Send an OpenAI-compatible chat request with bounded retry behavior.
+    """Send exactly ONE provider request.
 
-    RUAPI behavior:
-    - normal request first
-    - one minimal-payload retry on HTTP 400
-    - retry on read/connect timeout or transient 5xx
+    ApexMacro's shared background AI engine owns refresh/retry timing. Foreground
+    page renders never retry provider calls, preventing one logical refresh from
+    becoming two or three billable requests.
     """
+    # Hard billing gate: even if a future code path accidentally reaches this
+    # helper, the provider cannot be contacted while Admin AI Control is OFF.
+    if "is_ai_enabled" in globals() and not is_ai_enabled():
+        raise RuntimeError("AI is disabled by the administrator.")
+
     payload = {
         "model": model,
         "messages": [
@@ -161,170 +315,217 @@ def _post_ai_chat(
         ],
         "temperature": temperature,
     }
+    gate_ticket = None
+    try:
+        gate_ticket = _provider_gate_enter()
+        _ai_diag_update(global_provider_status="PROVIDER GATE WON", global_gate_won_at=time.time())
+        _ai_diag_update(global_provider_status="HTTP SENT", global_http_sent_at=time.time())
+        response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+        _ai_diag_update(
+            global_provider_status="HTTP RESPONSE RECEIVED",
+            global_http_response_at=time.time(),
+            global_http_status=int(getattr(response, "status_code", 0) or 0),
+        )
+    except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout, requests.exceptions.ConnectionError) as exc:
+        raise RuntimeError(f"{provider} temporarily unavailable.") from exc
+    finally:
+        _provider_gate_exit(gate_ticket)
 
-    max_attempts = 3 if str(provider).upper() == "RUAPI" else 2
-    last_error = None
+    if response.ok:
+        return response
 
-    for attempt in range(max_attempts):
-        try:
-            response = requests.post(
-                url,
-                headers=headers,
-                json=payload,
-                timeout=timeout,
-            )
-
-            # Some RUAPI/model combinations reject optional parameters or system role.
-            if str(provider).upper() == "RUAPI" and response.status_code == 400:
-                minimal_prompt = (
-                    f"{system_prompt.strip()}\n\n"
-                    f"USER REQUEST / EVIDENCE:\n{user_prompt.strip()}"
-                )
-                minimal_payload = {
-                    "model": model,
-                    "messages": [
-                        {"role": "user", "content": minimal_prompt}
-                    ],
-                }
-                response = requests.post(
-                    url,
-                    headers=headers,
-                    json=minimal_payload,
-                    timeout=timeout,
-                )
-
-            if response.ok:
-                return response
-
-            # Retry only transient gateway/server errors.
-            if response.status_code in {408, 425, 429, 500, 502, 503, 504} and attempt < max_attempts - 1:
-                time.sleep(1.5 * (attempt + 1))
-                continue
-
-            detail = ""
-            try:
-                body = response.json()
-                if isinstance(body, dict):
-                    err = body.get("error", body)
-                    if isinstance(err, dict):
-                        detail = str(err.get("message") or err.get("detail") or err)
-                    else:
-                        detail = str(err)
-                else:
-                    detail = str(body)
-            except Exception:
-                detail = str(response.text or "").strip()
-
-            detail = re.sub(r"\s+", " ", detail)[:500]
-            provider_label = str(provider or "AI")
-            if detail:
-                raise RuntimeError(
-                    f"{provider_label} HTTP {response.status_code}: {detail}"
-                )
-            response.raise_for_status()
-
-        except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout, requests.exceptions.ConnectionError) as exc:
-            last_error = exc
-            if attempt < max_attempts - 1:
-                time.sleep(1.5 * (attempt + 1))
-                continue
-            raise RuntimeError(
-                f"{provider} temporarily unavailable after {max_attempts} attempts."
-            ) from exc
-
-    if last_error:
-        raise RuntimeError(f"{provider} temporarily unavailable.") from last_error
-    raise RuntimeError(f"{provider} request failed.")
-
+    detail = ""
+    try:
+        body = response.json()
+        if isinstance(body, dict):
+            err = body.get("error", body)
+            detail = str(err.get("message") or err.get("detail") or err) if isinstance(err, dict) else str(err)
+        else:
+            detail = str(body)
+    except Exception:
+        detail = str(response.text or "").strip()
+    detail = re.sub(r"\s+", " ", detail)[:500]
+    raise RuntimeError(f"{provider} HTTP {response.status_code}: {detail}" if detail else f"{provider} HTTP {response.status_code}")
 
 def _ai_message_content(response_json: dict) -> str:
-    """Extract text from an OpenAI-compatible chat-completions response."""
-    try:
-        choices = response_json.get("choices") or []
-        if not choices:
-            return ""
-        message = (choices[0] or {}).get("message") or {}
-        content = message.get("content", "")
-        if isinstance(content, str):
-            return content.strip()
-        # Some gateways can return structured content parts.
-        if isinstance(content, list):
-            parts = []
-            for item in content:
-                if isinstance(item, dict):
-                    txt = item.get("text") or item.get("content") or ""
-                    if txt:
-                        parts.append(str(txt))
-                elif item:
-                    parts.append(str(item))
-            return "\n".join(parts).strip()
-        return str(content or "").strip()
-    except Exception:
+    """Extract assistant text from common OpenAI-compatible gateway schemas."""
+    if not isinstance(response_json, dict):
         return ""
 
+    def _to_text(content) -> str:
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            out = []
+            for part in content:
+                if isinstance(part, dict):
+                    value = (
+                        part.get("text")
+                        or part.get("content")
+                        or part.get("output_text")
+                        or part.get("value")
+                        or ""
+                    )
+                    if isinstance(value, dict):
+                        value = value.get("value") or value.get("text") or ""
+                    if value:
+                        out.append(str(value))
+                elif part:
+                    out.append(str(part))
+            return "\n".join(out).strip()
+        if isinstance(content, dict):
+            return str(
+                content.get("text")
+                or content.get("value")
+                or content.get("content")
+                or ""
+            ).strip()
+        return str(content or "").strip()
+
+    try:
+        choices = response_json.get("choices") or []
+        if isinstance(choices, list) and choices:
+            first = choices[0] if isinstance(choices[0], dict) else {}
+            message = first.get("message") if isinstance(first, dict) else {}
+            if isinstance(message, dict):
+                text = _to_text(message.get("content"))
+                if text:
+                    return text
+
+                # Compatible gateways sometimes return JSON in tool/function args.
+                for call in (message.get("tool_calls") or []):
+                    if isinstance(call, dict):
+                        fn = call.get("function") or {}
+                        if isinstance(fn, dict) and fn.get("arguments"):
+                            return str(fn.get("arguments")).strip()
+                fcall = message.get("function_call")
+                if isinstance(fcall, dict) and fcall.get("arguments"):
+                    return str(fcall.get("arguments")).strip()
+
+            text = _to_text(first.get("text") if isinstance(first, dict) else "")
+            if text:
+                return text
+
+        text = _to_text(response_json.get("output_text"))
+        if text:
+            return text
+
+        output = response_json.get("output")
+        if isinstance(output, list):
+            for item in output:
+                if isinstance(item, dict):
+                    text = _to_text(item.get("content") or item.get("text") or item.get("output_text"))
+                    if text:
+                        return text
+
+        # Proxy wrappers.
+        for key in ("data", "response", "result"):
+            wrapped = response_json.get(key)
+            if isinstance(wrapped, dict):
+                text = _ai_message_content(wrapped)
+                if text:
+                    return text
+    except Exception:
+        return ""
+    return ""
+
+
+def _ai_response_metadata(response_json: object) -> dict:
+    """Safe HTTP-200 schema diagnostics. Never stores response content or secrets."""
+    meta = {
+        "top_level_keys": [],
+        "choice_count": 0,
+        "finish_reason": "",
+        "content_type": "",
+        "content_chars": 0,
+    }
+    if not isinstance(response_json, dict):
+        return meta
+    meta["top_level_keys"] = sorted(str(k)[:60] for k in response_json.keys())[:24]
+    choices = response_json.get("choices")
+    if isinstance(choices, list):
+        meta["choice_count"] = len(choices)
+        if choices and isinstance(choices[0], dict):
+            first = choices[0]
+            meta["finish_reason"] = str(first.get("finish_reason", ""))[:80]
+            msg = first.get("message")
+            if isinstance(msg, dict):
+                content = msg.get("content")
+                meta["content_type"] = type(content).__name__
+                if isinstance(content, str):
+                    meta["content_chars"] = len(content)
+                elif isinstance(content, list):
+                    meta["content_chars"] = sum(len(str(x)) for x in content)
+    if not meta["content_type"] and "output_text" in response_json:
+        value = response_json.get("output_text")
+        meta["content_type"] = type(value).__name__
+        meta["content_chars"] = len(str(value or ""))
+    return meta
 
 def _extract_json_object(raw_text: str) -> dict | None:
-    """Parse strict/fenced/embedded JSON without changing model semantics."""
+    """Parse strict, fenced, embedded, or double-encoded model JSON."""
     raw = str(raw_text or "").strip()
     if not raw:
         return None
 
-    # 1) Direct JSON.
-    try:
-        parsed = json.loads(raw)
-        return parsed if isinstance(parsed, dict) else None
-    except Exception:
-        pass
-
-    # 2) Markdown fenced JSON.
-    cleaned = re.sub(
-        r"^\s*```(?:json)?\s*|\s*```\s*$",
-        "",
-        raw,
-        flags=re.I | re.S,
-    ).strip()
-    try:
-        parsed = json.loads(cleaned)
-        return parsed if isinstance(parsed, dict) else None
-    except Exception:
-        pass
-
-    # 3) Extract the first balanced {...} object even if the model adds prose.
-    start = cleaned.find("{")
-    if start < 0:
+    def _accept(value):
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            try:
+                inner = json.loads(value.strip())
+                return inner if isinstance(inner, dict) else None
+            except Exception:
+                return None
+        if isinstance(value, list) and len(value) == 1 and isinstance(value[0], dict):
+            return value[0]
         return None
 
-    depth = 0
-    in_string = False
-    escaped = False
-    for i in range(start, len(cleaned)):
-        ch = cleaned[i]
+    for candidate in (raw, re.sub(
+        r"^\s*```[a-zA-Z0-9_-]*\s*|\s*```\s*$", "", raw, flags=re.I | re.S
+    ).strip()):
+        try:
+            accepted = _accept(json.loads(candidate))
+            if isinstance(accepted, dict):
+                return accepted
+        except Exception:
+            pass
 
-        if in_string:
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == '"':
-                in_string = False
-            continue
+    cleaned = re.sub(
+        r"^\s*```[a-zA-Z0-9_-]*\s*|\s*```\s*$", "", raw, flags=re.I | re.S
+    ).strip()
 
-        if ch == '"':
-            in_string = True
-        elif ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                candidate = cleaned[start:i + 1]
-                try:
-                    parsed = json.loads(candidate)
-                    return parsed if isinstance(parsed, dict) else None
-                except Exception:
-                    return None
-
+    # Try each balanced object candidate; do not stop at the first malformed brace block.
+    starts = [i for i, ch in enumerate(cleaned) if ch == "{"][:12]
+    for start in starts:
+        depth = 0
+        in_string = False
+        escaped = False
+        for i in range(start, len(cleaned)):
+            ch = cleaned[i]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        accepted = _accept(json.loads(cleaned[start:i + 1]))
+                        if isinstance(accepted, dict):
+                            return accepted
+                    except Exception:
+                        pass
+                    break
     return None
-
 
 def _normalize_causal_ai_payload(parsed: dict, source_count: int) -> dict:
     """Normalize only schema/typing; do not invent analytical content."""
@@ -338,6 +539,8 @@ def _normalize_causal_ai_payload(parsed: dict, source_count: int) -> dict:
         "facts",
         "supporting_evidence",
         "contradictions",
+        "decisive_evidence",
+        "evidence_missing",
     ]
     for field in list_fields:
         value = result.get(field, [])
@@ -355,6 +558,10 @@ def _normalize_causal_ai_payload(parsed: dict, source_count: int) -> dict:
     for field, default in {
         "event_assessment": "Insufficient Evidence",
         "nowcast": "Insufficient Evidence",
+        "ai_judgment": "",
+        "agreement_with_quant": "",
+        "reason": "",
+        "override_reason": "",
         "confidence_reason": "Insufficient structured AI evidence.",
         "cross_source_confirmation": "Unavailable",
         "usd": "Neutral",
@@ -374,76 +581,284 @@ def _normalize_causal_ai_payload(parsed: dict, source_count: int) -> dict:
     return result
 
 
-def fetch_forex_factory_calendar() -> list[dict]:
-    """
-    Load and normalize the live Forex Factory/Faireconomy weekly calendar.
+def _normalize_ai_judgment(value: object) -> str:
+    """Canonical Beat/In-line/Miss key for AI/audit logic; never invents a direction."""
+    text = re.sub(r"[^a-z]+", " ", str(value or "").lower()).strip()
+    if not text:
+        return ""
+    if "miss" in text or "below" in text or "lower than" in text:
+        return "miss"
+    if "beat" in text or "above" in text or "higher than" in text:
+        return "beat"
+    if "inline" in text or "in line" in text or "consensus" in text or "neutral" in text:
+        return "inline"
+    return ""
 
-    A transient network failure must never wipe the live Forecaster.
-    The last non-empty calendar is retained in memory and reused until a fresh
-    non-empty response is available.
+
+def _quantitative_outcome_from_reference(reference: dict) -> str:
+    reference = reference if isinstance(reference, dict) else {}
+    direct = _normalize_ai_judgment(reference.get("prediction") or reference.get("outcome_key") or reference.get("bias"))
+    if direct:
+        return direct
+    probs = reference.get("probabilities", {}) if isinstance(reference.get("probabilities", {}), dict) else {}
+    clean = {}
+    for key in ("beat", "inline", "miss"):
+        try:
+            clean[key] = float(probs.get(key, 0) or 0)
+        except Exception:
+            clean[key] = 0.0
+    return max(clean, key=clean.get) if any(clean.values()) else ""
+
+
+def _causal_relationship(quantitative_prediction: str, ai_judgment: str) -> tuple[str, str]:
+    """Return machine agreement state and compact UI relationship label."""
+    q = _normalize_ai_judgment(quantitative_prediction)
+    a = _normalize_ai_judgment(ai_judgment)
+    if not q or not a:
+        return "", "AI EVIDENCE REVIEW"
+    if q == a:
+        return "agree", "QUANT + AI AGREEMENT"
+    if q in {"beat", "miss"} and a == "inline":
+        return "partial", "AI WEAKENS QUANT SIGNAL"
+    if q == "inline" and a in {"beat", "miss"}:
+        return "disagree", "AI DISAGREES WITH QUANT"
+    if {q, a} == {"beat", "miss"}:
+        return "disagree", "MAJOR EVIDENCE CONFLICT"
+    return "disagree", "AI DISAGREES WITH QUANT"
+
+
+def _derive_final_forecast_state(quantitative_prediction: str, analysis: dict) -> tuple[str, str]:
+    """Transparent arbitration without adding the same evidence twice."""
+    q = _normalize_ai_judgment(quantitative_prediction) or "inline"
+    a = _normalize_ai_judgment((analysis or {}).get("ai_judgment") or (analysis or {}).get("nowcast"))
+    if not a:
+        return q, "Quantitative foundation retained; AI judgment unavailable."
+    if a == q:
+        return q, "Quantitative and causal AI judgments agree; no evidence is double-counted."
+    if a == "inline" and q in {"beat", "miss"}:
+        return "inline", "AI weakens the directional quantitative signal to in-line."
+    decisive = [str(x).strip() for x in ((analysis or {}).get("decisive_evidence") or []) if str(x).strip()]
+    override_reason = str((analysis or {}).get("override_reason") or "").strip()
+    if decisive and override_reason:
+        return a, "AI override accepted because explicit decisive evidence and an override reason were supplied."
+    if {q, a} == {"beat", "miss"}:
+        return "inline", "Major directional conflict without a qualified override; final state is conservatively in-line."
+    return q, "AI disagrees but did not supply a qualified decisive override; quantitative foundation retained."
+
+
+def _causal_ai_result_is_current_judge(item: dict | None) -> bool:
+    return bool(isinstance(item, dict) and str(item.get("_judge_version", "") or item.get("judge_version", "")) == CAUSAL_AI_JUDGE_VERSION)
+
+
+def _get_london_tz():
+    """Return a timezone object for Europe/London without crashing if tzdata is missing on Windows."""
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo("Europe/London")
+    except Exception:
+        now_month = datetime.now(timezone.utc).month
+        if 4 <= now_month <= 9 or now_month in (3, 10):
+            return timezone(timedelta(hours=1))
+        return timezone(timedelta(hours=0))
+
+
+def _ff_clean_cell(node) -> str:
+    """Clean and strip text from HTML node or string."""
+    if node is None:
+        return ""
+    if hasattr(node, "get_text"):
+        raw = node.get_text(separator=" ", strip=True)
+    else:
+        raw = str(node or "")
+    text = re.sub(r"<[^>]+>", " ", raw)
+    text = text.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("—", "")
+    return " ".join(text.split())
+
+
+def _parse_forex_factory_html(html_text: str, start_date, end_date) -> list[dict]:
+    """
+    Multi-layer resilient parser for Forex Factory calendar HTML.
+    Extracts all economic events across table rows, handles carry-over dates,
+    determines impact (High/Medium/Low), and converts London times to UTC ISO.
+    """
+    if not html_text:
+        return []
+    if isinstance(start_date, datetime):
+        start_date = start_date.date()
+    if isinstance(end_date, datetime):
+        end_date = end_date.date()
+    if not start_date or not end_date or end_date < start_date:
+        return []
+
+    london = _get_london_tz()
+    utc = timezone.utc
+    rows: list[dict] = []
+    current_date = None
+    last_clock_text = ""
+
+    # Strategy A: regex parsing of calendar__row blocks (fast and dependency-free)
+    tr_matches = re.findall(r'<tr[^>]*class="[^"]*calendar__row[^"]*"[^>]*>(.*?)</tr>', html_text, re.DOTALL | re.IGNORECASE)
+    if not tr_matches:
+        # Fallback to any tr with data-event-id
+        tr_matches = re.findall(r'<tr[^>]*data-event-id="[^"]*"[^>]*>(.*?)</tr>', html_text, re.DOTALL | re.IGNORECASE)
+
+    for tr in tr_matches:
+        date_match = re.search(r'class="[^"]*calendar__date[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+        date_text = _ff_clean_cell(date_match.group(1)) if date_match else ""
+        if date_text:
+            m = re.search(r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)?\s*([A-Za-z]{3})\s+(\d{1,2})", date_text)
+            if m:
+                mon, day = m.group(1), int(m.group(2))
+                candidate_years = [start_date.year, end_date.year]
+                parsed = None
+                for year in dict.fromkeys(candidate_years):
+                    try:
+                        d = datetime.strptime(f"{mon} {day} {year}", "%b %d %Y").date()
+                        if start_date - timedelta(days=1) <= d <= end_date + timedelta(days=1):
+                            parsed = d
+                            break
+                    except Exception:
+                        pass
+                current_date = parsed
+            last_clock_text = ""
+
+        if current_date is None or not (start_date <= current_date <= end_date):
+            continue
+
+        curr_match = re.search(r'class="[^"]*calendar__currency[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+        currency = _ff_clean_cell(curr_match.group(1)).upper() if curr_match else ""
+
+        event_match = re.search(r'class="[^"]*calendar__event[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+        title = _ff_clean_cell(event_match.group(1)) if event_match else ""
+        if not currency or not title:
+            continue
+
+        impact_match = re.search(r'class="[^"]*calendar__impact[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+        impact_blob = (impact_match.group(0) if impact_match else "").lower()
+        if "high" in impact_blob or "red" in impact_blob or "impact-red" in impact_blob:
+            impact = "High"
+        elif "medium" in impact_blob or "orange" in impact_blob or "impact-ora" in impact_blob:
+            impact = "Medium"
+        elif "low" in impact_blob or "yellow" in impact_blob or "impact-yel" in impact_blob:
+            impact = "Low"
+        else:
+            impact = "Low"
+
+        time_match = re.search(r'class="[^"]*calendar__time[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+        time_text = _ff_clean_cell(time_match.group(1)) if time_match else ""
+        if time_text:
+            last_clock_text = time_text
+        else:
+            time_text = last_clock_text
+
+        clock_match = re.search(r"(\d{1,2}):(\d{2})\s*(am|pm)", time_text, re.I)
+        if clock_match:
+            hh = int(clock_match.group(1))
+            mm = int(clock_match.group(2))
+            ap = clock_match.group(3).lower()
+            if ap == "pm" and hh != 12:
+                hh += 12
+            if ap == "am" and hh == 12:
+                hh = 0
+            local_dt = datetime.combine(current_date, datetime.min.time()).replace(hour=hh, minute=mm, tzinfo=london)
+        else:
+            local_dt = datetime.combine(current_date, datetime.min.time()).replace(hour=12, minute=0, tzinfo=london)
+
+        utc_dt = local_dt.astimezone(utc)
+
+        fc_match = re.search(r'class="[^"]*calendar__forecast[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+        prev_match = re.search(r'class="[^"]*calendar__previous[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+        act_match = re.search(r'class="[^"]*calendar__actual[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+
+        rows.append({
+            "title": title,
+            "country": currency,
+            "impact": impact,
+            "date": utc_dt.isoformat(),
+            "forecast": _ff_clean_cell(fc_match.group(1)) if fc_match else "",
+            "previous": _ff_clean_cell(prev_match.group(1)) if prev_match else "",
+            "actual": _ff_clean_cell(act_match.group(1)) if act_match else "",
+            "ff_time_label": time_text,
+            "source": "Forex Factory",
+        })
+
+    return rows
+
+
+def fetch_forex_factory_calendar(force_refresh: bool = False) -> list[dict]:
+    """
+    Load and normalize the live Forex Factory weekly calendar.
+    Tries the FairEconomy JSON feed, with immediate fallback to the live HTML calendar.
+    The last non-empty calendar is retained in memory and reused as a safety net.
     """
     global _FOREX_FACTORY_LAST_GOOD_EVENTS, _FOREX_FACTORY_LAST_GOOD_AT
 
+    with _FOREX_FACTORY_LAST_GOOD_LOCK:
+        if (not force_refresh and _FOREX_FACTORY_LAST_GOOD_EVENTS and
+                time.time() - _FOREX_FACTORY_LAST_GOOD_AT < _FF_NORMAL_REFRESH_SECONDS):
+            return [dict(item) for item in _FOREX_FACTORY_LAST_GOOD_EVENTS]
+
+    normalized = []
+    aliases = {
+        "Red": "High", "Orange": "Medium", "Yellow": "Low",
+        "High Impact": "High", "Medium Impact": "Medium", "Low Impact": "Low",
+    }
+
+    # Step 1: Try JSON feed
     urls = [
         FOREX_FACTORY_CALENDAR_URL,
         "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
-        "https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.json",
     ]
-
-    rows = None
     for url in urls:
         try:
             response = requests.get(
                 url,
-                timeout=10,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (compatible; ApexMacro/1.0)",
-                    "Accept": "application/json,text/plain,*/*",
-                    "Cache-Control": "no-cache",
-                },
+                timeout=8,
+                headers=_FF_BROWSER_HEADERS,
             )
-            response.raise_for_status()
-            data = response.json()
-            if isinstance(data, list) and data:
-                rows = data
-                break
+            if response.status_code == 200:
+                data = response.json()
+                if isinstance(data, list) and data:
+                    for row in data:
+                        if not isinstance(row, dict):
+                            continue
+                        title = str(row.get("title") or row.get("event") or row.get("name") or "").strip()
+                        country = str(row.get("country") or row.get("currency") or "").strip().upper()
+                        raw_impact = str(row.get("impact") or "").strip()
+                        impact = aliases.get(raw_impact.title(), raw_impact.title())
+                        raw_date = row.get("date") or row.get("datetime") or row.get("time")
+                        if not title or not country or not raw_date:
+                            continue
+                        normalized.append({
+                            **row,
+                            "title": title,
+                            "country": country,
+                            "impact": impact or "Low",
+                            "date": raw_date,
+                            "forecast": row.get("forecast", ""),
+                            "previous": row.get("previous", ""),
+                            "actual": row.get("actual", ""),
+                        })
+                    if normalized:
+                        break
         except Exception:
             continue
 
-    normalized = []
-    aliases = {
-        "Red": "High",
-        "Orange": "Medium",
-        "Yellow": "Low",
-        "High Impact": "High",
-        "Medium Impact": "Medium",
-        "Low Impact": "Low",
-    }
-
-    if rows:
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-
-            title = str(row.get("title") or row.get("event") or row.get("name") or "").strip()
-            country = str(row.get("country") or row.get("currency") or "").strip().upper()
-            raw_impact = str(row.get("impact") or "").strip()
-            impact = aliases.get(raw_impact.title(), raw_impact.title())
-            raw_date = row.get("date") or row.get("datetime") or row.get("time")
-
-            if not title or not country or not raw_date:
-                continue
-
-            normalized.append({
-                **row,
-                "title": title,
-                "country": country,
-                "impact": impact,
-                "date": raw_date,
-                "forecast": row.get("forecast", ""),
-                "previous": row.get("previous", ""),
-                "actual": row.get("actual", ""),
-            })
+    # Step 2: Fallback to HTML week page if JSON feed failed
+    if not normalized:
+        try:
+            today_utc = datetime.now(timezone.utc).date()
+            week_start = today_utc - timedelta(days=today_utc.weekday() + 1 if today_utc.weekday() != 6 else 0)
+            week_end = week_start + timedelta(days=6)
+            r = requests.get(
+                "https://www.forexfactory.com/calendar?week=this",
+                timeout=10,
+                headers=_FF_BROWSER_HEADERS,
+            )
+            if r.status_code == 200 and r.text:
+                normalized = _parse_forex_factory_html(r.text, week_start, week_end)
+        except Exception:
+            pass
 
     if normalized:
         with _FOREX_FACTORY_LAST_GOOD_LOCK:
@@ -496,6 +911,253 @@ _TACTICAL_STATE_LOCK = threading.RLock()
 
 # Synchronizes Streamlit/Admin and Telegram worker access to the shared VIP registry.
 _VIP_REGISTRY_LOCK = threading.RLock()
+
+
+def fetch_forex_factory_calendar_week(week_offset: int = 0) -> list[dict]:
+    """Fetch the current/adjacent Forex Factory weekly calendar.
+    week_offset: -1 = previous week, 0 = current week, 1 = next week.
+    """
+    if int(week_offset) == 0:
+        return fetch_forex_factory_calendar()
+
+    week_slug = "next" if int(week_offset) > 0 else "last"
+    url = f"https://www.forexfactory.com/calendar?week={week_slug}"
+    try:
+        r = requests.get(url, timeout=12, headers=_FF_BROWSER_HEADERS)
+        if r.status_code == 200 and r.text:
+            today_utc = datetime.now(timezone.utc).date()
+            delta_weeks = int(week_offset)
+            base_monday = today_utc - timedelta(days=today_utc.weekday())
+            target_start = base_monday + timedelta(weeks=delta_weeks)
+            target_end = target_start + timedelta(days=6)
+            return _parse_forex_factory_html(r.text, target_start, target_end)
+    except Exception:
+        pass
+    return []
+
+
+def fetch_forex_factory_calendar_range(start_date, end_date) -> list[dict]:
+    """Fetch an exact Forex Factory calendar date range from the public calendar page.
+    Times published by Forex Factory are interpreted in Europe/London and converted to UTC ISO timestamps.
+    """
+    try:
+        if isinstance(start_date, datetime):
+            start_date = start_date.date()
+        if isinstance(end_date, datetime):
+            end_date = end_date.date()
+        if not start_date or not end_date or end_date < start_date:
+            return []
+
+        def _ff_range_date(d):
+            return f"{d.strftime('%b').lower()}{d.day}.{d.year}"
+
+        url = (
+            "https://www.forexfactory.com/calendar?range="
+            f"{_ff_range_date(start_date)}-{_ff_range_date(end_date)}"
+        )
+        r = requests.get(url, timeout=14, headers=_FF_BROWSER_HEADERS)
+        if r.status_code == 200 and r.text:
+            return _parse_forex_factory_html(r.text, start_date, end_date)
+    except Exception as e:
+        _FOREX_FACTORY_DIAGNOSTICS["last_error"] = str(e)
+    return []
+
+
+def _update_ff_cache_and_diagnostics(events: list[dict], tier_name: str) -> None:
+    """Save successful non-empty calendar events and update diagnostic statistics."""
+    global _FOREX_FACTORY_LAST_GOOD_EVENTS, _FOREX_FACTORY_LAST_GOOD_AT, _FOREX_FACTORY_DIAGNOSTICS
+    with _FOREX_FACTORY_LAST_GOOD_LOCK:
+        _FOREX_FACTORY_LAST_GOOD_EVENTS = [dict(item) for item in events]
+        _FOREX_FACTORY_LAST_GOOD_AT = time.time()
+
+    _save_persistent_state("forex_factory_schedule_state", FF_SCHEDULE_FILE, events)
+
+    counts_by_day: dict[str, int] = {}
+    for ev in events:
+        raw_date = str(ev.get("date", "")).strip()
+        try:
+            d = datetime.fromisoformat(raw_date.replace("Z", "+00:00")).astimezone(timezone(timedelta(hours=3))).date()
+            d_key = d.strftime("%A, %b %d")
+            counts_by_day[d_key] = counts_by_day.get(d_key, 0) + 1
+        except Exception:
+            pass
+
+    _FOREX_FACTORY_DIAGNOSTICS["tier_used"] = tier_name
+    _FOREX_FACTORY_DIAGNOSTICS["total_deduped_events"] = len(events)
+    _FOREX_FACTORY_DIAGNOSTICS["cache_status"] = "live_refreshed"
+    _FOREX_FACTORY_DIAGNOSTICS["daily_counts"] = counts_by_day
+
+
+def get_forex_factory_diagnostics() -> dict[str, object]:
+    """Return a safe snapshot of Forex Factory calendar ingestion health for Admin inspection."""
+    return dict(_FOREX_FACTORY_DIAGNOSTICS)
+
+
+def fetch_forex_factory_calendar_rolling(days: int = 7, tz_offset: int = 3, force_refresh: bool = False) -> list[dict]:
+    """Return a true rolling Today + N-1 day Forex Factory window.
+    Strategy:
+      Tier 1) exact range page (fast path),
+      Tier 2) each calendar day separately (robust fallback for future dates),
+      Tier 3) weekly pages (week=this and week=next),
+      Tier 4) FairEconomy weekly JSON feed,
+      Tier 5) Persistent/memory cache fallback.
+    """
+    global _FOREX_FACTORY_LAST_GOOD_EVENTS, _FOREX_FACTORY_LAST_GOOD_AT, _FOREX_FACTORY_DIAGNOSTICS
+
+    safe_days = max(1, min(14, int(days or 7)))
+    now_utc = datetime.now(timezone.utc)
+    today_local = (now_utc + timedelta(hours=tz_offset)).date()
+    end_local = today_local + timedelta(days=safe_days - 1)
+
+    with _FOREX_FACTORY_LAST_GOOD_LOCK:
+        if (not force_refresh and _FOREX_FACTORY_LAST_GOOD_EVENTS and
+                time.time() - _FOREX_FACTORY_LAST_GOOD_AT < _FF_NORMAL_REFRESH_SECONDS):
+            _FOREX_FACTORY_DIAGNOSTICS["cache_status"] = "memory_hit"
+            return [dict(item) for item in _FOREX_FACTORY_LAST_GOOD_EVENTS]
+
+    def _dedupe(items):
+        seen = set()
+        out = []
+        for row in items or []:
+            key = (
+                str(row.get("country", "")).upper().strip(),
+                re.sub(r"\s+", " ", str(row.get("title", "")).strip().lower()),
+                str(row.get("date", "")),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(dict(row))
+        return out
+
+    _FOREX_FACTORY_DIAGNOSTICS["last_fetch_ts"] = time.time()
+    _FOREX_FACTORY_DIAGNOSTICS["last_fetch_time"] = now_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+    _FOREX_FACTORY_DIAGNOSTICS["rolling_window"] = f"{today_local.isoformat()} to {end_local.isoformat()}"
+
+    # ── Tier 1: HTML Range Request ──────────────────────────
+    t1_rows = fetch_forex_factory_calendar_range(today_local, end_local)
+    _FOREX_FACTORY_DIAGNOSTICS["tier1_range_count"] = len(t1_rows)
+    if t1_rows and len(t1_rows) >= 5:
+        deduped = _dedupe(t1_rows)
+        _update_ff_cache_and_diagnostics(deduped, "Tier 1: HTML Range")
+        return deduped
+
+    # ── Tier 2: Individual Day Pages ─────────────────────────
+    daily_rows = []
+    for i in range(safe_days):
+        day = today_local + timedelta(days=i)
+        try:
+            day_url = f"https://www.forexfactory.com/calendar?day={day.strftime('%b').lower()}{day.day}.{day.year}"
+            r = requests.get(day_url, timeout=8, headers=_FF_BROWSER_HEADERS)
+            if r.status_code == 200 and r.text:
+                batch = _parse_forex_factory_html(r.text, day, day)
+                if batch:
+                    daily_rows.extend(batch)
+        except Exception:
+            pass
+    _FOREX_FACTORY_DIAGNOSTICS["tier2_daily_count"] = len(daily_rows)
+    if daily_rows and len(daily_rows) >= 5:
+        deduped = _dedupe(daily_rows)
+        _update_ff_cache_and_diagnostics(deduped, "Tier 2: Daily Pages")
+        return deduped
+
+    # ── Tier 3: Weekly Pages (this + next week) ──────────────
+    weekly_rows = []
+    for w_slug in ("this", "next"):
+        try:
+            w_url = f"https://www.forexfactory.com/calendar?week={w_slug}"
+            r = requests.get(w_url, timeout=10, headers=_FF_BROWSER_HEADERS)
+            if r.status_code == 200 and r.text:
+                w_batch = _parse_forex_factory_html(r.text, today_local, end_local)
+                if w_batch:
+                    weekly_rows.extend(w_batch)
+        except Exception:
+            pass
+    _FOREX_FACTORY_DIAGNOSTICS["tier3_weekly_count"] = len(weekly_rows)
+    if weekly_rows and len(weekly_rows) >= 3:
+        deduped = _dedupe(weekly_rows)
+        _update_ff_cache_and_diagnostics(deduped, "Tier 3: Weekly Pages")
+        return deduped
+
+    # ── Tier 4: FairEconomy JSON Feeds (current + next week) ─────────────
+    # The rolling board can cross a week boundary, so a current-week-only JSON
+    # fallback is insufficient. Merge both public feeds, then clip strictly to
+    # the requested local Today..Today+N-1 window before deduplication.
+    json_rows = []
+    json_aliases = {
+        "Red": "High", "Orange": "Medium", "Yellow": "Low",
+        "High Impact": "High", "Medium Impact": "Medium", "Low Impact": "Low",
+    }
+    json_urls = (
+        "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+        "https://nfs.faireconomy.media/ff_calendar_nextweek.json",
+    )
+    json_source_counts = {}
+    for json_url in json_urls:
+        source_rows = []
+        try:
+            jr = requests.get(json_url, timeout=8, headers=_FF_BROWSER_HEADERS)
+            if jr.status_code == 200:
+                payload = jr.json()
+                if isinstance(payload, list):
+                    for row in payload:
+                        if not isinstance(row, dict):
+                            continue
+                        title = str(row.get("title") or row.get("event") or row.get("name") or "").strip()
+                        country = str(row.get("country") or row.get("currency") or "").strip().upper()
+                        raw_date = row.get("date") or row.get("datetime") or row.get("time")
+                        if not title or not country or not raw_date:
+                            continue
+                        try:
+                            dt = datetime.fromisoformat(str(raw_date).replace("Z", "+00:00"))
+                            if dt.tzinfo is None:
+                                dt = dt.replace(tzinfo=timezone.utc)
+                            local_day = (dt.astimezone(timezone.utc) + timedelta(hours=tz_offset)).date()
+                            if local_day < today_local or local_day > end_local:
+                                continue
+                        except Exception:
+                            continue
+                        raw_impact = str(row.get("impact") or "").strip()
+                        source_rows.append({
+                            **row,
+                            "title": title,
+                            "country": country,
+                            "impact": json_aliases.get(raw_impact.title(), raw_impact.title()) or "Low",
+                            "date": raw_date,
+                            "forecast": row.get("forecast", ""),
+                            "previous": row.get("previous", ""),
+                            "actual": row.get("actual", ""),
+                            "source": "FairEconomy/Forex Factory JSON",
+                        })
+        except Exception:
+            source_rows = []
+        json_source_counts[json_url.rsplit("/", 1)[-1]] = len(source_rows)
+        json_rows.extend(source_rows)
+
+    # Keep the older current-week loader as a final JSON compatibility fallback.
+    if not json_rows:
+        json_rows = fetch_forex_factory_calendar(force_refresh=True)
+    _FOREX_FACTORY_DIAGNOSTICS["tier4_json_count"] = len(json_rows)
+    _FOREX_FACTORY_DIAGNOSTICS["tier4_json_sources"] = json_source_counts
+    if json_rows:
+        deduped = _dedupe(json_rows)
+        _update_ff_cache_and_diagnostics(deduped, "Tier 4: FairEconomy JSON (This + Next Week)")
+        return deduped
+
+    # ── Tier 5: Fallback to Memory & Persistent State Cache ──
+    with _FOREX_FACTORY_LAST_GOOD_LOCK:
+        if _FOREX_FACTORY_LAST_GOOD_EVENTS:
+            _FOREX_FACTORY_DIAGNOSTICS["cache_status"] = "fallback_memory"
+            return [dict(item) for item in _FOREX_FACTORY_LAST_GOOD_EVENTS]
+
+    saved_state = _load_persistent_state("forex_factory_schedule_state", FF_SCHEDULE_FILE, [])
+    if isinstance(saved_state, list) and saved_state:
+        _FOREX_FACTORY_DIAGNOSTICS["cache_status"] = "fallback_disk"
+        return [dict(item) for item in saved_state]
+
+    _FOREX_FACTORY_DIAGNOSTICS["cache_status"] = "empty"
+    return []
+
 
 def _supabase_enabled() -> bool:
     return bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY)
@@ -1411,6 +2073,227 @@ div[data-testid="stPopover"] > button {
 .fc-outlook{display:grid;grid-template-columns:1.45fr repeat(3,.72fr);gap:8px;margin-top:10px}.fc-outlook-main,.fc-asset{background:rgba(0,0,0,.18);border:1px solid rgba(255,255,255,.055);border-radius:10px;padding:10px}.fc-outlook-main{border-color:rgba(0,245,255,.13)}.fc-small-lbl{font-size:8.5px;color:#718795;text-transform:uppercase;font-weight:850;letter-spacing:.7px}.fc-main-action{font-size:11.5px;font-weight:900;margin-top:4px}.fc-main-desc{font-size:9.8px;color:#92a5b1;line-height:1.4;margin-top:3px}.fc-asset{font-size:10px;color:#dce7ed;line-height:1.35}.fc-asset b{display:block;color:#fff;margin-bottom:3px}
 .fc-ai{margin-top:10px;background:rgba(8,15,23,.72);border:1px solid rgba(173,123,255,.16);border-radius:12px;padding:12px}.fc-ai-head{display:flex;justify-content:space-between;gap:8px;align-items:center}.fc-ai-title{font-size:9px;font-weight:900;color:#ad7bff;letter-spacing:1px;text-transform:uppercase}.fc-ai-conf{font-size:9px;font-weight:850;color:#00ffa3}.fc-ai-assess{font-size:12px;font-weight:850;color:#fff;margin-top:6px}.fc-ai-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:8px}.fc-ai-box{background:rgba(255,255,255,.018);border:1px solid rgba(255,255,255,.055);border-radius:8px;padding:8px;font-size:9.8px;color:#dce7ed;line-height:1.4}.fc-ai-box b{font-size:8.5px;letter-spacing:.6px}.fc-ai-foot{font-size:9.5px;color:#8397a4;margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.05)}
 @media(max-width:760px){.fc-hero-row,.fc-event-top{align-items:flex-start;flex-direction:column}.fc-horizon{text-align:left}.fc-event-name{white-space:normal;max-width:none}.fc-metrics{grid-template-columns:1fr 1fr}.fc-nowcast{grid-template-columns:1fr}.fc-score{text-align:left}.fc-outlook{grid-template-columns:1fr 1fr}.fc-outlook-main{grid-column:1/-1}.fc-ai-grid{grid-template-columns:1fr}.fc-body{padding:12px}.fc-event-top{padding:12px}.fc-title{font-size:19px}}
+
+/* ===== ApexMacro Forecaster Calendar v1 — apex- scoped, safe ===== */
+.apex-forecaster-shell{width:100%;box-sizing:border-box;}
+
+/* Calendar container */
+.apex-cal-wrap{background:linear-gradient(145deg,rgba(5,18,28,.96),rgba(3,11,19,.98));border:1px solid rgba(20,205,220,.18);border-radius:18px;padding:20px 20px 16px;margin-bottom:20px;box-shadow:0 20px 60px rgba(0,0,0,.42);}
+.apex-cal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:12px;}
+.apex-cal-title-block{}
+.apex-cal-eyebrow{font-size:14px;font-weight:900;letter-spacing:1.5px;color:#20DDE8;text-transform:uppercase;margin-bottom:4px;}
+.apex-cal-sub{font-size:11.5px;color:#8fa3b4;}
+.apex-cal-nav{display:flex;align-items:center;gap:10px;}
+.apex-cal-month-label{font-size:14px;font-weight:850;color:#F2F6F8;letter-spacing:1px;text-transform:uppercase;}
+
+/* Weekday row */
+.apex-cal-weekdays{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;margin-bottom:8px;}
+.apex-cal-wd{font-size:9.5px;font-weight:900;color:#8fa3b4;text-transform:uppercase;letter-spacing:1px;text-align:center;padding:4px 0;}
+
+/* Day grid */
+.apex-cal-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;}
+.apex-calendar-day{position:relative;min-height:74px;padding:10px 6px 8px;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;box-sizing:border-box;background:linear-gradient(145deg,rgba(15,35,47,.78),rgba(6,20,29,.90));border:1px solid rgba(110,155,175,.15);border-radius:9px;color:#F4F7FA;cursor:pointer;transition:border-color 150ms ease,background 150ms ease,transform 150ms ease;user-select:none;}
+.apex-calendar-day:hover{border-color:rgba(20,205,220,.45);background:linear-gradient(145deg,rgba(6,48,60,.70),rgba(4,22,32,.88));transform:translateY(-1px);}
+.apex-calendar-day.is-selected{border:1px solid rgba(20,225,235,.95)!important;background:linear-gradient(145deg,rgba(6,64,75,.78),rgba(4,28,38,.94))!important;box-shadow:0 0 18px rgba(20,220,230,.15)!important;}
+.apex-calendar-day.is-today .apex-cal-date-num{color:#20DDE8;font-weight:950;}
+.apex-calendar-day.is-other-month{opacity:.35;pointer-events:none;}
+.apex-calendar-day.no-events{cursor:default;}
+.apex-calendar-day.no-events:hover{transform:none;border-color:rgba(110,155,175,.15);background:linear-gradient(145deg,rgba(15,35,47,.78),rgba(6,20,29,.90));}
+.apex-cal-date-num{font-size:15px;font-weight:850;color:#F4F7FA;line-height:1;margin-bottom:7px;}
+.apex-cal-dots{display:flex;flex-wrap:wrap;gap:4px;align-items:center;justify-content:center;min-height:10px;}
+.apex-impact-dot{width:6.5px;height:6.5px;border-radius:50%;flex-shrink:0;}
+.apex-impact-dot.high{background:#A84DE3;box-shadow:0 0 6px rgba(168,77,227,.65);}
+.apex-impact-dot.medium{background:#FFBC26;box-shadow:0 0 6px rgba(255,188,38,.55);}
+.apex-impact-dot.low{background:#38D4E4;box-shadow:0 0 6px rgba(56,212,228,.50);}
+.apex-cal-overflow{font-size:8.5px;font-weight:850;color:#A5B2BF;}
+
+/* Legend */
+.apex-cal-legend{display:flex;align-items:center;gap:20px;justify-content:center;margin-top:16px;padding-top:14px;border-top:1px solid rgba(255,255,255,.06);}
+.apex-cal-legend-item{display:flex;align-items:center;gap:7px;font-size:10.5px;color:#A5B2BF;font-weight:650;}
+
+/* Selected day header */
+.apex-selected-day-header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px;flex-wrap:wrap;}
+.apex-selected-day-title-wrap{display:flex;align-items:center;gap:12px;}
+.apex-selected-day-title{font-size:16px;font-weight:900;color:#20DDE8;letter-spacing:1px;text-transform:uppercase;}
+.apex-selected-day-count{font-size:10px;font-weight:850;color:#20DDE8;background:rgba(20,221,232,.10);border:1px solid rgba(20,221,232,.25);padding:3px 10px;border-radius:999px;letter-spacing:.5px;}
+
+/* Day event cards */
+.apex-day-events-list{display:flex;flex-direction:column;gap:10px;margin-bottom:24px;}
+.apex-day-event-card{width:100%;display:grid;grid-template-columns:70px 80px minmax(0,1fr) 70px 70px 70px 28px;gap:12px;align-items:center;padding:16px 18px;box-sizing:border-box;background:linear-gradient(145deg,rgba(10,28,39,.82),rgba(5,17,26,.92));border:1px solid rgba(90,145,165,.18);border-radius:11px;transition:border-color 150ms ease,background 150ms ease,transform 150ms ease;}
+.apex-day-event-card:hover{border-color:rgba(20,205,220,.42);background:linear-gradient(145deg,rgba(6,42,58,.85),rgba(4,20,32,.95));}
+.apex-dec-time{font-size:13px;font-weight:800;color:#F2F6F8;line-height:1.2;}
+.apex-dec-time-sub{font-size:9.5px;color:#718795;font-weight:700;margin-top:2px;text-transform:uppercase;}
+.apex-dec-currency{display:flex;align-items:center;gap:6px;}
+.apex-dec-flag{font-size:18px;line-height:1;}
+.apex-dec-cur-code{font-size:12px;font-weight:850;color:#F2F6F8;}
+.apex-dec-body{min-width:0;}
+.apex-dec-impact-row{display:flex;align-items:center;gap:6px;margin-bottom:4px;}
+.apex-dec-impact-dot{width:7px;height:7px;border-radius:50%;}
+.apex-dec-impact-dot.high{background:#A84DE3;}
+.apex-dec-impact-dot.medium{background:#FFBC26;}
+.apex-dec-impact-dot.low{background:#38D4E4;}
+.apex-dec-impact-text{font-size:9.5px;font-weight:850;color:#8fa3b4;text-transform:uppercase;letter-spacing:.5px;}
+.apex-dec-name{font-size:13.5px;font-weight:850;color:#F2F6F8;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.apex-dec-val-box{text-align:center;}
+.apex-dec-val-lbl{font-size:8.5px;font-weight:850;color:#718795;text-transform:uppercase;letter-spacing:.6px;}
+.apex-dec-val{font-size:13px;font-weight:850;color:#F2F6F8;margin-top:2px;}
+.apex-dec-val.actual-live{color:#00ffa3;}
+.apex-dec-val.pending{color:#718795;}
+.apex-dec-arrow{font-size:16px;color:#8fa3b4;font-weight:800;text-align:right;}
+.apex-no-events-msg{padding:28px 16px;text-align:center;color:#718795;font-size:12.5px;background:rgba(5,18,28,.4);border:1px solid rgba(110,155,175,.10);border-radius:11px;margin-bottom:20px;}
+
+/* Modal overlay */
+.apex-event-modal-overlay{position:fixed;inset:0;z-index:9998;display:flex;align-items:center;justify-content:center;padding:24px;background:rgba(1,7,12,.58);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);}
+
+/* Modal */
+.apex-event-modal{position:relative;z-index:9999;width:min(980px,72vw);max-height:90vh;overflow-y:auto;padding:26px 28px;box-sizing:border-box;border-radius:16px;background:linear-gradient(145deg,rgba(5,20,30,.98),rgba(3,13,21,.99));border:1px solid rgba(20,215,225,.72);box-shadow:0 28px 90px rgba(0,0,0,.60),0 0 40px rgba(15,210,220,.05);scrollbar-width:thin;scrollbar-color:#20DDE8 rgba(8,16,24,.6);}
+.apex-event-modal::-webkit-scrollbar{width:6px;}.apex-event-modal::-webkit-scrollbar-track{background:rgba(8,16,24,.5);border-radius:4px;}.apex-event-modal::-webkit-scrollbar-thumb{background:linear-gradient(180deg,#20DDE8,#00ffa3);border-radius:4px;}
+
+/* Modal header */
+.apex-modal-header{position:sticky;top:-26px;z-index:10;background:rgba(5,20,30,.97);margin:-26px -28px 20px;padding:18px 28px 14px;border-bottom:1px solid rgba(20,215,225,.14);display:flex;align-items:flex-start;justify-content:space-between;gap:12px;}
+.apex-modal-header-left{}
+.apex-modal-title{font-size:17px;font-weight:900;color:#F2F6F8;letter-spacing:-.1px;}
+.apex-modal-date{font-size:12px;color:#8fa3b4;margin-top:3px;}
+.apex-modal-close-btn{width:36px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:9px;background:rgba(8,24,34,.72);border:1px solid rgba(90,145,165,.18);color:#F0F5F8;font-size:18px;cursor:pointer;line-height:1;}
+
+/* Form fields */
+.apex-form-grid-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:12px;}
+.apex-form-grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-bottom:12px;}
+.apex-form-field{display:flex;flex-direction:column;gap:5px;margin-bottom:12px;}
+.apex-form-label{font-size:9.5px;font-weight:800;color:#8fa3b4;text-transform:uppercase;letter-spacing:.6px;}
+.apex-form-box{padding:11px 14px;border-radius:9px;background:rgba(8,27,38,.76);border:1px solid rgba(90,145,165,.20);font-size:13px;font-weight:750;color:#F2F6F8;display:flex;align-items:center;justify-content:space-between;}
+
+/* Actual/Forecast/Previous values row */
+.apex-modal-values{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-bottom:14px;}
+.apex-modal-value{padding:13px 14px;border-radius:9px;background:rgba(8,27,38,.76);border:1px solid rgba(90,145,165,.20);}
+.apex-modal-value-lbl{font-size:9px;font-weight:850;color:#8fa3b4;text-transform:uppercase;letter-spacing:.6px;margin-bottom:5px;}
+.apex-modal-value-num{font-size:18px;font-weight:900;color:#F2F6F8;}
+.apex-modal-value-num.beat{color:#00ffa3;}
+.apex-modal-value-num.miss{color:#ff5e75;}
+.apex-modal-value-num.inline{color:#ffd166;}
+
+/* Causal card & AI panels */
+.apex-intelligence-card{padding:14px 16px;border-radius:11px;background:rgba(8,24,34,.72);border:1px solid rgba(90,145,165,.18);margin-bottom:14px;}
+.apex-card-header-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
+.apex-card-title{font-size:11px;font-weight:900;color:#F2F6F8;letter-spacing:.5px;text-transform:uppercase;}
+.apex-ai-badge{font-size:9px;font-weight:900;color:#20DDE8;background:rgba(32,221,232,.12);border:1px solid rgba(32,221,232,.30);padding:2px 7px;border-radius:6px;}
+.apex-conf-badge{font-size:10px;font-weight:850;color:#00ffa3;}
+.apex-evidence-list{margin:0;padding:0 0 0 16px;font-size:11px;color:#cbd8df;line-height:1.65;}
+.apex-evidence-list li{margin-bottom:4px;}
+
+/* Cross Asset Grid */
+.apex-cross-asset-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-bottom:14px;}
+.apex-cross-asset-card{padding:12px 10px;background:rgba(8,24,34,.72);border:1px solid rgba(90,145,165,.16);border-radius:10px;text-align:center;}
+.apex-cross-asset-name{font-size:11px;font-weight:850;color:#F2F6F8;display:flex;align-items:center;justify-content:center;gap:4px;margin-bottom:4px;}
+.apex-cross-asset-state{font-size:10px;font-weight:700;color:#8fa3b4;}
+
+/* Admin Box */
+.apex-admin-box{padding:14px 16px;border-radius:11px;background:rgba(12,28,40,.82);border:1px solid rgba(20,205,220,.25);margin-bottom:14px;}
+.apex-admin-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}
+.apex-admin-title{font-size:11.5px;font-weight:900;color:#20DDE8;letter-spacing:.5px;}
+.apex-admin-sub{font-size:10px;color:#8fa3b4;}
+
+/* Mobile responsiveness */
+@media(max-width:768px){
+  .apex-cal-wrap{padding:14px 10px 12px;}
+  .apex-cal-grid,.apex-cal-weekdays{gap:4px;}
+  .apex-calendar-day{min-height:48px;padding:6px 2px 4px;border-radius:7px;}
+  .apex-cal-date-num{font-size:13px;margin-bottom:3px;}
+  .apex-impact-dot{width:4.5px;height:4.5px;}
+  .apex-cal-dots{gap:2px;}
+  .apex-cal-legend{gap:10px;flex-wrap:wrap;}
+  .apex-day-event-card{grid-template-columns:1fr;gap:6px;padding:12px 14px;}
+  .apex-event-modal-overlay{padding:8px;}
+  .apex-event-modal{width:100%;max-width:none;height:min(94vh,100%);max-height:94vh;padding:18px 14px;border-radius:14px;}
+  .apex-modal-header{margin:-18px -14px 16px;padding:14px 14px 12px;top:-18px;}
+  .apex-form-grid-3,.apex-form-grid-2{grid-template-columns:1fr;}
+  .apex-modal-values{grid-template-columns:1fr 1fr 1fr;}
+  .apex-cross-asset-grid{grid-template-columns:repeat(2,minmax(0,1fr));}
+}
+@media(max-width:480px){
+  .apex-modal-values{grid-template-columns:1fr;}
+  .apex-cross-asset-grid{grid-template-columns:1fr;}
+}
+
+
+/* ===== Forecaster direct calendar/event interaction (scoped) ===== */
+.apex-forecaster-calendar-head{width:100%;padding:18px 16px 16px;box-sizing:border-box;background:linear-gradient(145deg,rgba(5,21,31,.95),rgba(3,13,21,.99));border:1px solid rgba(35,190,205,.22);border-bottom:0;border-radius:20px 20px 0 0;display:flex;align-items:flex-start;justify-content:space-between;gap:12px;}
+.apex-forecaster-title{color:#2CD9E5;font-size:18px;font-weight:800;letter-spacing:1px;}
+.apex-forecaster-subtitle{margin-top:4px;color:#A5B2BF;font-size:12px;line-height:1.45;}
+.apex-forecaster-month{color:#F4F7F9;font-size:16px;font-weight:800;letter-spacing:.5px;white-space:nowrap;}
+.apex-forecaster-calendar-head + .apex-cal-weekdays{padding:0 10px 8px;background:linear-gradient(145deg,rgba(5,21,31,.95),rgba(3,13,21,.99));border-left:1px solid rgba(35,190,205,.22);border-right:1px solid rgba(35,190,205,.22);margin:0;}
+
+/* Force Streamlit columns to remain a seven-column calendar on phones. */
+.st-key-apex_calendar_interactive{padding:0 10px 12px;background:linear-gradient(145deg,rgba(5,21,31,.95),rgba(3,13,21,.99));border-left:1px solid rgba(35,190,205,.22);border-right:1px solid rgba(35,190,205,.22);}
+.st-key-apex_calendar_interactive [data-testid="stHorizontalBlock"]{display:flex!important;flex-direction:row!important;gap:5px!important;margin-bottom:5px!important;}
+.st-key-apex_calendar_interactive [data-testid="stColumn"]{min-width:0!important;width:0!important;flex:1 1 0!important;}
+
+[class*="st-key-apex_calday_"]{position:relative!important;min-width:0!important;}
+[class*="st-key-apex_calday_"] .stButton{margin:0!important;}
+[class*="st-key-apex_calday_"] button{width:100%!important;min-width:0!important;height:72px!important;padding:6px 2px 20px!important;border-radius:9px!important;background:linear-gradient(145deg,rgba(13,32,43,.78),rgba(5,18,27,.93))!important;border:1px solid rgba(100,150,170,.12)!important;color:#F2F5F7!important;box-shadow:none!important;font-size:17px!important;font-weight:750!important;line-height:1!important;}
+[class*="st-key-apex_calday_"] button:hover{border-color:rgba(35,205,220,.42)!important;background:linear-gradient(145deg,rgba(13,43,55,.88),rgba(5,22,32,.96))!important;transform:none!important;}
+[class*="st-key-apex_calday_selected_"] button{border:1px solid rgba(23,222,234,.95)!important;background:linear-gradient(145deg,rgba(7,66,76,.82),rgba(4,28,38,.96))!important;color:#2CE4EC!important;box-shadow:0 0 14px rgba(25,220,230,.13)!important;}
+[class*="st-key-apex_calday_today_"] button{border-color:rgba(65,200,215,.40)!important;}
+[class*="st-key-apex_calday_outside_"]{opacity:.28!important;}
+[class*="st-key-apex_calday_outside_"] button{cursor:default!important;}
+.apex-cal-button-dots{position:absolute;left:1px;right:1px;bottom:7px;z-index:5;display:flex;align-items:center;justify-content:center;gap:3px;line-height:1;pointer-events:none;white-space:nowrap;}
+.apex-cal-live-dot{width:6px;height:6px;border-radius:50%;display:inline-block;box-shadow:0 0 7px rgba(255,255,255,.05);}
+.apex-cal-live-dot.high{background:#B04CE4}.apex-cal-live-dot.medium{background:#FFB822}.apex-cal-live-dot.low{background:#35D2E3}.apex-cal-more{font-size:8px;font-weight:850;color:#A5B2BF;margin-left:1px;}
+
+.apex-cal-legend{margin:0 0 0;padding:12px 14px 14px;border:1px solid rgba(35,190,205,.22);border-top:1px solid rgba(255,255,255,.05);border-radius:0 0 20px 20px;background:linear-gradient(145deg,rgba(5,21,31,.95),rgba(3,13,21,.99));display:flex;align-items:center;justify-content:center;gap:22px;}
+.apex-cal-legend .apex-impact-dot{width:7px;height:7px;display:inline-block;border-radius:50%;margin-right:6px;}
+.apex-cal-legend .high{background:#B04CE4}.apex-cal-legend .medium{background:#FFB822}.apex-cal-legend .low{background:#35D2E3}
+.apex-selected-date-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:22px 0 12px;}
+.apex-selected-date-text{color:#28DCE7;font-size:19px;font-weight:800;letter-spacing:.5px;}
+.apex-selected-date-count{padding:5px 10px;border-radius:999px;border:1px solid rgba(30,205,220,.30);background:rgba(25,200,215,.07);color:#28DCE7;font-size:11px;font-weight:700;}
+
+/* Each event card is ONE real Streamlit button. No duplicate View Details control. */
+[class*="st-key-apex_evtcard_"]{margin-bottom:12px!important;}
+[class*="st-key-apex_evtcard_"] button{width:100%!important;min-height:142px!important;padding:18px!important;box-sizing:border-box!important;border-radius:14px!important;background:linear-gradient(145deg,rgba(8,27,38,.88),rgba(4,17,25,.96))!important;border:1px solid rgba(90,145,165,.20)!important;color:#F3F6F8!important;box-shadow:none!important;text-align:left!important;justify-content:flex-start!important;white-space:pre-wrap!important;font-size:13px!important;font-weight:650!important;line-height:1.55!important;}
+[class*="st-key-apex_evtcard_"] button{position:relative!important;}
+[class*="st-key-apex_evtcard_"] button::before{content:"●";font-size:11px;margin-right:8px;align-self:flex-start;}
+[class*="st-key-apex_evtcard_high_"] button::before{color:#B04CE4;}
+[class*="st-key-apex_evtcard_medium_"] button::before{color:#FFB822;}
+[class*="st-key-apex_evtcard_low_"] button::before{color:#35D2E3;}
+[class*="st-key-apex_evtcard_"] button p{width:100%!important;text-align:left!important;white-space:pre-wrap!important;margin:0!important;}
+[class*="st-key-apex_evtcard_"] button:hover{border-color:rgba(35,205,220,.50)!important;background:linear-gradient(145deg,rgba(9,39,52,.94),rgba(4,20,30,.98))!important;color:#F7FBFD!important;transform:none!important;}
+
+/* Native Streamlit dialog = true modal with built-in top-right X and blocked background. */
+div[data-testid="stDialog"]{backdrop-filter:blur(8px)!important;-webkit-backdrop-filter:blur(8px)!important;}
+div[data-testid="stDialog"] div[role="dialog"]{width:min(980px,92vw)!important;max-width:980px!important;max-height:92vh!important;border-radius:18px!important;background:linear-gradient(155deg,rgba(5,22,32,.99),rgba(2,13,20,.995))!important;border:1px solid rgba(35,205,220,.40)!important;box-shadow:0 30px 80px rgba(0,0,0,.60)!important;overflow-y:auto!important;}
+div[data-testid="stDialog"] div[role="dialog"] > div{max-width:none!important;}
+.apex-dialog-date{color:#8fa3b4;font-size:12px;margin:-4px 0 16px;}
+.apex-dialog-event-name{font-size:14px!important;overflow-wrap:anywhere;}
+.apex-dialog-ai-text{font-size:12px;color:#dce7ed;line-height:1.65;white-space:normal;overflow-wrap:anywhere;margin-bottom:6px;}
+.apex-dialog-ai-source{font-size:9.5px;color:#718795;line-height:1.45;}
+.apex-dialog-section-title{font-size:10px;font-weight:900;color:#8fa3b4;text-transform:uppercase;letter-spacing:.6px;margin:2px 0 8px;}
+
+@media(max-width:768px){
+  .apex-forecaster-calendar-head{padding:16px 12px 14px;border-radius:18px 18px 0 0;}
+  .apex-forecaster-title{font-size:17px}.apex-forecaster-month{font-size:14px}.apex-forecaster-subtitle{font-size:11px;}
+  .apex-forecaster-calendar-head + .apex-cal-weekdays{padding:0 6px 7px;gap:4px;}
+  .st-key-apex_calendar_interactive{padding:0 6px 10px;}
+  .st-key-apex_calendar_interactive [data-testid="stHorizontalBlock"]{gap:4px!important;margin-bottom:4px!important;}
+  [class*="st-key-apex_calday_"] button{height:50px!important;padding:5px 1px 16px!important;border-radius:7px!important;font-size:13px!important;}
+  .apex-cal-button-dots{bottom:5px;gap:2px;}.apex-cal-live-dot{width:4px;height:4px;}.apex-cal-more{font-size:6.5px;}
+  .apex-cal-legend{gap:12px;flex-wrap:wrap;font-size:10px;padding:10px 8px 12px;border-radius:0 0 18px 18px;}
+  .apex-selected-date-text{font-size:17px;}
+  [class*="st-key-apex_evtcard_"] button{min-height:220px!important;padding:18px 16px!important;font-size:13px!important;line-height:1.6!important;}
+  div[data-testid="stDialog"] div[role="dialog"]{width:calc(100vw - 12px)!important;max-width:none!important;max-height:94vh!important;border-radius:16px!important;}
+  div[data-testid="stDialog"] div[role="dialog"] [data-testid="stVerticalBlock"]{padding-left:0!important;padding-right:0!important;}
+  .apex-form-grid-3,.apex-form-grid-2{grid-template-columns:1fr!important;}
+  .apex-modal-values{grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:7px!important;}
+  .apex-cross-asset-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important;}
+}
+@media(max-width:390px){
+  .st-key-apex_calendar_interactive [data-testid="stHorizontalBlock"]{gap:3px!important;margin-bottom:3px!important;}
+  [class*="st-key-apex_calday_"] button{height:45px!important;font-size:12px!important;padding-bottom:14px!important;}
+  .apex-cal-button-dots{bottom:4px;gap:1.5px;}.apex-cal-live-dot{width:3.5px;height:3.5px;}.apex-cal-more{font-size:6px;}
+  [class*="st-key-apex_evtcard_"] button{padding:15px 13px!important;min-height:210px!important;font-size:12px!important;}
+  .apex-modal-values{grid-template-columns:1fr!important;}
+  .apex-cross-asset-grid{grid-template-columns:1fr!important;}
+}
+
 </style>
 """)
 
@@ -1774,7 +2657,11 @@ def _tactical_symbol_config(asset_key: str) -> dict[str, object] | None:
 
 @st.cache_data(ttl=55, show_spinner=False)
 def _fetch_tactical_price_series(symbol: str) -> pd.DataFrame | None:
-    """Fetch 5-minute market prices. Failure is silent so the macro engine remains fully independent."""
+    """Fetch 5-minute OHLC market data for the tactical/entry engine.
+
+    OHLC is intentionally kept here (rather than close-only data) so support,
+    resistance, rejection and invalidation zones are derived from real candles.
+    """
     if not symbol:
         return None
     try:
@@ -1787,7 +2674,7 @@ def _fetch_tactical_price_series(symbol: str) -> pd.DataFrame | None:
                 "includePrePost": "true",
                 "events": "div,splits",
             },
-            headers={"User-Agent": "Mozilla/5.0 ApexMacro Tactical/15.0"},
+            headers={"User-Agent": "Mozilla/5.0 ApexMacro Entry/16.0"},
             timeout=REQUEST_TIMEOUT,
         )
         response.raise_for_status()
@@ -1797,28 +2684,271 @@ def _fetch_tactical_price_series(symbol: str) -> pd.DataFrame | None:
             return None
         timestamps = result.get("timestamp") or []
         quote_data = ((((result.get("indicators") or {}).get("quote")) or [{}])[0])
+        opens = quote_data.get("open") or []
+        highs = quote_data.get("high") or []
+        lows = quote_data.get("low") or []
         closes = quote_data.get("close") or []
+        volumes = quote_data.get("volume") or []
         if not timestamps or not closes:
             return None
         rows = []
-        for ts, close in zip(timestamps, closes):
+        for i, (ts, close) in enumerate(zip(timestamps, closes)):
             try:
                 if close is None:
                     continue
-                value = float(close)
-                if not np.isfinite(value) or value <= 0:
+                c = float(close)
+                o = float(opens[i]) if i < len(opens) and opens[i] is not None else c
+                h = float(highs[i]) if i < len(highs) and highs[i] is not None else max(o, c)
+                l = float(lows[i]) if i < len(lows) and lows[i] is not None else min(o, c)
+                v = float(volumes[i]) if i < len(volumes) and volumes[i] is not None else 0.0
+                if not all(np.isfinite(x) for x in (o, h, l, c)) or min(o, h, l, c) <= 0:
                     continue
-                rows.append((int(ts), value))
+                rows.append((int(ts), o, max(h, o, c), min(l, o, c), c, max(v, 0.0)))
             except Exception:
                 continue
         if len(rows) < 40:
             return None
-        df = pd.DataFrame(rows, columns=["ts", "close"])
-        df = df.drop_duplicates("ts").sort_values("ts").reset_index(drop=True)
-        return df
+        df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "volume"])
+        return df.drop_duplicates("ts").sort_values("ts").reset_index(drop=True)
     except Exception:
         return None
 
+
+def _tactical_analysis_ohlc(df: pd.DataFrame, invert: bool) -> pd.DataFrame:
+    """Return OHLC in the asset-strength convention used by ApexMacro."""
+    out = df.copy()
+    if not invert:
+        return out
+    old_high = out["high"].astype(float).copy()
+    old_low = out["low"].astype(float).copy()
+    out["open"] = 1.0 / np.maximum(out["open"].astype(float), 1e-12)
+    out["close"] = 1.0 / np.maximum(out["close"].astype(float), 1e-12)
+    out["high"] = 1.0 / np.maximum(old_low, 1e-12)
+    out["low"] = 1.0 / np.maximum(old_high, 1e-12)
+    return out
+
+
+def _entry_price_decimals(price: float) -> int:
+    price = abs(float(price or 0.0))
+    if price >= 1000: return 1
+    if price >= 100: return 2
+    if price >= 10: return 3
+    if price >= 1: return 4
+    return 5
+
+
+def _get_asset_relevant_currencies(asset_key: str) -> set[str]:
+    k = str(asset_key or "").upper()
+    if "GOLD" in k or "XAU" in k: return {"USD"}
+    if "OIL" in k or "WTI" in k or "BRENT" in k: return {"USD"}
+    if "NASDAQ" in k or "NQ" in k or "QQQ" in k or "SPX" in k: return {"USD"}
+    if "EURUSD" in k: return {"EUR", "USD"}
+    if "GBPUSD" in k: return {"GBP", "USD"}
+    if "USDJPY" in k: return {"USD", "JPY"}
+    if "USDCAD" in k: return {"USD", "CAD"}
+    if "AUDUSD" in k: return {"AUD", "USD"}
+    if "NZDUSD" in k: return {"NZD", "USD"}
+    if "USDCHF" in k: return {"USD", "CHF"}
+    return {"USD"}
+
+
+def _calculate_dynamic_event_safety(asset_key: str) -> tuple[int, str, bool]:
+    """
+    Evaluate upcoming High Impact economic calendar events for the asset's relevant currencies.
+    Returns (event_points: 0-10, safety_desc, is_blocked_by_event)
+    """
+    relevant_curs = _get_asset_relevant_currencies(asset_key)
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    # Use the cached rolling calendar to inspect High-Impact events within the next 24 hours
+    events = fetch_forex_factory_calendar_rolling(3, 0)
+    if not events:
+        return 10, "Clear Calendar — High Event Safety", False
+
+    nearest_min_diff = 999999.0
+    nearest_event = None
+
+    for ev in events:
+        impact = str(ev.get("impact", "")).title()
+        if impact not in {"High", "Red", "High Impact"}:
+            continue
+        cur = str(ev.get("country", ev.get("currency", ""))).upper()
+        if cur not in relevant_curs:
+            continue
+        date_raw = str(ev.get("date", "")).strip()
+        if not date_raw:
+            continue
+        try:
+            p_dt = datetime.fromisoformat(date_raw.replace("Z", "+00:00")).astimezone(timezone.utc).replace(tzinfo=None)
+            diff_min = (p_dt - now_utc).total_seconds() / 60.0
+            # Relevant window: from -15m post-release to +720m (12h pre-release)
+            if -15.0 <= diff_min <= 720.0:
+                if abs(diff_min) < abs(nearest_min_diff):
+                    nearest_min_diff = diff_min
+                    nearest_event = ev
+        except Exception:
+            continue
+
+    if nearest_event is None:
+        return 10, "Clear Calendar — High Event Safety", False
+
+    ev_title = nearest_event.get("title", "High Impact Catalyst")
+    ev_cur = nearest_event.get("country", nearest_event.get("currency", ""))
+
+    # Window 1: Release Imminent (-10m to +30m) -> 0 points, Hard BLOCK
+    if -10.0 <= nearest_min_diff <= 30.0:
+        return 0, f"HIGH EVENT RISK: {ev_cur} {ev_title} (within {int(abs(nearest_min_diff))}m)", True
+
+    # Window 2: Close Proximity (+30m to +120m) -> 3 points
+    if 30.0 < nearest_min_diff <= 120.0:
+        return 3, f"Elevated Event Risk: {ev_cur} {ev_title} in {int(nearest_min_diff)}m", False
+
+    # Window 3: Same-Session Proximity (+120m to +360m) -> 6 points
+    if 120.0 < nearest_min_diff <= 360.0:
+        return 6, f"Moderate Event Proximity: {ev_cur} {ev_title} in {round(nearest_min_diff/60, 1)}h", False
+
+    # Window 4: > 6h -> 10 points
+    return 10, f"Event Clear (>6h until {ev_cur} {ev_title})", False
+
+
+def _build_macro_entry_plan(df: pd.DataFrame, macro_regime: str, macro_score: float | None, asset_key: str = "") -> dict:
+    """Find a rules-based entry zone; macro chooses direction, price chooses location.
+
+    This is deliberately deterministic: no AI-generated prices. It combines
+    prior swing support/resistance, broken levels, impulse origin, ATR-sized
+    zones, short-term rejection/structure confirmation, and dynamic High-Impact Event Safety.
+    """
+    neutral = {
+        "direction": "WAIT", "status": "NO MACRO EDGE", "status_icon": "⚪",
+        "zone_low": None, "zone_high": None, "invalidation": None,
+        "entry_score": 0, "zone_score": 0, "confirmation_score": 0,
+        "macro_points": 0, "event_points": 0, "confluences": [],
+        "confirmation": "Macro direction is neutral; no entry is allowed.",
+    }
+    if macro_regime not in {"Bullish", "Bearish"} or len(df) < 45:
+        return neutral
+
+    direction = 1 if macro_regime == "Bullish" else -1
+    o = df["open"].astype(float).to_numpy(); h = df["high"].astype(float).to_numpy()
+    l = df["low"].astype(float).to_numpy(); c = df["close"].astype(float).to_numpy()
+    current = float(c[-1])
+    prev_close = np.r_[c[0], c[:-1]]
+    tr = np.maximum(h-l, np.maximum(np.abs(h-prev_close), np.abs(l-prev_close)))
+    atr = float(pd.Series(tr).rolling(14, min_periods=5).mean().iloc[-1])
+    if not np.isfinite(atr) or atr <= 0:
+        atr = max(current * 0.0015, 1e-8)
+
+    lookback = min(96, len(c)-3)
+    start = len(c)-lookback
+    candidates: list[tuple[float, str, int]] = []
+    # Confirmed local pivots. Swing highs are resistance candidates; swing lows are support candidates.
+    for i in range(max(2, start), len(c)-2):
+        if h[i] >= max(h[i-2:i+3]):
+            if direction < 0 and h[i] >= current - 0.20*atr:
+                candidates.append((float(h[i]), "Previous swing resistance", 10))
+        if l[i] <= min(l[i-2:i+3]):
+            if direction > 0 and l[i] <= current + 0.20*atr:
+                candidates.append((float(l[i]), "Previous swing support", 10))
+
+    # Broken support/resistance: a formerly defended level that price crossed and may retest.
+    recent = slice(max(0, len(c)-72), len(c)-3)
+    if direction < 0:
+        prior_support = float(np.percentile(l[recent], 35))
+        if prior_support > current + 0.15*atr:
+            candidates.append((prior_support, "Broken support → resistance", 18))
+    else:
+        prior_resistance = float(np.percentile(h[recent], 65))
+        if prior_resistance < current - 0.15*atr:
+            candidates.append((prior_resistance, "Broken resistance → support", 18))
+
+    # Origin of the strongest recent impulse in the macro direction.
+    returns = np.diff(c) / np.maximum(c[:-1], 1e-12)
+    tail_start = max(0, len(returns)-48)
+    segment = returns[tail_start:]
+    if len(segment):
+        idx = tail_start + (int(np.argmin(segment)) if direction < 0 else int(np.argmax(segment)))
+        impulse_level = float(max(o[idx], c[idx]) if direction < 0 else min(o[idx], c[idx]))
+        candidates.append((impulse_level, "Origin of strong directional impulse", 16))
+
+    # EMA value is a secondary confluence, never the sole reason for an entry.
+    ema20 = float(pd.Series(c).ewm(span=20, adjust=False).mean().iloc[-1])
+    if (direction < 0 and ema20 >= current) or (direction > 0 and ema20 <= current):
+        candidates.append((ema20, "Short-term dynamic level", 6))
+
+    valid = []
+    for level, reason, weight in candidates:
+        dist = (level-current) * direction * -1  # positive when level is on retracement side
+        if -0.25*atr <= dist <= 5.0*atr:
+            valid.append((level, reason, weight))
+    if not valid:
+        neutral.update({"direction": "BUY" if direction > 0 else "SELL", "status": "WAIT FOR RETRACEMENT", "status_icon": "🟡", "confirmation": "Macro direction exists, but no high-quality price zone is close enough."})
+        return neutral
+
+    # Cluster nearby evidence and select the strongest/nearest cluster.
+    cluster_radius = max(atr * 0.75, current * 0.0004)
+    clusters = []
+    for seed, _, _ in valid:
+        members = [x for x in valid if abs(x[0]-seed) <= cluster_radius]
+        reasons = list(dict.fromkeys(x[1] for x in members))
+        evidence = sum(x[2] for x in members) + min(8, max(0, len(reasons)-1)*3)
+        center = float(np.average([x[0] for x in members], weights=[max(1, x[2]) for x in members]))
+        retrace_distance = abs(center-current) / max(atr, 1e-12)
+        quality = evidence - max(0.0, retrace_distance-2.5)*2.0
+        clusters.append((quality, center, reasons, evidence))
+    _, center, reasons, evidence = max(clusters, key=lambda x: x[0])
+
+    half = max(atr*0.32, current*0.00025)
+    zone_low, zone_high = center-half, center+half
+    # Invalidation lives beyond the zone plus volatility buffer, not at an arbitrary fixed distance.
+    invalidation = zone_high + 0.55*atr if direction < 0 else zone_low - 0.55*atr
+
+    in_zone = zone_low <= current <= zone_high
+    distance = (zone_low-current) if direction < 0 else (current-zone_high)
+    approaching = 0 < distance <= 1.25*atr
+    moved_past = (current < zone_low-1.8*atr) if direction < 0 else (current > zone_high+1.8*atr)
+    invalid = current > invalidation if direction < 0 else current < invalidation
+
+    # Rejection + micro structure confirmation.
+    last_body = abs(c[-1]-o[-1]); last_range = max(h[-1]-l[-1], 1e-12)
+    upper_wick = h[-1]-max(o[-1], c[-1]); lower_wick = min(o[-1], c[-1])-l[-1]
+    rejection = (upper_wick > max(last_body, 0.25*last_range)) if direction < 0 else (lower_wick > max(last_body, 0.25*last_range))
+    micro = (c[-1] < c[-2] and c[-2] <= c[-3]) if direction < 0 else (c[-1] > c[-2] and c[-2] >= c[-3])
+    confirmation_points = (10 if rejection else 0) + (10 if micro else 0)
+
+    macro_strength = min(1.0, abs(float(macro_score or 0.0)) / 0.45)
+    macro_points = int(round(24 + 16*macro_strength))
+    zone_points = int(min(30, 12 + min(18, evidence)))
+    event_points, event_safety_text, event_blocked = _calculate_dynamic_event_safety(asset_key)
+    entry_score = int(min(100, macro_points + zone_points + confirmation_points + event_points))
+
+    if invalid:
+        status, icon = "INVALIDATED", "🔴"
+    elif event_blocked:
+        status, icon = "EVENT LOCK — HIGH RISK IMMINENT", "⚠️"
+    elif in_zone and confirmation_points >= 10 and entry_score >= 70:
+        status, icon = "ENTRY READY", "🟢"
+    elif in_zone:
+        status, icon = "IN ZONE — WAIT CONFIRMATION", "🟠"
+    elif approaching:
+        status, icon = "APPROACHING ZONE", "🟡"
+    elif moved_past:
+        status, icon = "DO NOT CHASE — WAIT RETRACEMENT", "⛔"
+    else:
+        status, icon = "WAIT FOR ZONE", "🟡"
+
+    confirmation_text = []
+    if rejection: confirmation_text.append("price rejection")
+    if micro: confirmation_text.append("micro structure aligned")
+    if event_blocked: confirmation_text.append(event_safety_text)
+    if not confirmation_text: confirmation_text.append("confirmation not present yet")
+    return {
+        "direction": "BUY" if direction > 0 else "SELL", "status": status, "status_icon": icon,
+        "zone_low": float(zone_low), "zone_high": float(zone_high), "invalidation": float(invalidation),
+        "entry_score": entry_score, "zone_score": zone_points, "confirmation_score": confirmation_points,
+        "macro_points": macro_points, "event_points": event_points, "confluences": reasons[:5],
+        "confirmation": ", ".join(confirmation_text), "event_safety_desc": event_safety_text,
+        "atr": atr, "current_analysis_price": current,
+    }
 
 def _tactical_label(score: float) -> str:
     if score >= 0.62:
@@ -1875,10 +3005,8 @@ def compute_tactical_move(asset_key: str, macro_score: float | None = None) -> d
     if df is None or df.empty or len(df) < 40:
         return None
 
-    closes = df["close"].astype(float).to_numpy()
-    if bool(cfg.get("invert")):
-        # Invert USDXXX pairs so positive movement always means target-currency strength.
-        closes = 1.0 / np.maximum(closes, 1e-12)
+    analysis_df = _tactical_analysis_ohlc(df, bool(cfg.get("invert")))
+    closes = analysis_df["close"].astype(float).to_numpy()
 
     def ret(bars: int) -> float:
         if len(closes) <= bars or closes[-1-bars] == 0:
@@ -1954,6 +3082,7 @@ def compute_tactical_move(asset_key: str, macro_score: float | None = None) -> d
         macro_regime = str((GLOBAL_ALERT_STATE.get(asset_key) or {}).get("confirmed_regime") or "Neutral")
 
     confidence = int(min(95, max(50, 52 + abs(score) * 45 + (5 if abs(breakout_component) else 0))))
+    entry_plan = _build_macro_entry_plan(analysis_df, macro_regime, macro_score, asset_key=asset_key)
     last_ts = int(df["ts"].iloc[-1])
     return {
         "key": asset_key,
@@ -1973,48 +3102,58 @@ def compute_tactical_move(asset_key: str, macro_score: float | None = None) -> d
         "ret_4h": r240,
         "confidence": confidence,
         "last_price": float(df["close"].iloc[-1]),
+        "analysis_price": float(closes[-1]),
+        "entry_plan": entry_plan,
         "market_ts": last_ts,
     }
 
 
 def render_tactical_move_panel(asset_key: str, macro_score: float | None = None) -> None:
-    """Compact dashboard card that clearly separates live price action from Macro Outlook."""
+    """Render the Macro Entry Zone engine while preserving the old public function name."""
     tactical = compute_tactical_move(asset_key, macro_score)
-    render_html('<div class="sec-title">Tactical Move — Live Price Action</div>')
+    render_html('<div class="sec-title">Macro Entry Zone — Tactical Execution</div>')
     if not tactical:
-        st.caption("Live tactical price data is temporarily unavailable. Macro Outlook remains fully active.")
+        st.caption("Live entry-zone price data is temporarily unavailable. Macro Outlook remains fully active.")
         return
-    label = tactical["label"]
-    if "Bullish" in label:
-        color = "#00ffa3"
-    elif "Bearish" in label:
-        color = "#ff5e75"
-    else:
-        color = "#ffd166"
+    plan = tactical.get("entry_plan") or {}
+    status = str(plan.get("status") or "WAIT")
+    icon = str(plan.get("status_icon") or "⚪")
+    direction = str(plan.get("direction") or "WAIT")
+    if status == "ENTRY READY": color = "#00ffa3"
+    elif status in {"INVALIDATED", "DO NOT CHASE — WAIT RETRACEMENT"}: color = "#ff5e75"
+    else: color = "#ffd166"
+
+    zl, zh, inv = plan.get("zone_low"), plan.get("zone_high"), plan.get("invalidation")
+    px = float(tactical.get("analysis_price") or tactical.get("last_price") or 0.0)
+    dec = _entry_price_decimals(px)
+    zone_text = f"{float(zl):.{dec}f} – {float(zh):.{dec}f}" if zl is not None and zh is not None else "Waiting for valid zone"
+    inv_text = f"{float(inv):.{dec}f}" if inv is not None else "—"
+    reasons = plan.get("confluences") or []
+    reason_html = "".join(f"<div>✓ {escape(str(x))}</div>" for x in reasons) or "<div>Waiting for price-location confluence.</div>"
     render_html(f"""
     <div class="comp-box" style="text-align:left;padding:17px 19px;border-color:rgba(0,245,255,.20);">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
         <div>
-          <div style="font-size:10px;font-weight:850;letter-spacing:1.4px;color:#8fa3b4;text-transform:uppercase;">SHORT-TERM PRICE ACTION</div>
-          <div style="font-size:20px;font-weight:950;color:{color};margin-top:5px;">{tactical['label_icon']} {label}</div>
+          <div style="font-size:10px;font-weight:850;letter-spacing:1.4px;color:#8fa3b4;text-transform:uppercase;">MACRO DIRECTION + PRICE LOCATION</div>
+          <div style="font-size:20px;font-weight:950;color:{color};margin-top:5px;">{icon} {escape(status)}</div>
+          <div style="font-size:11px;color:#b8c9d5;margin-top:5px;">Direction: <b style="color:#ecf7ff;">{escape(direction)}</b> &nbsp;•&nbsp; Macro: <b style="color:#ecf7ff;">{escape(str(tactical['macro_regime']))}</b></div>
         </div>
-        <div style="font-size:10px;color:#8fa3b4;text-align:right;">Confidence<br><b style="color:#ecf7ff;font-size:14px;">{tactical['confidence']}%</b></div>
+        <div style="font-size:10px;color:#8fa3b4;text-align:right;">Entry Score<br><b style="color:#ecf7ff;font-size:14px;">{int(plan.get('entry_score') or 0)}/100</b></div>
       </div>
       <div style="height:1px;background:rgba(255,255,255,.08);margin:13px 0;"></div>
-      <div style="font-size:11px;color:#b8c9d5;line-height:1.75;">
-        <b style="color:#ecf7ff;">Momentum:</b> {tactical['momentum']}<br>
-        <b style="color:#ecf7ff;">Structure:</b> {tactical['structure']}<br>
-        <b style="color:#ecf7ff;">15m:</b> {tactical['ret_15m']*100:+.2f}% &nbsp;•&nbsp;
-        <b style="color:#ecf7ff;">1h:</b> {tactical['ret_1h']*100:+.2f}% &nbsp;•&nbsp;
-        <b style="color:#ecf7ff;">4h:</b> {tactical['ret_4h']*100:+.2f}%
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:9px;">
+        <div style="padding:10px;border-radius:10px;background:rgba(255,255,255,.035);"><span style="font-size:9px;color:#7890a2;">ENTRY ZONE</span><br><b style="color:#ecf7ff;">{zone_text}</b></div>
+        <div style="padding:10px;border-radius:10px;background:rgba(255,255,255,.035);"><span style="font-size:9px;color:#7890a2;">CURRENT PRICE</span><br><b style="color:#ecf7ff;">{px:.{dec}f}</b></div>
+        <div style="padding:10px;border-radius:10px;background:rgba(255,255,255,.035);"><span style="font-size:9px;color:#7890a2;">INVALIDATION</span><br><b style="color:#ff8a9b;">{inv_text}</b></div>
       </div>
-      <div style="margin-top:11px;padding:9px 11px;border-radius:10px;background:rgba(255,255,255,.035);font-size:10.5px;color:#8fa3b4;">
-        {tactical['interpretation']}
+      <div style="margin-top:11px;font-size:10.5px;color:#9fb3c1;line-height:1.7;">{reason_html}</div>
+      <div style="margin-top:11px;padding:9px 11px;border-radius:10px;background:rgba(255,255,255,.035);font-size:10px;color:#8fa3b4;">
+        Macro {int(plan.get('macro_points') or 0)}/40 &nbsp;•&nbsp; Price Zone {int(plan.get('zone_score') or 0)}/30 &nbsp;•&nbsp; Confirmation {int(plan.get('confirmation_score') or 0)}/20 &nbsp;•&nbsp; Event Safety {int(plan.get('event_points') or 0)}/10<br>
+        Confirmation: {escape(str(plan.get('confirmation') or 'Waiting'))}
       </div>
-      <div style="margin-top:8px;font-size:9.5px;color:#607586;">Tactical Move tracks live short-term price action and does not alter the Macro Outlook model.</div>
+      <div style="margin-top:8px;font-size:9.5px;color:#607586;">Macro chooses direction. Deterministic candle structure chooses location. The engine will not chase an extended move.</div>
     </div>
     """)
-
 
 def _load_tactical_state() -> dict[str, dict]:
     data = _load_persistent_state("tactical_move_state", TACTICAL_STATE_FILE, {})
@@ -2026,102 +3165,54 @@ def _save_tactical_state(state: dict[str, dict]) -> None:
 
 
 def _update_tactical_alert_state(state: dict[str, dict], tactical: dict, now_ts: float) -> bool:
-    """Return True only for a new, meaningful strong tactical move; suppress one-minute noise/spam."""
+    """Alert once when a macro-aligned entry zone becomes confirmed and ready."""
     key = str(tactical.get("key", ""))
-    label = str(tactical.get("label", "Neutral"))
-    strong = label if label in {"Strong Bullish", "Strong Bearish"} else ""
-
-    if key == "Gold" and label in {"Bullish", "Bearish"}:
-        ret15 = float(tactical.get("ret_15m", 0.0))
-        ret1h = float(tactical.get("ret_1h", 0.0))
-        confidence = int(tactical.get("confidence", 0))
-        structure = str(tactical.get("structure", ""))
-        same_direction = (
-            (ret15 > 0 and ret1h > 0)
-            if label == "Bullish"
-            else (ret15 < 0 and ret1h < 0)
-        )
-        meaningful_move = abs(ret1h) >= 0.0035
-        structural_move = structure in {"Upside Breakout", "Downside Breakdown"}
-        if confidence >= 68 and same_direction and (meaningful_move or structural_move):
-            strong = label
-
-    stt = state.setdefault(key, {
-        "active": "", "candidate": "", "candidate_since": None,
-        "non_strong_since": None, "last_alert_ts": 0.0,
-    })
-
-    if not strong:
-        stt["candidate"] = ""
-        stt["candidate_since"] = None
-        if stt.get("active"):
-            if stt.get("non_strong_since") is None:
-                stt["non_strong_since"] = float(now_ts)
-            elif float(now_ts) - float(stt.get("non_strong_since") or now_ts) >= 600.0:
-                stt["active"] = ""
-                stt["non_strong_since"] = None
+    plan = tactical.get("entry_plan") or {}
+    status = str(plan.get("status") or "WAIT")
+    direction = str(plan.get("direction") or "WAIT")
+    zl, zh = plan.get("zone_low"), plan.get("zone_high")
+    zone_id = ""
+    if zl is not None and zh is not None:
+        zone_id = f"{direction}:{float(zl):.6g}:{float(zh):.6g}"
+    stt = state.setdefault(key, {"active_entry": "", "last_alert_ts": 0.0, "last_status": ""})
+    stt["last_status"] = status
+    if status != "ENTRY READY" or not zone_id:
+        if status in {"INVALIDATED", "DO NOT CHASE — WAIT RETRACEMENT", "NO MACRO EDGE"}:
+            stt["active_entry"] = ""
         return False
-
-    stt["non_strong_since"] = None
-    if stt.get("active") == strong:
-        stt["candidate"] = ""
-        stt["candidate_since"] = None
+    if stt.get("active_entry") == zone_id:
         return False
-
-    structure_now = str(tactical.get("structure", ""))
-    score_now = abs(float(tactical.get("score", 0.0)))
-    confidence_now = int(tactical.get("confidence", 0))
-    ret1h_now = abs(float(tactical.get("ret_1h", 0.0)))
-
-    immediate = score_now >= 0.78 and structure_now in {"Upside Breakout", "Downside Breakdown"}
-    if key == "Gold" and strong:
-        immediate = immediate or (
-            confidence_now >= 72
-            and (
-                (score_now >= 0.42 and structure_now in {"Upside Breakout", "Downside Breakdown"})
-                or ret1h_now >= 0.006
-            )
-        )
-    if stt.get("candidate") != strong:
-        stt["candidate"] = strong
-        stt["candidate_since"] = float(now_ts)
-        if not immediate:
-            return False
-
-    candidate_since = float(stt.get("candidate_since") or now_ts)
-    required_persistence = 60.0 if key == "Gold" else 180.0
-    if not immediate and float(now_ts) - candidate_since < required_persistence:
-        return False
-
-    # Prevent repeated same-direction alerts during noisy reconnects/restarts.
     last_alert = float(stt.get("last_alert_ts") or 0.0)
-    if last_alert and float(now_ts) - last_alert < 900.0 and stt.get("active") == strong:
+    if last_alert and float(now_ts)-last_alert < 300.0:
         return False
-
-    stt["active"] = strong
-    stt["candidate"] = ""
-    stt["candidate_since"] = None
+    stt["active_entry"] = zone_id
     stt["last_alert_ts"] = float(now_ts)
     return True
 
-
 def _build_tactical_alert_msg(tactical: dict) -> str:
+    plan = tactical.get("entry_plan") or {}
+    px = float(tactical.get("analysis_price") or tactical.get("last_price") or 0.0)
+    dec = _entry_price_decimals(px)
+    zl, zh, inv = plan.get("zone_low"), plan.get("zone_high"), plan.get("invalidation")
+    zone = f"{float(zl):.{dec}f} - {float(zh):.{dec}f}" if zl is not None and zh is not None else "N/A"
+    invalid = f"{float(inv):.{dec}f}" if inv is not None else "N/A"
+    reasons = ", ".join(str(x) for x in (plan.get("confluences") or [])[:3]) or "Macro + price structure"
     return (
-        "⚡ *APEXMACRO — TACTICAL MOVE*\n"
+        "🎯 *APEXMACRO — MACRO ENTRY ZONE*\n"
         "━━━━━━━━━━━━━━━━━━━\n"
-        f"{tactical['icon']} *Asset:* `{tactical['display_name']}`\n\n"
-        f"🏛️ *Macro Outlook:* `{tactical['macro_regime']}`\n"
-        f"🎯 *Tactical Move:* `{tactical['label']}`\n"
-        f"🚦 *Momentum:* `{tactical['momentum']}`\n"
-        f"🧱 *Structure:* `{tactical['structure']}`\n\n"
-        f"⏱ *15m:* `{tactical['ret_15m']*100:+.2f}%`  |  *1h:* `{tactical['ret_1h']*100:+.2f}%`  |  *4h:* `{tactical['ret_4h']*100:+.2f}%`\n"
-        f"📌 *Interpretation:* {tactical['interpretation']}\n"
-        f"💹 *Price Source:* `{tactical.get('symbol', 'Live Market')}`\n\n"
-        "_This alert can fire before the broader Macro Outlook changes; price action and macro regime are intentionally tracked as separate layers._\n"
+        f"{tactical['icon']} *Asset:* `{tactical['display_name']}`\n"
+        f"🏛️ *Macro Direction:* `{tactical['macro_regime']}`\n"
+        f"➡️ *Setup:* `{plan.get('direction', 'WAIT')}`\n\n"
+        f"🎯 *Entry Zone:* `{zone}`\n"
+        f"💹 *Current:* `{px:.{dec}f}`\n"
+        f"🛡️ *Invalidation:* `{invalid}`\n"
+        f"⭐ *Entry Score:* `{int(plan.get('entry_score') or 0)}/100`\n\n"
+        f"🧱 *Confluence:* {reasons}\n"
+        f"✅ *Confirmation:* {plan.get('confirmation', 'Confirmed')}\n\n"
+        "_Macro selects direction; price structure selects the entry zone. Extended moves are not chased._\n"
         "━━━━━━━━━━━━━━━━━━━\n"
-        "⚡ *ApexMacro Institutional Terminal v15.0*"
+        "⚡ *ApexMacro Institutional Terminal*"
     )
-
 
 def send_personalized_tactical_alert(tactical: dict) -> list[dict]:
     if not TELEGRAM_BOT_TOKEN or not tactical:
@@ -2189,7 +3280,7 @@ def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHAN
             forex_lines.append(f"  {meta['flag']} {cur} Macro Outlook: {_emoji(score)}")
             tactical = compute_tactical_move(cur, score)
             if tactical:
-                forex_lines.append(f"     Tactical Move: {tactical['label_icon']} {tactical['label']} | 1h {tactical['ret_1h']*100:+.2f}%")
+                plan = tactical.get('entry_plan') or {}; forex_lines.append(f"     Entry Zone: {plan.get('status_icon','⚪')} {plan.get('status','WAIT')} | {plan.get('direction','WAIT')} | Score {int(plan.get('entry_score') or 0)}/100")
         except Exception: pass
     if forex_lines: lines.extend(["", "🌐 *Forex Macro Outlook*", *forex_lines])
     market_lines = []; ry_val_str = "N/A"
@@ -2198,14 +3289,16 @@ def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHAN
             score, ry_val_str, _ = _calc_gold_score_only(fred_key, channel_name)
             market_lines.append(f"  🥇 Gold (XAUUSD) Macro Outlook: {_emoji(score or 0.0)}")
             tactical = compute_tactical_move("Gold", score or 0.0)
-            if tactical: market_lines.append(f"     Tactical Move: {tactical['label_icon']} {tactical['label']} | 1h {tactical['ret_1h']*100:+.2f}%")
+            if tactical:
+                plan = tactical.get('entry_plan') or {}; market_lines.append(f"     Entry Zone: {plan.get('status_icon','⚪')} {plan.get('status','WAIT')} | {plan.get('direction','WAIT')} | Score {int(plan.get('entry_score') or 0)}/100")
         except Exception: pass
     if "Oil" in selected:
         try:
             score, _ = _calc_oil_score_only(fred_key, channel_name)
             market_lines.append(f"  🛢️ Oil (WTI) Macro Outlook: {_emoji(score or 0.0)}")
             tactical = compute_tactical_move("Oil", score or 0.0)
-            if tactical: market_lines.append(f"     Tactical Move: {tactical['label_icon']} {tactical['label']} | 1h {tactical['ret_1h']*100:+.2f}%")
+            if tactical:
+                plan = tactical.get('entry_plan') or {}; market_lines.append(f"     Entry Zone: {plan.get('status_icon','⚪')} {plan.get('status','WAIT')} | {plan.get('direction','WAIT')} | Score {int(plan.get('entry_score') or 0)}/100")
         except Exception: pass
     if "NDX" in selected:
         try:
@@ -2213,7 +3306,8 @@ def build_hourly_report(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHAN
             if score is not None:
                 market_lines.append(f"  📊 Nasdaq-100 (NDX) Macro Outlook: {_emoji(score)}")
                 tactical = compute_tactical_move("NDX", score)
-                if tactical: market_lines.append(f"     Tactical Move: {tactical['label_icon']} {tactical['label']} | 1h {tactical['ret_1h']*100:+.2f}%")
+                if tactical:
+                    plan = tactical.get('entry_plan') or {}; market_lines.append(f"     Entry Zone: {plan.get('status_icon','⚪')} {plan.get('status','WAIT')} | {plan.get('direction','WAIT')} | Score {int(plan.get('entry_score') or 0)}/100")
         except Exception: pass
     if market_lines: lines.extend(["", "🏅 *Macro Outlook — Commodities & Equity*", *market_lines])
     if not forex_lines and not market_lines: return ""
@@ -2407,6 +3501,8 @@ def _get_daemon_controller():
         "last_hour": get_current_time().strftime("%Y-%m-%d %H"),
         "seen_weekend_news": set(),
         "process_lock": None,
+        "last_forecaster_warm": 0.0,
+        "last_ff_history_backfill": 0.0,
     }
 
 def start_background_alert_daemon(fred_key: str, channel_name: str) -> None:
@@ -2464,12 +3560,55 @@ def start_background_alert_daemon(fred_key: str, channel_name: str) -> None:
 
                 check_global_market_shifts(fred_key, channel_name)
                 check_global_tactical_moves()
+
+                # Keep Catalyst Forecaster warm even when nobody has opened the page.
+                # The existing singleton/process lock guarantees this does not create
+                # duplicate background loops during normal Streamlit reruns.
+                if time.time() - float(ctrl.get("last_forecaster_warm", 0.0)) >= 180:
+                    ctrl["last_forecaster_warm"] = time.time()
+                    try:
+                        fc_events = get_upcoming_catalyst_events(3, "KRD (UTC+3)")
+                        if fc_events:
+                            _ensure_forecaster_background_worker(
+                                fc_events,
+                                fred_key,
+                                channel_name,
+                                load_actuals_cache(),
+                            )
+                    except Exception:
+                        pass
+
+                # Release-time Actual watcher: only performs a forced network refresh when a
+                # High-Impact event is due/recently released.  No manual Actual entry required.
+                try:
+                    live_fc_events = get_upcoming_catalyst_events(3, "KRD (UTC+3)")
+                    _ff_release_actual_watcher(live_fc_events)
+                except Exception:
+                    pass
+
+                # Historical bootstrap is deliberately slow: two monthly pages per day until
+                # roughly one year of High-Impact Actual/Forecast/Previous history is seeded.
+                if time.time() - float(ctrl.get("last_ff_history_backfill", 0.0)) >= 24 * 3600:
+                    ctrl["last_ff_history_backfill"] = time.time()
+                    try:
+                        _ff_backfill_high_impact_history(days=370, max_chunks=2)
+                    except Exception:
+                        pass
             except Exception:
                 pass
             time.sleep(60)
 
     t = threading.Thread(target=_daemon_loop, daemon=True, name="ApexMacroAlertDaemon")
     t.start()
+
+    # Forecaster Causal AI precompute is background-owned. If the durable Admin
+    # switch was already ON before this process started, recover the existing
+    # shared AI supervisor without waiting for any user to open an event.
+    try:
+        if is_ai_enabled(force_refresh=True):
+            start_shared_background_ai_worker()
+    except Exception:
+        pass
 
 
 def is_duplicate_news(title1: str, title2: str, threshold: float = 0.55) -> bool:
@@ -2768,14 +3907,2009 @@ def fetch_all_instant_news(channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> list
     return _rank_news_articles(deduped)
 
 
-def start_shared_background_ai_worker() -> None:
-    """Compatibility no-op kept for apex/bootstrap.py, which still calls this
-    on every page load. Safe to call repeatedly; does not spawn any thread.
+# ============================================================
+# SHARED BACKGROUND AI ENGINE — ONE REQUEST FOR THE WHOLE DESK
+# ============================================================
+# All pages are readers only. A singleton background supervisor creates one
+# combined request when relevant news / macro observations / Forecaster inputs
+# change. Page navigation and Streamlit reruns never call the provider.
+AI_BATCH_STATE_FILE = str(PROJECT_ROOT / "ai_batch_state_v2.json")
+AI_BATCH_PROCESS_LOCK_FILE = str(PROJECT_ROOT / ".apexmacro_ai_batch.lock")
+_AI_BATCH_STATE_ID = "shared_ai_batch_v2"
+
+# Persistent per-event Forecaster AI registry. This is the single source of truth
+# for Causal AI event state/results; Event Details only reads it.
+FORECASTER_AI_REGISTRY_FILE = str(PROJECT_ROOT / "forecaster_ai_registry_v1.json")
+_FORECASTER_AI_REGISTRY_STATE_ID = "forecaster_ai_registry_v1"
+_FORECASTER_AI_REGISTRY_LOCK = threading.RLock()
+_FORECASTER_AI_REGISTRY_VERSION = 1
+_FORECASTER_AI_PRECOMPUTE_HORIZON_SECONDS = 7 * 24 * 60 * 60
+_FORECASTER_AI_TRANSIENT_RETRY_SECONDS = 2 * 60
+
+# Master billing control. It is deliberately OFF by default so a fresh deploy
+# cannot spend provider credit until an administrator explicitly enables AI.
+AI_CONTROL_STATE_FILE = str(PROJECT_ROOT / "ai_control_state.json")
+_AI_CONTROL_STATE_ID = "ai_control_state_v1"
+_AI_CONTROL_LOCK = threading.RLock()
+_AI_CONTROL_MEMORY: dict | None = None
+_AI_CONTROL_MEMORY_LOADED_AT = 0.0
+_AI_CONTROL_REFRESH_SECONDS = 3.0
+
+_AI_BATCH_LOCK = threading.RLock()
+_AI_BATCH_MEMORY: dict | None = None
+_AI_BATCH_MEMORY_LOADED_AT = 0.0
+_AI_BATCH_MEMORY_REFRESH_SECONDS = 5.0
+_AI_BATCH_SUPERVISOR_RUNNING = False
+_AI_BATCH_SUPERVISOR_THREAD = None
+_AI_BATCH_REQUEST_INFLIGHT = False
+_AI_BATCH_POLL_SECONDS = 30
+_AI_BATCH_MEDIUM_DELAY_SECONDS = 15 * 60
+_AI_BATCH_HIGH_DELAY_SECONDS = 90
+_AI_BATCH_GLOBAL_MIN_PAID_SECONDS = 90
+_AI_BATCH_SAME_TOPIC_COOLDOWN_SECONDS = 5 * 60
+_AI_BATCH_ERROR_BACKOFF_SECONDS = 15 * 60
+_AI_BATCH_FIRST_RESULT_RETRY_SECONDS = 2 * 60
+_CAUSAL_AI_EVENT_BATCH_LIMIT = 6
+_CAUSAL_AI_NEWS_BATCH_LIMIT = 14
+_CAUSAL_AI_HTTP_TIMEOUT_SECONDS = 120
+_AI_BATCH_MACRO_REFRESH_SECONDS = 15 * 60
+_AI_BATCH_MACRO_CACHE = {"at": 0.0, "data": {}}
+_AI_BATCH_WAKE_EVENT = threading.Event()
+
+# Durable admin audit trail for the shared AI engine. The log records free trigger
+# decisions, provider calls, supplied evidence, model conclusions and failures.
+AI_AUDIT_LOG_FILE = str(PROJECT_ROOT / "ai_activity_log_v1.json")
+_AI_AUDIT_STATE_ID = "ai_activity_log_v1"
+_AI_AUDIT_LOCK = threading.RLock()
+_AI_AUDIT_MAX_ENTRIES = 600
+_AI_PRICE_AUDIT_STATE_FILE = str(PROJECT_ROOT / "ai_price_validation_v1.json")
+_AI_PRICE_AUDIT_STATE_ID = "ai_price_validation_v1"
+_AI_PRICE_CONFIRM_MOVE_PCT = 0.18
+_AI_PRICE_VALIDATION_MAX_AGE_SECONDS = 6 * 60 * 60
+
+# Volatility-adaptive price confirmation thresholds per asset class
+_ASSET_VOLATILITY_CONFIRM_THRESHOLDS = {
+    "Nasdaq": 0.35,
+    "Oil": 0.40,
+    "Gold": 0.25,
+    "USD/JPY": 0.20,
+    "GBP/USD": 0.18,
+    "AUD/USD": 0.18,
+    "NZD/USD": 0.20,
+    "USD/CAD": 0.16,
+    "EUR/USD": 0.12,
+    "USD/CHF": 0.12,
+    "USD": 0.14,
+    "DXY": 0.14,
+}
+
+
+def _asset_base_confirmation_threshold(asset: str) -> float:
+    """Static safety anchor used only when live volatility cannot be measured."""
+    a_clean = str(asset or "").strip()
+    for k, v in _ASSET_VOLATILITY_CONFIRM_THRESHOLDS.items():
+        if k.lower() in a_clean.lower() or a_clean.lower() in k.lower():
+            return float(v)
+    return float(_AI_PRICE_CONFIRM_MOVE_PCT)
+
+
+def _get_asset_confirmation_threshold(asset: str) -> float:
+    """Return a live volatility-adaptive confirmation threshold in percent.
+
+    The old implementation used one fixed threshold per asset.  This version
+    keeps that value only as a safety anchor, then adapts it to recent 5-minute
+    realized volatility.  The threshold is frozen with each AI decision so a
+    later volatility change cannot rewrite the audit outcome.
     """
-    return None
+    base = _asset_base_confirmation_threshold(asset)
+    key = "NDX" if str(asset).strip().lower() == "nasdaq" else str(asset).strip().upper()
+    cfg = _tactical_symbol_config(key) or {}
+    symbols = [cfg.get("symbol")] + list(cfg.get("fallback_symbols", []) or [])
+    for symbol in [x for x in symbols if x]:
+        try:
+            df = _fetch_tactical_price_series(str(symbol))
+            if df is None or df.empty or "close" not in df.columns:
+                continue
+            closes = pd.to_numeric(df["close"], errors="coerce").dropna().tail(145)
+            if len(closes) < 24:
+                continue
+            # 5-minute log-return volatility, scaled to a one-hour (12 bar) move.
+            log_ret = np.log(closes / closes.shift(1)).replace([np.inf, -np.inf], np.nan).dropna()
+            if len(log_ret) < 20:
+                continue
+            hourly_sigma_pct = float(log_ret.tail(72).std(ddof=0) * np.sqrt(12.0) * 100.0)
+            if not np.isfinite(hourly_sigma_pct) or hourly_sigma_pct <= 0:
+                continue
+            # About 0.9 sigma is enough to establish directional follow-through.
+            # Clamp around the asset anchor to avoid unstable thresholds in data spikes.
+            adaptive = 0.90 * hourly_sigma_pct
+            lower = max(0.05, base * 0.60)
+            upper = base * 1.80
+            return round(max(lower, min(upper, adaptive)), 3)
+        except Exception:
+            continue
+    return round(base, 3)
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+def _ai_audit_append(kind: str, message: str, details: dict | None = None) -> None:
+    entry = {
+        "time": time.time(),
+        "time_iso": datetime.now(timezone.utc).isoformat(),
+        "kind": str(kind or "info")[:40],
+        "message": str(message or "")[:500],
+        "details": details if isinstance(details, dict) else {},
+    }
+    try:
+        with _AI_AUDIT_LOCK:
+            state = _load_persistent_state(_AI_AUDIT_STATE_ID, AI_AUDIT_LOG_FILE, {"entries": []})
+            entries = list(state.get("entries", [])) if isinstance(state, dict) else []
+            entries.append(entry)
+            entries = entries[-_AI_AUDIT_MAX_ENTRIES:]
+            _save_persistent_state(_AI_AUDIT_STATE_ID, AI_AUDIT_LOG_FILE, {"entries": entries})
+    except Exception:
+        pass
+
+
+def get_ai_activity_log(limit: int = 200) -> list[dict]:
+    try:
+        state = _load_persistent_state(_AI_AUDIT_STATE_ID, AI_AUDIT_LOG_FILE, {"entries": []})
+        entries = list(state.get("entries", [])) if isinstance(state, dict) else []
+        return list(reversed(entries[-max(1, int(limit)):]))
+    except Exception:
+        return []
+
+
+def clear_ai_activity_log() -> None:
+    try:
+        with _AI_AUDIT_LOCK:
+            _save_persistent_state(_AI_AUDIT_STATE_ID, AI_AUDIT_LOG_FILE, {"entries": []})
+    except Exception:
+        pass
+
+
+def _ai_price_validation_load() -> dict:
+    try:
+        state = _load_persistent_state(_AI_PRICE_AUDIT_STATE_ID, _AI_PRICE_AUDIT_STATE_FILE, {"pending": []})
+        return state if isinstance(state, dict) else {"pending": []}
+    except Exception:
+        return {"pending": []}
+
+
+def _ai_price_validation_save(state: dict) -> None:
+    try:
+        _save_persistent_state(_AI_PRICE_AUDIT_STATE_ID, _AI_PRICE_AUDIT_STATE_FILE, state if isinstance(state, dict) else {"pending": []})
+    except Exception:
+        pass
+
+
+def _register_ai_price_decisions(result: dict, price_context: dict) -> None:
+    """Freeze AI direction + market price at decision time with an immutable volatility-relative threshold."""
+    assets = result.get("assets", {}) if isinstance(result, dict) else {}
+    if not isinstance(assets, dict):
+        return
+    state = _ai_price_validation_load()
+    pending = list(state.get("pending", [])) if isinstance(state, dict) else []
+    now_ts = time.time()
+    for asset in ("Gold", "USD", "Nasdaq", "Oil", "EUR", "GBP", "CAD", "JPY", "AUD", "NZD", "CHF"):
+        a = assets.get(asset, {}) if isinstance(assets.get(asset, {}), dict) else {}
+        pc = price_context.get(asset, {}) if isinstance(price_context.get(asset, {}), dict) else {}
+        try:
+            score = float(a.get("score", 0) or 0)
+            price = float(pc.get("last", 0) or 0)
+        except Exception:
+            continue
+        if abs(score) <= 0.12:
+            continue
+        if not price:
+            _ai_audit_append("price_missing", f"{asset} AI decision exists but live price was unavailable", {
+                "asset": asset, "score": score, "confidence": float(a.get("confidence", 0) or 0),
+                "reason": str(a.get("reason", ""))[:700], "decision_at": now_ts,
+            })
+            continue
+        direction = "Bullish" if score > 0 else "Bearish"
+        confirm_threshold = _get_asset_confirmation_threshold(asset)
+        # Older unresolved calls for the same asset are superseded, not silently counted.
+        for row in pending:
+            if row.get("asset") == asset and row.get("status") == "pending":
+                row["status"] = "superseded"
+                row["resolved_at"] = now_ts
+        decision = {
+            "id": hashlib.sha256(f"{asset}|{now_ts}|{price}|{score}".encode()).hexdigest()[:16],
+            "asset": asset, "direction": direction, "score": score,
+            "confidence": float(a.get("confidence", 0) or 0), "reason": str(a.get("reason", ""))[:700],
+            "decision_at": now_ts, "decision_price": price, "status": "pending",
+            "confirm_threshold_pct": confirm_threshold,
+            "price_confirmation_at_decision": str(pc.get("price_confirmation", "Neutral")),
+        }
+        pending.append(decision)
+        _ai_audit_append("ai_decision", f"{asset} AI {direction} frozen at market price {price} (Threshold: ±{confirm_threshold}%)", decision)
+    state["pending"] = pending[-250:]
+    _ai_price_validation_save(state)
+
+
+def _check_ai_price_validations() -> None:
+    """Free price-only follow-up. Never calls AI; records whether an earlier AI direction was confirmed later."""
+    state = _ai_price_validation_load()
+    pending = list(state.get("pending", [])) if isinstance(state, dict) else []
+    if not any(r.get("status") == "pending" for r in pending):
+        return
+    prices = _ai_batch_price_context()
+    now_ts = time.time()
+    changed = False
+    for row in pending:
+        if row.get("status") != "pending":
+            continue
+        age = now_ts - float(row.get("decision_at", now_ts) or now_ts)
+        if age > _AI_PRICE_VALIDATION_MAX_AGE_SECONDS:
+            row["status"] = "expired"; row["resolved_at"] = now_ts; changed = True
+            continue
+        pc = prices.get(row.get("asset"), {}) if isinstance(prices, dict) else {}
+        try:
+            current = float(pc.get("last", 0) or 0); start = float(row.get("decision_price", 0) or 0)
+        except Exception:
+            continue
+        if not current or not start:
+            continue
+        move = ((current / start) - 1.0) * 100.0
+        signed = move if row.get("direction") == "Bullish" else -move
+        threshold = float(row.get("confirm_threshold_pct") or _get_asset_confirmation_threshold(row.get("asset", "")))
+        if signed >= threshold:
+            row.update({"status":"confirmed", "resolved_at":now_ts, "resolved_price":current, "move_pct":round(move,4)})
+            _ai_audit_append("price_confirmed", f"{row.get('asset')} AI {row.get('direction')} confirmed by later price ({move:+.2f}% vs {threshold}%)", dict(row)); changed=True
+        elif signed <= -threshold:
+            row.update({"status":"contradicted", "resolved_at":now_ts, "resolved_price":current, "move_pct":round(move,4)})
+            _ai_audit_append("price_contradicted", f"{row.get('asset')} AI {row.get('direction')} contradicted by later price ({move:+.2f}% vs -{threshold}%)", dict(row)); changed=True
+    if changed:
+        state["pending"] = pending[-250:]
+        _ai_price_validation_save(state)
+
+
+def _ai_control_load_state(force_refresh: bool = False) -> dict:
+    """Read the durable master AI switch shared by every Streamlit process."""
+    global _AI_CONTROL_MEMORY, _AI_CONTROL_MEMORY_LOADED_AT
+    now_ts = time.time()
+    with _AI_CONTROL_LOCK:
+        if (
+            not force_refresh
+            and isinstance(_AI_CONTROL_MEMORY, dict)
+            and now_ts - float(_AI_CONTROL_MEMORY_LOADED_AT or 0.0) < _AI_CONTROL_REFRESH_SECONDS
+        ):
+            return dict(_AI_CONTROL_MEMORY)
+    try:
+        state = _load_persistent_state(
+            _AI_CONTROL_STATE_ID,
+            AI_CONTROL_STATE_FILE,
+            {"enabled": False, "updated_at": 0.0, "updated_by": "default-off"},
+        )
+        if not isinstance(state, dict):
+            state = {"enabled": False}
+    except Exception:
+        state = {"enabled": False}
+    with _AI_CONTROL_LOCK:
+        _AI_CONTROL_MEMORY = dict(state)
+        _AI_CONTROL_MEMORY_LOADED_AT = now_ts
+    return dict(state)
+
+
+def is_ai_enabled(force_refresh: bool = False) -> bool:
+    """Single source of truth for whether paid AI requests are permitted."""
+    return bool(_ai_control_load_state(force_refresh=force_refresh).get("enabled", False))
+
+
+def set_ai_enabled(enabled: bool, updated_by: str = "ADMINISTRATOR") -> dict:
+    """Persist the admin switch and wake the supervisor without making a request here."""
+    global _AI_CONTROL_MEMORY, _AI_CONTROL_MEMORY_LOADED_AT
+    payload = {
+        "enabled": bool(enabled),
+        "updated_at": time.time(),
+        "updated_at_iso": datetime.now(timezone.utc).isoformat(),
+        "updated_by": str(updated_by or "ADMINISTRATOR")[:120],
+    }
+    try:
+        _save_persistent_state(_AI_CONTROL_STATE_ID, AI_CONTROL_STATE_FILE, payload)
+    finally:
+        with _AI_CONTROL_LOCK:
+            _AI_CONTROL_MEMORY = dict(payload)
+            _AI_CONTROL_MEMORY_LOADED_AT = time.time()
+
+    # If AI is re-enabled before any successful result exists, discard only the
+    # failed-attempt timer so the first background batch can start immediately.
+    if enabled:
+        state = _ai_batch_load_state(force_refresh=True)
+        if not (isinstance(state.get("result"), dict) and bool(state.get("result"))):
+            state.pop("last_attempt_signature", None)
+            state.pop("last_attempt_at", None)
+            state.pop("last_error", None)
+            state.pop("last_error_at", None)
+            _ai_batch_save_state(state)
+        # Admin re-enable is the explicit retry boundary for prior 401/403
+        # configuration failures. This does not call the provider here.
+        try:
+            if "_forecaster_ai_registry_load" in globals():
+                reg = _forecaster_ai_registry_load()
+                updates = {}
+                for ident, item in (reg.get("events", {}) or {}).items():
+                    if isinstance(item, dict) and str(item.get("error_class", "")).upper() == "AUTH":
+                        updates[str(ident)] = {
+                            "ai_state": "QUEUED",
+                            "error_class": "",
+                            "last_error": "",
+                            "last_error_at": 0.0,
+                        }
+                if updates:
+                    _forecaster_ai_registry_merge(updates)
+        except Exception:
+            pass
+    _AI_BATCH_WAKE_EVENT.set()
+    _ai_audit_append("control", f"Administrator {'enabled' if enabled else 'disabled'} paid AI", {"enabled": bool(enabled), "updated_by": updated_by})
+    return payload
+
+
+def get_ai_control_state() -> dict:
+    state = _ai_control_load_state(force_refresh=True)
+    batch = _ai_batch_load_state(force_refresh=True)
+    return {
+        **state,
+        "has_result": isinstance(batch.get("result"), dict) and bool(batch.get("result")),
+        "last_ai_update": batch.get("updated_at_iso", ""),
+        "last_error": batch.get("last_error", ""),
+    }
+
+
+def _ai_batch_load_state(force_refresh: bool = False) -> dict:
+    """Read shared AI state, periodically refreshing across Streamlit processes.
+
+    The previous process-local forever-cache could leave one web session showing
+    "AI not ready" even after another worker had already written the first
+    successful batch. A short metadata refresh keeps page navigation provider-free
+    while allowing every session/process to see the shared background result.
+    """
+    global _AI_BATCH_MEMORY, _AI_BATCH_MEMORY_LOADED_AT
+    now_ts = time.time()
+    with _AI_BATCH_LOCK:
+        if (
+            not force_refresh
+            and isinstance(_AI_BATCH_MEMORY, dict)
+            and now_ts - float(_AI_BATCH_MEMORY_LOADED_AT or 0.0) < _AI_BATCH_MEMORY_REFRESH_SECONDS
+        ):
+            return dict(_AI_BATCH_MEMORY)
+    try:
+        state = _load_persistent_state(_AI_BATCH_STATE_ID, AI_BATCH_STATE_FILE, {})
+        if not isinstance(state, dict):
+            state = {}
+    except Exception:
+        with _AI_BATCH_LOCK:
+            state = dict(_AI_BATCH_MEMORY) if isinstance(_AI_BATCH_MEMORY, dict) else {}
+    with _AI_BATCH_LOCK:
+        _AI_BATCH_MEMORY = dict(state)
+        _AI_BATCH_MEMORY_LOADED_AT = now_ts
+    return dict(state)
+
+
+def _ai_batch_save_state(state: dict) -> None:
+    global _AI_BATCH_MEMORY, _AI_BATCH_MEMORY_LOADED_AT
+    payload = dict(state or {})
+    with _AI_BATCH_LOCK:
+        _AI_BATCH_MEMORY = payload
+        _AI_BATCH_MEMORY_LOADED_AT = time.time()
+    try:
+        _save_persistent_state(_AI_BATCH_STATE_ID, AI_BATCH_STATE_FILE, payload)
+    except Exception:
+        pass
+
+
+def get_shared_background_ai_state() -> dict:
+    """Read the latest background AI result without ever contacting the provider."""
+    return _ai_batch_load_state()
+
+
+def _forecaster_ai_registry_load() -> dict:
+    """Supabase-first per-event AI registry read with local safety mirror."""
+    try:
+        state = _load_persistent_state(
+            _FORECASTER_AI_REGISTRY_STATE_ID,
+            FORECASTER_AI_REGISTRY_FILE,
+            {"version": _FORECASTER_AI_REGISTRY_VERSION, "events": {}, "queue_meta": {}},
+        )
+        if not isinstance(state, dict):
+            state = {}
+    except Exception:
+        state = {}
+    state.setdefault("version", _FORECASTER_AI_REGISTRY_VERSION)
+    state.setdefault("events", {})
+    state.setdefault("queue_meta", {})
+    if not isinstance(state.get("events"), dict):
+        state["events"] = {}
+    if not isinstance(state.get("queue_meta"), dict):
+        state["queue_meta"] = {}
+    return state
+
+
+def _forecaster_ai_registry_merge(entry_updates: dict | None = None, queue_meta: dict | None = None) -> dict:
+    """Merge per-event updates into the durable registry.
+
+    Completion is never regressed to QUEUED for the same evidence signature.
+    This keeps multi-replica preparers from overwriting a provider winner.
+    """
+    with _FORECASTER_AI_REGISTRY_LOCK:
+        state = _forecaster_ai_registry_load()
+        events = dict(state.get("events", {}) or {})
+        for identity, patch in (entry_updates or {}).items():
+            if not identity or not isinstance(patch, dict):
+                continue
+            current = dict(events.get(identity, {}) or {})
+            incoming = dict(patch)
+            current_completed_sig = str(current.get("completed_evidence_signature", "") or "")
+            incoming_sig = str(incoming.get("evidence_signature", "") or current.get("evidence_signature", "") or "")
+            incoming_state = str(incoming.get("ai_state", "") or "").upper()
+
+            # A preparer may have read stale data in another container. Never
+            # downgrade a valid completed analysis for unchanged evidence.
+            if (
+                str(current.get("ai_state", "")).upper() == "COMPLETED"
+                and current_completed_sig
+                and current_completed_sig == incoming_sig
+                and incoming_state in {"NOT_PREPARED", "QUEUED", "RUNNING"}
+            ):
+                incoming.pop("ai_state", None)
+                incoming.pop("requested_at", None)
+                incoming.pop("batch_started_at", None)
+
+            current.update(incoming)
+            current["event_identity"] = identity
+            current["updated_at"] = time.time()
+            events[identity] = current
+
+        state["events"] = events
+        if isinstance(queue_meta, dict):
+            qm = dict(state.get("queue_meta", {}) or {})
+            qm.update(queue_meta)
+            qm["updated_at"] = time.time()
+            state["queue_meta"] = qm
+        state["version"] = _FORECASTER_AI_REGISTRY_VERSION
+        state["updated_at"] = time.time()
+        state["updated_at_iso"] = datetime.now(timezone.utc).isoformat()
+        _save_persistent_state(
+            _FORECASTER_AI_REGISTRY_STATE_ID,
+            FORECASTER_AI_REGISTRY_FILE,
+            state,
+        )
+        return state
+
+
+def _forecaster_ai_registry_entry(event: dict, state: dict | None = None) -> dict:
+    registry = state if isinstance(state, dict) else _forecaster_ai_registry_load()
+    identity = _event_identity(event)
+    item = (registry.get("events", {}) or {}).get(identity, {})
+    return dict(item) if isinstance(item, dict) else {}
+
+
+def _forecaster_ai_registry_counts(state: dict | None = None) -> dict:
+    registry = state if isinstance(state, dict) else _forecaster_ai_registry_load()
+    entries = list((registry.get("events", {}) or {}).values())
+    counts = {"eligible": 0, "queued": 0, "running": 0, "completed": 0, "stale": 0, "error": 0}
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        s = str(item.get("ai_state", "") or "").upper()
+        if s == "QUEUED":
+            counts["queued"] += 1
+            counts["eligible"] += 1
+        elif s == "RUNNING":
+            counts["running"] += 1
+        elif s == "COMPLETED":
+            counts["completed"] += 1
+        elif s == "STALE":
+            counts["stale"] += 1
+            counts["eligible"] += 1
+        elif s == "ERROR":
+            counts["error"] += 1
+    return counts
+
+
+def _forecaster_ai_legacy_result(event: dict, batch_state: dict | None = None) -> tuple[dict | None, str]:
+    """Backward-compatible reader for pre-registry shared event results."""
+    state = batch_state if isinstance(batch_state, dict) else _ai_batch_load_state(force_refresh=True)
+    result = state.get("result", {}) if isinstance(state, dict) else {}
+    events = result.get("events", {}) if isinstance(result, dict) else {}
+    if not isinstance(events, dict):
+        return None, ""
+
+    code = str((event or {}).get("code", "")).strip()
+    if code and isinstance(events.get(code), dict):
+        return dict(events[code]), code
+    if code:
+        folded = code.casefold()
+        for key, value in events.items():
+            if str(key).strip().casefold() == folded and isinstance(value, dict):
+                return dict(value), str(key)
+
+    # Historical analyses used currency|normalized-title without release time.
+    legacy_identity = f"{str((event or {}).get('currency','')).upper()}|{_normalize_catalyst_title((event or {}).get('title',''))}"
+    for key, value in events.items():
+        if isinstance(value, dict) and str(value.get("_event_identity", "")) == legacy_identity:
+            return dict(value), str(key)
+    return None, ""
+
+
+def _forecaster_ai_registry_mark_batch(event_rows: list[dict], state_name: str, **extra) -> None:
+    updates = {}
+    now_ts = time.time()
+    for row in event_rows or []:
+        identity = str(row.get("event_identity", "") or "")
+        if not identity:
+            continue
+        patch = {
+            "event_code": str(row.get("code", "") or ""),
+            "currency": str(row.get("currency", "") or ""),
+            "title": str(row.get("title", "") or ""),
+            "release_time_utc": str(row.get("release_time_utc", "") or ""),
+            "evidence_signature": str(row.get("evidence_signature", "") or ""),
+            "analysis_version": CAUSAL_AI_JUDGE_VERSION,
+            "ai_state": state_name,
+        }
+        patch.update(extra)
+        if state_name == "RUNNING":
+            patch["batch_started_at"] = now_ts
+            patch["last_requested_batch"] = now_ts
+        updates[identity] = patch
+    if updates:
+        _forecaster_ai_registry_merge(updates)
+
+
+def _forecaster_ai_select_precompute_batch(
+    event_rows: list[dict],
+    legacy_batch_state: dict | None = None,
+    limit: int = _CAUSAL_AI_EVENT_BATCH_LIMIT,
+) -> tuple[list[dict], dict]:
+    """Prepare the persistent queue and return the next bounded eligible batch."""
+    now_ts = time.time()
+    registry = _forecaster_ai_registry_load()
+    current_events = dict(registry.get("events", {}) or {})
+    legacy_state = legacy_batch_state if isinstance(legacy_batch_state, dict) else {}
+    updates = {}
+    eligible = []
+
+    for row in event_rows or []:
+        identity = str(row.get("event_identity", "") or "")
+        if not identity:
+            continue
+        release_ts = float(row.get("release_epoch_utc", 0.0) or 0.0)
+        # Pre-release only, bounded to Today + next 6 days/rolling seven-day horizon.
+        if release_ts and (release_ts <= now_ts or release_ts > now_ts + _FORECASTER_AI_PRECOMPUTE_HORIZON_SECONDS):
+            continue
+        if str(row.get("actual", "") or "").strip():
+            continue
+
+        sig = str(row.get("evidence_signature", "") or "")
+        current = dict(current_events.get(identity, {}) or {})
+        analysis = current.get("analysis") if isinstance(current.get("analysis"), dict) else None
+        completed_sig = str(current.get("completed_evidence_signature", "") or "")
+        analysis_valid = isinstance(analysis, dict) and _causal_ai_result_is_current_judge(analysis)
+
+        # Safe migration: exact current event code maps a legacy shared result to
+        # this canonical release identity. It is retained as STALE until refreshed
+        # because the old storage did not freeze a comparable evidence signature.
+        if not analysis_valid:
+            legacy, legacy_key = _forecaster_ai_legacy_result(
+                {"code": row.get("code"), "currency": row.get("currency"), "title": row.get("title")},
+                legacy_state,
+            )
+            if isinstance(legacy, dict) and _causal_ai_result_is_current_judge(legacy):
+                analysis = dict(legacy)
+                analysis_valid = True
+                completed_sig = str(current.get("completed_evidence_signature", "") or "")
+                current["legacy_migrated_from"] = legacy_key
+                current["analysis"] = analysis
+                current["completed_at"] = current.get("completed_at") or legacy_state.get("updated_at")
+                current["analysis_version"] = CAUSAL_AI_JUDGE_VERSION
+
+        state_name = str(current.get("ai_state", "") or "").upper()
+        last_error_at = float(current.get("last_error_at", 0.0) or 0.0)
+        error_class = str(current.get("error_class", "") or "").upper()
+
+        if analysis_valid and completed_sig and completed_sig == sig:
+            new_state = "COMPLETED"
+            is_eligible = False
+        elif error_class == "AUTH" and str(current.get("evidence_signature", "") or "") == sig:
+            new_state = "ERROR"
+            is_eligible = False
+        elif (
+            state_name == "ERROR"
+            and not current.get("batch_started_at")
+            and str(current.get("provider_status", "") or "") == "AI unavailable"
+        ):
+            # Recover immediately from the precompute build that failed before the
+            # paid batch started because _ai_batch_price_context() was missing.
+            new_state = "QUEUED"
+            is_eligible = True
+        elif state_name == "ERROR" and last_error_at and now_ts - last_error_at < _FORECASTER_AI_TRANSIENT_RETRY_SECONDS:
+            new_state = "ERROR"
+            is_eligible = False
+        elif analysis_valid:
+            new_state = "STALE"
+            is_eligible = True
+        else:
+            new_state = "QUEUED"
+            is_eligible = True
+
+        patch = {
+            "event_identity": identity,
+            "event_code": str(row.get("code", "") or ""),
+            "currency": str(row.get("currency", "") or ""),
+            "title": str(row.get("title", "") or ""),
+            "release_time_utc": str(row.get("release_time_utc", "") or ""),
+            "evidence_signature": sig,
+            "analysis_version": CAUSAL_AI_JUDGE_VERSION,
+            "ai_state": new_state,
+            "last_error": "" if new_state in {"QUEUED", "STALE", "COMPLETED"} else str(current.get("last_error", "") or ""),
+        }
+        if analysis_valid:
+            patch["analysis"] = analysis
+            if completed_sig:
+                patch["completed_evidence_signature"] = completed_sig
+        if is_eligible and not current.get("requested_at"):
+            patch["requested_at"] = now_ts
+        updates[identity] = patch
+
+        if is_eligible:
+            # Closest release first; if two are effectively simultaneous, missing
+            # analyses outrank stale refreshes.
+            missing_rank = 0 if not analysis_valid else 1
+            eligible.append((release_ts or 10**18, missing_rank, str(row.get("code", "")), row))
+
+    eligible.sort(key=lambda x: (x[0], x[1], x[2]))
+    selected = [x[3] for x in eligible[:max(1, int(limit))]]
+    selected_ids = {str(r.get("event_identity", "")) for r in selected}
+
+    for identity, patch in updates.items():
+        if identity in selected_ids and patch.get("ai_state") in {"QUEUED", "STALE"}:
+            patch["batch_inclusion_status"] = "SELECTED"
+            patch["last_requested_batch"] = now_ts
+        elif patch.get("ai_state") in {"QUEUED", "STALE"}:
+            patch["batch_inclusion_status"] = "WAITING_NEXT_BATCH"
+
+    queued_n = sum(1 for p in updates.values() if p.get("ai_state") == "QUEUED")
+    stale_n = sum(1 for p in updates.values() if p.get("ai_state") == "STALE")
+    completed_n = sum(1 for p in updates.values() if p.get("ai_state") == "COMPLETED")
+    error_n = sum(1 for p in updates.values() if p.get("ai_state") == "ERROR")
+    queue_meta = {
+        "eligible_event_count": len(eligible),
+        "selected_event_count": len(selected),
+        "queued_count": queued_n,
+        "stale_count": stale_n,
+        "completed_count": completed_n,
+        "error_count": error_n,
+        "last_queue_scan_at": now_ts,
+        "last_queue_scan_at_iso": datetime.now(timezone.utc).isoformat(),
+    }
+    registry = _forecaster_ai_registry_merge(updates, queue_meta)
+    return selected, registry
+
+
+def _forecaster_ai_registry_complete(event_row: dict, analysis: dict, provider: str, model: str) -> None:
+    identity = str(event_row.get("event_identity", "") or "")
+    if not identity or not isinstance(analysis, dict):
+        return
+    now_ts = time.time()
+    _forecaster_ai_registry_merge({
+        identity: {
+            "event_code": str(event_row.get("code", "") or ""),
+            "currency": str(event_row.get("currency", "") or ""),
+            "title": str(event_row.get("title", "") or ""),
+            "release_time_utc": str(event_row.get("release_time_utc", "") or ""),
+            "ai_state": "COMPLETED",
+            "evidence_signature": str(event_row.get("evidence_signature", "") or ""),
+            "completed_evidence_signature": str(event_row.get("evidence_signature", "") or ""),
+            "analysis_version": CAUSAL_AI_JUDGE_VERSION,
+            "analysis": dict(analysis),
+            "completed_at": now_ts,
+            "completed_at_iso": datetime.now(timezone.utc).isoformat(),
+            "last_error": "",
+            "last_error_at": 0.0,
+            "error_class": "",
+            "provider_status": "COMPLETED",
+            "provider": str(provider or "")[:40],
+            "model": str(model or "")[:120],
+            "batch_inclusion_status": "RETURNED",
+        }
+    }, {
+        "last_batch_completed_at": now_ts,
+        "last_batch_completed_at_iso": datetime.now(timezone.utc).isoformat(),
+    })
+
+
+def _forecaster_ai_registry_fail(event_rows: list[dict], error_text: str, blocked: bool = False) -> None:
+    label = _safe_ai_error_label(error_text)
+    now_ts = time.time()
+    raw_lower = str(error_text or "").lower()
+    error_class = (
+        "AUTH"
+        if label == "Authentication failed" or "403" in raw_lower or "forbidden" in raw_lower
+        else ("RATE_LIMIT" if label == "Rate limited" else "TRANSIENT")
+    )
+    updates = {}
+    for row in event_rows or []:
+        identity = str(row.get("event_identity", "") or "")
+        if not identity:
+            continue
+        updates[identity] = {
+            "event_code": str(row.get("code", "") or ""),
+            "currency": str(row.get("currency", "") or ""),
+            "title": str(row.get("title", "") or ""),
+            "release_time_utc": str(row.get("release_time_utc", "") or ""),
+            "evidence_signature": str(row.get("evidence_signature", "") or ""),
+            "analysis_version": CAUSAL_AI_JUDGE_VERSION,
+            "ai_state": "QUEUED" if blocked else "ERROR",
+            "provider_status": "BLOCKED_BY_GATE" if blocked else label,
+            "last_error": "" if blocked else label,
+            "last_error_at": 0.0 if blocked else now_ts,
+            "error_class": "" if blocked else error_class,
+            "batch_inclusion_status": "BLOCKED" if blocked else "FAILED",
+        }
+    if updates:
+        _forecaster_ai_registry_merge(updates, {
+            "last_batch_error": "" if blocked else label,
+            "last_batch_error_at": now_ts,
+        })
+
+
+def _acquire_ai_batch_process_lock(stale_seconds: int = 180) -> int | None:
+    """Cross-process guard so multiple Streamlit sessions cannot duplicate one paid batch."""
+    path = AI_BATCH_PROCESS_LOCK_FILE
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, f"{os.getpid()} {time.time()}".encode("utf-8"))
+        return fd
+    except FileExistsError:
+        try:
+            if time.time() - os.path.getmtime(path) > stale_seconds:
+                os.unlink(path)
+                fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(fd, f"{os.getpid()} {time.time()}".encode("utf-8"))
+                return fd
+        except Exception:
+            pass
+        return None
+    except Exception:
+        return None
+
+
+def _release_ai_batch_process_lock(fd: int | None) -> None:
+    if fd is None:
+        return
+    try:
+        os.close(fd)
+    except Exception:
+        pass
+    try:
+        os.unlink(AI_BATCH_PROCESS_LOCK_FILE)
+    except Exception:
+        pass
+
+
+def _ai_batch_news_rows(articles: list, limit: int = 20) -> list[dict]:
+    """Stable news fingerprint: same headlines do not retrigger AI merely because freshness scores age."""
+    prepared = []
+    for a in deduplicate_news_articles(list(articles or [])):
+        if not isinstance(a, dict):
+            continue
+        source = a.get("source", {})
+        source_name = source.get("name", "Unknown Source") if isinstance(source, dict) else str(source)
+        published_raw = str(a.get("publishedAt", ""))[:80]
+        dt = _parse_news_datetime(published_raw)
+        stamp = dt.timestamp() if dt is not None else 0.0
+        prepared.append((stamp, str(a.get("title", "")).lower(), {
+            "source": str(source_name)[:80],
+            "published": published_raw,
+            "title": str(a.get("title", ""))[:240],
+            "description": str(a.get("description", ""))[:360],
+        }))
+    prepared.sort(key=lambda row: (row[0], row[1]), reverse=True)
+    return [row[2] for row in prepared[:max(1, int(limit))]]
+
+
+def _ai_batch_macro_snapshot() -> dict:
+    """Compact data fingerprint; refreshed at most every 15 minutes."""
+    now_ts = time.time()
+    with _AI_BATCH_LOCK:
+        if now_ts - float(_AI_BATCH_MACRO_CACHE.get("at", 0)) < _AI_BATCH_MACRO_REFRESH_SECONDS:
+            return dict(_AI_BATCH_MACRO_CACHE.get("data", {}))
+
+    snapshot = {}
+    if DEFAULT_FRED_KEY:
+        for currency, cfg in CURRENCY_SERIES.items():
+            cur = {}
+            indicators = cfg.get("indicators", {})
+            names = cfg.get("key_indicators", []) or list(indicators)[:4]
+            for name in names[:4]:
+                spec = indicators.get(name, {})
+                sid = spec.get("series")
+                if not sid:
+                    continue
+                df = fetch_fred(sid, DEFAULT_FRED_KEY, limit=2)
+                if df is not None and not df.empty:
+                    row = df.iloc[-1]
+                    cur[name] = {"date": str(row.get("date", "")), "value": round(float(row.get("value", 0.0)), 6)}
+            if cur:
+                snapshot[currency] = cur
+
+        extra = {
+            "Gold Real Yield": GOLD_SERIES.get("real_yield"),
+            "WTI": OIL_SERIES.get("wti"),
+            "Nasdaq100": "NASDAQ100",
+        }
+        for name, sid in extra.items():
+            if not sid:
+                continue
+            df = fetch_fred(sid, DEFAULT_FRED_KEY, limit=2)
+            if df is not None and not df.empty:
+                row = df.iloc[-1]
+                snapshot[name] = {"date": str(row.get("date", "")), "value": round(float(row.get("value", 0.0)), 6)}
+
+    with _AI_BATCH_LOCK:
+        _AI_BATCH_MACRO_CACHE["at"] = now_ts
+        _AI_BATCH_MACRO_CACHE["data"] = dict(snapshot)
+    return snapshot
+
+
+def _ai_event_precursor_rows(nowcast: dict) -> list[dict]:
+    rows = []
+    for p in (nowcast.get("precursor_results") or [])[:8]:
+        try:
+            score = float(p.get("score", 0) or 0)
+        except Exception:
+            score = 0.0
+        try:
+            weight = float(p.get("weight", 0) or 0)
+        except Exception:
+            weight = 0.0
+        try:
+            mom = float(p.get("mom", 0) or 0)
+        except Exception:
+            mom = 0.0
+        direction = "up" if score > 0.03 else ("down" if score < -0.03 else "flat/mixed")
+        rows.append({
+            "name": str(p.get("name", ""))[:120],
+            "latest": p.get("latest"),
+            "momentum": round(mom, 6),
+            "direction": direction,
+            "score": round(score, 6),
+            "weight": round(weight, 6),
+            "weighted_contribution": round(score * weight, 6),
+        })
+    return rows
+
+
+def _ai_event_history_rows(nowcast: dict) -> list[dict]:
+    out = []
+    for row in (nowcast.get("same_release_history") or [])[:5]:
+        if not isinstance(row, dict):
+            continue
+        out.append({
+            "date": str(row.get("date_label") or row.get("resolved_at_utc") or "")[:40],
+            "forecast": str(row.get("forecast") or row.get("consensus") or "")[:60],
+            "actual": str(row.get("first_print_actual") or row.get("actual") or "")[:60],
+            "actual_outcome": str(row.get("actual_outcome") or "")[:20],
+            "standardized_surprise_z": row.get("standardized_surprise_z"),
+        })
+    return out
+
+
+def _ai_event_news_rows(event: dict, articles: list, limit: int = 4) -> list[dict]:
+    currency = str(event.get("currency", "")).upper()
+    prepared = []
+    for art in (articles or [])[:max(1, int(limit))]:
+        if not isinstance(art, dict):
+            continue
+        source = art.get("source", {})
+        source_name = source.get("name", "Unknown Source") if isinstance(source, dict) else str(source or "")
+        try:
+            pts = float(analyze_news_rule_based([art]).get("scores", {}).get(currency, 0.0) or 0.0)
+        except Exception:
+            pts = 0.0
+        direction = "supportive" if pts > 0.01 else ("negative" if pts < -0.01 else "neutral/unclear")
+        prepared.append({
+            "source": str(source_name)[:80],
+            "timestamp": str(art.get("publishedAt", ""))[:80],
+            "title": str(art.get("title", ""))[:240],
+            "description": str(art.get("description", ""))[:220],
+            "event_verified": bool(art.get("_event_verified", False)),
+            "numeric_ambiguous": bool(art.get("_numeric_ambiguous", False)),
+            "deterministic_direction": direction,
+            "deterministic_currency_score": round(pts, 6),
+        })
+    return prepared
+
+
+def _ai_batch_event_rows(events: list, all_news: list, actuals: dict, limit: int = 40) -> list[dict]:
+    """Build deterministic evidence packets for High Impact events.
+
+    This function is provider-free. It prepares enough events for eligibility
+    scanning; the paid shared batch is capped later by the persistent queue.
+    """
+    rows = []
+    now_utc = datetime.now(timezone.utc)
+    candidates = []
+    for ev in events or []:
+        if str(ev.get("impact", "")).title() != "High":
+            continue
+        release_utc = _event_release_utc(ev)
+        if release_utc is None:
+            continue
+        delta = (release_utc - now_utc).total_seconds()
+        # Active Forecaster horizon: upcoming only, Today + next 6 days.
+        if delta <= 0 or delta > _FORECASTER_AI_PRECOMPUTE_HORIZON_SECONDS:
+            continue
+        candidates.append((release_utc, ev))
+
+    candidates.sort(key=lambda x: x[0])
+
+    for release_utc, ev in candidates[:max(1, int(limit))]:
+        code = str(ev.get("code", "")).strip()
+        if not code:
+            continue
+        saved = str((actuals or {}).get(code, "")).strip()
+        published = _normalize_forex_factory_actual(ev.get("actual_str", ""))
+        actual = saved or published
+        if actual:
+            continue
+
+        try:
+            nowcast = compute_event_nowcast(
+                ev,
+                DEFAULT_FRED_KEY,
+                all_news,
+                actual_override="",
+            ) if DEFAULT_FRED_KEY else {}
+        except Exception:
+            nowcast = {}
+
+        # Freeze deterministic pre-release state even if nobody opens the modal.
+        try:
+            if nowcast:
+                _record_forecaster_snapshot(ev, nowcast, actual="")
+        except Exception:
+            pass
+
+        rel_news = _forecaster_relevant_ai_articles(ev, all_news) if "_forecaster_relevant_ai_articles" in globals() else []
+        probs = nowcast.get("probabilities", {}) if isinstance(nowcast.get("probabilities", {}), dict) else {}
+        quant_prediction = max(probs, key=probs.get) if probs else str(nowcast.get("outcome_key", "inline"))
+        identity = _event_identity(ev)
+        release_iso = _event_release_utc_iso(ev)
+        evidence_sig = _forecaster_ai_evidence_signature(ev, nowcast, rel_news, "")
+
+        rows.append({
+            "code": code,
+            "event_identity": identity,
+            "release_time_utc": release_iso,
+            "release_epoch_utc": release_utc.timestamp(),
+            "evidence_signature": evidence_sig,
+            "event": {
+                "event_identity": identity,
+                "currency": str(ev.get("currency", ""))[:12],
+                "title": str(ev.get("title", ""))[:180],
+                "scheduled_release_utc": release_iso,
+                "event_family": str(nowcast.get("event_family") or _event_family(ev))[:40],
+                "impact": "High",
+            },
+            "market_baseline": {
+                "consensus": str(ev.get("forecast_str", ""))[:80],
+                "previous": str(ev.get("prev_str", ""))[:80],
+                "market_expectations": str(ev.get("consensus_bias", ""))[:220],
+            },
+            "quantitative_evidence": {
+                "precursor_observations": _ai_event_precursor_rows(nowcast),
+                "same_release_history": _ai_event_history_rows(nowcast),
+                "same_release_history_signal": round(float(nowcast.get("history_release_signal", 0) or 0), 4),
+                "event_news_sentiment_score": round(float(nowcast.get("news_sentiment_pts", 0) or 0), 4),
+                "conflict_score": round(float(nowcast.get("conflict_score", 0) or 0), 4),
+                "evidence_quality": round(float(nowcast.get("evidence_quality", 0) or 0), 4),
+                "news_ambiguity": round(float(nowcast.get("news_ambiguity", 0) or 0), 4),
+                "consensus_hurdle": nowcast.get("consensus_hurdle"),
+                "model_estimate": nowcast.get("model_estimate"),
+                "evidence_framework": str(nowcast.get("evidence_framework", ""))[:80],
+            },
+            "news_causal_evidence": _ai_event_news_rows(ev, rel_news, 4),
+            "REFERENCE_QUANTITATIVE_OUTPUT_DO_NOT_ANCHOR": {
+                "prediction": quant_prediction,
+                "probabilities": probs,
+                "confidence": nowcast.get("confidence", 0),
+                "composite": nowcast.get("nowcast_composite", 0),
+                "conflict": nowcast.get("conflict_score", 0),
+                "evidence_quality": nowcast.get("evidence_quality", 0),
+                "label": nowcast.get("bias_label", ""),
+                "instruction": "REFERENCE QUANTITATIVE OUTPUT — DO NOT ANCHOR ON THIS. Assess raw evidence first.",
+            },
+            # Backward-compatible alias consumed by existing arbitration helpers.
+            "REFERENCE_MODEL_OUTPUT_DO_NOT_ANCHOR": {
+                "prediction": quant_prediction,
+                "probabilities": probs,
+                "confidence": nowcast.get("confidence", 0),
+                "composite": nowcast.get("nowcast_composite", 0),
+                "conflict": nowcast.get("conflict_score", 0),
+                "evidence_quality": nowcast.get("evidence_quality", 0),
+                "label": nowcast.get("bias_label", ""),
+                "instruction": "Reference only. Form the causal evidence judgment first.",
+            },
+            "judge_version": CAUSAL_AI_JUDGE_VERSION,
+            "title": str(ev.get("title", ""))[:180],
+            "currency": str(ev.get("currency", ""))[:12],
+            "impact": "High",
+            "date": str(ev.get("date_str", ""))[:80],
+            "time": str(ev.get("time_str", ""))[:80],
+            "forecast": str(ev.get("forecast_str", ""))[:80],
+            "previous": str(ev.get("prev_str", ""))[:80],
+            "actual": "",
+        })
+    return rows
+
+
+def _ai_batch_price_context() -> dict:
+    """Free live-price confirmation context for AI; price changes alone never trigger billing.
+
+    Uses the same tactical symbol registry as the UI. Gold explicitly falls back from
+    XAUUSD=X to GC=F so a temporary Yahoo spot-feed gap cannot silently remove Gold
+    from the AI decision/price audit.
+    """
+    asset_keys = ["Gold", "Oil", "NDX", "USD", "EUR", "GBP", "CAD", "JPY", "AUD", "NZD", "CHF"]
+    out = {}
+    for asset_key in asset_keys:
+        cfg = _tactical_symbol_config(asset_key) or {}
+        output_asset = "Nasdaq" if asset_key == "NDX" else asset_key
+        symbols = [cfg.get("symbol")] + list(cfg.get("fallback_symbols", []) or [])
+        invert = bool(cfg.get("invert", False))
+        for symbol in [x for x in symbols if x]:
+            try:
+                df = _fetch_tactical_price_series(str(symbol))
+                if df is None or df.empty or "close" not in df.columns:
+                    continue
+                closes = pd.to_numeric(df["close"], errors="coerce").dropna()
+                if closes.empty:
+                    continue
+                raw_last = float(closes.iloc[-1])
+                raw_prev = float(closes.iloc[-2]) if len(closes) >= 2 else raw_last
+                raw_old = float(closes.iloc[-13]) if len(closes) >= 13 else raw_last
+                if not raw_last or not raw_prev or not raw_old:
+                    continue
+                # For USDXXX pairs, invert the movement so the signal represents the target currency.
+                ret_1 = ((raw_last / raw_prev) - 1.0) * 100.0
+                ret_12 = ((raw_last / raw_old) - 1.0) * 100.0
+                if invert:
+                    ret_1, ret_12 = -ret_1, -ret_12
+                trend = "Bullish" if ret_12 > 0.20 else "Bearish" if ret_12 < -0.20 else "Neutral"
+                out[output_asset] = {
+                    "symbol": str(symbol), "last": round(raw_last, 5),
+                    "short_change_pct": round(ret_1, 4), "trend_change_pct": round(ret_12, 4),
+                    "price_confirmation": trend, "fallback_used": str(symbol) != str(cfg.get("symbol")),
+                }
+                break
+            except Exception:
+                continue
+    return out
+
+
+def _ai_batch_signature(news_rows: list, macro_snapshot: dict, event_rows: list) -> str:
+    event_material = [
+        {
+            "event_identity": str(row.get("event_identity", "") or ""),
+            "evidence_signature": str(row.get("evidence_signature", "") or ""),
+        }
+        for row in (event_rows or [])
+    ]
+    payload = {"news": news_rows, "macro": macro_snapshot, "events": event_material}
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
+
+
+
+def _ai_news_trigger_score(article: dict) -> tuple[int, str]:
+    """Free deterministic 0-100 impact score. Never contacts AI."""
+    text = f"{article.get('title', '')} {article.get('description', '')}".lower()
+    if not text.strip():
+        return 0, "empty headline"
+
+    # Major scheduled/policy/geopolitical shocks deserve immediate analysis.
+    critical = {
+        "fomc": 96, "federal reserve": 90, "powell": 86, "emergency rate": 100,
+        "ecb": 86, "bank of england": 86, "boe": 84, "bank of japan": 86, "boj": 84,
+        "cpi": 90, "core cpi": 92, "pce": 88, "nonfarm payroll": 94, "nfp": 94,
+        "unemployment rate": 88, "gdp": 82, "interest rate decision": 96,
+        "rate cut": 86, "rate hike": 88, "opec": 86, "opec+": 88,
+        "missile": 88, "airstrike": 90, "invasion": 96, "war": 88,
+        "ceasefire": 82, "sanctions": 82, "tariff": 78,
+        "oil supply disruption": 92, "crude inventory": 76,
+        "nvidia": 72, "semiconductor": 70, "chip restrictions": 84,
+    }
+    best = 0; reason = ""
+    for term, score in critical.items():
+        if term in text and score > best:
+            best, reason = score, term
+
+    # Asset/region relevance raises ordinary macro headlines into the batching tier.
+    asset_terms = [
+        "usd", "dollar", "dxy", "eur", "euro", "gbp", "pound", "sterling",
+        "cad", "canada", "jpy", "yen", "chf", "swiss franc", "aud", "australia",
+        "nzd", "new zealand", "gold", "xau", "bullion", "oil", "crude", "wti",
+        "brent", "nasdaq", "ndx", "treasury yield", "real yield", "inflation",
+        "employment", "payroll", "central bank", "recession", "geopolitical",
+    ]
+    if any(term in text for term in asset_terms):
+        if best < 58:
+            best, reason = 58, "macro/asset relevance"
+
+    # Market-moving language adds urgency, but cannot make an unrelated story critical.
+    urgency = ["unexpected", "surprise", "shock", "emergency", "record", "plunge", "surge", "halted", "attack", "escalation"]
+    if best and any(term in text for term in urgency):
+        best = min(100, best + 10)
+        reason += " + urgency"
+    return int(best), reason or "low relevance"
+
+
+def _ai_news_identity(row: dict) -> str:
+    # Stable identity: feeds often edit descriptions/timestamps after publication.
+    # Those metadata edits must not create a second paid-AI trigger.
+    title = re.sub(r"[^a-z0-9]+", " ", str(row.get("title", "")).lower()).strip()
+    title = re.sub(r"\s+", " ", title)
+    return hashlib.sha256(title.encode("utf-8")).hexdigest()[:24]
+
+
+def _ai_news_topic(row: dict) -> str:
+    """Cheap event-family key used to batch repeated live-news fragments."""
+    text = f"{row.get('title','')} {row.get('description','')}".lower()
+    if any(x in text for x in ("warsh", "powell", "fomc", "federal reserve", " fed ")):
+        return "fed_policy_speech"
+    if any(x in text for x in ("cpi", "pce", "inflation")):
+        return "inflation"
+    if any(x in text for x in ("nonfarm", "nfp", "payroll", "unemployment")):
+        return "us_labor"
+    if any(x in text for x in ("opec", "crude", "oil", "wti", "brent")):
+        return "oil_market"
+    if any(x in text for x in ("nasdaq", "ndx", "nvidia", "semiconductor", "chip")):
+        return "nasdaq_tech"
+    if any(x in text for x in ("gold", "xau", "bullion")):
+        return "gold_market"
+    return "general_macro"
+
+
+def _ai_event_actual_map(event_rows: list[dict]) -> dict:
+    out = {}
+    for row in event_rows or []:
+        code = str(row.get("code", "")).strip()
+        actual = _normalize_forex_factory_actual(row.get("actual", ""))
+        if code:
+            out[code] = actual
+    return out
+
+
+def _ai_trigger_decision(state: dict, news_rows: list[dict], macro_snapshot: dict, event_rows: list[dict]) -> tuple[bool, dict]:
+    """Decide whether a changed snapshot deserves a paid request.
+
+    0-39: ignore for AI; 40-69: batch for 15 minutes; 70-84: analyze within
+    90 seconds; 85-100: immediate. A newly published High-impact Actual is 100.
+    """
+    now = time.time()
+    has_result = isinstance(state.get("result"), dict) and bool(state.get("result"))
+    current_news = {_ai_news_identity(r): r for r in news_rows or []}
+    seen_news = set(state.get("observed_news_ids", []) or [])
+    new_rows = [row for key, row in current_news.items() if key not in seen_news]
+
+    score = 0; reasons = []
+    new_topics = set()
+    for row in new_rows:
+        s, why = _ai_news_trigger_score(row)
+        if s >= 40:
+            new_topics.add(_ai_news_topic(row))
+        if s > score:
+            score = s
+        if s >= 40:
+            reasons.append(f"news:{s}:{why}:{str(row.get('title',''))[:90]}")
+
+    macro_sig = hashlib.sha256(json.dumps(macro_snapshot or {}, sort_keys=True, default=str).encode()).hexdigest()
+    old_macro_sig = str(state.get("observed_macro_signature", ""))
+    if has_result and old_macro_sig and macro_sig != old_macro_sig:
+        score = max(score, 60)
+        reasons.append("macro:60:new FRED observation")
+
+    actual_map = _ai_event_actual_map(event_rows)
+    old_actuals = state.get("observed_event_actuals", {}) if isinstance(state.get("observed_event_actuals"), dict) else {}
+    actual_release_trigger = False
+    for code, actual in actual_map.items():
+        if actual and actual != str(old_actuals.get(code, "")):
+            score = 100
+            actual_release_trigger = True
+            reasons.append(f"actual:100:{code}:{actual}")
+
+    # First successful shared result is bootstrap-critical and must not wait.
+    bootstrap_trigger = not has_result
+    if bootstrap_trigger:
+        score = 100
+        reasons.append("bootstrap:100:first shared analysis")
+
+    pending_score = int(state.get("pending_trigger_score", 0) or 0)
+    pending_since = float(state.get("pending_trigger_since", 0) or 0)
+    pending_reasons = list(state.get("pending_trigger_reasons", []) or [])
+    pending_topics = set(state.get("pending_trigger_topics", []) or [])
+    if score >= 40:
+        if pending_since <= 0:
+            pending_since = now
+        pending_score = max(pending_score, score)
+        pending_reasons = (pending_reasons + reasons)[-20:]
+        pending_topics.update(new_topics)
+
+    # Always advance free observations, including low-impact headlines, so they
+    # are not reconsidered on every supervisor pass.
+    state["observed_news_ids"] = list(current_news.keys())[:80]
+    state["observed_macro_signature"] = macro_sig
+    state["observed_event_actuals"] = actual_map
+    state["last_trigger_scan_at"] = now
+    state["last_trigger_score"] = score
+    state["last_trigger_reasons"] = reasons[-10:]
+
+    if pending_score < 40:
+        state.pop("pending_trigger_score", None); state.pop("pending_trigger_since", None); state.pop("pending_trigger_reasons", None); state.pop("pending_trigger_topics", None)
+        if new_rows:
+            scored = []
+            for row in new_rows[:20]:
+                s, why = _ai_news_trigger_score(row)
+                scored.append({"score": s, "reason": why, "source": row.get("source", ""), "title": row.get("title", ""), "published": row.get("published", "")})
+            _ai_audit_append("ignored", f"{len(new_rows)} new headline(s) did not pass the paid-AI gate", {"max_score": score, "new_news": scored})
+        return False, state
+
+    elapsed = max(0.0, now - pending_since)
+    if pending_score >= 85:
+        due = True
+    elif pending_score >= 70:
+        due = elapsed >= _AI_BATCH_HIGH_DELAY_SECONDS
+    else:
+        due = elapsed >= _AI_BATCH_MEDIUM_DELAY_SECONDS
+
+    # Cost guard for live-news storms. First critical evidence can fire immediately,
+    # then fragments are batched instead of producing one request per headline.
+    # A newly published High-impact Actual and first bootstrap are exempt.
+    if due and not actual_release_trigger and not bootstrap_trigger:
+        last_paid_at = float(state.get("last_paid_at", 0) or 0)
+        if last_paid_at and now - last_paid_at < _AI_BATCH_GLOBAL_MIN_PAID_SECONDS:
+            due = False
+        if due and pending_topics:
+            last_paid_topics = state.get("last_paid_topics", {}) if isinstance(state.get("last_paid_topics"), dict) else {}
+            waits = []
+            for topic in pending_topics:
+                t = float(last_paid_topics.get(topic, 0) or 0)
+                if t:
+                    waits.append(now - t)
+            # If every queued topic is the same recently analyzed live event, wait
+            # five minutes and absorb all intervening headlines into one batch.
+            if waits and len(waits) == len(pending_topics) and max(waits) < _AI_BATCH_SAME_TOPIC_COOLDOWN_SECONDS:
+                due = False
+
+    state["pending_trigger_score"] = pending_score
+    state["pending_trigger_since"] = pending_since
+    state["pending_trigger_reasons"] = pending_reasons
+    state["pending_trigger_topics"] = sorted(pending_topics)
+    state["pending_trigger_due"] = bool(due)
+
+    # Log only when genuinely new free evidence was observed, not on every 30s poll.
+    if new_rows or reasons:
+        scored = []
+        for row in new_rows[:20]:
+            s, why = _ai_news_trigger_score(row)
+            scored.append({
+                "score": s, "reason": why, "source": row.get("source", ""),
+                "title": row.get("title", ""), "published": row.get("published", ""),
+            })
+        if pending_score >= 85:
+            action = "immediate shared AI request"
+        elif pending_score >= 70:
+            action = "queued for ~90 seconds"
+        elif pending_score >= 40:
+            action = "queued for 15-minute batch"
+        else:
+            action = "ignored for paid AI"
+        _ai_audit_append("trigger", f"Evidence gate score {score}/100 — {action}", {
+            "scan_score": score, "pending_score": pending_score, "due": bool(due),
+            "action": action, "new_news": scored, "reasons": reasons[-12:],
+        })
+    return bool(due), state
+
+def _normalize_shared_asset_payload(raw: dict) -> dict:
+    assets = ["USD", "EUR", "GBP", "CAD", "JPY", "AUD", "NZD", "CHF", "Gold", "Oil", "Nasdaq"]
+    out = {}
+    raw = raw if isinstance(raw, dict) else {}
+    for asset in assets:
+        item = raw.get(asset, {}) if isinstance(raw.get(asset, {}), dict) else {}
+        try:
+            score = float(np.clip(float(item.get("score", 0.0)), -1.0, 1.0))
+        except Exception:
+            score = 0.0
+        try:
+            confidence = float(np.clip(float(item.get("confidence", 0.0)), 0.0, 100.0))
+        except Exception:
+            confidence = 0.0
+        out[asset] = {
+            "score": score,
+            "confidence": confidence,
+            "reason": str(item.get("reason", ""))[:300],
+            "horizon": str(item.get("horizon", "1-3 Days"))[:40],
+        }
+    return out
+
+
+def _safe_ai_error_label(error_text: str) -> str:
+    """Return a client-safe provider failure label without secrets or raw credentials."""
+    text = str(error_text or "").lower()
+    if "401" in text or "authentication" in text or "unauthorized" in text or "invalid api key" in text:
+        return "Authentication failed"
+    if "403" in text or "forbidden" in text:
+        return "AI unavailable"
+    if "429" in text or "rate limit" in text or "too many requests" in text:
+        return "Rate limited"
+    if "timeout" in text or "temporarily unavailable" in text or "connection" in text:
+        return "Provider temporarily unavailable"
+    if "unstructured" in text or "json" in text or "empty choices" in text or "parse" in text:
+        return "Response parsing failed"
+    if "model" in text and any(x in text for x in ("invalid", "not found", "unsupported")):
+        return "AI unavailable"
+    return "AI unavailable"
+
+
+def _ai_diag_update(code: str = "", **fields) -> None:
+    """Persist compact shared-AI diagnostics. Never stores prompts, tokens or API keys."""
+    try:
+        state = _ai_batch_load_state(force_refresh=True)
+        diag = dict(state.get("causal_ai_diagnostics", {}) or {})
+        global_diag = dict(diag.get("_global", {}) or {})
+        now_ts = time.time()
+        if fields:
+            global_fields = {k: v for k, v in fields.items() if k.startswith("global_")}
+            if global_fields:
+                for k, v in global_fields.items():
+                    global_diag[k[7:]] = v
+                global_diag["updated_at"] = now_ts
+                diag["_global"] = global_diag
+            if code:
+                item = dict(diag.get(code, {}) or {})
+                for k, v in fields.items():
+                    if not k.startswith("global_"):
+                        item[k] = v
+                item["updated_at"] = now_ts
+                diag[code] = item
+        state["causal_ai_diagnostics"] = diag
+        _ai_batch_save_state(state)
+    except Exception:
+        pass
+
+
+def _shared_ai_event_result(event: dict, state: dict | None = None) -> tuple[dict | None, str]:
+    """Registry-first lookup. Legacy shared result is migration fallback only."""
+    registry = _forecaster_ai_registry_load()
+    identity = _event_identity(event)
+    entry = (registry.get("events", {}) or {}).get(identity, {})
+    if isinstance(entry, dict) and isinstance(entry.get("analysis"), dict):
+        analysis = dict(entry.get("analysis") or {})
+        analysis["_registry_state"] = str(entry.get("ai_state", "") or "")
+        analysis["_registry_evidence_signature"] = str(entry.get("evidence_signature", "") or "")
+        return analysis, identity
+    return _forecaster_ai_legacy_result(event, state)
+
+def _forecaster_event_request_snapshot(event: dict) -> dict:
+    """JSON-safe event snapshot so a transient calendar refetch cannot drop an opened event."""
+    ev = dict(event or {})
+    dt = ev.get("datetime_obj")
+    meta = ev.get("meta", {}) if isinstance(ev.get("meta", {}), dict) else {}
+    safe_meta = {}
+    for k, v in meta.items():
+        if isinstance(v, (str, int, float, bool)) or v is None:
+            safe_meta[str(k)] = v
+        elif isinstance(v, list):
+            safe_meta[str(k)] = [x for x in v if isinstance(x, (str, int, float, bool)) or x is None]
+        elif isinstance(v, dict):
+            safe_meta[str(k)] = {str(a): b for a, b in v.items() if isinstance(b, (str, int, float, bool)) or b is None}
+    return {
+        "code": str(ev.get("code", "")).strip(),
+        "event_identity": _event_identity(ev),
+        "title": str(ev.get("title", "")),
+        "currency": str(ev.get("currency", "")),
+        "impact": str(ev.get("impact", "High")),
+        "datetime_iso": dt.isoformat() if isinstance(dt, datetime) else "",
+        "date_str": str(ev.get("date_str", "")),
+        "time_str": str(ev.get("time_str", "")),
+        "forecast_str": str(ev.get("forecast_str", "")),
+        "prev_str": str(ev.get("prev_str", "")),
+        "actual_str": str(ev.get("actual_str", "")),
+        "consensus_bias": str(ev.get("consensus_bias", "")),
+        "meta": safe_meta,
+    }
+
+
+def _restore_forecaster_event_request(snapshot: dict) -> dict:
+    ev = dict(snapshot or {})
+    iso = str(ev.pop("datetime_iso", "") or "")
+    if iso:
+        try:
+            ev["datetime_obj"] = datetime.fromisoformat(iso)
+        except Exception:
+            pass
+    ev.pop("event_identity", None)
+    return ev
+
+
+def _run_shared_ai_batch_once() -> None:
+    """Run ONE bounded shared paid batch for desk assets + eligible Forecaster events.
+
+    Forecaster eligibility is discovered from the calendar/evidence registry.
+    UI interaction is never part of this paid path.
+    """
+    global _AI_BATCH_REQUEST_INFLIGHT
+    process_lock_fd = None
+    batch_event_rows: list[dict] = []
+    state: dict = {}
+    failure_stage = "PRECHECK"
+
+    if not DEFAULT_AI_KEY or not is_ai_enabled():
+        return
+
+    with _AI_BATCH_LOCK:
+        if _AI_BATCH_REQUEST_INFLIGHT:
+            return
+        _AI_BATCH_REQUEST_INFLIGHT = True
+
+    try:
+        failure_stage = "NEWS_FETCH"
+        try:
+            all_news = fetch_all_instant_news(DEFAULT_TELEGRAM_CHANNEL)
+        except Exception:
+            all_news = []
+        news_rows = _ai_batch_news_rows(all_news, _CAUSAL_AI_NEWS_BATCH_LIMIT)
+        failure_stage = "MACRO_SNAPSHOT"
+        macro_snapshot = _ai_batch_macro_snapshot()
+
+        try:
+            events = get_upcoming_catalyst_events(3, "KRD (UTC+3)")
+        except Exception:
+            events = []
+        try:
+            actuals = load_actuals_cache()
+        except Exception:
+            actuals = {}
+
+        failure_stage = "SHARED_STATE_LOAD"
+        state = _ai_batch_load_state(force_refresh=True)
+
+        failure_stage = "EVENT_PREPARE"
+        # Provider-free preparation of every High Impact event in the rolling
+        # seven-day Forecaster horizon. Registry eligibility decides the paid subset.
+        prepared_event_rows = _ai_batch_event_rows(events, all_news, actuals, limit=40)
+        batch_event_rows, registry_state = _forecaster_ai_select_precompute_batch(
+            prepared_event_rows,
+            legacy_batch_state=state,
+            limit=_CAUSAL_AI_EVENT_BATCH_LIMIT,
+        )
+        failure_stage = "PRICE_CONTEXT"
+        price_context = _ai_batch_price_context()
+
+        # Nothing at all to analyze.
+        if not news_rows and not macro_snapshot and not batch_event_rows:
+            return
+
+        signature = _ai_batch_signature(news_rows, macro_snapshot, batch_event_rows)
+
+        # Keep the existing impact/change trigger for desk-wide assets. Missing or
+        # materially stale Forecaster events are themselves a high-impact trigger.
+        failure_stage = "TRIGGER_DECISION"
+        due, state = _ai_trigger_decision(state, news_rows, macro_snapshot, batch_event_rows)
+        global_due_without_forecaster = bool(due)
+        if batch_event_rows:
+            state["pending_trigger_score"] = max(85, int(state.get("pending_trigger_score", 0) or 0))
+            if float(state.get("pending_trigger_since", 0) or 0) <= 0:
+                state["pending_trigger_since"] = time.time()
+            reasons = list(state.get("pending_trigger_reasons", []) or [])
+            marker = f"forecaster_precompute:{len(batch_event_rows)}"
+            if marker not in reasons:
+                reasons.append(marker)
+            state["pending_trigger_reasons"] = reasons[-20:]
+            state["pending_trigger_due"] = True
+            due = True
+
+        _ai_batch_save_state(state)
+        if not due:
+            return
+
+        # Duplicate request protection. Explicitly missing/stale event work gets
+        # the controlled short retry; normal desk-wide provider failures keep the
+        # existing longer backoff.
+        if state.get("last_attempt_signature") == signature:
+            last_attempt = float(state.get("last_attempt_at", 0) or 0)
+            has_result = isinstance(state.get("result"), dict) and bool(state.get("result"))
+            backoff = (
+                _AI_BATCH_FIRST_RESULT_RETRY_SECONDS
+                if batch_event_rows
+                else (_AI_BATCH_ERROR_BACKOFF_SECONDS if has_result else _AI_BATCH_FIRST_RESULT_RETRY_SECONDS)
+            )
+            if time.time() - last_attempt < backoff:
+                return
+
+        if not is_ai_enabled(force_refresh=True):
+            return
+
+        provider, url, model, resolved_key = _ai_runtime(
+            DEFAULT_AI_KEY, DEFAULT_AI_PROVIDER, DEFAULT_AI_MODEL
+        )
+        if not resolved_key:
+            if batch_event_rows:
+                _forecaster_ai_registry_fail(
+                    batch_event_rows,
+                    "Authentication failed",
+                    blocked=False,
+                )
+            return
+
+        failure_stage = "PROCESS_LOCK"
+        process_lock_fd = _acquire_ai_batch_process_lock()
+        if process_lock_fd is None:
+            # Another local/process batch owns the paid path. The persistent
+            # registry remains queued for a later supervisor cycle.
+            if batch_event_rows:
+                _forecaster_ai_registry_fail(
+                    batch_event_rows,
+                    "AI_PROVIDER_GLOBAL_LEASE:30",
+                    blocked=True,
+                )
+            return
+
+        # Cross-container safety: after acquiring the process lock, re-check the
+        # registry. Another replica may already have completed some selected rows.
+        failure_stage = "REGISTRY_RECHECK"
+        latest_registry = _forecaster_ai_registry_load()
+        filtered_rows = []
+        for row in batch_event_rows:
+            identity = str(row.get("event_identity", "") or "")
+            entry = (latest_registry.get("events", {}) or {}).get(identity, {})
+            if not isinstance(entry, dict):
+                filtered_rows.append(row)
+                continue
+            completed_same = (
+                str(entry.get("ai_state", "")).upper() == "COMPLETED"
+                and str(entry.get("completed_evidence_signature", "") or "")
+                == str(row.get("evidence_signature", "") or "")
+                and isinstance(entry.get("analysis"), dict)
+                and _causal_ai_result_is_current_judge(entry.get("analysis"))
+            )
+            if not completed_same:
+                filtered_rows.append(row)
+        batch_event_rows = filtered_rows
+        if not batch_event_rows and not global_due_without_forecaster:
+            _release_ai_batch_process_lock(process_lock_fd)
+            process_lock_fd = None
+            return
+
+        # Recompute signature after cross-container completion filtering.
+        signature = _ai_batch_signature(news_rows, macro_snapshot, batch_event_rows)
+
+        system_prompt = """You are ApexMacro's ONE shared institutional causal-evidence judge. One response must serve the entire desk.
+Use ONLY supplied evidence; never invent facts, observations, release values, sources, or timestamps. Return ONE valid JSON object and no markdown.
+
+Required top-level keys: summary, assets, events.
+assets MUST contain USD, EUR, GBP, CAD, JPY, AUD, NZD, CHF, Gold, Oil, Nasdaq.
+For each asset return: score (-1 to +1), confidence (0-100), reason, horizon. Judge each asset separately.
+Use macro observations plus current news. live_price_context is confirmation only. For economic-event judgments, never use a preferred asset direction to force the release forecast.
+
+For every supplied High Impact event, act as the FINAL CAUSAL EVIDENCE JUDGE, not an echo of the deterministic model.
+Reasoning order:
+1) Read EVENT and MARKET BASELINE.
+2) Assess raw underlying evidence first: direct hard data, country-specific precursors, official/direct policy information, event-specific credible news, broader macro context, then generic sentiment.
+3) Identify contradictions, stale/missing evidence, numeric ambiguity, and evidence quality.
+4) Form BEAT / INLINE / MISS relative to consensus.
+5) ONLY THEN inspect REFERENCE_QUANTITATIVE_OUTPUT_DO_NOT_ANCHOR.
+Agreement is allowed. Disagreement is allowed. Do not manufacture disagreement.
+If disagreeing or weakening the quantitative result, identify the decisive supplied evidence.
+Confidence must fall when direct evidence is absent, stale, conflicting, or weak.
+First judge the economic event; only then infer USD, Gold, Oil and Nasdaq implications.
+Do not mathematically double-count evidence merely because both Quantitative and AI interpret it similarly.
+
+events MUST be an object keyed by the supplied event_identity.
+For every supplied event return exactly:
+event_identity, ai_judgment, agreement_with_quant, confidence, reason, causal_chain, facts,
+supporting_evidence, contradictions, decisive_evidence, evidence_missing, override_reason,
+event_assessment, nowcast, confidence_reason, cross_source_confirmation, usd, gold, oil,
+nasdaq, invalidation, source_count, judge_version.
+ai_judgment MUST be beat, inline, or miss.
+agreement_with_quant MUST be agree, partial, or disagree.
+causal_chain, facts, supporting_evidence, contradictions, decisive_evidence, evidence_missing MUST be arrays.
+confidence MUST be integer 0-100.
+judge_version MUST be evidence-judge-v1.
+Keep output compact: each evidence array <= 4 concise items and prose fields <= 2 short sentences."""
+
+        user_payload = {
+            "causal_ai_judge_version": CAUSAL_AI_JUDGE_VERSION,
+            "architecture": "precompute_once_store_once_read_many",
+            "evidence_order_note": "Judge raw evidence first. Inspect REFERENCE_QUANTITATIVE_OUTPUT_DO_NOT_ANCHOR only afterward.",
+            "news": news_rows,
+            "macro_data": macro_snapshot,
+            "live_price_context": price_context,
+            "high_impact_forecaster_events": batch_event_rows,
+        }
+
+        failure_stage = "AUDIT_REQUEST"
+        _ai_audit_append(
+            "request",
+            f"Sending one shared AI precompute batch via {provider} / {model}",
+            {
+                "trigger_score": state.get("pending_trigger_score", state.get("last_trigger_score", 0)),
+                "trigger_reasons": state.get("pending_trigger_reasons", state.get("last_trigger_reasons", [])),
+                "news_count": len(news_rows),
+                "event_count": len(batch_event_rows),
+                "events": [
+                    {
+                        "event_identity": row.get("event_identity"),
+                        "code": row.get("code"),
+                        "title": row.get("title"),
+                        "currency": row.get("currency"),
+                        "release_time_utc": row.get("release_time_utc"),
+                        "evidence_signature": row.get("evidence_signature"),
+                    }
+                    for row in batch_event_rows
+                ],
+            },
+        )
+
+        reserve_ts = time.time()
+        attempt_state = {
+            **state,
+            "last_attempt_signature": signature,
+            "last_attempt_at": reserve_ts,
+            "last_paid_reserved_at": reserve_ts,
+            "last_paid_reserved_at_iso": datetime.now(timezone.utc).isoformat(),
+        }
+        failure_stage = "ATTEMPT_RESERVE"
+        _ai_batch_save_state(attempt_state)
+
+        if batch_event_rows:
+            _forecaster_ai_registry_mark_batch(
+                batch_event_rows,
+                "RUNNING",
+                provider_status="PROVIDER_GATE_PENDING",
+                last_error="",
+            )
+
+        failure_stage = "PROVIDER_HTTP"
+        response = _post_ai_chat(
+            provider=provider,
+            url=url,
+            headers=_ai_headers(resolved_key, "ApexMacro Shared Background AI"),
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=json.dumps(user_payload, ensure_ascii=False, separators=(",", ":")),
+            temperature=0.1,
+            timeout=_CAUSAL_AI_HTTP_TIMEOUT_SECONDS,
+        )
+
+        response_status = int(getattr(response, "status_code", 0) or 0)
+        if batch_event_rows:
+            _forecaster_ai_registry_mark_batch(
+                batch_event_rows,
+                "RUNNING",
+                provider_status="HTTP_RESPONSE_RECEIVED",
+                http_status=response_status,
+            )
+
+        failure_stage = "RESPONSE_JSON"
+        try:
+            response_json = response.json()
+        except Exception as exc:
+            raise RuntimeError(f"{provider} response parsing failed: non-JSON HTTP response") from exc
+
+        schema_meta = _ai_response_metadata(response_json)
+        raw = _ai_message_content(response_json)
+        if not raw:
+            raise RuntimeError(
+                f"{provider} returned empty choices/content "
+                f"(finish_reason={schema_meta.get('finish_reason') or 'unknown'})"
+            )
+        failure_stage = "RESPONSE_PARSE"
+        parsed = _extract_json_object(raw)
+        if not isinstance(parsed, dict):
+            raise RuntimeError(
+                f"{provider} returned unstructured batch output "
+                f"(content_chars={len(raw)}, finish_reason={schema_meta.get('finish_reason') or 'unknown'})"
+            )
+
+        failure_stage = "EVENT_RESULT_EXTRACT"
+        raw_events_obj = parsed.get("events", {})
+        raw_event_items = []
+        if isinstance(raw_events_obj, dict):
+            raw_event_items = list(raw_events_obj.items())
+        elif isinstance(raw_events_obj, list):
+            for item in raw_events_obj:
+                if isinstance(item, dict):
+                    raw_event_items.append((str(item.get("event_identity") or item.get("code") or ""), item))
+
+        expected_by_identity = {
+            str(row.get("event_identity", "") or ""): row
+            for row in batch_event_rows
+            if str(row.get("event_identity", "") or "")
+        }
+        expected_by_code = {
+            str(row.get("code", "") or ""): row
+            for row in batch_event_rows
+            if str(row.get("code", "") or "")
+        }
+
+        clean_by_identity: dict[str, dict] = {}
+        clean_by_code: dict[str, dict] = {}
+
+        # Parse/persist each event independently: one malformed entry never
+        # discards another event's valid analysis.
+        for raw_key, raw_value in raw_event_items:
+            if not isinstance(raw_value, dict):
+                continue
+            key = str(raw_key or "").strip()
+            value_identity = str(raw_value.get("event_identity", "") or "").strip()
+            expected = expected_by_identity.get(value_identity) or expected_by_identity.get(key)
+            if expected is None:
+                expected = expected_by_code.get(key)
+            if expected is None:
+                # Case-insensitive code fallback for gateway/model formatting.
+                folded = key.casefold()
+                for code, row in expected_by_code.items():
+                    if code.casefold() == folded:
+                        expected = row
+                        break
+            if expected is None:
+                continue
+
+            identity = str(expected.get("event_identity", "") or "")
+            code = str(expected.get("code", "") or "")
+            item = dict(raw_value)
+            item["event_identity"] = identity
+            item["_event_identity"] = identity
+            item["_event_code"] = code
+
+            reference = expected.get("REFERENCE_MODEL_OUTPUT_DO_NOT_ANCHOR", {})
+            quant_prediction = _quantitative_outcome_from_reference(reference)
+            ai_judgment = _normalize_ai_judgment(item.get("ai_judgment") or item.get("nowcast"))
+            if not ai_judgment:
+                # Malformed event only; leave it unresolved without discarding peers.
+                continue
+
+            agreement, relationship_label = _causal_relationship(quant_prediction, ai_judgment)
+            item["ai_judgment"] = ai_judgment
+            item["agreement_with_quant"] = agreement or str(item.get("agreement_with_quant", "") or "")
+            item["relationship_label"] = relationship_label
+
+            qe = expected.get("quantitative_evidence", {}) if isinstance(expected.get("quantitative_evidence"), dict) else {}
+            prec_n = len(qe.get("precursor_observations", []) or [])
+            hist_n = len(qe.get("same_release_history", []) or [])
+            news_n = len(expected.get("news_causal_evidence", []) or [])
+            try:
+                ai_conf = int(max(0, min(100, round(float(item.get("confidence", 0) or 0)))))
+            except Exception:
+                ai_conf = 0
+            conf_cap = 100
+            if (prec_n + hist_n + news_n) == 0:
+                conf_cap = 45
+            elif prec_n == 0 and news_n == 0:
+                conf_cap = 55
+            try:
+                if float(qe.get("evidence_quality", 0) or 0) < 0.45:
+                    conf_cap = min(conf_cap, 60)
+                if float(qe.get("conflict_score", 0) or 0) >= 0.45:
+                    conf_cap = min(conf_cap, 64)
+            except Exception:
+                pass
+            item["confidence"] = min(ai_conf, conf_cap)
+            item["_quantitative_prediction"] = quant_prediction
+            item["_quantitative_reference"] = dict(reference) if isinstance(reference, dict) else {}
+            item["_judge_version"] = CAUSAL_AI_JUDGE_VERSION
+            item["judge_version"] = CAUSAL_AI_JUDGE_VERSION
+            final_prediction, final_reason = _derive_final_forecast_state(quant_prediction, item)
+            item["final_prediction"] = final_prediction
+            item["final_arbitration_reason"] = final_reason
+
+            clean_by_identity[identity] = item
+            clean_by_code[code] = item
+
+            # Per-event persistent write is the Forecaster source of truth.
+            _forecaster_ai_registry_complete(expected, item, provider, model)
+            try:
+                _freeze_forecaster_ai_snapshot_from_batch_row(expected, item)
+            except Exception:
+                pass
+
+        # Mark only missing/malformed event entries as ERROR. Valid peers remain saved.
+        for row in batch_event_rows:
+            identity = str(row.get("event_identity", "") or "")
+            if identity and identity not in clean_by_identity:
+                _forecaster_ai_registry_fail(
+                    [row],
+                    "Response parsing failed: event result missing or malformed",
+                    blocked=False,
+                )
+
+        existing_result = state.get("result", {}) if isinstance(state.get("result"), dict) else {}
+        legacy_events = dict(existing_result.get("events", {}) or {}) if isinstance(existing_result.get("events"), dict) else {}
+        legacy_events.update(clean_by_code)
+
+        result = {
+            "summary": str(parsed.get("summary", ""))[:1800],
+            "assets": _normalize_shared_asset_payload(parsed.get("assets", {})),
+            # Legacy shared blob retained for other readers/migration only.
+            # Forecaster UI reads FORECASTER_AI_REGISTRY_FILE instead.
+            "events": legacy_events,
+        }
+
+        now_ts = time.time()
+        failure_stage = "SHARED_STATE_SAVE"
+        _ai_batch_save_state({
+            "signature": signature,
+            "updated_at": now_ts,
+            "updated_at_iso": datetime.now(timezone.utc).isoformat(),
+            "last_attempt_signature": signature,
+            "last_attempt_at": now_ts,
+            "provider": provider,
+            "model": model,
+            "result": result,
+            "observed_news_ids": state.get("observed_news_ids", []),
+            "observed_macro_signature": state.get("observed_macro_signature", ""),
+            "observed_event_actuals": state.get("observed_event_actuals", {}),
+            "last_trigger_score": state.get("last_trigger_score", 0),
+            "last_trigger_reasons": state.get("last_trigger_reasons", []),
+            "last_trigger_consumed_score": state.get("pending_trigger_score", state.get("last_trigger_score", 0)),
+            "last_trigger_consumed_reasons": state.get("pending_trigger_reasons", state.get("last_trigger_reasons", [])),
+            "last_paid_at": now_ts,
+            "last_paid_topics": {
+                **(state.get("last_paid_topics", {}) if isinstance(state.get("last_paid_topics"), dict) else {}),
+                **{topic: now_ts for topic in (state.get("pending_trigger_topics", []) or [])},
+            },
+            # Obsolete event-open request queue is intentionally emptied.
+            "requested_forecaster_event_codes": [],
+            "requested_forecaster_events": {},
+            "causal_ai_diagnostics": (
+                _ai_batch_load_state(force_refresh=True).get("causal_ai_diagnostics", {}) or {}
+            ),
+        })
+
+        _forecaster_ai_registry_merge(queue_meta={
+            "last_batch_completed_at": now_ts,
+            "last_batch_completed_at_iso": datetime.now(timezone.utc).isoformat(),
+            "last_batch_event_count": len(batch_event_rows),
+            "last_batch_provider_status": "COMPLETED",
+        })
+
+        _register_ai_price_decisions(result, price_context)
+        _ai_audit_append(
+            "success",
+            "Shared AI precompute batch completed successfully",
+            {
+                "provider": provider,
+                "model": model,
+                "summary": result.get("summary", ""),
+                "event_count": len(clean_by_identity),
+                "event_identities": sorted(clean_by_identity.keys()),
+            },
+        )
+
+    except Exception as exc:
+        err = str(exc)
+        gate_blocked = (
+            err.startswith("AI_PROVIDER_HARD_COOLDOWN:")
+            or err.startswith("AI_PROVIDER_GLOBAL_LEASE:")
+        )
+        if gate_blocked:
+            if batch_event_rows:
+                _forecaster_ai_registry_fail(batch_event_rows, err, blocked=True)
+            try:
+                remaining = float(err.split(":", 1)[1])
+            except Exception:
+                remaining = _AI_PROVIDER_HARD_MIN_SECONDS
+            state = _ai_batch_load_state(force_refresh=True)
+            state["provider_gate_blocked_at"] = time.time()
+            state["provider_gate_remaining_seconds"] = round(max(0.0, remaining), 1)
+            _ai_batch_save_state(state)
+            _ai_audit_append(
+                "blocked",
+                "Paid AI precompute batch blocked by global provider billing gate",
+                {
+                    "remaining_seconds": round(max(0.0, remaining), 1),
+                    "event_count": len(batch_event_rows),
+                    "rule": "90-second hard minimum + distributed provider lease",
+                },
+            )
+        else:
+            if batch_event_rows:
+                _forecaster_ai_registry_fail(batch_event_rows, err, blocked=False)
+                _forecaster_ai_registry_mark_batch(
+                    batch_event_rows,
+                    "ERROR",
+                    failure_stage=failure_stage,
+                    provider_status=_safe_ai_error_label(err),
+                )
+            state = _ai_batch_load_state(force_refresh=True)
+            state["last_error"] = err[:500]
+            state["last_error_at"] = time.time()
+            _ai_batch_save_state(state)
+            _ai_audit_append(
+                "error",
+                "Shared AI precompute request/analysis failed",
+                {
+                    "error": _safe_ai_error_label(err),
+                    "failure_stage": failure_stage,
+                    "event_count": len(batch_event_rows),
+                },
+            )
+    finally:
+        _release_ai_batch_process_lock(process_lock_fd)
+        with _AI_BATCH_LOCK:
+            _AI_BATCH_REQUEST_INFLIGHT = False
+
+def _shared_ai_supervisor_loop() -> None:
+    """One controlled background cycle for desk AI + Forecaster precompute."""
+    global _AI_BATCH_SUPERVISOR_RUNNING, _AI_BATCH_SUPERVISOR_THREAD
+    try:
+        while True:
+            try:
+                try:
+                    _check_ai_price_validations()
+                except Exception:
+                    pass
+                if is_ai_enabled(force_refresh=True):
+                    _run_shared_ai_batch_once()
+            except Exception as exc:
+                _ai_audit_append(
+                    "error",
+                    "Shared AI supervisor iteration failed",
+                    {"error": _safe_ai_error_label(str(exc))},
+                )
+            _AI_BATCH_WAKE_EVENT.wait(timeout=_AI_BATCH_POLL_SECONDS)
+            _AI_BATCH_WAKE_EVENT.clear()
+    finally:
+        with _AI_BATCH_LOCK:
+            _AI_BATCH_SUPERVISOR_RUNNING = False
+            if _AI_BATCH_SUPERVISOR_THREAD is threading.current_thread():
+                _AI_BATCH_SUPERVISOR_THREAD = None
+
+
+def start_shared_background_ai_worker() -> None:
+    """Start/recover the one process-local supervisor; never a paid UI action."""
+    global _AI_BATCH_SUPERVISOR_RUNNING, _AI_BATCH_SUPERVISOR_THREAD
+    if not DEFAULT_AI_KEY:
+        return
+    with _AI_BATCH_LOCK:
+        alive = bool(
+            _AI_BATCH_SUPERVISOR_THREAD is not None
+            and getattr(_AI_BATCH_SUPERVISOR_THREAD, "is_alive", lambda: False)()
+        )
+        if _AI_BATCH_SUPERVISOR_RUNNING and alive:
+            _AI_BATCH_WAKE_EVENT.set()
+            return
+        _AI_BATCH_SUPERVISOR_RUNNING = True
+        _AI_BATCH_SUPERVISOR_THREAD = threading.Thread(
+            target=_shared_ai_supervisor_loop,
+            daemon=True,
+            name="ApexMacroSharedAI",
+        )
+        thread = _AI_BATCH_SUPERVISOR_THREAD
+    try:
+        thread.start()
+    except Exception:
+        with _AI_BATCH_LOCK:
+            _AI_BATCH_SUPERVISOR_RUNNING = False
+            _AI_BATCH_SUPERVISOR_THREAD = None
+        return
+    if is_ai_enabled():
+        _AI_BATCH_WAKE_EVENT.set()
+
+
+def _shared_ai_asset(asset: str) -> dict:
+    state = _ai_batch_load_state()
+    result = state.get("result", {}) if isinstance(state, dict) else {}
+    assets = result.get("assets", {}) if isinstance(result, dict) else {}
+    item = assets.get(asset, {}) if isinstance(assets, dict) else {}
+    return dict(item) if isinstance(item, dict) else {}
+
+
+@st.cache_data(ttl=30, show_spinner=False)
 def get_openrouter_analysis(
     news_text: str,
     api_key: str = DEFAULT_AI_KEY,
@@ -2783,37 +5917,17 @@ def get_openrouter_analysis(
     model_hint: str = DEFAULT_AI_MODEL,
     cache_version: str = AI_CACHE_VERSION,
 ) -> str:
-    if not news_text or not api_key:
-        return "AI analysis unavailable."
-
-    provider, url, model, resolved_key = _ai_runtime(api_key, provider_hint, model_hint)
-    if not resolved_key:
-        return f"{provider} AI key is unavailable."
-
-    system_prompt = (
-        "You are an institutional financial analyst and macro strategist. "
-        "Analyze ONLY the supplied live-news items. Respect source names and timestamps, prioritize the freshest "
-        "high-impact developments, and treat cross-source confirmation as stronger evidence than a single headline. "
-        "Do not invent missing facts and do not treat stale or undated items as breaking news. "
-        "Provide a concise 2-3 sentence executive summary highlighting the immediate directional impact on "
-        "Gold (XAUUSD), US Dollar (USD), Crude Oil, and Nasdaq-100 when relevant."
-    )
-
-    try:
-        response = _post_ai_chat(
-            provider=provider,
-            url=url,
-            headers=_ai_headers(resolved_key, "ApexMacro Desk"),
-            model=model,
-            system_prompt=system_prompt,
-            user_prompt=news_text,
-            temperature=0.2,
-            timeout=45,
-        )
-        content = _ai_message_content(response.json())
-        return content or "Could not generate AI analysis at the moment."
-    except Exception as e:
-        return f"{provider} AI Error: {str(e)}"
+    """Read the shared background summary; never make a page-triggered AI request."""
+    if not is_ai_enabled():
+        return "AI is paused by the administrator to prevent provider spending. Rule-based and macro analysis remain active."
+    state = _ai_batch_load_state()
+    result = state.get("result", {}) if isinstance(state, dict) else {}
+    summary = str(result.get("summary", "")).strip() if isinstance(result, dict) else ""
+    if summary:
+        return summary
+    if state.get("last_error"):
+        return "Background AI bootstrap is retrying after a provider error; cached macro rules remain active."
+    return "Background AI is preparing the first shared news/data snapshot in the background."
 
 
 def _is_gold_relevant_news(article: dict) -> bool:
@@ -2913,7 +6027,7 @@ def _gold_rule_based_news_points(articles: list) -> float:
     return float(np.clip(score, -0.50, 0.50))
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def get_openrouter_gold_signal(
     news_text: str,
     api_key: str = DEFAULT_AI_KEY,
@@ -2921,69 +6035,30 @@ def get_openrouter_gold_signal(
     model_hint: str = DEFAULT_AI_MODEL,
     cache_version: str = AI_CACHE_VERSION,
 ) -> dict:
-    default = {
-        "direction": "Neutral",
-        "score": 0.0,
-        "confidence": 0.0,
-        "horizon": "Unknown",
-        "reason": "Gold AI signal is temporarily unavailable.",
-        "active": False,
-    }
-    if not news_text or not api_key:
-        return default
-
-    provider, url, model, resolved_key = _ai_runtime(api_key, provider_hint, model_hint)
-    if not resolved_key:
-        return default
-
-    system_prompt = (
-        "You are the Gold intelligence analyst for an institutional macro terminal. "
-        "Assess ONLY the directional impact of the supplied CURRENT news on Gold/XAUUSD. "
-        "Use supplied source names and timestamps: prioritize fresher high-quality reports, look for cross-source "
-        "confirmation, and lower confidence when evidence is stale, undated, contradictory, or single-source. "
-        "Reason through real yields, USD/DXY, Federal Reserve expectations, inflation, "
-        "safe-haven/geopolitical demand, central-bank demand and ETF flows. "
-        "Do not treat generic positive/negative words as Gold direction and do not invent facts not present in the feed. "
-        "Return ONLY valid JSON with keys: direction, score, confidence, horizon, reason. "
-        "direction must be Bullish, Neutral or Bearish. "
-        "score must be from -1.0 to +1.0. confidence must be from 0 to 100. "
-        "horizon must be Intraday, 1-3 Days, or Multi-Day. "
-        "reason must be one concise sentence."
-    )
-
-    try:
-        response = _post_ai_chat(
-            provider=provider,
-            url=url,
-            headers=_ai_headers(resolved_key, "ApexMacro Gold Intelligence"),
-            model=model,
-            system_prompt=system_prompt,
-            user_prompt=news_text,
-            temperature=0.1,
-            timeout=45,
-        )
-        content = _ai_message_content(response.json())
-        content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.I | re.S).strip()
-        parsed = json.loads(content)
-
-        direction = str(parsed.get("direction", "Neutral")).strip().title()
-        if direction not in {"Bullish", "Neutral", "Bearish"}:
-            direction = "Neutral"
-
-        score = float(np.clip(float(parsed.get("score", 0.0)), -1.0, 1.0))
-        confidence = float(np.clip(float(parsed.get("confidence", 0.0)), 0.0, 100.0))
-
+    """Read Gold from the one shared background AI batch."""
+    if not is_ai_enabled():
         return {
-            "direction": direction,
-            "score": score,
-            "confidence": confidence,
-            "horizon": str(parsed.get("horizon", "Unknown"))[:40],
-            "reason": str(parsed.get("reason", ""))[:280],
-            "active": True,
+            "direction": "Neutral", "score": 0.0, "confidence": 0.0,
+            "horizon": "Paused", "reason": "AI is paused by the administrator; Gold rules and macro data remain active.",
+            "active": False,
         }
-    except Exception as exc:
-        default["reason"] = f"{provider} Gold AI unavailable: {str(exc)[:220]}"
-        return default
+    item = _shared_ai_asset("Gold")
+    if not item:
+        return {
+            "direction": "Neutral", "score": 0.0, "confidence": 0.0,
+            "horizon": "Unknown", "reason": "Background AI has not produced a Gold update yet.",
+            "active": False,
+        }
+    score = float(item.get("score", 0.0) or 0.0)
+    direction = "Bullish" if score > 0.12 else "Bearish" if score < -0.12 else "Neutral"
+    return {
+        "direction": direction,
+        "score": score,
+        "confidence": float(item.get("confidence", 0.0) or 0.0),
+        "horizon": str(item.get("horizon", "1-3 Days")),
+        "reason": str(item.get("reason", ""))[:280],
+        "active": True,
+    }
 
 
 def _gold_news_intelligence(articles: list) -> dict:
@@ -3040,79 +6115,85 @@ def _nasdaq_relevant_articles(articles: list) -> list:
     return [a for a in (articles or []) if _is_nasdaq_news(a)]
 
 
+def _asset_news_relevance(article: dict, asset: str) -> bool:
+    """Deterministic relevance gate: unrelated headlines cannot affect an asset."""
+    text = f"{article.get('title', '')} {article.get('description', '')}".lower()
+    common_macro = ["inflation","cpi","pce","gdp","jobs","employment","unemployment","payroll","central bank","interest rate","rate cut","rate hike","bond yield","treasury yield","recession","growth","tariff","sanction","geopolitical","war"]
+    terms = {
+        "USD":["usd","dollar","dxy","federal reserve"," fed ","powell","united states","u.s.","us economy","treasury"],
+        "EUR":["eur","euro","ecb","lagarde","eurozone","euro area","germany","france","italy","spain"],
+        "GBP":["gbp","pound","sterling","bank of england","boe","united kingdom","uk economy","britain","bailey"],
+        "CAD":["cad","canadian dollar","bank of canada","boc","canada","macklem"],
+        "JPY":["jpy","yen","bank of japan","boj","japan","ueda"],
+        "CHF":["chf","swiss franc","swiss national bank","snb","switzerland"],
+        "AUD":["aud","australian dollar","reserve bank of australia","rba","australia"],
+        "NZD":["nzd","new zealand dollar","reserve bank of new zealand","rbnz","new zealand"],
+        "Gold":["gold","xau","bullion","precious metal","real yield","safe haven","gold reserve","gold etf","central bank buying"],
+        "Oil":["oil","crude","wti","brent","opec","opec+","petroleum","gasoline","energy","inventory","inventories","refinery"],
+        "Nasdaq":["nasdaq","ndx","technology stocks","tech stocks","semiconductor","nvidia","microsoft","apple","amazon","meta","alphabet","tesla","growth stocks","ai stocks","chip"]}
+    if any(term in text for term in terms.get(asset, [])): return True
+    if asset in {"USD","Gold","Nasdaq"} and any(term in text for term in common_macro): return True
+    if asset == "Oil" and any(term in text for term in ["geopolitical","war","attack","sanction","middle east","russia","iran"]): return True
+    return False
+
+def _asset_rule_news_score(articles: list, asset: str) -> float:
+    if asset == "Gold": return float(_gold_rule_based_news_points(articles))
+    bull=["rally","surge","jump","beat","strong","higher","growth","dovish","rate cut","risk on","risk-on"]
+    bear=["selloff","slump","drop","fall","miss","weak","lower","hawkish","rate hike","risk off","risk-off","recession"]
+    score=0.0
+    for art in articles:
+        if not _asset_news_relevance(art,asset): continue
+        t=f"{art.get('title','')} {art.get('description','')}".lower(); local=0.0
+        if any(k in t for k in bull): local += 0.055
+        if any(k in t for k in bear): local -= 0.055
+        if asset=="Oil":
+            if any(k in t for k in ["supply cut","output cut","inventory draw","inventories fall","supply disruption","sanction","attack"]): local += 0.075
+            if any(k in t for k in ["output increase","supply increase","inventory build","inventories rise","demand weak"]): local -= 0.075
+        elif asset=="Nasdaq":
+            if any(k in t for k in ["yields fall","yield falls","ai demand","chip rally","tech rally","strong earnings"]): local += 0.07
+            if any(k in t for k in ["yields rise","yield spike","chip restrictions","tech selloff","inflation surprise"]): local -= 0.07
+        elif asset in {"JPY","CHF"} and any(k in t for k in ["risk off","risk-off","war","attack","escalation"]): local += 0.04
+        score += local
+    return float(np.clip(score,-0.50,0.50))
+
+@st.cache_data(ttl=30, show_spinner=False)
+def get_multi_asset_news_intelligence(news_text: str, api_key: str=DEFAULT_AI_KEY, provider_hint: str=DEFAULT_AI_PROVIDER, model_hint: str=DEFAULT_AI_MODEL, cache_version: str=AI_CACHE_VERSION) -> dict:
+    """Read all asset judgments from the one shared background AI batch."""
+    assets=["USD","EUR","GBP","CAD","JPY","AUD","NZD","CHF","Gold","Oil","Nasdaq"]
+    empty={a:{"score":0.0,"confidence":0.0,"reason":"Background AI not ready.","horizon":"Unknown"} for a in assets}
+    if not is_ai_enabled():
+        paused={a:{"score":0.0,"confidence":0.0,"reason":"AI paused by administrator; deterministic rules remain active.","horizon":"Paused"} for a in assets}
+        return {"summary":"AI is paused by the administrator to prevent provider spending. Rule-based and macro analysis remain active.","assets":paused,"active":False}
+    state=_ai_batch_load_state(); result=state.get("result",{}) if isinstance(state,dict) else {}
+    raw=result.get("assets",{}) if isinstance(result,dict) else {}
+    if not isinstance(raw,dict) or not raw:
+        status = "Background AI bootstrap is retrying after a provider error; cached macro rules remain active." if state.get("last_error") else "Background AI is preparing the first shared news/data snapshot in the background."
+        return {"summary":status,"assets":empty,"active":False}
+    clean=dict(empty)
+    for asset in assets:
+        if isinstance(raw.get(asset),dict): clean[asset]=dict(raw[asset])
+    return {"summary":str(result.get("summary",""))[:1200],"assets":clean,"active":True}
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def analyze_news_rule_based(articles: list) -> dict:
-    scores = {
-        "USD": 0.0, "EUR": 0.0, "GBP": 0.0, "CAD": 0.0,
-        "JPY": 0.0, "AUD": 0.0, "NZD": 0.0, "CHF": 0.0,
-        "Gold": 0.0, "Oil": 0.0, "Nasdaq": 0.0
-    }
-    drivers = [
-        {"name": "Macro Data Momentum", "icon": "📊", "expected_duration": "Active Session", "reason": "Evaluated via multi-timeframe FRED indicators."},
-        {"name": "Geopolitical & Feed Flow", "icon": "📡", "expected_duration": "1-2 Days", "reason": "Real-time institutional news stream monitored."}
-    ]
-
-    if not articles:
-        return {"scores": scores, "drivers": drivers, "ai_summary": "No live news articles detected for AI analysis.", "ai_active": True}
-
-    ranked_articles = _rank_news_articles(articles)
-    combined_news = "\n".join([
-        f"- [{(a.get('source') or {}).get('name', 'Unknown Source')} | {a.get('publishedAt', '')}] "
-        f"{a.get('title', '')}: {a.get('description', '')}"
-        for a in ranked_articles[:10]
-    ])
-    ai_summary = get_openrouter_analysis(combined_news, DEFAULT_AI_KEY, DEFAULT_AI_PROVIDER, DEFAULT_AI_MODEL, AI_CACHE_VERSION)
-
-    bullish_keywords = ["surge", "jump", "higher", "beat", "strong", "rally", "growth", "bull", "cut inflation", "options", "profit"]
-    bearish_keywords = ["drop", "fall", "lower", "miss", "weak", "slump", "bear", "inflation rise", "tension", "attacking", "military", "war"]
-
-    sentiment_delta = 0.0
-    for art in articles:
-        text = (art.get("title", "") + " " + art.get("description", "")).lower()
-        if any(k in text for k in bullish_keywords):
-            sentiment_delta += 0.04
-        if any(k in text for k in bearish_keywords):
-            sentiment_delta -= 0.04
-
-    gold_intel = _gold_news_intelligence(articles)
-
-    for k in scores:
-        if k == "Gold":
-            scores[k] = float(gold_intel["points"])
-        elif k == "CHF":
-            scores[k] = max(min(-sentiment_delta + 0.05, 0.5), -0.5)
-        elif k in ["Oil"]:
-            scores[k] = max(min(sentiment_delta + 0.08, 0.5), -0.5)
-        elif k == "Nasdaq":
-            ndx_delta = 0.0
-            ndx_bull = [
-                "rally", "surge", "beat", "strong earnings", "risk on", "risk-on", "yield falls",
-                "yields fall", "rate cut", "dovish", "ai demand", "chip rally", "tech rally"
-            ]
-            ndx_bear = [
-                "selloff", "slump", "miss", "risk off", "risk-off", "yield spike", "yields rise",
-                "rate hike", "hawkish", "inflation surprise", "recession", "chip restrictions", "tech selloff"
-            ]
-            for art in _nasdaq_relevant_articles(articles):
-                text2 = (art.get("title", "") + " " + art.get("description", "")).lower()
-                if any(kw in text2 for kw in ndx_bull):
-                    ndx_delta += 0.06
-                if any(kw in text2 for kw in ndx_bear):
-                    ndx_delta -= 0.06
-            scores[k] = max(min(ndx_delta, 0.5), -0.5)
-        else:
-            scores[k] = max(min(sentiment_delta, 0.5), -0.5)
-
-    return {
-        "scores": scores,
-        "drivers": drivers,
-        "ai_summary": ai_summary,
-        "ai_active": True,
-        "gold_ai": gold_intel.get("ai", {}),
-        "gold_rule_points": gold_intel.get("rule_points", 0.0),
-        "gold_ai_points": gold_intel.get("ai_points", 0.0),
-        "gold_relevant_news_count": gold_intel.get("relevant_count", 0),
-    }
+    """Asset-specific news scores; all AI judgments arrive in one cached request."""
+    assets=["USD","EUR","GBP","CAD","JPY","AUD","NZD","CHF","Gold","Oil","Nasdaq"]; scores={a:0.0 for a in assets}
+    drivers=[{"name":"Macro Data Momentum","icon":"📊","expected_duration":"Active Session","reason":"Evaluated via multi-timeframe FRED indicators."},{"name":"Geopolitical & Feed Flow","icon":"📡","expected_duration":"1-2 Days","reason":"Real-time institutional news stream monitored."}]
+    if not articles: return {"scores":scores,"drivers":drivers,"ai_summary":"No live news articles detected for AI analysis.","ai_active":False}
+    ranked=_rank_news_articles(articles)
+    combined_news="\n".join(f"- [{(a.get('source') or {}).get('name','Unknown Source')} | {a.get('publishedAt','')}] {a.get('title','')}: {a.get('description','')}" for a in ranked[:18])
+    ai_pack=get_multi_asset_news_intelligence(combined_news,DEFAULT_AI_KEY,DEFAULT_AI_PROVIDER,DEFAULT_AI_MODEL,AI_CACHE_VERSION); ai_assets=ai_pack.get("assets",{})
+    counts={}; reasons={}
+    for asset in assets:
+        relevant=[a for a in ranked if _asset_news_relevance(a,asset)][:14]; counts[asset]=len(relevant)
+        rule=_asset_rule_news_score(relevant,asset) if relevant else 0.0; item=ai_assets.get(asset,{}) if ai_pack.get("active") else {}
+        ais=float(item.get("score",0.0)); conf=float(item.get("confidence",0.0))/100.0; aic=float(np.clip(ais*0.50*conf,-0.50,0.50)) if relevant else 0.0
+        scores[asset]=float(np.clip((0.65*rule)+(0.35*aic),-0.50,0.50)); reasons[asset]=str(item.get("reason",""))[:240]
+    gi=ai_assets.get("Gold",{}) if ai_pack.get("active") else {}; gs=float(gi.get("score",0.0)); gc=float(gi.get("confidence",0.0)); gd="Bullish" if gs>0.12 else "Bearish" if gs<-0.12 else "Neutral"
+    gold_ai={"direction":gd,"score":gs,"confidence":gc,"horizon":"1-3 Days","reason":str(gi.get("reason",""))[:280],"active":bool(ai_pack.get("active") and counts.get("Gold",0))}
+    gold_rel=[a for a in ranked if _asset_news_relevance(a,"Gold")][:14]
+    return {"scores":scores,"drivers":drivers,"ai_summary":ai_pack.get("summary",""),"ai_active":bool(ai_pack.get("active")),"asset_ai_reasons":reasons,"asset_news_counts":counts,"gold_ai":gold_ai,"gold_rule_points":_asset_rule_news_score(gold_rel,"Gold"),"gold_ai_points":float(np.clip(gs*0.50*(gc/100.0),-0.50,0.50)),"gold_relevant_news_count":counts.get("Gold",0)}
 
 def calc_mtf(vals: list, cat: str) -> dict | None:
     if not vals or len(vals) < 2:
@@ -3548,6 +6629,21 @@ def page_gold(fred_key: str, channel_name: str) -> None:
         gold_ai_confidence = float(gold_ai.get("confidence", 0.0))
         gold_ai_reason = str(gold_ai.get("reason", ""))
         gold_ai_horizon = str(gold_ai.get("horizon", "Unknown"))
+        tactical_label = str((gold_tactical_confirm or {}).get("label", "Neutral"))
+        ai_dir_l = gold_ai_direction.lower()
+        tact_l = tactical_label.lower()
+        gold_ai_display = gold_ai_direction
+        price_note = ""
+        if ai_dir_l in {"bullish", "bearish"}:
+            if tact_l == "neutral":
+                gold_ai_display = f"Mildly {gold_ai_direction} / Price Unconfirmed"
+                price_note = " Live price has not confirmed the AI direction yet."
+            elif (ai_dir_l == "bullish" and tact_l == "bearish") or (ai_dir_l == "bearish" and tact_l == "bullish"):
+                gold_ai_display = f"{gold_ai_direction} Thesis / Price Conflict"
+                price_note = " Live price currently contradicts the AI direction."
+            else:
+                gold_ai_display = f"{gold_ai_direction} / Price Confirmed"
+                price_note = " Live price confirms the AI direction."
         gold_news_count = int(gold_intel.get("gold_relevant_news_count", 0))
         tactical_confirm_text = (
             f"{gold_tactical_confirm.get('label_icon', '')} {gold_tactical_confirm.get('label', 'Neutral')} "
@@ -3557,9 +6653,9 @@ def page_gold(fred_key: str, channel_name: str) -> None:
         ai_summary_html = (
             f'<div style="margin-top:10px;padding:10px 12px;background:rgba(255,209,102,0.06);'
             f'border:1px solid rgba(255,209,102,0.22);border-radius:10px;font-size:11.5px;color:#ecf7ff;'
-            f'text-align:left;line-height:1.55;"><b style="color:#ffd166;">Gold AI Signal:</b> '
-            f'{gold_ai_direction} • {gold_ai_confidence:.0f}% • {gold_ai_horizon}<br>'
-            f'<span style="color:#9fb1bf;">{gold_ai_reason}</span></div>'
+            f'text-align:left;line-height:1.55;"><b style="color:#ffd166;">AI News View:</b> '
+            f'{gold_ai_display} • {gold_ai_confidence:.0f}% • {gold_ai_horizon}<br>'
+            f'<span style="color:#9fb1bf;">{gold_ai_reason}{price_note}</span></div>'
         ) if gold_ai.get("active") else (
             '<div style="margin-top:10px;padding:10px 12px;background:rgba(255,255,255,0.03);'
             'border:1px solid rgba(255,255,255,0.08);border-radius:10px;font-size:11px;color:#8fa3b4;">'
@@ -3935,6 +7031,18 @@ CATALYST_PRECURSOR_MAP = {
             {"name": "Real Disposable Personal Income", "series": "DSPIC96", "cat": "growth", "weight": 0.25},
         ],
     },
+    "CAD_GDP_MM": {
+        "title": "GDP m/m",
+        "currency": "CAD",
+        "impact": "High",
+        "keywords": ["canada gdp", "canadian gdp", "gdp m/m", "monthly gdp", "canada growth", "statistics canada"],
+        "forecast_str": "—", "prev_str": "—", "consensus_bias": "Canada Monthly GDP Consensus",
+        "precursors": [
+            {"name": "Canadian Employment Momentum", "series": "LFEMTTTTCAM647S", "cat": "labor_pos", "weight": 0.40},
+            {"name": "Canadian Unemployment Momentum", "series": "LRUN64TTCAM156S", "cat": "labor_neg", "weight": 0.35},
+            {"name": "WTI Commodity Demand Proxy", "series": "DCOILWTICO", "cat": "growth", "weight": 0.25, "fallback": "POILWTIUSDM"},
+        ],
+    },
     "US_PCE": {
         "title": "Core PCE Price Index m/m",
         "currency": "USD",
@@ -4005,25 +7113,26 @@ def _normalize_forex_factory_actual(value: object) -> str:
     return clean
 
 
-def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3)") -> list[dict]:
+def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3)", ff_events_override: list[dict] | None = None) -> list[dict]:
     """
-    Forex Factory is the sole calendar source. Only High and Medium
-    impact events are allowed into the Catalyst Forecaster.
+    Forex Factory is the sole calendar source. Only High Impact
+    economic events are allowed into the Catalyst Forecaster.
     Existing precursor/Nowcast logic is preserved where a title matches
     the legacy catalyst map.
     """
-    utc_now = datetime.utcnow()
+    utc_now = datetime.now(timezone.utc).replace(tzinfo=None)
     user_now = utc_now + timedelta(hours=tz_offset)
     events = []
 
-    ff_events = fetch_forex_factory_calendar()
+    ff_events = ff_events_override if ff_events_override is not None else fetch_forex_factory_calendar_rolling(7, tz_offset)
     if not ff_events:
         return []
 
     for ff in ff_events:
-        impact_level = str(ff.get("impact", "")).strip().title()
-        if impact_level not in {"High", "Medium"}:
+        raw_impact = str(ff.get("impact", "")).strip().title()
+        if raw_impact not in {"High", "Red", "High Impact"}:
             continue
+        impact_level = "High"
 
         title = str(ff.get("title", "")).strip()
         currency = str(ff.get("country", "")).strip().upper()
@@ -4044,7 +7153,7 @@ def get_upcoming_catalyst_events(tz_offset: int = 3, tz_label: str = "KRD (UTC+3
         diff = event_local - user_now
         total_seconds = diff.total_seconds()
         days_away = (event_local.date() - user_now.date()).days
-        if days_away > 10:
+        if days_away > 14:
             continue
 
         # Keep a released catalyst on the live Forecaster radar for 48 hours only.
@@ -4158,6 +7267,167 @@ def _safe_numeric_release(value: object) -> float | None:
         return None
 
 
+
+def _ff_history_load() -> dict:
+    with _FF_HISTORY_LOCK:
+        data = _load_persistent_state("forex_factory_high_impact_history_v1", FF_HISTORY_FILE, {"records": [], "last_backfill_utc": ""})
+        return data if isinstance(data, dict) else {"records": [], "last_backfill_utc": ""}
+
+
+def _ff_history_save(data: dict) -> None:
+    with _FF_HISTORY_LOCK:
+        _save_persistent_state("forex_factory_high_impact_history_v1", FF_HISTORY_FILE, data)
+
+
+def _ff_parse_historical_html(html_text: str) -> list[dict]:
+    """Parse Forex Factory calendar rows for historical archives."""
+    if not html_text:
+        return []
+    rows = []
+    current_date = ""
+
+    tr_matches = re.findall(r'<tr[^>]*class="[^"]*calendar__row[^"]*"[^>]*>(.*?)</tr>', html_text, re.DOTALL | re.IGNORECASE)
+    if not tr_matches:
+        tr_matches = re.findall(r'<tr[^>]*data-event-id="[^"]*"[^>]*>(.*?)</tr>', html_text, re.DOTALL | re.IGNORECASE)
+
+    for tr in tr_matches:
+        date_match = re.search(r'class="[^"]*calendar__date[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+        if date_match and _ff_clean_cell(date_match.group(1)):
+            current_date = _ff_clean_cell(date_match.group(1))
+        curr_match = re.search(r'class="[^"]*calendar__currency[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+        currency = _ff_clean_cell(curr_match.group(1)).upper() if curr_match else ""
+        event_match = re.search(r'class="[^"]*calendar__event[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+        title = _ff_clean_cell(event_match.group(1)) if event_match else ""
+        if not currency or not title:
+            continue
+        impact_match = re.search(r'class="[^"]*calendar__impact[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+        impact_blob = (impact_match.group(0) if impact_match else "").lower()
+        if "high" not in impact_blob and "red" not in impact_blob:
+            continue
+        act_match = re.search(r'class="[^"]*calendar__actual[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+        fc_match = re.search(r'class="[^"]*calendar__forecast[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+        prev_match = re.search(r'class="[^"]*calendar__previous[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+        time_match = re.search(r'class="[^"]*calendar__time[^"]*"[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
+        actual = _ff_clean_cell(act_match.group(1)) if act_match else ""
+        forecast = _ff_clean_cell(fc_match.group(1)) if fc_match else ""
+        previous = _ff_clean_cell(prev_match.group(1)) if prev_match else ""
+        time_txt = _ff_clean_cell(time_match.group(1)) if time_match else ""
+        if not actual:
+            continue
+        rows.append({
+            "event_identity": f"{currency}|{_normalize_catalyst_title(title)}",
+            "currency": currency, "title": title, "date_label": current_date, "time_label": time_txt,
+            "actual": actual, "forecast": forecast, "previous": previous,
+            "source": "Forex Factory", "captured_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds") + "Z",
+        })
+    return rows
+
+
+def _ff_backfill_high_impact_history(days: int = 370, max_chunks: int = 2) -> int:
+    """Low-frequency historical bootstrap. At most two 30-day pages per daemon pass."""
+    state = _ff_history_load()
+    existing = list(state.get("records") or [])
+    done_ranges = set(state.get("done_ranges") or [])
+    today = datetime.now(timezone.utc).date()
+    added = 0
+    chunks = []
+    end = today - timedelta(days=1)
+    floor = today - timedelta(days=max(60, int(days)))
+    while end >= floor:
+        start = max(floor, end - timedelta(days=29))
+        key = f"{start.isoformat()}:{end.isoformat()}"
+        if key not in done_ranges:
+            chunks.append((start, end, key))
+        end = start - timedelta(days=1)
+    for start, end, key in chunks[:max_chunks]:
+        try:
+            def ffdate(d): return d.strftime("%b%d.%Y").lower()
+            url = f"https://www.forexfactory.com/calendar?range={ffdate(start)}-{ffdate(end)}"
+            r = requests.get(url, timeout=14, headers=_FF_BROWSER_HEADERS)
+            if r.status_code == 200 and r.text:
+                parsed = _ff_parse_historical_html(r.text)
+                seen = {f"{x.get('event_identity')}|{x.get('date_label')}|{x.get('time_label')}|{x.get('actual')}" for x in existing}
+                for row in parsed:
+                    k = f"{row.get('event_identity')}|{row.get('date_label')}|{row.get('time_label')}|{row.get('actual')}"
+                    if k not in seen:
+                        seen.add(k)
+                        existing.append(row)
+                        added += 1
+                done_ranges.add(key)
+        except Exception:
+            break
+    state["records"] = existing[-5000:]
+    state["done_ranges"] = sorted(done_ranges)
+    state["last_backfill_utc"] = datetime.now(timezone.utc).isoformat(timespec="seconds") + "Z"
+    _ff_history_save(state)
+    return added
+
+
+def _ff_external_same_event_history(event: dict, limit: int = 12) -> list[dict]:
+    ident = _event_identity(event)
+    out = []
+    for r in (_ff_history_load().get("records") or []):
+        if str(r.get("event_identity", "")) != ident:
+            continue
+        av = _safe_numeric_release(r.get("actual"))
+        fv = _safe_numeric_release(r.get("forecast"))
+        if av is None or fv is None:
+            continue
+        eps = max(1e-9, abs(fv) * 1e-6)
+        outcome = "beat" if av > fv + eps else ("miss" if av < fv - eps else "inline")
+        out.append({**r, "actual_outcome": outcome, "resolved": True, "external_history": True})
+    return out[-limit:][::-1]
+
+
+def _ff_release_actual_watcher(events: list[dict]) -> int:
+    """At release time, refresh the live rolling feed and persist new Actual prints automatically."""
+    now_local = get_current_time(3)
+    pending = []
+    for ev in events or []:
+        if str(ev.get("impact", "")).title() != "High":
+            continue
+        dt = ev.get("datetime_obj")
+        if not isinstance(dt, datetime):
+            continue
+        sec = (now_local - dt.replace(tzinfo=None)).total_seconds()
+        if -45 <= sec <= 12 * 60 and not _normalize_forex_factory_actual(ev.get("actual_str", "")):
+            pending.append(ev)
+    if not pending:
+        return 0
+    fresh = fetch_forex_factory_calendar_rolling(7, 3, force_refresh=True)
+    by_code = {}
+    for ff in fresh:
+        try:
+            raw = str(ff.get("date", ""))
+            d = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if d.tzinfo is not None:
+                d = d.astimezone(timezone.utc).replace(tzinfo=None)
+            code = _build_ff_event_code(str(ff.get("country", "")).upper(), str(ff.get("title", "")), d)
+            by_code[code] = ff
+        except Exception:
+            continue
+    cache = load_actuals_cache()
+    changed = 0
+    for ev in pending:
+        ff = by_code.get(str(ev.get("code", "")), {})
+        actual = _normalize_forex_factory_actual(ff.get("actual", ""))
+        if actual and actual != str(cache.get(ev.get("code"), "")).strip():
+            cache[ev["code"]] = actual
+            changed += 1
+            ev["actual_str"] = actual
+            try:
+                nc = compute_event_nowcast(ev, DEFAULT_FRED_KEY, fetch_all_instant_news(DEFAULT_TELEGRAM_CHANNEL), actual_override=actual)
+                _record_forecaster_snapshot(ev, nc, actual=actual)
+            except Exception:
+                pass
+    if changed:
+        save_actuals_cache(cache)
+        try:
+            _AI_BATCH_WAKE_EVENT.set()
+        except Exception:
+            pass
+    return changed
+
 def _event_family(event: dict) -> str:
     title = _normalize_catalyst_title(event.get("title", ""))
     if any(k in title for k in ("pce", "cpi", "inflation", "price index", "ppi")):
@@ -4174,6 +7444,377 @@ def _event_family(event: dict) -> str:
         return "energy"
     return "general"
 
+
+
+# v14 — universal High-Impact evidence engine.  The same framework is used for every
+# High-Impact calendar event; event families only choose economically related inputs.
+_GENERIC_PRECURSORS = {
+    "inflation": [
+        {"name":"Producer-price pressure", "series":"PPIACO", "cat":"inflation", "weight":.28},
+        {"name":"10Y breakeven inflation", "series":"T10YIE", "cat":"inflation", "weight":.24},
+        {"name":"Oil/energy pressure", "series":"DCOILWTICO", "fallback":"POILWTIUSDM", "cat":"inflation", "weight":.20},
+        {"name":"Consumer-demand momentum", "series":"RSAFS", "cat":"growth", "weight":.16},
+        {"name":"Industrial-price/demand backdrop", "series":"INDPRO", "cat":"growth", "weight":.12},
+    ],
+    "labor": [
+        {"name":"Employment trend", "series":"PAYEMS", "cat":"labor_pos", "weight":.30},
+        {"name":"Unemployment trend", "series":"UNRATE", "cat":"labor_neg", "weight":.28},
+        {"name":"Initial claims trend", "series":"ICSA", "cat":"labor_neg", "weight":.24},
+        {"name":"Activity backdrop", "series":"INDPRO", "cat":"growth", "weight":.18},
+    ],
+    "growth": [
+        {"name":"Industrial-production momentum", "series":"INDPRO", "cat":"growth", "weight":.28},
+        {"name":"Retail-demand momentum", "series":"RSAFS", "cat":"growth", "weight":.25},
+        {"name":"Real-income momentum", "series":"DSPIC96", "cat":"growth", "weight":.22},
+        {"name":"Employment backdrop", "series":"PAYEMS", "cat":"labor_pos", "weight":.15},
+        {"name":"Oil/activity proxy", "series":"DCOILWTICO", "fallback":"POILWTIUSDM", "cat":"growth", "weight":.10},
+    ],
+    "activity": [
+        {"name":"Industrial-production momentum", "series":"INDPRO", "cat":"growth", "weight":.35},
+        {"name":"Manufacturing capacity/use", "series":"TCU", "cat":"growth", "weight":.25},
+        {"name":"Retail-demand momentum", "series":"RSAFS", "cat":"growth", "weight":.20},
+        {"name":"Employment backdrop", "series":"PAYEMS", "cat":"labor_pos", "weight":.20},
+    ],
+    "energy": [
+        {"name":"WTI price momentum", "series":"DCOILWTICO", "fallback":"POILWTIUSDM", "cat":"growth", "weight":.45},
+        {"name":"Industrial-demand backdrop", "series":"INDPRO", "cat":"growth", "weight":.30},
+        {"name":"USD/rate demand backdrop", "series":"DTWEXBGS", "cat":"growth", "weight":.25},
+    ],
+    "policy": [
+        {"name":"Core inflation pressure", "series":"PCEPILFE", "cat":"inflation", "weight":.30},
+        {"name":"Unemployment trend", "series":"UNRATE", "cat":"labor_neg", "weight":.25},
+        {"name":"10Y breakeven inflation", "series":"T10YIE", "cat":"inflation", "weight":.25},
+        {"name":"Industrial activity", "series":"INDPRO", "cat":"growth", "weight":.20},
+    ],
+    "general": [
+        {"name":"Industrial activity", "series":"INDPRO", "cat":"growth", "weight":.30},
+        {"name":"Retail demand", "series":"RSAFS", "cat":"growth", "weight":.25},
+        {"name":"Employment trend", "series":"PAYEMS", "cat":"labor_pos", "weight":.25},
+        {"name":"Inflation expectations", "series":"T10YIE", "cat":"inflation", "weight":.20},
+    ],
+}
+
+# Comprehensive Country-Specific Precursor Architecture for USD, EUR, GBP, CAD, JPY, AUD, NZD, CHF
+_CURRENCY_PRECURSOR_OVERRIDES = {
+    "USD": {
+        "inflation": [
+            {"name":"Producer-Price Pressure (PPI)", "series":"PPIACO", "cat":"inflation", "weight":.30},
+            {"name":"10Y Breakeven Inflation Rate", "series":"T10YIE", "cat":"inflation", "weight":.25},
+            {"name":"Crude Oil Energy Input Velocity", "series":"DCOILWTICO", "fallback":"POILWTIUSDM", "cat":"inflation", "weight":.20},
+            {"name":"Retail Demand Momentum", "series":"RSAFS", "cat":"growth", "weight":.15},
+            {"name":"Industrial Output Demand", "series":"INDPRO", "cat":"growth", "weight":.10},
+        ],
+        "labor": [
+            {"name":"Non-Farm Payroll Employment", "series":"PAYEMS", "cat":"labor_pos", "weight":.32},
+            {"name":"Unemployment Rate Trend", "series":"UNRATE", "cat":"labor_neg", "weight":.28},
+            {"name":"Initial Jobless Claims Velocity", "series":"ICSA", "cat":"labor_neg", "weight":.24},
+            {"name":"Industrial Production Backdrop", "series":"INDPRO", "cat":"growth", "weight":.16},
+        ],
+        "growth": [
+            {"name":"Industrial Production Momentum", "series":"INDPRO", "cat":"growth", "weight":.30},
+            {"name":"Retail Demand Momentum", "series":"RSAFS", "cat":"growth", "weight":.28},
+            {"name":"Real Disposable Income", "series":"DSPIC96", "cat":"growth", "weight":.22},
+            {"name":"Capacity Utilization", "series":"TCU", "cat":"growth", "weight":.20},
+        ],
+        "policy": [
+            {"name":"Core PCE Deflator Pressure", "series":"PCEPILFE", "cat":"inflation", "weight":.35},
+            {"name":"Unemployment Rate Trend", "series":"UNRATE", "cat":"labor_neg", "weight":.25},
+            {"name":"10Y Breakeven Expectations", "series":"T10YIE", "cat":"inflation", "weight":.25},
+            {"name":"Trade-Weighted USD Index", "series":"DTWEXBGS", "cat":"growth", "weight":.15},
+        ],
+    },
+    "EUR": {
+        "inflation": [
+            {"name":"Euro Area Harmonized CPI (HICP)", "series":"CP0000EZ19M086NEST", "fallback":"DEUCPIALLMINMEI", "cat":"inflation", "weight":.40},
+            {"name":"Germany Producer Prices (PPI)", "series":"DEUPPIALLMINMEI", "fallback":"PPIACO", "cat":"inflation", "weight":.30},
+            {"name":"Brent/WTI Energy Cost Velocity", "series":"DCOILWTICO", "fallback":"POILWTIUSDM", "cat":"inflation", "weight":.30},
+        ],
+        "labor": [
+            {"name":"Euro Area Harmonized Unemployment", "series":"LRHUTTTTEZM156S", "fallback":"LRHUTTTTDEQ156S", "cat":"labor_neg", "weight":.50},
+            {"name":"German Employment/Jobless Trend", "series":"LRHUTTTTDEQ156S", "cat":"labor_neg", "weight":.30},
+            {"name":"Eurozone Industrial Production", "series":"EA19PRMNTO01GYS", "fallback":"DEUPROINDQISMEI", "cat":"growth", "weight":.20},
+        ],
+        "growth": [
+            {"name":"Germany Industrial Production", "series":"DEUPROINDQISMEI", "fallback":"EA19PRMNTO01GYS", "cat":"growth", "weight":.40},
+            {"name":"Euro Area Retail Trade Volume", "series":"SLRSTT01EZM661S", "cat":"growth", "weight":.35},
+            {"name":"Energy & Terms-of-Trade Input", "series":"DCOILWTICO", "fallback":"POILWTIUSDM", "cat":"growth", "weight":.25},
+        ],
+        "policy": [
+            {"name":"Euro Area Core HICP Inflation", "series":"CP0000EZ19M086NEST", "cat":"inflation", "weight":.45},
+            {"name":"Eurozone Unemployment Pressure", "series":"LRHUTTTTEZM156S", "cat":"labor_neg", "weight":.35},
+            {"name":"Germany Manufacturing Backbone", "series":"DEUPROINDQISMEI", "cat":"growth", "weight":.20},
+        ],
+    },
+    "GBP": {
+        "inflation": [
+            {"name":"UK Consumer Price Inflation (CPI)", "series":"GBRCPIALLMINMEI", "cat":"inflation", "weight":.45},
+            {"name":"UK Producer Output Prices (PPI)", "series":"GBRPPIALLMINMEI", "cat":"inflation", "weight":.30},
+            {"name":"UK Energy Import Cost Momentum", "series":"DCOILWTICO", "fallback":"POILWTIUSDM", "cat":"inflation", "weight":.25},
+        ],
+        "labor": [
+            {"name":"UK Harmonized Unemployment Rate", "series":"LMUNRRTTGBM156S", "cat":"labor_neg", "weight":.55},
+            {"name":"UK Employment Growth Momentum", "series":"LREM64TTGBM156S", "cat":"labor_pos", "weight":.45},
+        ],
+        "growth": [
+            {"name":"UK Industrial Production Output", "series":"GBRPROINDMISMEI", "cat":"growth", "weight":.40},
+            {"name":"UK Retail Sales Volume Index", "series":"SLRSTT01GBM661S", "cat":"growth", "weight":.35},
+            {"name":"UK Labor Demand Backdrop", "series":"LMUNRRTTGBM156S", "cat":"labor_neg", "weight":.25},
+        ],
+        "policy": [
+            {"name":"UK Headline/Core Inflation", "series":"GBRCPIALLMINMEI", "cat":"inflation", "weight":.45},
+            {"name":"UK Unemployment Level", "series":"LMUNRRTTGBM156S", "cat":"labor_neg", "weight":.35},
+            {"name":"UK Industrial Output Activity", "series":"GBRPROINDMISMEI", "cat":"growth", "weight":.20},
+        ],
+    },
+    "CAD": {
+        "inflation": [
+            {"name":"Canada Consumer Price Index (CPI)", "series":"CANCPIALLMINMEI", "cat":"inflation", "weight":.40},
+            {"name":"Canada Industrial Product Price (PPI)", "series":"CANPPIALLMINMEI", "cat":"inflation", "weight":.30},
+            {"name":"WTI Crude Energy Terms-of-Trade", "series":"DCOILWTICO", "fallback":"POILWTIUSDM", "cat":"inflation", "weight":.30},
+        ],
+        "labor": [
+            {"name":"Canadian Employment Momentum", "series":"LFEMTTTTCAM647S", "cat":"labor_pos", "weight":.55},
+            {"name":"Canadian Unemployment Momentum", "series":"LRUN64TTCAM156S", "cat":"labor_neg", "weight":.45},
+        ],
+        "growth": [
+            {"name":"Canadian Industrial Output", "series":"CANPROINDMISMEI", "cat":"growth", "weight":.35},
+            {"name":"Canadian Employment Momentum", "series":"LFEMTTTTCAM647S", "cat":"labor_pos", "weight":.25},
+            {"name":"WTI/Canada Terms-of-Trade Proxy", "series":"DCOILWTICO", "fallback":"POILWTIUSDM", "cat":"growth", "weight":.25},
+            {"name":"Canada Retail Trade Activity", "series":"SLRSTT01CAM661S", "cat":"growth", "weight":.15},
+        ],
+        "policy": [
+            {"name":"Canada Core CPI Pressure", "series":"CANCPIALLMINMEI", "cat":"inflation", "weight":.45},
+            {"name":"Canada Unemployment Slack", "series":"LRUN64TTCAM156S", "cat":"labor_neg", "weight":.35},
+            {"name":"WTI Energy Balance", "series":"DCOILWTICO", "cat":"growth", "weight":.20},
+        ],
+    },
+    "JPY": {
+        "inflation": [
+            {"name":"Japan National CPI Inflation", "series":"JPNCPIALLMINMEI", "cat":"inflation", "weight":.50},
+            {"name":"Japan Corporate Goods Prices (CGPI/PPI)", "series":"JPNPPIALLMINMEI", "cat":"inflation", "weight":.30},
+            {"name":"Imported Energy Cost Pressure", "series":"DCOILWTICO", "fallback":"POILWTIUSDM", "cat":"inflation", "weight":.20},
+        ],
+        "labor": [
+            {"name":"Japan Unemployment Rate", "series":"LRUN64TTJPM156S", "cat":"labor_neg", "weight":.60},
+            {"name":"Japan Industrial Activity Backdrop", "series":"JPNPROINDMISMEI", "cat":"growth", "weight":.40},
+        ],
+        "growth": [
+            {"name":"Japan Industrial Production Output", "series":"JPNPROINDMISMEI", "cat":"growth", "weight":.45},
+            {"name":"Japan Retail Trade Turnover", "series":"SLRSTT01JPM661S", "cat":"growth", "weight":.35},
+            {"name":"Japan Labor Tightness", "series":"LRUN64TTJPM156S", "cat":"labor_neg", "weight":.20},
+        ],
+        "policy": [
+            {"name":"Japan Inflation & Price Velocity", "series":"JPNCPIALLMINMEI", "cat":"inflation", "weight":.50},
+            {"name":"Japan Industrial Output Momentum", "series":"JPNPROINDMISMEI", "cat":"growth", "weight":.30},
+            {"name":"Japan Unemployment Metric", "series":"LRUN64TTJPM156S", "cat":"labor_neg", "weight":.20},
+        ],
+    },
+    "AUD": {
+        "inflation": [
+            {"name":"Australia Consumer Price Index", "series":"AUSCPIALLQINMEI", "cat":"inflation", "weight":.45},
+            {"name":"Australia Producer Price Index", "series":"AUSPPIALLQINMEI", "cat":"inflation", "weight":.30},
+            {"name":"Global Commodity/Energy Input", "series":"DCOILWTICO", "fallback":"POILWTIUSDM", "cat":"inflation", "weight":.25},
+        ],
+        "labor": [
+            {"name":"Australia Unemployment Rate", "series":"LRUN64TTAUM156S", "cat":"labor_neg", "weight":.55},
+            {"name":"Australia Employment Growth", "series":"LFEMTTTTAUM647S", "cat":"labor_pos", "weight":.45},
+        ],
+        "growth": [
+            {"name":"Australia Industrial Production", "series":"AUSPROINDQISMEI", "cat":"growth", "weight":.40},
+            {"name":"Australia Retail Trade Volume", "series":"SLRSTT01AUM661S", "cat":"growth", "weight":.35},
+            {"name":"Commodity Terms of Trade", "series":"DCOILWTICO", "cat":"growth", "weight":.25},
+        ],
+        "policy": [
+            {"name":"Australia Trimmed Mean/CPI", "series":"AUSCPIALLQINMEI", "cat":"inflation", "weight":.45},
+            {"name":"Australia Unemployment Rate", "series":"LRUN64TTAUM156S", "cat":"labor_neg", "weight":.35},
+            {"name":"Australia Industrial Momentum", "series":"AUSPROINDQISMEI", "cat":"growth", "weight":.20},
+        ],
+    },
+    "NZD": {
+        "inflation": [
+            {"name":"New Zealand CPI Inflation", "series":"NZLCPIALLQINMEI", "cat":"inflation", "weight":.50},
+            {"name":"Commodity & Agricultural Inputs", "series":"DCOILWTICO", "fallback":"POILWTIUSDM", "cat":"inflation", "weight":.50},
+        ],
+        "labor": [
+            {"name":"New Zealand Unemployment Rate", "series":"LRUN64TTNZQ156S", "cat":"labor_neg", "weight":.55},
+            {"name":"New Zealand Employment Level", "series":"LFEMTTTTNZQ647S", "cat":"labor_pos", "weight":.45},
+        ],
+        "growth": [
+            {"name":"New Zealand Industrial Output", "series":"NZLPROINDQISMEI", "cat":"growth", "weight":.40},
+            {"name":"New Zealand Retail Turnover", "series":"SLRSTT01NZM661S", "cat":"growth", "weight":.35},
+            {"name":"Commodity Terms of Trade", "series":"DCOILWTICO", "cat":"growth", "weight":.25},
+        ],
+        "policy": [
+            {"name":"New Zealand CPI Inflation", "series":"NZLCPIALLQINMEI", "cat":"inflation", "weight":.50},
+            {"name":"New Zealand Labor Conditions", "series":"LRUN64TTNZQ156S", "cat":"labor_neg", "weight":.50},
+        ],
+    },
+    "CHF": {
+        "inflation": [
+            {"name":"Switzerland CPI Inflation", "series":"CHECPIALLMINMEI", "cat":"inflation", "weight":.50},
+            {"name":"Switzerland PPI Production Prices", "series":"CHEPPIALLMINMEI", "cat":"inflation", "weight":.30},
+            {"name":"Energy & Import Cost Velocity", "series":"DCOILWTICO", "cat":"inflation", "weight":.20},
+        ],
+        "labor": [
+            {"name":"Switzerland Unemployment Rate", "series":"LRUN64TTCHM156S", "cat":"labor_neg", "weight":.70},
+            {"name":"Swiss Production Backdrop", "series":"CHEPROINDQISMEI", "cat":"growth", "weight":.30},
+        ],
+        "growth": [
+            {"name":"Switzerland Industrial Output", "series":"CHEPROINDQISMEI", "cat":"growth", "weight":.45},
+            {"name":"Switzerland Retail Turnover", "series":"SLRSTT01CHM661S", "cat":"growth", "weight":.35},
+            {"name":"Labor Stability Proxy", "series":"LRUN64TTCHM156S", "cat":"growth", "weight":.20},
+        ],
+        "policy": [
+            {"name":"Swiss Headline/Core Inflation", "series":"CHECPIALLMINMEI", "cat":"inflation", "weight":.50},
+            {"name":"Swiss Industrial Growth", "series":"CHEPROINDQISMEI", "cat":"growth", "weight":.30},
+            {"name":"Swiss Unemployment Stability", "series":"LRUN64TTCHM156S", "cat":"labor_neg", "weight":.20},
+        ],
+    },
+}
+
+FORECAST_EVIDENCE_ARCHIVE_FILE = str(PROJECT_ROOT / "forecaster_evidence_archive.json")
+_FORECAST_EVIDENCE_ARCHIVE_LOCK = threading.RLock()
+
+def _universal_precursors(event: dict) -> list:
+    """Return event-specific inputs when known, otherwise a family template for every High-Impact event."""
+    meta = event.get("meta", {}) or {}
+    explicit = list(meta.get("precursors") or [])
+    family = _event_family(event)
+    cur = str(meta.get("currency", event.get("currency", ""))).upper()
+    country_map = (_CURRENCY_PRECURSOR_OVERRIDES.get(cur, {}) or {})
+    # For supported currencies, never silently substitute the generic (mostly US)
+    # template. If a niche family is absent, use that country's own growth/policy
+    # basket instead. Generic templates are reserved for unsupported currencies.
+    if country_map:
+        fallback = list(country_map.get(family) or country_map.get("growth") or country_map.get("policy") or [])
+    else:
+        fallback = list(_GENERIC_PRECURSORS.get(family) or _GENERIC_PRECURSORS["general"])
+    # Preserve curated inputs, then fill gaps from the universal family model without duplicate series.
+    out, seen = [], set()
+    for row in explicit + fallback:
+        sid = str(row.get("series", ""))
+        if not sid or sid in seen: continue
+        seen.add(sid); out.append(dict(row))
+    # Normalize weights so the evidence score is comparable across event types.
+    total = sum(max(0.0, float(x.get("weight", 0) or 0)) for x in out) or 1.0
+    for x in out: x["weight"] = max(0.0, float(x.get("weight", 0) or 0)) / total
+    return out[:6]
+
+def _event_release_utc(event: dict) -> datetime | None:
+    """Return the scheduled release as timezone-aware UTC using deterministic fields."""
+    ev = event or {}
+    meta = ev.get("meta", {}) if isinstance(ev.get("meta", {}), dict) else {}
+
+    raw = str(meta.get("ff_date_raw", "") or "").strip()
+    if raw:
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except Exception:
+            pass
+
+    code = str(ev.get("code", "") or "")
+    m = re.match(r"^FF_[A-Z]+_(\d{12})_", code)
+    if m:
+        try:
+            return datetime.strptime(m.group(1), "%Y%m%d%H%M").replace(tzinfo=timezone.utc)
+        except Exception:
+            pass
+
+    dt = ev.get("datetime_obj")
+    if isinstance(dt, datetime) and dt.tzinfo is not None:
+        try:
+            return dt.astimezone(timezone.utc)
+        except Exception:
+            pass
+    return None
+
+
+def _event_release_utc_iso(event: dict) -> str:
+    dt = _event_release_utc(event)
+    if dt is None:
+        return ""
+    return dt.replace(second=0, microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _event_identity(event: dict) -> str:
+    """ONE canonical Forecaster event identity used across AI/persistence/audit/UI."""
+    currency = str((event or {}).get("currency", "") or "").upper().strip()
+    title = _normalize_catalyst_title((event or {}).get("title", ""))
+    release_utc = _event_release_utc_iso(event)
+    return f"{currency}|{title}|{release_utc or 'unscheduled'}"
+
+def _same_event_history(event: dict, limit: int = 8) -> list:
+    """Merge ApexMacro frozen outcomes with external Forex Factory release history."""
+    ident = _event_identity(event)
+    rows=[]
+    for r in (_load_forecaster_history().get("records", {}) or {}).values():
+        if str(r.get("event_identity", "")) == ident and r.get("resolved"):
+            rows.append(r)
+    rows.sort(key=lambda r: str(r.get("resolved_at_utc", "")), reverse=True)
+    # Internal frozen records win; external history fills the long pre-ApexMacro gap.
+    seen={(str(r.get("actual", "")), str(r.get("forecast", "")), str(r.get("resolved_at_utc", ""))[:10]) for r in rows}
+    for r in _ff_external_same_event_history(event, max(limit, 12)):
+        key=(str(r.get("actual", "")), str(r.get("forecast", "")), str(r.get("date_label", "")))
+        if key not in seen:
+            rows.append(r)
+    return rows[:limit]
+
+def _history_release_signal(event: dict) -> tuple[float, list]:
+    """Score repeat-indicator Actual-vs-consensus behavior; no invented historical releases."""
+    rows=_same_event_history(event, 8)
+    vals=[]
+    for i,r in enumerate(rows):
+        out=str(r.get("actual_outcome", ""))
+        v=1.0 if out=="beat" else (-1.0 if out=="miss" else 0.0)
+        vals.append((v, 1.0/(1.0+i*.35)))
+    if not vals: return 0.0, rows
+    den=sum(w for _,w in vals) or 1.0
+    return sum(v*w for v,w in vals)/den, rows
+
+def _load_evidence_archive() -> dict:
+    with _FORECAST_EVIDENCE_ARCHIVE_LOCK:
+        d=_load_persistent_state("forecaster_evidence_archive_v1", FORECAST_EVIDENCE_ARCHIVE_FILE, {"events":{}})
+        return d if isinstance(d,dict) else {"events":{}}
+
+def _save_evidence_archive(d: dict) -> None:
+    with _FORECAST_EVIDENCE_ARCHIVE_LOCK:
+        _save_persistent_state("forecaster_evidence_archive_v1", FORECAST_EVIDENCE_ARCHIVE_FILE, d)
+
+def _archive_event_news(event: dict, current_articles: list) -> list:
+    """Persist relevant headlines so the next release can inspect news since the previous release."""
+    now=datetime.utcnow()
+    ident=_event_identity(event)
+    d=_load_evidence_archive(); bucket=d.setdefault("events",{}).setdefault(ident,{"articles":[]})
+    old=list(bucket.get("articles") or [])
+    seen={str(x.get("fingerprint", "")) for x in old}
+    for a in current_articles or []:
+        fp=hashlib.sha1(f"{a.get('title','')}|{a.get('publishedAt','')}".encode("utf-8","ignore")).hexdigest()[:20]
+        if fp in seen: continue
+        seen.add(fp)
+        old.append({"fingerprint":fp,"title":str(a.get("title",""))[:500],"description":str(a.get("description",""))[:900],
+                    "publishedAt":str(a.get("publishedAt","")),"source":a.get("source",{}),"captured_at_utc":now.isoformat(timespec="seconds")+"Z"})
+    cutoff=now-timedelta(days=90)
+    def keep(x):
+        try: return datetime.fromisoformat(str(x.get("captured_at_utc","")).replace("Z","+00:00")).replace(tzinfo=None)>=cutoff
+        except Exception: return True
+    old=[x for x in old if keep(x)][-250:]
+    bucket["articles"]=old; _save_evidence_archive(d)
+    # Previous release boundary comes from our frozen/resolved same-event history.
+    hist=_same_event_history(event, 2)
+    boundary=None
+    if hist:
+        try: boundary=datetime.fromisoformat(str(hist[0].get("resolved_at_utc","")).replace("Z","+00:00")).replace(tzinfo=None)
+        except Exception: boundary=None
+    if boundary is None: return old[-80:]
+    out=[]
+    for x in old:
+        try: dt=datetime.fromisoformat(str(x.get("captured_at_utc","")).replace("Z","+00:00")).replace(tzinfo=None)
+        except Exception: dt=now
+        if dt>=boundary: out.append(x)
+    return out[-80:]
 
 _EVENT_MODEL_PROFILES = {
     # Quant/news/surprise weights plus minimum evidence and ambiguity controls.
@@ -4212,6 +7853,31 @@ def _verified_event_news(event: dict, articles: list) -> tuple[list, float]:
     return verified[:12], min(1.0, ambiguity / max(1, len(verified)))
 
 
+def _consensus_relative_adjustment(event: dict, composite: float) -> tuple[float, float, float | None]:
+    """Anchor the directional nowcast to consensus instead of treating positive momentum as an automatic beat.
+
+    Returns adjusted composite, consensus hurdle, and a conservative numeric model estimate
+    for percentage-style releases. The estimate is diagnostic and is frozen pre-release.
+    """
+    fv = _safe_numeric_release(event.get("forecast_str", ""))
+    pv = _safe_numeric_release(event.get("prev_str", ""))
+    if fv is None:
+        return float(composite), 0.0, None
+    hurdle = 0.0
+    if pv is not None:
+        gap = fv - pv
+        scale = max(0.10, abs(fv) * 0.50, abs(pv) * 0.50)
+        hurdle = max(-0.35, min(0.35, gap / max(scale, 1e-9) * 0.18))
+    adjusted = max(-1.0, min(1.0, float(composite) - hurdle))
+    # Do not manufacture false precision: only create a numeric estimate for percent releases.
+    raw = f"{event.get('forecast_str','')} {event.get('prev_str','')}"
+    estimate = None
+    if "%" in raw:
+        step = max(0.05, min(0.25, abs(fv) * 0.20 + 0.05))
+        estimate = round(fv + adjusted * step, 2)
+    return adjusted, hurdle, estimate
+
+
 def _three_way_probabilities(composite: float, conflict: float, evidence_quality: float, inline_prior: float) -> dict:
     """Convert directional score into calibrated Beat/In-line/Miss probabilities."""
     strength = min(1.0, abs(float(composite)))
@@ -4232,25 +7898,35 @@ def _three_way_probabilities(composite: float, conflict: float, evidence_quality
 
 def _load_forecaster_history() -> dict:
     with _FORECAST_HISTORY_LOCK:
-        try:
-            with open(FORECAST_HISTORY_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return data if isinstance(data, dict) else {"records": {}}
-        except Exception:
-            return {"records": {}}
+        data = _load_persistent_state("forecaster_history_v2", FORECAST_HISTORY_FILE, {"records": {}})
+        return data if isinstance(data, dict) else {"records": {}}
 
 
 def _save_forecaster_history(data: dict) -> None:
     with _FORECAST_HISTORY_LOCK:
-        try:
-            tmp = FORECAST_HISTORY_FILE + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-                f.flush(); os.fsync(f.fileno())
-            os.replace(tmp, FORECAST_HISTORY_FILE)
-        except Exception:
-            pass
+        _save_persistent_state("forecaster_history_v2", FORECAST_HISTORY_FILE, data)
 
+
+def _forecast_reason(nowcast: dict) -> str:
+    probs = nowcast.get("probabilities", {}) or {}
+    winner = max(probs, key=probs.get) if probs else str(nowcast.get("outcome_key", "inline"))
+    conf = float(nowcast.get("confidence", 0) or 0)
+    eq = float(nowcast.get("evidence_quality", 0) or 0)
+    conflict = float(nowcast.get("conflict_score", 0) or 0)
+    parts = [f"Model favored {winner} ({conf:.0f}% confidence)"]
+    parts.append("evidence quality was weak" if eq < .35 else ("evidence quality was moderate" if eq < .60 else "evidence quality was strong"))
+    if conflict >= .45: parts.append("signals were conflicting")
+    elif conflict >= .20: parts.append("some signal conflict was present")
+    parts.append(f"{len(nowcast.get('precursor_results', []) or [])} precursor series, {len(nowcast.get('correlated_articles', []) or [])} relevant headlines, and {len(nowcast.get('same_release_history', []) or [])} prior same-release Actuals were available")
+    return "; ".join(parts) + "."
+
+
+def _resolution_reason(rec: dict, outcome: str, actual: str, forecast: str) -> str:
+    predicted = str(rec.get("predicted_outcome", ""))
+    if predicted == outcome:
+        return f"Correct: model predicted {predicted}; release was {outcome} (actual {actual} vs forecast {forecast})."
+    context = str(rec.get("prediction_reason", "")).strip()
+    return f"Wrong: model predicted {predicted}; release was {outcome} (actual {actual} vs forecast {forecast})." + (f" Pre-release context: {context}" if context else "")
 
 def _history_learning_adjustment(event: dict) -> tuple[float, int]:
     """Conservative calibration from completed same-family forecasts; no self-modifying business logic."""
@@ -4265,6 +7941,124 @@ def _history_learning_adjustment(event: dict) -> tuple[float, int]:
     return max(.82, min(1.08, acc / .60)), len(rows)
 
 
+def calculate_standardized_surprise(actual_val: float, consensus_val: float, history_rows: list[dict] | None = None) -> tuple[float, float]:
+    """
+    Standardized Surprise = (Actual - Consensus) / sigma_historical_consensus_error
+    Returns (standardized_z_score, raw_surprise).
+    Z-scores are winsorized to [-3.5, 3.5] to protect against extreme outliers.
+    """
+    raw_surprise = actual_val - consensus_val
+    if not history_rows or len(history_rows) < 3:
+        return round(max(-3.5, min(3.5, raw_surprise)), 3), round(raw_surprise, 4)
+
+    historical_errors = []
+    for r in history_rows:
+        act = _safe_numeric_release(str(r.get("first_print_actual") or r.get("actual") or ""))
+        con = _safe_numeric_release(str(r.get("forecast") or r.get("consensus") or ""))
+        if act is not None and con is not None:
+            historical_errors.append(act - con)
+
+    if len(historical_errors) < 3:
+        return round(max(-3.5, min(3.5, raw_surprise)), 3), round(raw_surprise, 4)
+
+    mean_err = sum(historical_errors) / len(historical_errors)
+    variance = sum((x - mean_err) ** 2 for x in historical_errors) / len(historical_errors)
+    sigma = variance ** 0.5
+    if sigma <= 1e-6:
+        sigma = 1.0
+
+    z_score = raw_surprise / sigma
+    clamped_z = max(-3.5, min(3.5, z_score))
+    return round(float(clamped_z), 3), round(raw_surprise, 4)
+
+
+def _freeze_forecaster_ai_snapshot(event: dict, nowcast: dict, analysis: dict) -> None:
+    """Freeze AI + final arbitration once, before Actual, without rewriting history."""
+    code = str((event or {}).get("code", "")).strip()
+    if not code or not isinstance(analysis, dict) or analysis.get("status") not in {None, "", "ok"}:
+        return
+    if not _causal_ai_result_is_current_judge(analysis):
+        return
+    if _normalize_forex_factory_actual((event or {}).get("actual_str", "")):
+        return
+    data = _load_forecaster_history()
+    records = data.setdefault("records", {})
+    rec = records.get(code)
+    if not isinstance(rec, dict):
+        _record_forecaster_snapshot(event, nowcast, actual="")
+        data = _load_forecaster_history()
+        records = data.setdefault("records", {})
+        rec = records.get(code)
+    if not isinstance(rec, dict) or rec.get("resolved") or rec.get("ai_frozen_at_utc"):
+        return
+
+    probs = dict(nowcast.get("probabilities", {}) or {})
+    quant_prediction = _normalize_ai_judgment(rec.get("quantitative_prediction") or rec.get("predicted_outcome") or nowcast.get("outcome_key"))
+    if not quant_prediction and probs:
+        quant_prediction = max(probs, key=probs.get)
+    ai_judgment = _normalize_ai_judgment(analysis.get("ai_judgment") or analysis.get("nowcast"))
+    agreement, relationship = _causal_relationship(quant_prediction, ai_judgment)
+    final_prediction, final_reason = _derive_final_forecast_state(quant_prediction, analysis)
+
+    rec.update({
+        "quantitative_prediction": quant_prediction,
+        "quantitative_probabilities": probs or dict(rec.get("probabilities", {}) or {}),
+        "ai_judgment": ai_judgment,
+        "ai_confidence": int(analysis.get("confidence", 0) or 0),
+        "agreement_with_quant": agreement,
+        "ai_relationship_label": relationship,
+        "ai_reason": str(analysis.get("reason") or analysis.get("event_assessment") or "")[:1200],
+        "ai_decisive_evidence": list(analysis.get("decisive_evidence") or [])[:12],
+        "ai_evidence_missing": list(analysis.get("evidence_missing") or [])[:12],
+        "ai_override_reason": str(analysis.get("override_reason") or "")[:1200],
+        "final_prediction": final_prediction,
+        "final_forecast_reason": final_reason,
+        "final_displayed_forecast": f"{final_prediction.upper()} — {relationship}",
+        "ai_frozen_at_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "causal_ai_version": CAUSAL_AI_JUDGE_VERSION,
+        "model_version_identifier": f"{AI_CACHE_VERSION}|{CAUSAL_AI_JUDGE_VERSION}",
+    })
+    _save_forecaster_history(data)
+
+
+def _freeze_forecaster_ai_snapshot_from_batch_row(event_row: dict, analysis: dict) -> None:
+    """Freeze shared-batch AI output even if the user never reopens the event."""
+    if not isinstance(event_row, dict) or not isinstance(analysis, dict) or not _causal_ai_result_is_current_judge(analysis):
+        return
+    code = str(event_row.get("code", "")).strip()
+    if not code or _normalize_forex_factory_actual(event_row.get("actual", "")):
+        return
+    data = _load_forecaster_history()
+    records = data.setdefault("records", {})
+    rec = records.get(code)
+    if not isinstance(rec, dict) or rec.get("resolved") or rec.get("ai_frozen_at_utc"):
+        return
+    reference = event_row.get("REFERENCE_MODEL_OUTPUT_DO_NOT_ANCHOR", {}) if isinstance(event_row.get("REFERENCE_MODEL_OUTPUT_DO_NOT_ANCHOR", {}), dict) else {}
+    quant_prediction = _quantitative_outcome_from_reference(reference) or _normalize_ai_judgment(rec.get("predicted_outcome"))
+    ai_judgment = _normalize_ai_judgment(analysis.get("ai_judgment") or analysis.get("nowcast"))
+    agreement, relationship = _causal_relationship(quant_prediction, ai_judgment)
+    final_prediction, final_reason = _derive_final_forecast_state(quant_prediction, analysis)
+    rec.update({
+        "quantitative_prediction": quant_prediction,
+        "quantitative_probabilities": dict(reference.get("probabilities", {}) or rec.get("probabilities", {}) or {}),
+        "ai_judgment": ai_judgment,
+        "ai_confidence": int(analysis.get("confidence", 0) or 0),
+        "agreement_with_quant": agreement,
+        "ai_relationship_label": relationship,
+        "ai_reason": str(analysis.get("reason") or analysis.get("event_assessment") or "")[:1200],
+        "ai_decisive_evidence": list(analysis.get("decisive_evidence") or [])[:12],
+        "ai_evidence_missing": list(analysis.get("evidence_missing") or [])[:12],
+        "ai_override_reason": str(analysis.get("override_reason") or "")[:1200],
+        "final_prediction": final_prediction,
+        "final_forecast_reason": final_reason,
+        "final_displayed_forecast": f"{final_prediction.upper()} — {relationship}",
+        "ai_frozen_at_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "causal_ai_version": CAUSAL_AI_JUDGE_VERSION,
+        "model_version_identifier": f"{AI_CACHE_VERSION}|{CAUSAL_AI_JUDGE_VERSION}",
+    })
+    _save_forecaster_history(data)
+
+
 def _record_forecaster_snapshot(event: dict, nowcast: dict, actual: str = "") -> None:
     code = str(event.get("code", "")).strip()
     if not code:
@@ -4277,42 +8071,137 @@ def _record_forecaster_snapshot(event: dict, nowcast: dict, actual: str = "") ->
             "event_code": code, "title": event.get("title", ""), "currency": event.get("currency", ""),
             "family": _event_family(event), "forecast": event.get("forecast_str", ""), "previous": event.get("prev_str", ""),
             "captured_at_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "event_identity": _event_identity(event),
             "predicted_outcome": max(probs, key=probs.get) if probs else nowcast.get("outcome_key", "inline"),
-            "probabilities": probs, "confidence": nowcast.get("confidence", 0),
+            "quantitative_prediction": max(probs, key=probs.get) if probs else nowcast.get("outcome_key", "inline"),
+            "probabilities": probs, "quantitative_probabilities": probs, "confidence": nowcast.get("confidence", 0),
+            "final_prediction": max(probs, key=probs.get) if probs else nowcast.get("outcome_key", "inline"),
+            "final_displayed_forecast": str((max(probs, key=probs.get) if probs else nowcast.get("outcome_key", "inline"))).upper() + " — QUANTITATIVE FOUNDATION",
+            "model_version_identifier": f"{AI_CACHE_VERSION}|quantitative",
+            "model_estimate": nowcast.get("model_estimate"), "consensus_hurdle": nowcast.get("consensus_hurdle", 0),
             "composite": nowcast.get("nowcast_composite", 0), "conflict_score": nowcast.get("conflict_score", 0),
             "evidence_quality": nowcast.get("evidence_quality", 0),
             "precursors": nowcast.get("precursor_results", []),
             "news_sources": [((a.get("source") or {}).get("name", "") if isinstance(a.get("source"), dict) else str(a.get("source", ""))) for a in nowcast.get("correlated_articles", [])],
+            "prediction_reason": _forecast_reason(nowcast),
+            "first_print_actual": "",
+            "latest_revised_actual": "",
             "resolved": False,
         }
         records[code] = rec
-    if actual and not rec.get("resolved"):
+
+    if actual:
         av = _safe_numeric_release(actual); fv = _safe_numeric_release(event.get("forecast_str", ""))
+        is_first_resolution = not bool(rec.get("resolved"))
+        if is_first_resolution:
+            rec["first_print_actual"] = str(actual).strip()
+        rec["latest_revised_actual"] = str(actual).strip()
+
         if av is not None and fv is not None:
             eps = max(1e-9, abs(fv) * 1e-6)
             outcome = "beat" if av > fv + eps else ("miss" if av < fv - eps else "inline")
-            rec.update({"actual": actual, "actual_outcome": outcome, "resolved": True,
-                        "resolved_at_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-                        "correct": rec.get("predicted_outcome") == outcome,
-                        "absolute_error": abs(av - fv)})
+            model_est = rec.get("model_estimate")
+            try:
+                model_err = round(abs(av - float(model_est)), 4) if model_est is not None else None
+            except Exception:
+                model_err = None
+            consensus_err = round(abs(av - fv), 4)
+
+            # Compute standardized surprise z-score against same-event history
+            hist_rows = _same_event_history(event, 12)
+            std_z, raw_surp = calculate_standardized_surprise(av, fv, hist_rows)
+
+            _quant_pred = _normalize_ai_judgment(rec.get("quantitative_prediction") or rec.get("predicted_outcome"))
+            _ai_pred = _normalize_ai_judgment(rec.get("ai_judgment"))
+            _final_pred = _normalize_ai_judgment(rec.get("final_prediction") or _quant_pred)
+            rec.update({
+                "actual": rec.get("first_print_actual") or actual,
+                "first_print_actual": rec.get("first_print_actual") or actual,
+                "latest_revised_actual": actual,
+                "actual_outcome": outcome,
+                "resolved": True,
+                "resolved_at_utc": rec.get("resolved_at_utc") or (datetime.utcnow().isoformat(timespec="seconds") + "Z"),
+                "correct": _quant_pred == outcome,
+                "quantitative_correct": _quant_pred == outcome,
+                "ai_correct": (_ai_pred == outcome) if _ai_pred else None,
+                "final_correct": _final_pred == outcome,
+                "consensus_correct": outcome == "inline",
+                "model_error": model_err,
+                "absolute_error": model_err,
+                "consensus_error": consensus_err,
+                "raw_surprise": raw_surp,
+                "standardized_surprise_z": std_z,
+                "resolution_reason": _resolution_reason(rec, outcome, rec.get("first_print_actual") or actual, str(event.get("forecast_str", ""))),
+            })
     _save_forecaster_history(data)
 
 
 def _forecaster_performance() -> dict:
+    """Comprehensive objective benchmark of ApexMacro Nowcasts vs Market Consensus."""
     rows = list(_load_forecaster_history().get("records", {}).values())
     done = [r for r in rows if r.get("resolved")]
     correct = sum(1 for r in done if r.get("correct"))
-    by = {}
+    quant_scored = [r for r in done if _normalize_ai_judgment(r.get("quantitative_prediction") or r.get("predicted_outcome"))]
+    ai_scored = [r for r in done if _normalize_ai_judgment(r.get("ai_judgment"))]
+    final_scored = [r for r in done if _normalize_ai_judgment(r.get("final_prediction") or r.get("predicted_outcome"))]
+    consensus_correct = sum(1 for r in done if str(r.get("actual_outcome", "")) == "inline")
+
+    model_errs = []
+    cons_errs = []
     for r in done:
-        fam = r.get("family", "general"); x = by.setdefault(fam, [0, 0]); x[0] += 1; x[1] += int(bool(r.get("correct")))
-    return {"total": len(rows), "resolved": len(done), "correct": correct,
-            "accuracy": (100.0 * correct / len(done)) if done else 0.0,
-            "by_family": {k: {"n": v[0], "accuracy": 100.0*v[1]/v[0]} for k,v in by.items()}}
+        try:
+            if r.get("model_error") is not None:
+                model_errs.append(float(r["model_error"]))
+        except Exception:
+            pass
+        try:
+            if r.get("consensus_error") is not None:
+                cons_errs.append(float(r["consensus_error"]))
+        except Exception:
+            pass
+
+    mean_model_err = round(sum(model_errs) / len(model_errs), 4) if model_errs else None
+    mean_cons_err = round(sum(cons_errs) / len(cons_errs), 4) if cons_errs else None
+
+    def _median(arr):
+        if not arr: return None
+        s = sorted(arr)
+        n = len(s)
+        mid = n // 2
+        return round(s[mid] if n % 2 == 1 else (s[mid-1] + s[mid]) / 2.0, 4)
+
+    median_model_err = _median(model_errs)
+    median_cons_err = _median(cons_errs)
+
+    by_family = {}
+    by_currency = {}
+    for r in done:
+        fam = r.get("family", "general"); cur = str(r.get("currency", "USD")).upper()
+        xf = by_family.setdefault(fam, [0, 0]); xf[0] += 1; xf[1] += int(bool(r.get("correct")))
+        xc = by_currency.setdefault(cur, [0, 0]); xc[0] += 1; xc[1] += int(bool(r.get("correct")))
+
+    return {
+        "total": len(rows),
+        "resolved": len(done),
+        "correct": correct,
+        "accuracy": round(100.0 * correct / len(done), 1) if done else 0.0,
+        "quantitative_accuracy": round(100.0 * sum(1 for r in quant_scored if bool(r.get("quantitative_correct", r.get("correct")))) / len(quant_scored), 1) if quant_scored else 0.0,
+        "ai_accuracy": round(100.0 * sum(1 for r in ai_scored if r.get("ai_correct") is True) / len(ai_scored), 1) if ai_scored else 0.0,
+        "final_accuracy": round(100.0 * sum(1 for r in final_scored if bool(r.get("final_correct", r.get("correct")))) / len(final_scored), 1) if final_scored else 0.0,
+        "consensus_accuracy": round(100.0 * consensus_correct / len(done), 1) if done else 0.0,
+        "ai_scored": len(ai_scored),
+        "mean_model_error": mean_model_err,
+        "mean_consensus_error": mean_cons_err,
+        "median_model_error": median_model_err,
+        "median_consensus_error": median_cons_err,
+        "by_family": {k: {"n": v[0], "accuracy": round(100.0*v[1]/v[0], 1)} for k,v in by_family.items()},
+        "by_currency": {k: {"n": v[0], "accuracy": round(100.0*v[1]/v[0], 1)} for k,v in by_currency.items()},
+    }
 
 
 def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_override: str = "") -> dict:
     meta = event.get("meta", {}) or {}
-    precursors = meta.get("precursors", [])
+    precursors = _universal_precursors(event) if str(event.get("impact", meta.get("impact", ""))).lower() == "high" else list(meta.get("precursors", []) or [])
     family = _event_family(event)
     profile = _EVENT_MODEL_PROFILES.get(family, _EVENT_MODEL_PROFILES["general"])
 
@@ -4336,6 +8225,18 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_ove
     base_precursor_score = precursor_score_sum / precursor_weight_sum if precursor_weight_sum else 0.0
 
     correlated_articles, news_ambiguity = _verified_event_news(event, all_news)
+    # High-Impact events accumulate relevant news from the previous release through now.
+    if str(event.get("impact", meta.get("impact", ""))).lower() == "high":
+        archived_window = _archive_event_news(event, correlated_articles)
+        archived_verified, archived_ambiguity = _verified_event_news(event, archived_window)
+        merged, seen_news = [], set()
+        for a in list(correlated_articles) + list(archived_verified):
+            k = _normalize_catalyst_title(a.get("title", ""))
+            if k and k not in seen_news:
+                seen_news.add(k); merged.append(a)
+        correlated_articles = merged[:24]
+        news_ambiguity = max(news_ambiguity, archived_ambiguity)
+    history_signal, same_release_history = _history_release_signal(event)
     cur = meta.get("currency", event.get("currency", "USD"))
     verified_for_score = [a for a in correlated_articles if not a.get("_numeric_ambiguous")]
     news_sentiment_pts = 0.0
@@ -4349,12 +8250,18 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_ove
     cross_conflict = 1.0 if base_precursor_score * news_sentiment_pts < -0.005 else 0.0
     conflict_score = min(1.0, .65 * precursor_conflict + .25 * cross_conflict + .10 * news_ambiguity)
 
-    evidence_quality = min(1.0, .18 + .16 * len(precursor_results) + .07 * min(5, len(verified_for_score)))
+    evidence_quality = min(1.0, .14 + .13 * len(precursor_results) + .055 * min(8, len(verified_for_score)) + .035 * min(4, len(same_release_history)))
     surprise_factor = .20 if base_precursor_score > .15 else (-.20 if base_precursor_score < -.15 else 0.0)
     nowcast_composite = (profile["precursor"] * base_precursor_score +
                          profile["news"] * (news_sentiment_pts / .50) +
                          profile["surprise"] * surprise_factor)
     nowcast_composite *= (1.0 - profile["conflict"] * conflict_score)
+    # Previous Actual-vs-consensus outcomes are evidence, not destiny.  Give them a capped
+    # 15% contribution only when the same indicator has resolved history.
+    if same_release_history:
+        nowcast_composite = max(-1.0, min(1.0, 0.85 * nowcast_composite + 0.15 * history_signal))
+    # Forecast the surprise relative to consensus, not merely the absolute direction of the economy.
+    nowcast_composite, consensus_hurdle, model_estimate = _consensus_relative_adjustment(event, nowcast_composite)
 
     calibration, learning_n = _history_learning_adjustment(event)
     probabilities = _three_way_probabilities(nowcast_composite, conflict_score, evidence_quality, profile["inline_prior"])
@@ -4391,9 +8298,12 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_ove
               "confidence": confidence_val, "outcome_desc": outcome_desc, "currency_action_en": currency_action_en,
               "currency_action_color": currency_action_color, "currency_action_desc_en": currency_action_desc_en,
               "gold_implication": gold_implication, "usd_implication": usd_implication, "oil_implication": oil_implication,
+              "consensus_hurdle": consensus_hurdle, "model_estimate": model_estimate,
               "nasdaq_implication": nasdaq_implication, "probabilities": probabilities, "outcome_key": outcome_key,
               "conflict_score": round(conflict_score, 3), "evidence_quality": round(evidence_quality, 3),
-              "event_family": family, "learning_sample": learning_n, "news_ambiguity": round(news_ambiguity, 3)}
+              "event_family": family, "learning_sample": learning_n, "news_ambiguity": round(news_ambiguity, 3),
+              "same_release_history": same_release_history, "history_release_signal": round(history_signal, 3),
+              "evidence_framework": "universal_high_impact_v15_ff_history_actual" if str(event.get("impact", meta.get("impact", ""))).lower() == "high" else "legacy"}
 
     # Once an official print exists, classify Beat/In-line/Miss correctly, including exact consensus matches.
     if actual_override:
@@ -4411,168 +8321,145 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_ove
     return result
 
 
-@st.cache_data(ttl=180, show_spinner=False)
-def get_causal_macro_ai_analysis(event: dict, nowcast: dict, articles: list, api_key: str = DEFAULT_AI_KEY, provider_hint: str = DEFAULT_AI_PROVIDER, model_hint: str = DEFAULT_AI_MODEL, cache_version: str = AI_CACHE_VERSION) -> dict:
-    """Event-specific causal AI layer. Keeps the existing quantitative nowcast intact."""
-    if not api_key:
-        return {"status": "unavailable", "raw": f"{DEFAULT_AI_PROVIDER} API key is unavailable. Check Streamlit Secrets."}
+def get_causal_macro_ai_analysis(
+    event: dict,
+    nowcast: dict,
+    articles: list,
+    api_key: str = DEFAULT_AI_KEY,
+    provider_hint: str = DEFAULT_AI_PROVIDER,
+    model_hint: str = DEFAULT_AI_MODEL,
+    cache_version: str = AI_CACHE_VERSION,
+) -> dict:
+    """Read-only Forecaster Causal AI access from the persistent event registry."""
+    if str(event.get("impact", "")).title() != "High":
+        return {
+            "status": "skipped",
+            "state": "NOT_PREPARED",
+            "raw": "Causal AI is enabled for High Impact events only.",
+        }
+    if not is_ai_enabled(force_refresh=True):
+        return {
+            "status": "disabled",
+            "state": "DISABLED",
+            "raw": "AI analysis is disabled by Admin.",
+        }
 
-    impact = str(event.get("impact", "")).title()
-    if impact != "High":
-        return {"status": "skipped", "raw": "Causal AI is enabled for High Impact events only."}
+    identity = _event_identity(event)
+    registry = _forecaster_ai_registry_load()
+    entry = (registry.get("events", {}) or {}).get(identity, {})
+    entry = dict(entry) if isinstance(entry, dict) else {}
 
-    meta = event.get("meta", {}) or {}
-    title = event.get("title", "Unknown event")
-    currency = meta.get("currency") or event.get("currency", "USD")
-    forecast = event.get("forecast_str", "—")
-    previous = event.get("prev_str", "—")
+    state_name = str(entry.get("ai_state", "") or "").upper()
+    analysis = entry.get("analysis") if isinstance(entry.get("analysis"), dict) else None
 
-    precursor_lines = []
-    for p in (nowcast.get("precursor_results") or []):
-        precursor_lines.append(
-            f"- {p.get('name','Unknown')}: latest={p.get('latest','—')}, "
-            f"MoM={p.get('mom','—')}%, signal_score={p.get('score','—')}"
-        )
-    precursor_text = "\n".join(precursor_lines) or "No mapped FRED precursor series are currently available."
-
-    relevant = []
-    event_keywords = [str(k).lower() for k in (meta.get("keywords") or [])]
-    for a in (articles or []):
-        blob = f"{a.get('title','')} {a.get('description','')}".lower()
-        if not event_keywords or any(k in blob for k in event_keywords):
-            relevant.append(a)
-    relevant = relevant[:10]
-
-    news_lines = []
-    for a in relevant:
-        source = a.get("source", {})
-        source_name = source.get("name", "Institutional Wire") if isinstance(source, dict) else str(source)
-        news_lines.append(
-            f"- [{source_name}] {a.get('publishedAt','')}: {a.get('title','')} — {a.get('description','')}"
-        )
-    news_text = "\n".join(news_lines) or "No event-specific live news evidence is currently available."
-
-    system_prompt = """You are an institutional-grade macro-econometric strategist.
-Analyze one upcoming HIGH-impact economic catalyst using ONLY the supplied evidence.
-
-Rules:
-1. Never invent economic data, consensus, dates, news, historical releases, or relationships.
-2. Clearly separate FACTS from INFERENCES.
-3. Build an event-specific causal chain. Do not force Labour→PPI→CPI logic onto speeches or unrelated events.
-4. For inflation events consider relevant upstream costs/wages/demand; for labour events consider claims/JOLTS/PMI employment when supplied; for growth events consider consumption/production/PMI when supplied; for central-bank/speech events focus on policy/rates/inflation/growth language in supplied news.
-5. Identify supporting evidence and contradictory evidence.
-6. Assess cross-source confirmation only from sources actually supplied.
-7. Give a Beat/Miss/In-line nowcast only when the event has a measurable consensus. For speeches or non-numeric events, use Bullish/Bearish/Neutral policy-impact bias instead.
-8. Confidence must reflect evidence quality and contradictions; do not manufacture precision.
-9. Any numeric value found in news must match the exact event metric, period and unit before it can be treated as release evidence. If identity is ambiguous, use it only as context and explicitly flag the ambiguity.
-10. Treat the quantitative three-way probabilities and conflict score as anchors; if you disagree, explain the supplied evidence causing the disagreement.
-11. Do not provide investment advice. Keep the report concise and institutional.
-
-Return ONLY valid JSON with these keys:
-event_assessment, causal_chain, facts, supporting_evidence, contradictions,
-nowcast, confidence, confidence_reason, cross_source_confirmation,
-usd, gold, oil, nasdaq, invalidation, source_count.
-Each of causal_chain, facts, supporting_evidence, contradictions must be an array of short strings.
-confidence must be an integer 0-100.
-Your entire response MUST begin with { and end with }. Do not use markdown fences and do not add any text outside the JSON object.
-"""
-
-    user_prompt = f"""EVENT
-Title: {title}
-Currency: {currency}
-Impact: {impact}
-Time: {event.get('date_str','')} {event.get('time_str','')}
-Forecast/Consensus: {forecast}
-Previous: {previous}
-
-EXISTING QUANTITATIVE NOWCAST (use as evidence, not as a replacement)
-Bias: {nowcast.get('bias_label','')}
-Confidence: {nowcast.get('confidence','')}%
-Composite: {nowcast.get('nowcast_composite','')}
-Precursor score: {nowcast.get('base_precursor_score','')}
-News sentiment points: {nowcast.get('news_sentiment_pts','')}
-Three-way probabilities: {nowcast.get('probabilities',{})}
-Conflict score: {nowcast.get('conflict_score','')}
-Evidence quality: {nowcast.get('evidence_quality','')}
-Event model family: {nowcast.get('event_family','')}
-
-FRED / MACRO PRECURSORS
-{precursor_text}
-
-EVENT-RELEVANT LIVE NEWS
-{news_text}
-"""
-
-    provider, url, model, resolved_key = _ai_runtime(api_key, provider_hint, model_hint)
-    if not resolved_key:
-        return {"status": "unavailable", "raw": "AI API key is unavailable."}
-
-    headers = _ai_headers(resolved_key, "ApexMacro Causal Macro Intelligence")
-    try:
-        response = _post_ai_chat(
-            provider=provider,
-            url=url,
-            headers=headers,
-            model=model,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            temperature=0.15,
-            timeout=60,
-        )
-        data = response.json()
-        raw = _ai_message_content(data)
-        parsed = _extract_json_object(raw)
-
-        # Claude-compatible gateways may occasionally wrap JSON in prose.
-        # If no JSON object can be recovered, make ONE compact repair request.
-        if parsed is None and raw:
-            repair_system = (
-                "Convert the supplied model output into ONE valid JSON object only. "
-                "Do not add facts, commentary, markdown, or explanation. "
-                "Preserve only information already present in the supplied output. "
-                "Required keys: event_assessment, causal_chain, facts, supporting_evidence, "
-                "contradictions, nowcast, confidence, confidence_reason, cross_source_confirmation, "
-                "usd, gold, oil, nasdaq, invalidation, source_count."
+    if state_name == "COMPLETED" and isinstance(analysis, dict) and _causal_ai_result_is_current_judge(analysis):
+        try:
+            normalized = _normalize_causal_ai_payload(
+                dict(analysis), int(analysis.get("source_count", 0) or 0)
             )
-            repair_response = _post_ai_chat(
-                provider=provider,
-                url=url,
-                headers=headers,
-                model=model,
-                system_prompt=repair_system,
-                user_prompt=raw[:8000],
-                temperature=0.0,
-                timeout=45,
+        except Exception:
+            normalized = dict(analysis)
+        normalized["status"] = "ok"
+        normalized["state"] = "COMPLETED"
+        normalized["matched_event_key"] = identity
+        normalized["evidence_signature"] = entry.get("completed_evidence_signature") or entry.get("evidence_signature")
+        try:
+            _freeze_forecaster_ai_snapshot(event, nowcast, normalized)
+        except Exception:
+            pass
+        return normalized
+
+    if state_name == "STALE" and isinstance(analysis, dict) and _causal_ai_result_is_current_judge(analysis):
+        try:
+            normalized = _normalize_causal_ai_payload(
+                dict(analysis), int(analysis.get("source_count", 0) or 0)
             )
-            repair_raw = _ai_message_content(repair_response.json())
-            parsed = _extract_json_object(repair_raw)
+        except Exception:
+            normalized = dict(analysis)
+        normalized["status"] = "stale"
+        normalized["state"] = "STALE"
+        normalized["raw"] = "Evidence changed; refresh pending."
+        normalized["matched_event_key"] = identity
+        return normalized
 
-        if parsed is None:
-            return {
-                "status": "error",
-                "raw": (
-                    f"{provider} returned a response that could not be converted to structured JSON. "
-                    "The quantitative nowcast remains active."
-                ),
-            }
+    if state_name == "RUNNING":
+        return {
+            "status": "updating",
+            "state": "RUNNING",
+            "raw": "Causal AI analysis is being prepared.",
+        }
+    if state_name == "QUEUED":
+        return {
+            "status": "deferred",
+            "state": "QUEUED",
+            "raw": "Causal AI analysis is queued.",
+        }
+    if state_name == "ERROR":
+        return {
+            "status": "error",
+            "state": "ERROR",
+            "raw": str(entry.get("last_error") or "Causal AI analysis is temporarily unavailable."),
+        }
 
-        parsed = _normalize_causal_ai_payload(parsed, len(relevant))
-        parsed["status"] = "ok"
-        return parsed
-    except Exception as exc:
-        err_text = str(exc)
-        if "temporarily unavailable" in err_text.lower() or "timed out" in err_text.lower():
-            return {
-                "status": "error",
-                "raw": f"{provider} is temporarily unavailable. The quantitative nowcast remains active and AI will retry automatically."
-            }
-        return {"status": "error", "raw": f"{provider} causal analysis error: {err_text[:300]}"}
+    # Backward-compatible read only. Legacy result is never treated as a fresh
+    # registry completion because its evidence signature was not frozen.
+    legacy, legacy_key = _forecaster_ai_legacy_result(event)
+    if isinstance(legacy, dict) and _causal_ai_result_is_current_judge(legacy):
+        try:
+            normalized = _normalize_causal_ai_payload(
+                dict(legacy), int(legacy.get("source_count", 0) or 0)
+            )
+        except Exception:
+            normalized = dict(legacy)
+        normalized["status"] = "stale"
+        normalized["state"] = "STALE"
+        normalized["raw"] = "Legacy Causal AI result available; evidence refresh pending."
+        normalized["matched_event_key"] = legacy_key
+        return normalized
 
+    return {
+        "status": "not_prepared",
+        "state": "NOT_PREPARED",
+        "raw": "Causal AI analysis has not been prepared yet.",
+    }
 
 def render_causal_macro_ai_panel(analysis: dict) -> None:
     # Compact visual layer for the existing causal AI output. No model logic is changed.
+    if analysis.get("status") == "stale":
+        render_html(
+            '<div class="fc-ai" style="border-color:rgba(255,209,102,.24);color:#ffd166;">'
+            '⚠️ Evidence changed; refresh pending. Showing the last completed Causal AI analysis.</div>'
+        )
+        analysis = dict(analysis)
+        analysis["status"] = "ok"
+
     if analysis.get("status") != "ok":
         if analysis.get("status") == "skipped":
+            return
+        if analysis.get("status") == "disabled":
+            render_html(
+                '<div class="fc-ai" style="border-color:rgba(255,209,102,.24);color:#ffd166;">'
+                '⏸️ AI analysis is disabled by Admin. '
+                'No paid AI requests are being sent; the quantitative Nowcast remains active.</div>'
+            )
+            return
+        if analysis.get("status") == "updating":
+            render_html(
+                '<div class="fc-ai" style="border-color:rgba(173,123,255,.22);color:#bfa7ff;">'
+                '🧠 Causal AI analysis is being prepared.</div>'
+            )
+            return
+        if analysis.get("status") == "deferred":
+            render_html(
+                '<div class="fc-ai" style="border-color:rgba(173,123,255,.22);color:#bfa7ff;">'
+                '🧠 Causal AI analysis is queued.</div>'
+            )
+            return
+        if analysis.get("status") == "not_prepared":
+            render_html(
+                '<div class="fc-ai" style="border-color:rgba(143,163,180,.22);color:#9eb0bc;">'
+                '🧠 Causal AI analysis has not been prepared yet.</div>'
+            )
             return
         render_html(
             f'<div class="fc-ai" style="border-color:rgba(255,94,117,.22);color:#ff8a9b;">'
@@ -4585,21 +8472,31 @@ def render_causal_macro_ai_panel(analysis: dict) -> None:
         return "".join(f"<div style='margin:2px 0;'>• {str(v)}</div>" for v in vals) or "<div>• None identified.</div>"
 
     confidence = int(analysis.get("confidence", 0) or 0)
+    relationship = str(analysis.get("relationship_label") or "AI EVIDENCE REVIEW")
+    ai_judgment = (_normalize_ai_judgment(analysis.get("ai_judgment") or analysis.get("nowcast")) or "unknown").upper()
+    final_prediction = (_normalize_ai_judgment(analysis.get("final_prediction")) or _normalize_ai_judgment(analysis.get("_quantitative_prediction")) or "unknown").upper()
     render_html(f"""
     <div class="fc-ai">
       <div class="fc-ai-head">
         <div class="fc-ai-title">🧠 Causal Macro Intelligence</div>
         <div class="fc-ai-conf">{confidence}% AI confidence</div>
       </div>
+      <div style="display:inline-block;margin:2px 0 7px;padding:4px 8px;border-radius:999px;border:1px solid rgba(0,245,255,.18);font-size:9px;font-weight:900;letter-spacing:.06em;color:#cfeef5;">{relationship}</div>
       <div class="fc-ai-assess">{analysis.get("event_assessment","—")}</div>
       <div style="font-size:9.8px;color:#8fa3b4;margin-top:4px;line-height:1.45;">
-        <b style="color:#00f5ff;">Nowcast:</b> {analysis.get("nowcast","Insufficient Evidence")}
-        &nbsp;•&nbsp; <b style="color:#ffd166;">Basis:</b> {analysis.get("confidence_reason","—")}
+        <b style="color:#00f5ff;">AI Judgment:</b> {ai_judgment}
+        &nbsp;•&nbsp; <b style="color:#ad7bff;">Final:</b> {final_prediction}
+        &nbsp;•&nbsp; <b style="color:#ffd166;">Basis:</b> {analysis.get("confidence_reason") or analysis.get("reason") or "—"}
       </div>
       <div class="fc-ai-grid">
         <div class="fc-ai-box"><b style="color:#00f5ff;">CAUSAL CHAIN</b><div style="margin-top:4px;">{items("causal_chain")}</div></div>
         <div class="fc-ai-box"><b style="color:#00ffa3;">SUPPORTING EVIDENCE</b><div style="margin-top:4px;">{items("supporting_evidence")}</div></div>
         <div class="fc-ai-box"><b style="color:#ff788a;">CONTRADICTIONS</b><div style="margin-top:4px;">{items("contradictions")}</div></div>
+      </div>
+      <div class="fc-ai-grid" style="margin-top:6px;">
+        <div class="fc-ai-box"><b style="color:#00ffa3;">DECISIVE EVIDENCE</b><div style="margin-top:4px;">{items("decisive_evidence")}</div></div>
+        <div class="fc-ai-box"><b style="color:#ffd166;">EVIDENCE MISSING</b><div style="margin-top:4px;">{items("evidence_missing")}</div></div>
+        <div class="fc-ai-box"><b style="color:#ad7bff;">OVERRIDE / ARBITRATION</b><div style="margin-top:4px;">{analysis.get("override_reason") or analysis.get("final_arbitration_reason") or "No override required."}</div></div>
       </div>
       <div class="fc-ai-foot">
         Cross-source: <b style="color:#cbd8df;">{analysis.get("cross_source_confirmation","—")}</b>
@@ -4623,7 +8520,13 @@ _FORECASTER_BG_LOCK = threading.RLock()
 _FORECASTER_BG_CACHE: dict[str, dict] = {}
 _FORECASTER_BG_INFLIGHT: set[str] = set()
 _FORECASTER_BG_WORKER_RUNNING = False
-_FORECASTER_BG_TTL_SECONDS = 300
+_FORECASTER_BG_TTL_SECONDS = 900
+# Causal AI is expensive. Reuse it until the event's meaningful evidence changes.
+# This cache is independent from the faster quantitative Nowcast cache.
+_FORECASTER_AI_REUSE_CACHE: dict[str, dict] = {}
+_FORECASTER_AI_MAX_AGE_SECONDS = 48 * 3600
+_FORECASTER_AI_ERROR_RETRY_SECONDS = 15 * 60
+_FORECASTER_AI_PREWARM_HORIZON_SECONDS = 72 * 3600
 
 
 def _forecaster_bg_signature(event: dict, actual: str = "") -> str:
@@ -4635,8 +8538,111 @@ def _forecaster_bg_signature(event: dict, actual: str = "") -> str:
         "impact": event.get("impact", ""),
         "ai_model": DEFAULT_AI_MODEL,
         "ai_cache": AI_CACHE_VERSION,
+        "causal_judge_version": CAUSAL_AI_JUDGE_VERSION,
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def _forecaster_ai_evidence_signature(event: dict, nowcast: dict, relevant_articles: list, actual: str = "") -> str:
+    """Stable signature of MATERIAL pre-release evidence only.
+
+    Quantization prevents tiny float noise from causing another paid batch.
+    """
+    def _q(value, step: float):
+        try:
+            x = float(value)
+            if not math.isfinite(x):
+                return None
+            return round(round(x / step) * step, 6)
+        except Exception:
+            return None
+
+    precursor_rows = []
+    for row in (nowcast.get("precursor_results") or [])[:10]:
+        precursor_rows.append({
+            "name": str(row.get("name", "") or "").strip().lower(),
+            "latest": _q(row.get("latest"), 0.05),
+            "mom": _q(row.get("mom"), 0.05),
+            "score": _q(row.get("score"), 0.05),
+            "weight": _q(row.get("weight", row.get("effective_weight")), 0.05),
+        })
+    precursor_rows.sort(key=lambda x: x["name"])
+
+    probs = nowcast.get("probabilities", {}) if isinstance(nowcast.get("probabilities", {}), dict) else {}
+    quant_probs = {str(k): _q(v, 0.5) for k, v in sorted(probs.items())}
+
+    news_rows = []
+    for art in (relevant_articles or [])[:8]:
+        source = art.get("source", {})
+        source_name = source.get("name", "") if isinstance(source, dict) else str(source or "")
+        title = re.sub(r"\s+", " ", str(art.get("title", "") or "").strip().lower())
+        published = str(art.get("publishedAt", "") or "")[:19]
+        # Headline identity is stable; descriptions are intentionally excluded
+        # because feed edits must not create new provider billing.
+        news_rows.append({
+            "source": str(source_name).strip().lower()[:80],
+            "published": published,
+            "title": title[:240],
+        })
+    news_rows.sort(key=lambda x: (x["published"], x["source"], x["title"]))
+
+    payload = {
+        "event_identity": _event_identity(event),
+        "consensus": str(event.get("forecast_str", "") or "").strip(),
+        "previous": str(event.get("prev_str", "") or "").strip(),
+        "precursors": precursor_rows,
+        "probabilities": quant_probs,
+        "quantitative_classification": (
+            max(probs, key=probs.get) if probs else str(nowcast.get("outcome_key", "inline"))
+        ),
+        "composite": _q(nowcast.get("nowcast_composite"), 0.05),
+        "conflict": _q(nowcast.get("conflict_score"), 0.05),
+        "evidence_quality": _q(nowcast.get("evidence_quality"), 0.05),
+        "history_signal": _q(nowcast.get("history_release_signal"), 0.05),
+        "news": news_rows,
+        "analysis_version": CAUSAL_AI_JUDGE_VERSION,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
+
+def _forecaster_relevant_ai_articles(event: dict, all_news: list) -> list:
+    """Use the same event-verification gate so unrelated feed churn cannot trigger AI spend."""
+    verified, _ = _verified_event_news(event, all_news or [])
+    return verified[:10]
+
+
+def _forecaster_ai_cache_get(code: str, evidence_sig: str) -> dict | None:
+    now_ts = time.time()
+    with _FORECASTER_BG_LOCK:
+        item = _FORECASTER_AI_REUSE_CACHE.get(code)
+        if not item or item.get("evidence_signature") != evidence_sig:
+            return None
+        age = now_ts - float(item.get("updated_at", 0))
+        result = item.get("result") or {}
+        status = str(result.get("status", ""))
+        # deferred/updating are transient states, never reusable AI answers.
+        # Caching them for 48h was able to leave the dialog permanently on
+        # "updating in background" even after the shared batch succeeded.
+        if status in {"deferred", "updating"}:
+            return None
+        max_age = _FORECASTER_AI_ERROR_RETRY_SECONDS if status == "error" else _FORECASTER_AI_MAX_AGE_SECONDS
+        if age > max_age:
+            return None
+        return result
+
+
+def _forecaster_ai_cache_put(code: str, evidence_sig: str, result: dict) -> None:
+    status = str((result or {}).get("status", ""))
+    # Only durable outcomes belong in the long-lived reuse cache.
+    if status in {"deferred", "updating"}:
+        return
+    with _FORECASTER_BG_LOCK:
+        _FORECASTER_AI_REUSE_CACHE[code] = {
+            "evidence_signature": evidence_sig,
+            "updated_at": time.time(),
+            "result": result,
+        }
 
 
 def _forecaster_bg_get(event: dict, actual: str = "") -> dict | None:
@@ -4654,20 +8660,49 @@ def _forecaster_bg_get(event: dict, actual: str = "") -> dict | None:
         return item
 
 
-def _forecaster_background_worker(events: list[dict], fred_key: str, channel_name: str, actuals_snapshot: dict) -> None:
-    """Precompute event Nowcasts and High-impact causal AI away from the click path."""
+
+def _forecaster_background_worker(events: list[dict], fred_key: str, channel_name: str, actuals_snapshot: dict, force_ai: bool = False) -> None:
+    """
+    Continuously warm Forecaster results off the click path.
+
+    Important behavior:
+    - one shared news fetch for the batch
+    - nearest/recent catalysts are prioritized
+    - several events can precompute concurrently
+    - quantitative Nowcast is cached BEFORE the slower causal-AI call
+    - one slow RUAPI request cannot block every other catalyst
+    """
     global _FORECASTER_BG_WORKER_RUNNING
+
     try:
-        # One news fetch is shared by the whole batch.
-        all_news = fetch_all_instant_news(channel_name)
-        ordered = sorted(
-            list(events or []),
-            key=lambda e: (0 if str(e.get("impact", "")).title() == "High" else 1, e.get("datetime_obj") or datetime.max),
-        )
-        for ev in ordered:
+        try:
+            all_news = fetch_all_instant_news(channel_name)
+        except Exception:
+            all_news = []
+
+        now_utc = datetime.now(timezone.utc)
+
+        def _priority(ev: dict):
+            dt = ev.get("datetime_obj")
+            if isinstance(dt, datetime):
+                try:
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    distance = abs((dt.astimezone(timezone.utc) - now_utc).total_seconds())
+                except Exception:
+                    distance = 10**12
+            else:
+                distance = 10**12
+            impact_rank = 0 if str(ev.get("impact", "")).title() == "High" else 1
+            return (distance, impact_rank)
+
+        ordered = sorted(list(events or []), key=_priority)
+
+        def _compute_one(ev: dict):
             code = str(ev.get("code", "")).strip()
             if not code:
-                continue
+                return
+
             saved_actual = str((actuals_snapshot or {}).get(code, "")).strip()
             published_actual = _normalize_forex_factory_actual(ev.get("actual_str", ""))
             effective_actual = saved_actual or published_actual
@@ -4679,59 +8714,122 @@ def _forecaster_background_worker(events: list[dict], fred_key: str, channel_nam
                     existing
                     and existing.get("signature") == signature
                     and time.time() - float(existing.get("updated_at", 0)) <= _FORECASTER_BG_TTL_SECONDS
+                    and existing.get("nowcast")
                 )
-                if fresh or code in _FORECASTER_BG_INFLIGHT:
-                    continue
+                ai_ready = bool(existing and (existing.get("causal_ai") or {}).get("status") in {"ok", "skipped"})
+                if (fresh and (not force_ai or ai_ready)) or code in _FORECASTER_BG_INFLIGHT:
+                    return
                 _FORECASTER_BG_INFLIGHT.add(code)
 
             try:
-                nowcast = compute_event_nowcast(ev, fred_key, all_news, actual_override=effective_actual)
-                causal_ai = (
-                    get_causal_macro_ai_analysis(
-                        ev, nowcast, all_news,
-                        DEFAULT_AI_KEY, DEFAULT_AI_PROVIDER, DEFAULT_AI_MODEL, AI_CACHE_VERSION
-                    )
-                    if str(ev.get("impact", "")).title() == "High"
-                    else {"status": "skipped"}
+                # Stage 1: fast quantitative result first.
+                nowcast = compute_event_nowcast(
+                    ev,
+                    fred_key,
+                    all_news,
+                    actual_override=effective_actual,
                 )
+                try:
+                    _record_forecaster_snapshot(ev, nowcast, actual=effective_actual)
+                except Exception:
+                    pass
+
                 with _FORECASTER_BG_LOCK:
                     _FORECASTER_BG_CACHE[code] = {
                         "signature": signature,
                         "updated_at": time.time(),
                         "nowcast": nowcast,
-                        "causal_ai": causal_ai,
+                        "causal_ai": {"status": "updating"},
                         "all_news": all_news,
                         "effective_actual": effective_actual,
                     }
-            except Exception as exc:
-                # Never let one failed event stop the remaining batch.
+
+                # Stage 2: read already-precomputed Causal AI state only.
+                # This worker never requests/wakes the paid provider.
+                if str(ev.get("impact", "")).title() == "High":
+                    relevant_ai_news = _forecaster_relevant_ai_articles(ev, all_news)
+                    causal_ai = get_causal_macro_ai_analysis(
+                        ev,
+                        nowcast,
+                        relevant_ai_news,
+                        DEFAULT_AI_KEY,
+                        DEFAULT_AI_PROVIDER,
+                        DEFAULT_AI_MODEL,
+                        AI_CACHE_VERSION,
+                    )
+                else:
+                    causal_ai = {"status": "skipped", "state": "NOT_PREPARED"}
+
                 with _FORECASTER_BG_LOCK:
+                    item = _FORECASTER_BG_CACHE.get(code, {})
+                    if item.get("signature") == signature:
+                        item["causal_ai"] = causal_ai
+                        item["updated_at"] = time.time()
+                        _FORECASTER_BG_CACHE[code] = item
+
+            except Exception as exc:
+                with _FORECASTER_BG_LOCK:
+                    prior = _FORECASTER_BG_CACHE.get(code, {})
                     _FORECASTER_BG_CACHE[code] = {
+                        **prior,
                         "signature": signature,
-                        "updated_at": time.time() - (_FORECASTER_BG_TTL_SECONDS - 30),
+                        "updated_at": time.time(),
                         "error": str(exc)[:300],
+                        "effective_actual": effective_actual,
                     }
             finally:
                 with _FORECASTER_BG_LOCK:
                     _FORECASTER_BG_INFLIGHT.discard(code)
+
+        # A small pool avoids RUAPI flooding while preventing one event from
+        # blocking the rest of the calendar.
+        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="ApexFcWarm") as pool:
+            futures = [pool.submit(_compute_one, ev) for ev in ordered]
+            for fut in as_completed(futures):
+                try:
+                    fut.result()
+                except Exception:
+                    pass
+
     finally:
         with _FORECASTER_BG_LOCK:
             _FORECASTER_BG_WORKER_RUNNING = False
 
+def _request_shared_ai_for_forecaster_event(event: dict) -> None:
+    """Compatibility no-op.
 
-def _ensure_forecaster_background_worker(events: list[dict], fred_key: str, channel_name: str, actuals_cache: dict) -> None:
-    """Start at most one daemon worker per process; reruns do not duplicate RUAPI calls."""
+    Forecaster AI is precomputed from the calendar/evidence registry. Opening an
+    event must never enqueue, wake, retry, or otherwise control paid AI.
+    """
+    return
+
+def _ensure_forecaster_background_worker(events: list[dict], fred_key: str, channel_name: str, actuals_cache: dict, force_ai: bool = False) -> None:
+    """Warm deterministic Forecaster data and ensure the shared precompute supervisor exists."""
     global _FORECASTER_BG_WORKER_RUNNING
     if not events:
         return
 
-    # Start only when at least one event is missing/stale.
+    # This is calendar/background discovery, not modal interaction. Starting or
+    # waking the singleton supervisor is free; paid execution still must win all
+    # existing shared batch, hard-cooldown and distributed-lease gates.
+    try:
+        if is_ai_enabled(force_refresh=True):
+            start_shared_background_ai_worker()
+            _AI_BATCH_WAKE_EVENT.set()
+    except Exception:
+        pass
+
+    # force_ai is retained only for backward call compatibility and has no
+    # billing semantics in the precompute architecture.
+
+    # Start only when deterministic event data is missing/stale.
     needs_work = False
     for ev in events:
         code = str(ev.get("code", "")).strip()
         saved = str((actuals_cache or {}).get(code, "")).strip()
         published = _normalize_forex_factory_actual(ev.get("actual_str", ""))
-        if _forecaster_bg_get(ev, saved or published) is None:
+        cached = _forecaster_bg_get(ev, saved or published)
+        if cached is None:
             needs_work = True
             break
     if not needs_work:
@@ -4744,7 +8842,7 @@ def _ensure_forecaster_background_worker(events: list[dict], fred_key: str, chan
 
     threading.Thread(
         target=_forecaster_background_worker,
-        args=(list(events), fred_key, channel_name, dict(actuals_cache or {})),
+        args=(list(events), fred_key, channel_name, dict(actuals_cache or {}), force_ai),
         daemon=True,
         name="ApexMacroForecasterPrecompute",
     ).start()
@@ -4757,33 +8855,329 @@ def _forecaster_radar_refresh_tick() -> None:
         st.caption("Live calendar refresh active.")
 
 
+@st.fragment(run_every=10)
+def _render_forecaster_causal_ai_live(event: dict, nowcast: dict, auth_user: dict | None) -> None:
+    """Free persistent-registry polling while dialog is open. Never wakes paid AI."""
+    analysis = get_causal_macro_ai_analysis(
+        event,
+        nowcast,
+        [],
+        DEFAULT_AI_KEY,
+        DEFAULT_AI_PROVIDER,
+        DEFAULT_AI_MODEL,
+        AI_CACHE_VERSION,
+    )
+    status = str(analysis.get("status", "") or "")
+
+    if status == "ok":
+        live_text = analysis.get("event_assessment", "") or nowcast.get("outcome_desc", "")
+        relation = str(analysis.get("relationship_label") or "AI EVIDENCE REVIEW")
+        live_source = f"Persisted Causal Macro Engine · {relation}"
+    elif status == "stale":
+        live_text = "Evidence changed; refresh pending. The last completed Causal AI analysis is shown below."
+        live_source = "STALE · persistent registry"
+    elif status == "disabled":
+        live_text = "AI analysis is disabled by Admin. The quantitative Nowcast remains available."
+        live_source = "DISABLED"
+    elif status == "updating":
+        live_text = "Causal AI analysis is being prepared."
+        live_source = "RUNNING"
+    elif status == "deferred":
+        live_text = "Causal AI analysis is queued."
+        live_source = "QUEUED"
+    elif status == "not_prepared":
+        live_text = "Causal AI analysis has not been prepared yet."
+        live_source = "NOT_PREPARED"
+    else:
+        live_text = analysis.get("raw", "Causal AI analysis is temporarily unavailable.")
+        live_source = analysis.get("state", "ERROR")
+
+    render_html(f"""
+    <div class="apex-intelligence-card">
+      <div class="apex-card-header-row"><div class="apex-card-title">AI Analysis (Causal Intelligence)</div><span class="apex-ai-badge">AI</span></div>
+      <div class="apex-dialog-ai-text">{live_text}</div>
+      <div class="apex-dialog-ai-source">Source: {live_source} &nbsp;•&nbsp; Baseline: {event.get('consensus_bias','')}</div>
+    </div>
+    """)
+    render_causal_macro_ai_panel(analysis)
+
+    if auth_user and auth_user.get("is_admin", False):
+        identity = _event_identity(event)
+        registry = _forecaster_ai_registry_load()
+        entry = dict((registry.get("events", {}) or {}).get(identity, {}) or {})
+        queue_meta = dict(registry.get("queue_meta", {}) or {})
+        counts = _forecaster_ai_registry_counts(registry)
+        with st.expander("🧪 Causal AI Precompute Diagnostics", expanded=False):
+            st.caption("Admin-only. Persistent precompute state; no API keys, tokens or prompt bodies are shown.")
+            st.json({
+                "Event identity": identity,
+                "Event code": str(event.get("code", "") or ""),
+                "Release time UTC": entry.get("release_time_utc") or _event_release_utc_iso(event),
+                "AI state": analysis.get("state") or entry.get("ai_state") or "NOT_PREPARED",
+                "Evidence signature": entry.get("evidence_signature"),
+                "Completed evidence signature": entry.get("completed_evidence_signature"),
+                "Analysis version": entry.get("analysis_version"),
+                "Requested/queued at": entry.get("requested_at"),
+                "Batch started at": entry.get("batch_started_at"),
+                "Completed at": entry.get("completed_at_iso") or entry.get("completed_at"),
+                "Batch inclusion status": entry.get("batch_inclusion_status"),
+                "Provider status": entry.get("provider_status"),
+                "Failure stage": entry.get("failure_stage"),
+                "Last error": entry.get("last_error") or "",
+                "Persistent state source": get_persistence_status().get("backend", "unknown"),
+                "Registry updated at": registry.get("updated_at_iso") or registry.get("updated_at"),
+                "Queue eligible count": queue_meta.get("eligible_event_count", counts.get("eligible")),
+                "Queue queued count": queue_meta.get("queued_count", counts.get("queued")),
+                "Queue running count": counts.get("running"),
+                "Queue completed count": queue_meta.get("completed_count", counts.get("completed")),
+                "Queue stale count": queue_meta.get("stale_count", counts.get("stale")),
+                "Queue error count": queue_meta.get("error_count", counts.get("error")),
+                "Last precompute batch": queue_meta.get("last_batch_completed_at_iso") or queue_meta.get("last_batch_completed_at"),
+                "Last precompute batch event count": queue_meta.get("last_batch_event_count"),
+                "Last precompute provider status": queue_meta.get("last_batch_provider_status"),
+            })
+
+
+@st.dialog("Event Details")
+def _show_forecaster_event_dialog(
+    modal_ev: dict,
+    fred_key: str,
+    channel_name: str,
+    auth_user: dict | None,
+    actuals_cache: dict,
+    currency_flags: dict,
+) -> None:
+    """UI-only event detail dialog. Forecasting/AI calculations remain unchanged."""
+    is_admin = bool(auth_user and auth_user.get("is_admin", False))
+    ev_code = str(modal_ev.get("code", "")).strip()
+    saved_actual = str(actuals_cache.get(ev_code, "")).strip()
+    published_actual = _normalize_forex_factory_actual(modal_ev.get("actual_str", ""))
+    effective_actual = saved_actual or published_actual
+    bg_result = _forecaster_bg_get(modal_ev, effective_actual)
+
+    if bg_result and bg_result.get("nowcast"):
+        nowcast = bg_result["nowcast"]
+        causal_ai = bg_result.get("causal_ai") or {"status": "skipped"}
+        all_news = bg_result.get("all_news") or []
+        # Causal AI state is read-only here; no modal-triggered queue/wake.
+        if str(modal_ev.get("impact", "")).title() == "High":
+            causal_ai = get_causal_macro_ai_analysis(modal_ev, nowcast, [], DEFAULT_AI_KEY, DEFAULT_AI_PROVIDER, DEFAULT_AI_MODEL, AI_CACHE_VERSION)
+    else:
+        with st.spinner(f"Loading Causal Intelligence for {modal_ev.get('title','catalyst')}..."):
+            all_news = fetch_all_instant_news(channel_name)
+            nowcast = compute_event_nowcast(
+                modal_ev, fred_key, all_news, actual_override=effective_actual
+            )
+            causal_ai = get_causal_macro_ai_analysis(
+                modal_ev, nowcast, all_news,
+                DEFAULT_AI_KEY, DEFAULT_AI_PROVIDER, DEFAULT_AI_MODEL, AI_CACHE_VERSION
+            )
+            with _FORECASTER_BG_LOCK:
+                _FORECASTER_BG_CACHE[ev_code] = {
+                    "signature": _forecaster_bg_signature(modal_ev, effective_actual),
+                    "updated_at": time.time(),
+                    "nowcast": nowcast,
+                    "causal_ai": causal_ai,
+                    "all_news": all_news,
+                    "effective_actual": effective_actual,
+                }
+
+    try:
+        _record_forecaster_snapshot(modal_ev, nowcast, actual=effective_actual)
+    except Exception:
+        pass
+
+    cur = modal_ev.get("currency", "USD")
+    cur_flag = currency_flags.get(cur, "🌐")
+    impact_level = str(modal_ev.get("impact", "High")).title()
+    impact_color = "#B04CE4" if impact_level == "High" else ("#FFB822" if impact_level == "Medium" else "#35D2E3")
+
+    ev_dt = modal_ev.get("datetime_obj")
+    ev_date_str = ev_dt.strftime("%d %B %Y") if ev_dt else modal_ev.get("date_str", "")
+    ev_time_str = ev_dt.strftime("%H:%M") if ev_dt else "—"
+
+    act_disp = effective_actual or "—"
+    fcst_disp = modal_ev.get("forecast_str", "—")
+    prev_disp = modal_ev.get("prev_str", "—")
+
+    actual_outcome = nowcast.get("actual_outcome", "")
+    if effective_actual:
+        act_num_cls = "beat" if actual_outcome == "beat" else ("miss" if actual_outcome == "miss" else ("inline" if actual_outcome == "inline" else ""))
+    else:
+        act_num_cls = ""
+
+    causal_intel_label = nowcast.get("bias_label", "In-Line Signal").lstrip("🔺🔻⚖️✅❌ ")
+    causal_intel_color = nowcast.get("bias_color", "#00ffa3")
+    market_impact_label = "Risk-Off" if "Bearish" in nowcast.get("usd_implication", "") or "miss" in str(actual_outcome).lower() else "Risk-On / High Volatility"
+    if "USD" in nowcast.get("currency_action_en", "") and "Appreciate" in nowcast.get("currency_action_en", ""):
+        market_impact_label = "Hawkish / Risk-Off"
+    elif "Weaken" in nowcast.get("currency_action_en", ""):
+        market_impact_label = "Dovish / Risk-On"
+
+    precursor_bullets = []
+    if nowcast.get("precursor_results"):
+        for p in nowcast["precursor_results"]:
+            p_name = p.get("name", "Indicator")
+            p_mom = p.get("mom", 0.0)
+            p_trend = "acceleration" if p_mom > 0 else ("deceleration" if p_mom < 0 else "steady")
+            precursor_bullets.append(
+                f"• {p_name} ({p.get('latest', 0.0):.2f}) showing MoM {p_trend} ({p_mom:+.2f}%)"
+            )
+    else:
+        precursor_bullets = [
+            "• Precursor series analysis integrated with FRED macroeconomic database",
+            "• Multi-timeframe trend momentum and directional bias calibrated",
+            "• High-frequency headline verification active",
+        ]
+    evidence_html = "".join(f"<li>{b}</li>" for b in precursor_bullets)
+
+    if causal_ai.get("status") == "ok":
+        ai_text = causal_ai.get("event_assessment", "") or nowcast.get("outcome_desc", "")
+        ai_updated = "Live Causal Macro Engine"
+    elif causal_ai.get("status") == "disabled":
+        ai_text = nowcast.get("outcome_desc", "") + " (Causal AI paused by Admin; no provider request is being sent.)"
+        ai_updated = "AI Paused"
+    elif causal_ai.get("status") == "updating":
+        ai_text = "Causal AI analysis is being prepared."
+        ai_updated = "RUNNING"
+    elif causal_ai.get("status") == "deferred":
+        ai_text = "Causal AI analysis is queued."
+        ai_updated = "QUEUED"
+    elif causal_ai.get("status") == "stale":
+        ai_text = "Evidence changed; refresh pending. Last completed AI analysis remains available."
+        ai_updated = "STALE"
+    elif causal_ai.get("status") == "not_prepared":
+        ai_text = "Causal AI analysis has not been prepared yet."
+        ai_updated = "NOT_PREPARED"
+    else:
+        ai_text = nowcast.get("outcome_desc", "Comprehensive three-way probabilistic model with evidence conflict penalties.")
+        ai_updated = "Real-time Quant Model"
+
+    cross_assets = [
+        ("USD", nowcast.get("usd_implication", "")),
+        ("Gold", nowcast.get("gold_implication", "")),
+        ("NASDAQ", nowcast.get("nasdaq_implication", "")),
+        ("Oil", nowcast.get("oil_implication", "")),
+    ]
+    cross_cards_html = ""
+    for a_name, a_imp in cross_assets:
+        a_str = str(a_imp)
+        is_up = any(w in a_str.lower() for w in ["bull", "appreciat", "tailwind", "support", "higher"])
+        is_dn = any(w in a_str.lower() for w in ["bear", "weaken", "drag", "lower", "miss"])
+        arrow = "↑" if is_up else ("↓" if is_dn else "→")
+        arr_color = "#00ffa3" if is_up else ("#ff5e75" if is_dn else "#ffd166")
+        state_word = "Bullish" if is_up else ("Bearish" if is_dn else "Neutral")
+        if a_name == "USD":
+            state_word = "Strengthen" if is_up else ("Weaken" if is_dn else "Consolidation")
+        cross_cards_html += f"""
+        <div class="apex-cross-asset-card">
+          <div class="apex-cross-asset-name">{a_name} <span style="color:{arr_color};font-weight:900;">{arrow}</span></div>
+          <div class="apex-cross-asset-state">{state_word}</div>
+        </div>
+        """
+
+    render_html(f"""
+    <div class="apex-dialog-date">{ev_date_str}, {ev_time_str} · {modal_ev.get('time_str','')}</div>
+    <div class="apex-form-grid-3">
+      <div class="apex-form-field"><div class="apex-form-label">Currency</div><div class="apex-form-box">{cur_flag} {cur}</div></div>
+      <div class="apex-form-field"><div class="apex-form-label">Impact</div><div class="apex-form-box"><span><span class="apex-impact-dot" style="background:{impact_color};display:inline-block;margin-right:6px;"></span>{impact_level} Impact</span></div></div>
+      <div class="apex-form-field"><div class="apex-form-label">Time</div><div class="apex-form-box">{ev_time_str}</div></div>
+    </div>
+    <div class="apex-form-field"><div class="apex-form-label">Event</div><div class="apex-form-box apex-dialog-event-name">{modal_ev.get('title','')}</div></div>
+    <div class="apex-modal-values">
+      <div class="apex-modal-value"><div class="apex-modal-value-lbl">Actual</div><div class="apex-modal-value-num {act_num_cls}">{act_disp}</div></div>
+      <div class="apex-modal-value"><div class="apex-modal-value-lbl">Forecast</div><div class="apex-modal-value-num">{fcst_disp}</div></div>
+      <div class="apex-modal-value"><div class="apex-modal-value-lbl">Previous</div><div class="apex-modal-value-num">{prev_disp}</div></div>
+    </div>
+    <div class="apex-form-grid-2">
+      <div class="apex-form-field"><div class="apex-form-label">Quantitative Nowcast</div><div class="apex-form-box" style="color:{causal_intel_color};">{causal_intel_label}</div></div>
+      <div class="apex-form-field"><div class="apex-form-label">Market Impact</div><div class="apex-form-box" style="color:#ffd166;">{market_impact_label}</div></div>
+    </div>
+    <div class="apex-intelligence-card">
+      <div class="apex-card-header-row"><div class="apex-card-title">Evidence &amp; Precursors</div><div><span class="apex-ai-badge">AI</span> <span class="apex-conf-badge">{nowcast.get('confidence', 0)}% Confidence</span></div></div>
+      <ul class="apex-evidence-list">{evidence_html}</ul>
+    </div>
+    <div class="apex-dialog-section-title">Cross-Asset Impact</div>
+    <div class="apex-cross-asset-grid">{cross_cards_html}</div>
+    """)
+
+    # Poll only durable shared state. This is provider-free and stops automatically
+    # when the dialog is closed; it never creates a paid call per rerun.
+    _render_forecaster_causal_ai_live(modal_ev, nowcast, auth_user)
+
+    if is_admin:
+        render_html(f"""
+        <div class="apex-admin-box">
+          <div class="apex-admin-header"><div class="apex-admin-title">👑 Admin Actual Override</div><div class="apex-admin-sub">Current: {act_disp}</div></div>
+        </div>
+        """)
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            new_actual = st.text_input(
+                "Admin Actual Override",
+                value=effective_actual,
+                placeholder="Enter actual value...",
+                key=f"apex_dialog_actual_{ev_code}",
+                label_visibility="collapsed",
+            )
+        with c2:
+            if st.button("Update Actual", key=f"apex_dialog_actual_save_{ev_code}", use_container_width=True):
+                actuals_cache[ev_code] = new_actual.strip()
+                save_actuals_cache(actuals_cache)
+                st.success("Updated!")
+                time.sleep(0.25)
+                st.rerun()
+
+
 def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict | None = None) -> None:
-    """Fast Catalyst Radar: render the full calendar first, analyze only the selected event."""
+    """Catalyst Forecaster UI: rolling 7-day catalyst rail -> timeline -> intelligence panel/dialog."""
+    from datetime import date as _date
+
     if "selected_tz" not in st.session_state or st.session_state["selected_tz"] not in SUPPORTED_TIMEZONES:
         st.session_state["selected_tz"] = "🏛️ Kurdistan & Iraq (UTC+3)"
 
-    tz_info = SUPPORTED_TIMEZONES.get(st.session_state["selected_tz"], {"offset": 3, "label": "KRD (UTC+3)"})
-    is_admin = auth_user and auth_user.get("is_admin", False)
+    tz_info = SUPPORTED_TIMEZONES.get(
+        st.session_state["selected_tz"],
+        {"offset": 3, "label": "KRD (UTC+3)"},
+    )
 
     selected_key = "APEX_FORECASTER_SELECTED_EVENT"
-    selected_code = st.session_state.get(selected_key, "")
-
-    if not selected_code:
+    snapshot_key = "APEX_FORECASTER_EVENT_SNAPSHOT"
+    sel_date_key = "apex_forecaster_selected_date"
+    # Forecaster board window. The default remains Today + 6 days, but the
+    # presentation can jump forward by date without changing any event logic.
+    if not st.session_state.get(selected_key):
         _forecaster_radar_refresh_tick()
 
-    # FAST PATH: calendar + published Actuals only. No FRED/news/AI work is done here.
-    # While an event is selected, the calendar is frozen for that analysis cycle so
-    # a transient feed failure or refresh cannot interrupt the selected analysis.
-    snapshot_key = "APEX_FORECASTER_EVENT_SNAPSHOT"
+    today_local = (datetime.now(timezone.utc) + timedelta(hours=tz_info["offset"])).date()
+    board_start_key = "apex_forecaster_board_start"
+    nav_direction_key = "apex_forecaster_nav_direction"
+    board_start = st.session_state.get(board_start_key, today_local)
+    if not isinstance(board_start, _date) or board_start < today_local or board_start > today_local + timedelta(days=60):
+        board_start = today_local
+        st.session_state[board_start_key] = board_start
+    board_end = board_start + timedelta(days=6)
 
-    if selected_code and st.session_state.get(snapshot_key):
-        events = st.session_state[snapshot_key]
+    # Keep the existing robust rolling fetch for the default window. For a user-
+    # selected future window, use the existing Forex Factory range fetcher only.
+    # No strategy, scoring, nowcast or causal-intelligence behavior is changed.
+    if board_start == today_local:
+        board_feed = fetch_forex_factory_calendar_rolling(7, tz_info["offset"])
     else:
-        events = get_upcoming_catalyst_events(tz_info["offset"], tz_info["label"])
-        if events:
-            st.session_state[snapshot_key] = events
-    actuals_cache = load_actuals_cache()
+        board_feed = fetch_forex_factory_calendar_range(board_start, board_end)
 
+    events = get_upcoming_catalyst_events(tz_info["offset"], tz_info["label"], ff_events_override=board_feed)
+    events = [
+        ev for ev in events
+        if ev.get("datetime_obj") and board_start <= ev["datetime_obj"].date() <= board_end
+    ]
+    snapshot_rolling_key = f"{snapshot_key}_rolling_{board_start.isoformat()}"
+    if events:
+        st.session_state[snapshot_rolling_key] = events
+    elif st.session_state.get(snapshot_rolling_key):
+        events = st.session_state[snapshot_rolling_key]
+
+    actuals_cache = load_actuals_cache()
     actuals_changed = False
     for event in events:
         event_code = str(event.get("code", "")).strip()
@@ -4794,250 +9188,238 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
     if actuals_changed:
         save_actuals_cache(actuals_cache)
 
-    # Start pre-computation immediately after the lightweight calendar arrives.
-    # The worker survives Streamlit reruns and warms Nowcast + RUAPI results before clicks.
     _ensure_forecaster_background_worker(events, fred_key, channel_name, actuals_cache)
-
-    render_html(f"""
-    <div class="fc-hero">
-      <div class="fc-hero-row">
-        <div>
-          <div class="fc-eyebrow">ApexMacro / Predictive Intelligence</div>
-          <div class="fc-title">🔮 Macro Catalyst Forecaster</div>
-          <div class="fc-sub">Upcoming macro releases ranked with the existing FRED precursor model, live wire sentiment and causal AI layer.</div>
-          <div class="fc-live"><span class="live-dot"></span> NOWCAST ENGINE ACTIVE &nbsp;•&nbsp; {tz_info['label']} &nbsp;•&nbsp; LIVE CALENDAR</div>
-        </div>
-        <div class="fc-horizon">
-          <div class="fc-horizon-lbl">PREDICTIVE HORIZON</div>
-          <div class="fc-horizon-val">Next 7–10 Days</div>
-        </div>
-      </div>
-    </div>
-    """)
-
-    high_count = sum(1 for e in events if e.get("impact") == "High")
-    medium_count = sum(1 for e in events if e.get("impact") == "Medium")
-    k1, k2, k3 = st.columns(3)
-    with k1:
-        render_html(f'<div class="fc-metric"><div class="fc-metric-l">Tracked catalysts</div><div class="fc-metric-v" style="color:#00f5ff;">{len(events)}</div><div class="fc-metric-note">Current calendar window</div></div>')
-    with k2:
-        render_html(f'<div class="fc-metric"><div class="fc-metric-l">High impact</div><div class="fc-metric-v" style="color:#ff788a;">{high_count}</div><div class="fc-metric-note">Priority causal-AI events</div></div>')
-    with k3:
-        render_html(f'<div class="fc-metric"><div class="fc-metric-l">Medium impact</div><div class="fc-metric-v" style="color:#ffd166;">{medium_count}</div><div class="fc-metric-note">Secondary catalysts</div></div>')
-
-    perf = _forecaster_performance()
-    if is_admin:
-        perf_note = f"Resolved: {perf['resolved']} • Correct: {perf['correct']} • Accuracy: {perf['accuracy']:.1f}%" if perf['resolved'] else "Learning history active — awaiting resolved forecasts"
-        render_html(f'<div style="margin:8px 0 2px;padding:8px 11px;border:1px solid rgba(0,245,255,.12);border-radius:9px;color:#8fa3b4;font-size:10px;">🧪 Forecaster Learning &amp; Backtesting &nbsp;•&nbsp; {perf_note}</div>')
-
-    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
-    render_html('<div class="sec-title">Catalyst Radar</div>')
-
-    ai_key_state = "Configured" if DEFAULT_AI_KEY else "Missing"
-    ai_key_color = "#00ffa3" if DEFAULT_AI_KEY else "#ff8a9b"
-    render_html(
-        f'<div style="margin:0 0 14px 0;padding:9px 12px;border:1px solid rgba(0,229,246,.14);'
-        f'border-radius:10px;background:rgba(3,12,19,.55);font-size:11px;color:#8da2b3;">'
-        f'🧠 AI Provider: <b style="color:#28eaf5;">{DEFAULT_AI_PROVIDER}</b>'
-        f' &nbsp;•&nbsp; Model: <b style="color:#eaf5fb;">{DEFAULT_AI_MODEL}</b>'
-        f' &nbsp;•&nbsp; Key: <b style="color:{ai_key_color};">{ai_key_state}</b>'
-        f'</div>'
-    )
-
-    if not events:
-        st.info("No High or Medium impact Forex Factory catalysts are available in the current calendar window.")
-        return
 
     currency_flags = {
         "USD": "🇺🇸", "EUR": "🇪🇺", "GBP": "💷", "CAD": "🍁",
-        "JPY": "💴", "AUD": "🇦🇺", "NZD": "🇳🇿", "CHF": "🏔️"
+        "JPY": "💴", "AUD": "🇦🇺", "NZD": "🇳🇿", "CHF": "🏔️",
     }
 
-    # Lightweight radar first. Clicking an event immediately switches the page
-    # into a selected-catalyst view instead of leaving the analysis below the full list.
-    selected_from_click = False
+    events_by_date: dict[_date, list[dict]] = {}
+    for ev in events:
+        dt = ev.get("datetime_obj")
+        if dt:
+            d = dt.date() if hasattr(dt, "date") else dt
+            events_by_date.setdefault(d, []).append(ev)
+    for day_events in events_by_date.values():
+        day_events.sort(key=lambda e: e.get("datetime_obj") or datetime.max)
 
-    # If an event is already selected, show a compact Back control and skip
-    # rendering the entire radar above the analysis on every rerun.
-    if selected_code:
-        if st.button("← Back to Catalyst Radar", key="fc_back_to_radar", use_container_width=True):
-            st.session_state.pop(selected_key, None)
-            st.session_state.pop(snapshot_key, None)
-            st.rerun()
+    all_event_dates = sorted(events_by_date)
 
-        ev = next((item for item in events if item.get("code") == selected_code), None)
-        if ev is None:
-            st.session_state.pop(selected_key, None)
-            st.session_state.pop(snapshot_key, None)
-            st.rerun()
-    else:
-        ev = None
-        for item in events:
-            cur = item.get("currency", "USD")
-            cur_flag = currency_flags.get(cur, "🌐")
-            impact_icon = "🔴" if item.get("impact") == "High" else "🟡"
-            label = (
-                f"{cur_flag} {cur} · {item['title']} · {impact_icon} {item['impact']} "
-                f"· 🕒 {item['time_str']} · {item['countdown']}"
-            )
-            if st.button(label, key=f"fc_select_{item['code']}", use_container_width=True):
-                st.session_state[selected_key] = item["code"]
-                st.session_state[snapshot_key] = events
-                selected_code = item["code"]
-                selected_from_click = True
-                break
+    if sel_date_key not in st.session_state or not isinstance(st.session_state[sel_date_key], _date):
+        st.session_state[sel_date_key] = today_local
 
-        if not selected_code:
-            st.caption("Select a catalyst above to load its full Nowcast, evidence and Causal AI analysis.")
-            return
+    selected_date: _date = st.session_state[sel_date_key]
+    if not (board_start <= selected_date <= board_end):
+        selected_date = board_start
+        st.session_state[sel_date_key] = selected_date
 
-        ev = next((item for item in events if item.get("code") == selected_code), None)
-        if ev is None:
-            st.session_state.pop(selected_key, None)
-            return
+    # Exactly seven dates anchored to the selected board start date.
+    week_start = board_start
+    week_days = [board_start + timedelta(days=i) for i in range(7)]
+    week_end = board_end
 
-    # Show the selected catalyst immediately before any slow network/AI work.
-    cur = ev.get("currency", "USD")
-    cur_flag = currency_flags.get(cur, "🌐")
-    render_html(
-        f'<div class="sec-title">Selected Catalyst — {cur_flag} {cur} · {ev["title"]}</div>'
-    )
-    render_html(
-        f'<div style="margin:0 0 14px 0;padding:12px 14px;border:1px solid rgba(0,229,246,.18);'
-        f'border-radius:12px;background:rgba(4,14,22,.72);color:#b8c7d3;font-size:13px;">'
-        f'📅 {ev["date_str"]} &nbsp;•&nbsp; 🕒 {ev["time_str"]} &nbsp;•&nbsp; {ev["countdown"]}'
-        f'</div>'
-    )
+    # Presentation-only Kanban redesign. All event ingestion, forecasting,
+    # AI, persistence, admin overrides and background workers above remain unchanged.
+    render_html("""
+    <style>
+    .apex-fk-hero{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin:2px 0 14px;padding:2px 2px 5px}
+    .apex-fk-kicker{font-size:11px;font-weight:850;letter-spacing:.16em;color:#28dce7;text-transform:uppercase}
+    .apex-fk-title{margin-top:6px;color:#f3f7fa;font-size:clamp(25px,3vw,38px);font-weight:850;line-height:1.08;letter-spacing:-.7px}
+    .apex-fk-sub{margin-top:8px;color:#8fa1ae;font-size:12px}.apex-fk-week{color:#91a5b1;font-size:11px;border:1px solid rgba(55,211,226,.20);background:rgba(5,20,29,.78);border-radius:999px;padding:7px 11px;white-space:nowrap}
+    .apex-fk-legend{display:flex;align-items:center;gap:15px;flex-wrap:wrap;margin:8px 0 13px;color:#91a3ae;font-size:10px}.apex-fk-leg{display:flex;align-items:center;gap:5px}.apex-fk-dot{display:inline-block;width:6px;height:6px;border-radius:50%}.apex-fk-dot.high{background:#b04ce4}.apex-fk-dot.medium{background:#ffb822}.apex-fk-dot.low{background:#35d2e3}
+    .apex-fk-board-label{display:flex;align-items:center;justify-content:flex-start;gap:12px;margin:0;min-height:44px}.apex-fk-board-label b{color:#eaf2f5;font-size:13px}
+    .apex-fk-board-range{display:flex;align-items:center;justify-content:center;gap:8px;min-height:42px;padding:0 14px;border-radius:11px;border:1px solid rgba(39,220,231,.22);background:linear-gradient(145deg,rgba(8,29,40,.88),rgba(4,16,24,.96));color:#a7bac4;font-size:10px;white-space:nowrap;box-sizing:border-box;box-shadow:inset 0 1px 0 rgba(255,255,255,.018)}
+    .apex-fk-range-icon{width:17px;height:17px;border:1px solid rgba(190,216,226,.58);border-radius:4px;display:inline-flex;align-items:center;justify-content:center;color:#c9d7de;font-size:9px;line-height:1}
+    [class*="st-key-apex_fk_board_nav"]{margin:0!important;padding:0!important}
+    [class*="st-key-apex_fk_prev_day"],[class*="st-key-apex_fk_next_day"]{margin:0!important}
+    [class*="st-key-apex_fk_prev_day"] button,[class*="st-key-apex_fk_next_day"] button{min-height:42px!important;width:48px!important;min-width:48px!important;padding:0!important;border-radius:11px!important;border:1px solid rgba(39,220,231,.32)!important;background:linear-gradient(145deg,rgba(8,29,40,.94),rgba(4,16,24,.98))!important;color:#dbe7ec!important;font-size:21px!important;line-height:1!important;box-shadow:0 0 0 rgba(39,220,231,0)!important;transition:transform .16s ease,border-color .18s ease,background .18s ease,box-shadow .18s ease!important}
+    [class*="st-key-apex_fk_next_day"] button{border-color:rgba(183,78,231,.42)!important;color:#dec8ed!important}
+    [class*="st-key-apex_fk_prev_day"] button:hover{transform:translateX(-2px)!important;border-color:rgba(39,220,231,.72)!important;background:rgba(9,40,52,.96)!important;box-shadow:0 0 18px rgba(39,220,231,.10)!important}
+    [class*="st-key-apex_fk_next_day"] button:hover{transform:translateX(2px)!important;border-color:rgba(183,78,231,.72)!important;background:rgba(32,18,45,.96)!important;box-shadow:0 0 18px rgba(183,78,231,.10)!important}
+    [class*="st-key-apex_fk_prev_day"] button:active,[class*="st-key-apex_fk_next_day"] button:active{transform:scale(.91)!important}
+    [class*="st-key-apex_fk_board_nav"] [data-testid="stHorizontalBlock"]{display:grid!important;grid-template-columns:48px minmax(150px,1fr) 48px!important;align-items:center!important;gap:7px!important;width:100%!important;margin:0!important}
+    [class*="st-key-apex_fk_board_nav"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"],
+    [class*="st-key-apex_fk_board_nav"] [data-testid="stHorizontalBlock"]>[data-testid="column"]{width:auto!important;min-width:0!important;max-width:none!important;flex:none!important}
+    .apex-fk-dayhead{text-align:center;padding:11px 5px 9px;margin:-2px -2px 7px;border-bottom:1px solid rgba(74,128,150,.15);min-height:55px;box-sizing:border-box}.apex-fk-dayname{font-size:9px;color:#8296a2;letter-spacing:.09em;font-weight:800}.apex-fk-daynum{font-size:17px;color:#e8f1f5;font-weight:850;margin-top:2px}.apex-fk-dayhead.selected .apex-fk-dayname,.apex-fk-dayhead.selected .apex-fk-daynum{color:#2adce7}.apex-fk-daycount{font-size:9px;color:#718591;margin-top:3px}
+    .apex-fk-empty{min-height:92px;display:flex;align-items:center;justify-content:center;text-align:center;color:#607682;font-size:10px;border:1px dashed rgba(73,126,147,.16);border-radius:10px;background:rgba(4,16,24,.32);padding:10px}
+    .apex-fk-more{text-align:center;color:#7f939e;font-size:9px;padding:7px 2px 1px}
 
-    # INSTANT PATH: use the background-precomputed result whenever available.
-    ev_code = ev["code"]
-    saved_actual = str(actuals_cache.get(ev_code, "")).strip()
-    published_actual = _normalize_forex_factory_actual(ev.get("actual_str", ""))
-    effective_actual = saved_actual or published_actual
-    bg_result = _forecaster_bg_get(ev, effective_actual)
+    /* The exact seven-column board. Desktop stays seven columns; mobile becomes a clean horizontal board. */
+    [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_col_"]){align-items:stretch!important;gap:7px!important;width:100%!important;max-width:100%!important;overflow:visible!important}
+    [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_col_"])>[data-testid="stColumn"],
+    [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_col_"])>[data-testid="column"]{min-width:0!important;max-width:100%!important;overflow:visible!important}
+    [class*="st-key-apex_fk_col_"]{height:100%!important;min-height:430px!important;padding:8px!important;box-sizing:border-box!important;border:1px solid rgba(55,211,226,.18)!important;border-radius:14px!important;background:linear-gradient(160deg,rgba(7,25,35,.94),rgba(3,14,21,.985))!important;overflow:hidden!important;animation:apexFkBoardIn .34s cubic-bezier(.22,.8,.25,1) both}
+    [class*="st-key-apex_fk_col_selected_"]{border-color:rgba(39,220,231,.58)!important;box-shadow:0 0 20px rgba(39,220,231,.06)!important}
 
-    if bg_result and bg_result.get("nowcast"):
-        nowcast = bg_result["nowcast"]
-        causal_ai = bg_result.get("causal_ai") or {"status": "skipped"}
-        all_news = bg_result.get("all_news") or []
-    else:
-        # First-ever cold click can still compute synchronously, while the daemon
-        # continues warming the rest of the radar. Subsequent clicks are instant.
-        with st.spinner(f"Preparing {ev.get('title','selected catalyst')}..."):
-            all_news = fetch_all_instant_news(channel_name)
-            nowcast = compute_event_nowcast(ev, fred_key, all_news, actual_override=effective_actual)
-            causal_ai = (
-                get_causal_macro_ai_analysis(
-                    ev, nowcast, all_news,
-                    DEFAULT_AI_KEY, DEFAULT_AI_PROVIDER, DEFAULT_AI_MODEL, AI_CACHE_VERSION
-                )
-                if ev.get("impact") == "High" else {"status": "skipped"}
-            )
-            with _FORECASTER_BG_LOCK:
-                _FORECASTER_BG_CACHE[ev_code] = {
-                    "signature": _forecaster_bg_signature(ev, effective_actual),
-                    "updated_at": time.time(),
-                    "nowcast": nowcast,
-                    "causal_ai": causal_ai,
-                    "all_news": all_news,
-                    "effective_actual": effective_actual,
-                }
+    /* Event cards */
+    [class*="st-key-apex_fk_card_"]{position:relative!important;margin-bottom:7px!important;min-width:0!important;max-width:100%!important;animation:apexFkCardIn .32s cubic-bezier(.22,.8,.25,1) both}
+    [class*="st-key-apex_fk_card_"] button{width:100%!important;max-width:100%!important;min-width:0!important;min-height:78px!important;padding:9px 9px 9px 13px!important;border-radius:10px!important;border:1px solid rgba(83,135,158,.17)!important;background:rgba(8,28,39,.80)!important;color:#dce8ed!important;text-align:left!important;justify-content:flex-start!important;white-space:pre-wrap!important;overflow-wrap:anywhere!important;word-break:normal!important;box-shadow:none!important;font-size:9px!important;line-height:1.42!important;font-weight:650!important;transition:transform .16s ease,border-color .16s ease,background .16s ease!important}
+    [class*="st-key-apex_fk_card_"] button p{margin:0!important;width:100%!important;max-width:100%!important;text-align:left!important;white-space:pre-wrap!important;overflow-wrap:anywhere!important}
+    [class*="st-key-apex_fk_card_"]::before{content:"";position:absolute;left:6px;top:13px;width:5px;height:5px;border-radius:50%;background:#35d2e3;z-index:3;pointer-events:none}
+    [class*="st-key-apex_fk_card_high_"]::before{background:#b04ce4}[class*="st-key-apex_fk_card_medium_"]::before{background:#ffb822}[class*="st-key-apex_fk_card_low_"]::before{background:#35d2e3}
+    [class*="st-key-apex_fk_card_"] button:hover{transform:translateY(-2px)!important;border-color:rgba(39,220,231,.48)!important;background:rgba(9,36,48,.94)!important}
+    [class*="st-key-apex_fk_card_"] button:active{transform:scale(.985)!important}
 
-    # Preserve learning/backtesting with the result actually displayed.
-    try:
-        _record_forecaster_snapshot(ev, nowcast, actual=effective_actual)
-    except Exception:
-        pass
+    /* Make the existing full Event Details dialog visually match the Kanban concept. */
+    div[data-testid="stDialog"]>div[role="dialog"]{border:1px solid rgba(39,220,231,.34)!important;border-radius:18px!important;background:linear-gradient(160deg,rgba(7,25,35,.99),rgba(2,12,19,.995))!important;box-shadow:0 28px 90px rgba(0,0,0,.55)!important;max-width:900px!important;animation:apexFkModalIn .28s cubic-bezier(.22,.8,.25,1) both!important}
+    div[data-testid="stDialog"]::before{backdrop-filter:blur(8px)!important;-webkit-backdrop-filter:blur(8px)!important;animation:apexFkOverlayIn .22s ease both!important}
+    .apex-fk-hero,.apex-fk-legend{animation:apexFkFadeIn .30s ease both}
+    [class*="st-key-apex_fk_col_prev_"]{animation-name:apexFkBoardPrevIn!important}
+    [class*="st-key-apex_fk_col_next_"]{animation-name:apexFkBoardNextIn!important}
+    [class*="st-key-apex_fk_col_today_"]{animation-name:apexFkBoardTodayIn!important}
+    @keyframes apexFkFadeIn{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+    @keyframes apexFkBoardIn{from{opacity:0;transform:translateY(7px) scale(.992)}to{opacity:1;transform:none}}
+    @keyframes apexFkBoardPrevIn{from{opacity:0;transform:translateX(-18px) scale(.992)}to{opacity:1;transform:none}}
+    @keyframes apexFkBoardNextIn{from{opacity:0;transform:translateX(18px) scale(.992)}to{opacity:1;transform:none}}
+    @keyframes apexFkBoardTodayIn{from{opacity:0;transform:translateY(-7px) scale(.992)}to{opacity:1;transform:none}}
+    @keyframes apexFkCardIn{from{opacity:0;transform:translateY(8px) scale(.985)}to{opacity:1;transform:none}}
+    @keyframes apexFkOverlayIn{from{opacity:0}to{opacity:1}}
+    @keyframes apexFkModalIn{from{opacity:0;transform:translateY(18px) scale(.975)}to{opacity:1;transform:none}}
 
-    cur = ev.get("currency", "USD")
-    cur_flag = currency_flags.get(cur, "🌐")
-    actual_value = effective_actual or "Pending"
-    actual_color = "#00ffa3" if effective_actual else "#718795"
-    bias_bg = "rgba(0,255,163,.055)" if nowcast["bias_color"] == "#00ffa3" else ("rgba(255,94,117,.055)" if nowcast["bias_color"] == "#ff5e75" else "rgba(255,209,102,.05)")
+    @media(max-width:768px){
+      .apex-fk-hero{align-items:flex-start;flex-direction:column;margin-bottom:10px}.apex-fk-title{font-size:24px}.apex-fk-week{padding:5px 8px}.apex-fk-sub{font-size:10px}
+      .apex-fk-board-label{margin:0!important;min-height:36px!important}
+      .apex-fk-board-range{min-height:40px;padding:0 8px;font-size:9px}.apex-fk-range-icon{width:15px;height:15px;font-size:8px}
+      [class*="st-key-apex_fk_prev_day"] button,[class*="st-key-apex_fk_next_day"] button{width:42px!important;min-width:42px!important;min-height:40px!important;font-size:19px!important}
+      [class*="st-key-apex_fk_board_nav"] [data-testid="stHorizontalBlock"]{grid-template-columns:42px minmax(126px,1fr) 42px!important;gap:6px!important}
+      [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_col_"]){display:flex!important;flex-direction:row!important;flex-wrap:nowrap!important;gap:8px!important;overflow-x:auto!important;overflow-y:hidden!important;scroll-snap-type:x proximity!important;padding:1px 2px 10px!important;-webkit-overflow-scrolling:touch!important;scrollbar-width:thin!important}
+      [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_col_"])>[data-testid="stColumn"],
+      [data-testid="stHorizontalBlock"]:has([class*="st-key-apex_fk_col_"])>[data-testid="column"]{display:block!important;flex:0 0 210px!important;width:210px!important;min-width:210px!important;max-width:210px!important;scroll-snap-align:start!important}
+      [class*="st-key-apex_fk_col_"]{min-height:370px!important;padding:7px!important;border-radius:12px!important}
+      [class*="st-key-apex_fk_card_"] button{min-height:72px!important;font-size:9px!important;padding:8px 8px 8px 12px!important}
+      .apex-fk-dayhead{min-height:50px;padding:8px 4px}.apex-fk-daynum{font-size:16px}
+      div[data-testid="stDialog"]>div[role="dialog"]{width:calc(100vw - 18px)!important;max-width:calc(100vw - 18px)!important;max-height:92vh!important;margin:auto!important;border-radius:15px!important}
+    }
+    @media(prefers-reduced-motion:reduce){[class*="st-key-apex_fk_"] button{transition:none!important}[class*="st-key-apex_fk_col_"],[class*="st-key-apex_fk_card_"],.apex-fk-hero,.apex-fk-legend,div[data-testid="stDialog"]>div[role="dialog"],div[data-testid="stDialog"]::before{animation:none!important}}
+    </style>
+    """)
 
-    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+    week_label = f"{week_start.strftime('%d %b')} — {week_end.strftime('%d %b %Y')}"
+    total_events = sum(len(events_by_date.get(d, [])) for d in week_days)
     render_html(f"""
-    <div class="fc-body" style="padding-top:4px;">
-      <div class="fc-time" style="margin-bottom:10px;">📅 {ev['date_str']} &nbsp;•&nbsp; 🕒 {ev['time_str']} &nbsp;•&nbsp; {ev['countdown']}</div>
-      <div class="fc-metrics">
-        <div class="fc-metric"><div class="fc-metric-l">Forecast</div><div class="fc-metric-v" style="color:#ffd166;">{ev['forecast_str']}</div><div class="fc-metric-note">Market consensus</div></div>
-        <div class="fc-metric"><div class="fc-metric-l">Previous</div><div class="fc-metric-v">{ev['prev_str']}</div><div class="fc-metric-note">Last official release</div></div>
-        <div class="fc-metric"><div class="fc-metric-l">Actual</div><div class="fc-metric-v" style="color:{actual_color};">{actual_value}</div><div class="fc-metric-note">Published print</div></div>
-      </div>
-      <div class="fc-nowcast" style="background:{bias_bg};border:1px solid {nowcast['bias_color']}33;">
-        <div>
-          <div class="fc-now-lbl" style="color:{nowcast['bias_color']};">ApexMacro Nowcast</div>
-          <div class="fc-now-title" style="color:{nowcast['bias_color']};">{nowcast['bias_label']}</div>
-          <div class="fc-now-desc">{nowcast['outcome_desc']}</div>
-          <div style="font-size:9.5px;color:#8fa3b4;margin-top:7px;">Beat <b style="color:#00ffa3;">{nowcast.get('probabilities',{}).get('beat',0):.1f}%</b> &nbsp;•&nbsp; In-line <b style="color:#ffd166;">{nowcast.get('probabilities',{}).get('inline',0):.1f}%</b> &nbsp;•&nbsp; Miss <b style="color:#ff788a;">{nowcast.get('probabilities',{}).get('miss',0):.1f}%</b></div>
-          <div style="font-size:8.8px;color:#718795;margin-top:3px;">Conflict {nowcast.get('conflict_score',0)*100:.0f}% • Evidence quality {nowcast.get('evidence_quality',0)*100:.0f}% • Model: {nowcast.get('event_family','general').title()}</div>
-        </div>
-        <div class="fc-score">
-          <div class="fc-score-num" style="color:{nowcast['bias_color']};">{nowcast['confidence']}%</div>
-          <div class="fc-score-cap">Model confidence</div>
-          <div style="font-size:9px;color:#718795;margin-top:4px;">Baseline: {ev['consensus_bias']}</div>
-        </div>
-      </div>
-      <div class="fc-outlook" style="grid-template-columns:1.45fr repeat(4,.65fr);">
-        <div class="fc-outlook-main">
-          <div class="fc-small-lbl">Direct {cur} trajectory</div>
-          <div class="fc-main-action" style="color:{nowcast['currency_action_color']};">{nowcast['currency_action_en']}</div>
-          <div class="fc-main-desc">{nowcast['currency_action_desc_en']}</div>
-        </div>
-        <div class="fc-asset"><b>🥇 Gold</b>{nowcast['gold_implication']}</div>
-        <div class="fc-asset"><b>💵 USD</b>{nowcast['usd_implication']}</div>
-        <div class="fc-asset"><b>🛢️ Oil</b>{nowcast['oil_implication']}</div>
-        <div class="fc-asset"><b>📊 Nasdaq-100</b>{nowcast['nasdaq_implication']}</div>
-      </div>
+    <div class="apex-fk-hero">
+      <div><div class="apex-fk-kicker">CATALYST FORECASTER</div><div class="apex-fk-title">Weekly Catalyst Board</div><div class="apex-fk-sub">Scan the week. Open any event for full causal intelligence · {tz_info['label']}</div></div>
+      <div class="apex-fk-week">{week_label}</div>
     </div>
     """)
 
-    render_causal_macro_ai_panel(causal_ai)
-
-    if is_admin:
-        st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
-        render_html('<div class="fc-small-lbl" style="margin-bottom:6px;">👑 Admin Actual Override</div>')
-        col_inp, col_btn = st.columns([3, 1])
-        with col_inp:
-            entered_actual_val = st.text_input(
-                f"Actual Value for {ev_code}", value=effective_actual,
-                placeholder="e.g. -0.5% or 0.5", key=f"act_txt_{ev_code}", label_visibility="collapsed"
-            )
-        with col_btn:
-            if st.button("💾 Publish", key=f"act_btn_{ev_code}", use_container_width=True):
-                actuals_cache[ev_code] = entered_actual_val.strip()
-                save_actuals_cache(actuals_cache)
-                st.success("Published!")
-                time.sleep(0.3)
+    # Preserve the existing admin-only diagnostics exactly as functionality.
+    is_admin_user = bool(auth_user and auth_user.get("is_admin"))
+    if is_admin_user:
+        diag = get_forex_factory_diagnostics()
+        with st.expander(f"🛠️ Admin: Forex Factory Ingestion Diagnostics ({diag.get('tier_used', 'Live Active')})", expanded=False):
+            d_col1, d_col2, d_col3 = st.columns(3)
+            with d_col1:
+                st.write(f"**Tier Used:** `{diag.get('tier_used', '—')}`")
+                st.write(f"**Total Events (7 Days):** `{diag.get('total_deduped_events', len(events))}`")
+            with d_col2:
+                st.write(f"**Cache Status:** `{diag.get('cache_status', '—')}`")
+                st.write(f"**Tier 1 (Range) Rows:** `{diag.get('tier1_range_count', 0)}`")
+            with d_col3:
+                st.write(f"**Last Fetch (UTC):** `{diag.get('last_fetch_time', '—')}`")
+                st.write(f"**Tier 2 (Daily) Rows:** `{diag.get('tier2_daily_count', 0)}`")
+            if diag.get("daily_counts"):
+                st.write("**Events per Rolling Day:**", diag.get("daily_counts"))
+            if st.button("🔄 Force Refresh Calendar Now", key="btn_admin_force_ff_refresh"):
+                fetch_forex_factory_calendar_rolling(7, tz_info["offset"], force_refresh=True)
                 st.rerun()
 
-    st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
-    render_html('<div class="fc-small-lbl" style="margin-bottom:7px;">Evidence & Precursors</div>')
-    if nowcast["precursor_results"]:
-        p_cols = st.columns(min(len(nowcast["precursor_results"]), 3))
-        for p_idx, p_item in enumerate(nowcast["precursor_results"]):
-            p_col = p_cols[p_idx % len(p_cols)]
-            p_mom_color = "#00ffa3" if p_item["mom"] > 0 else ("#ff5e75" if p_item["mom"] < 0 else "#8fa3b4")
-            p_arr = "▲" if p_item["mom"] > 0 else ("▼" if p_item["mom"] < 0 else "•")
-            with p_col:
+    nav_info, nav_today = st.columns([3, 1], gap="small")
+    with nav_info:
+        render_html(f'<div style="padding:10px 12px;color:#8fa1ae;font-size:11px;border:1px solid rgba(83,135,158,.16);border-radius:10px;background:rgba(7,25,35,.52)">Rolling 7-day board · {total_events} High Impact catalysts · refreshes automatically each day</div>')
+    with nav_today:
+        if st.button("Today", key="apex_fk_today", use_container_width=True):
+            st.session_state[board_start_key] = today_local
+            st.session_state[sel_date_key] = today_local
+            st.session_state[nav_direction_key] = "today"
+            st.session_state.pop(selected_key, None)
+            st.rerun()
+
+    render_html("""
+    <div class="apex-fk-legend">
+      <span class="apex-fk-leg"><i class="apex-fk-dot high"></i>High Impact Catalyst</span>
+    </div>
+    """)
+
+    # Day-by-day board navigation. The old date picker stays removed. The controls
+    # are intentionally grouped together on the far right to match the visual
+    # reference: previous arrow + compact date range + next arrow.
+    nav_title_col, nav_controls_col = st.columns([5.6, 2.4], gap="small")
+    with nav_title_col:
+        render_html('<div class="apex-fk-board-label"><b>7-Day Event Board</b></div>')
+    with nav_controls_col:
+        with st.container(key="apex_fk_board_nav"):
+            prev_col, range_col, next_col = st.columns([.48, 1.75, .48], gap="small")
+            with prev_col:
+                with st.container(key="apex_fk_prev_day"):
+                    prev_disabled = board_start <= today_local
+                    if st.button("‹", key="apex_fk_prev_day_btn", use_container_width=True, disabled=prev_disabled):
+                        new_start = max(today_local, board_start - timedelta(days=1))
+                        st.session_state[board_start_key] = new_start
+                        st.session_state[sel_date_key] = new_start
+                        st.session_state[nav_direction_key] = "prev"
+                        st.session_state.pop(selected_key, None)
+                        st.rerun()
+            with range_col:
+                render_html(f'<div class="apex-fk-board-range"><span class="apex-fk-range-icon">▣</span>{board_start.strftime("%d %b")} — {board_end.strftime("%d %b")}</div>')
+            with next_col:
+                with st.container(key="apex_fk_next_day"):
+                    next_disabled = board_start >= today_local + timedelta(days=60)
+                    if st.button("›", key="apex_fk_next_day_btn", use_container_width=True, disabled=next_disabled):
+                        new_start = min(today_local + timedelta(days=60), board_start + timedelta(days=1))
+                        st.session_state[board_start_key] = new_start
+                        st.session_state[sel_date_key] = new_start
+                        st.session_state[nav_direction_key] = "next"
+                        st.session_state.pop(selected_key, None)
+                        st.rerun()
+
+    # Seven true Kanban columns. On phones the board scrolls horizontally instead
+    # of crushing cards into unreadable narrow columns.
+    board_cols = st.columns(7, gap="small")
+    for day_idx, day_date in enumerate(week_days):
+        day_events = events_by_date.get(day_date, [])
+        is_selected_day = day_date == selected_date
+        state = "selected" if is_selected_day else ("today" if day_date == today_local else "normal")
+        with board_cols[day_idx]:
+            nav_direction = str(st.session_state.get(nav_direction_key, "default"))
+            if nav_direction not in {"prev", "next", "today"}:
+                nav_direction = "default"
+            with st.container(key=f"apex_fk_col_{nav_direction}_{state}_{day_date:%Y_%m_%d}"):
+                count_text = "No events" if not day_events else ("1 High Impact event" if len(day_events) == 1 else f"{len(day_events)} High Impact events")
                 render_html(f"""
-                <div class="fc-metric" style="margin-bottom:8px;">
-                  <div class="fc-metric-l">{p_item['name']}</div>
-                  <div class="fc-metric-v">{p_item['latest']:.2f}</div>
-                  <div class="fc-metric-note" style="color:{p_mom_color};font-weight:800;">{p_arr} {p_item['mom']:+.2f} MoM</div>
+                <div class="apex-fk-dayhead {'selected' if is_selected_day else ''}">
+                  <div class="apex-fk-dayname">{day_date.strftime('%a').upper()}</div>
+                  <div class="apex-fk-daynum">{day_date.day}</div>
+                  <div class="apex-fk-daycount">{count_text}</div>
                 </div>
                 """)
-    else:
-        st.caption("No mapped FRED precursor series are available for this catalyst.")
-
-    if nowcast["correlated_articles"]:
-        render_html('<div class="fc-small-lbl" style="margin:8px 0 7px;">Correlated breaking wires & speeches</div>')
-        for a in nowcast["correlated_articles"]:
-            render_html(f"""
-            <div style="padding:8px 10px;background:rgba(0,245,255,.025);border-left:2px solid rgba(0,245,255,.55);border-radius:5px;margin-bottom:6px;font-size:10.5px;color:#dce7ed;line-height:1.45;">
-              <b>{a.get('title', '')}</b><div style="color:#718795;font-size:9px;margin-top:2px;">{a.get('publishedAt', '')}</div>
-            </div>
-            """)
+                if not day_events:
+                    render_html('<div class="apex-fk-empty">No High Impact macro catalysts scheduled.</div>')
+                else:
+                    # Keep the board readable; all events remain available and no data is altered.
+                    for ev_idx, sev in enumerate(day_events):
+                        code = str(sev.get("code", "")).strip()
+                        cur = sev.get("currency", "USD")
+                        flag = currency_flags.get(cur, "🌐")
+                        impact = str(sev.get("impact", "High")).title()
+                        impact_key = impact.lower() if impact.lower() in {"high", "medium", "low"} else "low"
+                        dt = sev.get("datetime_obj")
+                        event_time = dt.strftime("%H:%M") if dt else "—"
+                        title = str(sev.get("title", ""))
+                        forecast = sev.get("forecast_str", "—") or "—"
+                        previous = sev.get("prev_str", "—") or "—"
+                        actual_val = str(sev.get("actual_str") or actuals_cache.get(code, "")).strip()
+                        act_disp = actual_val if (actual_val and actual_val != "—") else "Pending"
+                        safe_key = re.sub(r"[^a-zA-Z0-9_]", "_", code)[:52] or f"{day_idx}_{ev_idx}"
+                        card_label = f"{event_time} · {flag} {cur}\n{title}\nF: {forecast}  ·  P: {previous}\nActual: {act_disp}"
+                        with st.container(key=f"apex_fk_card_{impact_key}_{day_idx}_{safe_key}"):
+                            if st.button(card_label, key=f"apex_fk_btn_{day_idx}_{safe_key}", use_container_width=True):
+                                st.session_state[sel_date_key] = day_date
+                                st.session_state[selected_key] = code
+                                _show_forecaster_event_dialog(
+                                    sev, fred_key, channel_name, auth_user, actuals_cache, currency_flags
+                                )
 
 def _tron_headers() -> dict[str, str]:
     headers = {"Accept": "application/json", "User-Agent": "ApexMacro-VIP-Payments/1.0"}
@@ -5471,7 +9853,149 @@ def render_vip_checkout() -> None:
     .st-key-APEX_VIP_PLAN_SELECTOR [data-testid="stRadio"] [data-testid="stWidgetLabel"] {
         display:none !important;
     }
-    </style>
+    
+/* ===== ApexMacro Forecaster Calendar v1 — apex- scoped, safe ===== */
+.apex-forecaster-shell{width:100%;box-sizing:border-box;}
+
+/* Calendar container */
+.apex-cal-wrap{background:linear-gradient(145deg,rgba(5,18,28,.96),rgba(3,11,19,.98));border:1px solid rgba(20,205,220,.18);border-radius:18px;padding:20px 20px 16px;margin-bottom:20px;box-shadow:0 20px 60px rgba(0,0,0,.42);}
+.apex-cal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:12px;}
+.apex-cal-title-block{}
+.apex-cal-eyebrow{font-size:14px;font-weight:900;letter-spacing:1.5px;color:#20DDE8;text-transform:uppercase;margin-bottom:4px;}
+.apex-cal-sub{font-size:11.5px;color:#8fa3b4;}
+.apex-cal-nav{display:flex;align-items:center;gap:10px;}
+.apex-cal-month-label{font-size:14px;font-weight:850;color:#F2F6F8;letter-spacing:1px;text-transform:uppercase;}
+
+/* Weekday row */
+.apex-cal-weekdays{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;margin-bottom:8px;}
+.apex-cal-wd{font-size:9.5px;font-weight:900;color:#8fa3b4;text-transform:uppercase;letter-spacing:1px;text-align:center;padding:4px 0;}
+
+/* Day grid */
+.apex-cal-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;}
+.apex-calendar-day{position:relative;min-height:74px;padding:10px 6px 8px;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;box-sizing:border-box;background:linear-gradient(145deg,rgba(15,35,47,.78),rgba(6,20,29,.90));border:1px solid rgba(110,155,175,.15);border-radius:9px;color:#F4F7FA;cursor:pointer;transition:border-color 150ms ease,background 150ms ease,transform 150ms ease;user-select:none;}
+.apex-calendar-day:hover{border-color:rgba(20,205,220,.45);background:linear-gradient(145deg,rgba(6,48,60,.70),rgba(4,22,32,.88));transform:translateY(-1px);}
+.apex-calendar-day.is-selected{border:1px solid rgba(20,225,235,.95)!important;background:linear-gradient(145deg,rgba(6,64,75,.78),rgba(4,28,38,.94))!important;box-shadow:0 0 18px rgba(20,220,230,.15)!important;}
+.apex-calendar-day.is-today .apex-cal-date-num{color:#20DDE8;font-weight:950;}
+.apex-calendar-day.is-other-month{opacity:.35;pointer-events:none;}
+.apex-calendar-day.no-events{cursor:default;}
+.apex-calendar-day.no-events:hover{transform:none;border-color:rgba(110,155,175,.15);background:linear-gradient(145deg,rgba(15,35,47,.78),rgba(6,20,29,.90));}
+.apex-cal-date-num{font-size:15px;font-weight:850;color:#F4F7FA;line-height:1;margin-bottom:7px;}
+.apex-cal-dots{display:flex;flex-wrap:wrap;gap:4px;align-items:center;justify-content:center;min-height:10px;}
+.apex-impact-dot{width:6.5px;height:6.5px;border-radius:50%;flex-shrink:0;}
+.apex-impact-dot.high{background:#A84DE3;box-shadow:0 0 6px rgba(168,77,227,.65);}
+.apex-impact-dot.medium{background:#FFBC26;box-shadow:0 0 6px rgba(255,188,38,.55);}
+.apex-impact-dot.low{background:#38D4E4;box-shadow:0 0 6px rgba(56,212,228,.50);}
+.apex-cal-overflow{font-size:8.5px;font-weight:850;color:#A5B2BF;}
+
+/* Legend */
+.apex-cal-legend{display:flex;align-items:center;gap:20px;justify-content:center;margin-top:16px;padding-top:14px;border-top:1px solid rgba(255,255,255,.06);}
+.apex-cal-legend-item{display:flex;align-items:center;gap:7px;font-size:10.5px;color:#A5B2BF;font-weight:650;}
+
+/* Selected day header */
+.apex-selected-day-header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px;flex-wrap:wrap;}
+.apex-selected-day-title-wrap{display:flex;align-items:center;gap:12px;}
+.apex-selected-day-title{font-size:16px;font-weight:900;color:#20DDE8;letter-spacing:1px;text-transform:uppercase;}
+.apex-selected-day-count{font-size:10px;font-weight:850;color:#20DDE8;background:rgba(20,221,232,.10);border:1px solid rgba(20,221,232,.25);padding:3px 10px;border-radius:999px;letter-spacing:.5px;}
+
+/* Day event cards */
+.apex-day-events-list{display:flex;flex-direction:column;gap:10px;margin-bottom:24px;}
+.apex-day-event-card{width:100%;display:grid;grid-template-columns:70px 80px minmax(0,1fr) 70px 70px 70px 28px;gap:12px;align-items:center;padding:16px 18px;box-sizing:border-box;background:linear-gradient(145deg,rgba(10,28,39,.82),rgba(5,17,26,.92));border:1px solid rgba(90,145,165,.18);border-radius:11px;transition:border-color 150ms ease,background 150ms ease,transform 150ms ease;}
+.apex-day-event-card:hover{border-color:rgba(20,205,220,.42);background:linear-gradient(145deg,rgba(6,42,58,.85),rgba(4,20,32,.95));}
+.apex-dec-time{font-size:13px;font-weight:800;color:#F2F6F8;line-height:1.2;}
+.apex-dec-time-sub{font-size:9.5px;color:#718795;font-weight:700;margin-top:2px;text-transform:uppercase;}
+.apex-dec-currency{display:flex;align-items:center;gap:6px;}
+.apex-dec-flag{font-size:18px;line-height:1;}
+.apex-dec-cur-code{font-size:12px;font-weight:850;color:#F2F6F8;}
+.apex-dec-body{min-width:0;}
+.apex-dec-impact-row{display:flex;align-items:center;gap:6px;margin-bottom:4px;}
+.apex-dec-impact-dot{width:7px;height:7px;border-radius:50%;}
+.apex-dec-impact-dot.high{background:#A84DE3;}
+.apex-dec-impact-dot.medium{background:#FFBC26;}
+.apex-dec-impact-dot.low{background:#38D4E4;}
+.apex-dec-impact-text{font-size:9.5px;font-weight:850;color:#8fa3b4;text-transform:uppercase;letter-spacing:.5px;}
+.apex-dec-name{font-size:13.5px;font-weight:850;color:#F2F6F8;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.apex-dec-val-box{text-align:center;}
+.apex-dec-val-lbl{font-size:8.5px;font-weight:850;color:#718795;text-transform:uppercase;letter-spacing:.6px;}
+.apex-dec-val{font-size:13px;font-weight:850;color:#F2F6F8;margin-top:2px;}
+.apex-dec-val.actual-live{color:#00ffa3;}
+.apex-dec-val.pending{color:#718795;}
+.apex-dec-arrow{font-size:16px;color:#8fa3b4;font-weight:800;text-align:right;}
+.apex-no-events-msg{padding:28px 16px;text-align:center;color:#718795;font-size:12.5px;background:rgba(5,18,28,.4);border:1px solid rgba(110,155,175,.10);border-radius:11px;margin-bottom:20px;}
+
+/* Modal overlay */
+.apex-event-modal-overlay{position:fixed;inset:0;z-index:9998;display:flex;align-items:center;justify-content:center;padding:24px;background:rgba(1,7,12,.58);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);}
+
+/* Modal */
+.apex-event-modal{position:relative;z-index:9999;width:min(980px,72vw);max-height:90vh;overflow-y:auto;padding:26px 28px;box-sizing:border-box;border-radius:16px;background:linear-gradient(145deg,rgba(5,20,30,.98),rgba(3,13,21,.99));border:1px solid rgba(20,215,225,.72);box-shadow:0 28px 90px rgba(0,0,0,.60),0 0 40px rgba(15,210,220,.05);scrollbar-width:thin;scrollbar-color:#20DDE8 rgba(8,16,24,.6);}
+.apex-event-modal::-webkit-scrollbar{width:6px;}.apex-event-modal::-webkit-scrollbar-track{background:rgba(8,16,24,.5);border-radius:4px;}.apex-event-modal::-webkit-scrollbar-thumb{background:linear-gradient(180deg,#20DDE8,#00ffa3);border-radius:4px;}
+
+/* Modal header */
+.apex-modal-header{position:sticky;top:-26px;z-index:10;background:rgba(5,20,30,.97);margin:-26px -28px 20px;padding:18px 28px 14px;border-bottom:1px solid rgba(20,215,225,.14);display:flex;align-items:flex-start;justify-content:space-between;gap:12px;}
+.apex-modal-header-left{}
+.apex-modal-title{font-size:17px;font-weight:900;color:#F2F6F8;letter-spacing:-.1px;}
+.apex-modal-date{font-size:12px;color:#8fa3b4;margin-top:3px;}
+.apex-modal-close-btn{width:36px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:9px;background:rgba(8,24,34,.72);border:1px solid rgba(90,145,165,.18);color:#F0F5F8;font-size:18px;cursor:pointer;line-height:1;}
+
+/* Form fields */
+.apex-form-grid-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:12px;}
+.apex-form-grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-bottom:12px;}
+.apex-form-field{display:flex;flex-direction:column;gap:5px;margin-bottom:12px;}
+.apex-form-label{font-size:9.5px;font-weight:800;color:#8fa3b4;text-transform:uppercase;letter-spacing:.6px;}
+.apex-form-box{padding:11px 14px;border-radius:9px;background:rgba(8,27,38,.76);border:1px solid rgba(90,145,165,.20);font-size:13px;font-weight:750;color:#F2F6F8;display:flex;align-items:center;justify-content:space-between;}
+
+/* Actual/Forecast/Previous values row */
+.apex-modal-values{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-bottom:14px;}
+.apex-modal-value{padding:13px 14px;border-radius:9px;background:rgba(8,27,38,.76);border:1px solid rgba(90,145,165,.20);}
+.apex-modal-value-lbl{font-size:9px;font-weight:850;color:#8fa3b4;text-transform:uppercase;letter-spacing:.6px;margin-bottom:5px;}
+.apex-modal-value-num{font-size:18px;font-weight:900;color:#F2F6F8;}
+.apex-modal-value-num.beat{color:#00ffa3;}
+.apex-modal-value-num.miss{color:#ff5e75;}
+.apex-modal-value-num.inline{color:#ffd166;}
+
+/* Causal card & AI panels */
+.apex-intelligence-card{padding:14px 16px;border-radius:11px;background:rgba(8,24,34,.72);border:1px solid rgba(90,145,165,.18);margin-bottom:14px;}
+.apex-card-header-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
+.apex-card-title{font-size:11px;font-weight:900;color:#F2F6F8;letter-spacing:.5px;text-transform:uppercase;}
+.apex-ai-badge{font-size:9px;font-weight:900;color:#20DDE8;background:rgba(32,221,232,.12);border:1px solid rgba(32,221,232,.30);padding:2px 7px;border-radius:6px;}
+.apex-conf-badge{font-size:10px;font-weight:850;color:#00ffa3;}
+.apex-evidence-list{margin:0;padding:0 0 0 16px;font-size:11px;color:#cbd8df;line-height:1.65;}
+.apex-evidence-list li{margin-bottom:4px;}
+
+/* Cross Asset Grid */
+.apex-cross-asset-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-bottom:14px;}
+.apex-cross-asset-card{padding:12px 10px;background:rgba(8,24,34,.72);border:1px solid rgba(90,145,165,.16);border-radius:10px;text-align:center;}
+.apex-cross-asset-name{font-size:11px;font-weight:850;color:#F2F6F8;display:flex;align-items:center;justify-content:center;gap:4px;margin-bottom:4px;}
+.apex-cross-asset-state{font-size:10px;font-weight:700;color:#8fa3b4;}
+
+/* Admin Box */
+.apex-admin-box{padding:14px 16px;border-radius:11px;background:rgba(12,28,40,.82);border:1px solid rgba(20,205,220,.25);margin-bottom:14px;}
+.apex-admin-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}
+.apex-admin-title{font-size:11.5px;font-weight:900;color:#20DDE8;letter-spacing:.5px;}
+.apex-admin-sub{font-size:10px;color:#8fa3b4;}
+
+/* Mobile responsiveness */
+@media(max-width:768px){
+  .apex-cal-wrap{padding:14px 10px 12px;}
+  .apex-cal-grid,.apex-cal-weekdays{gap:4px;}
+  .apex-calendar-day{min-height:48px;padding:6px 2px 4px;border-radius:7px;}
+  .apex-cal-date-num{font-size:13px;margin-bottom:3px;}
+  .apex-impact-dot{width:4.5px;height:4.5px;}
+  .apex-cal-dots{gap:2px;}
+  .apex-cal-legend{gap:10px;flex-wrap:wrap;}
+  .apex-day-event-card{grid-template-columns:1fr;gap:6px;padding:12px 14px;}
+  .apex-event-modal-overlay{padding:8px;}
+  .apex-event-modal{width:100%;max-width:none;height:min(94vh,100%);max-height:94vh;padding:18px 14px;border-radius:14px;}
+  .apex-modal-header{margin:-18px -14px 16px;padding:14px 14px 12px;top:-18px;}
+  .apex-form-grid-3,.apex-form-grid-2{grid-template-columns:1fr;}
+  .apex-modal-values{grid-template-columns:1fr 1fr 1fr;}
+  .apex-cross-asset-grid{grid-template-columns:repeat(2,minmax(0,1fr));}
+}
+@media(max-width:480px){
+  .apex-modal-values{grid-template-columns:1fr;}
+  .apex-cross-asset-grid{grid-template-columns:1fr;}
+}
+
+</style>
     """)
 
     selector_labels = {
@@ -5887,7 +10411,149 @@ def render_public_nav(active: str = "home") -> None:
         .apex-ref-toplinks{gap:13px !important;}
         .apex-ref-toplinks a{font-size:9px !important;}
       }
-    </style>
+    
+/* ===== ApexMacro Forecaster Calendar v1 — apex- scoped, safe ===== */
+.apex-forecaster-shell{width:100%;box-sizing:border-box;}
+
+/* Calendar container */
+.apex-cal-wrap{background:linear-gradient(145deg,rgba(5,18,28,.96),rgba(3,11,19,.98));border:1px solid rgba(20,205,220,.18);border-radius:18px;padding:20px 20px 16px;margin-bottom:20px;box-shadow:0 20px 60px rgba(0,0,0,.42);}
+.apex-cal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:12px;}
+.apex-cal-title-block{}
+.apex-cal-eyebrow{font-size:14px;font-weight:900;letter-spacing:1.5px;color:#20DDE8;text-transform:uppercase;margin-bottom:4px;}
+.apex-cal-sub{font-size:11.5px;color:#8fa3b4;}
+.apex-cal-nav{display:flex;align-items:center;gap:10px;}
+.apex-cal-month-label{font-size:14px;font-weight:850;color:#F2F6F8;letter-spacing:1px;text-transform:uppercase;}
+
+/* Weekday row */
+.apex-cal-weekdays{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;margin-bottom:8px;}
+.apex-cal-wd{font-size:9.5px;font-weight:900;color:#8fa3b4;text-transform:uppercase;letter-spacing:1px;text-align:center;padding:4px 0;}
+
+/* Day grid */
+.apex-cal-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;}
+.apex-calendar-day{position:relative;min-height:74px;padding:10px 6px 8px;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;box-sizing:border-box;background:linear-gradient(145deg,rgba(15,35,47,.78),rgba(6,20,29,.90));border:1px solid rgba(110,155,175,.15);border-radius:9px;color:#F4F7FA;cursor:pointer;transition:border-color 150ms ease,background 150ms ease,transform 150ms ease;user-select:none;}
+.apex-calendar-day:hover{border-color:rgba(20,205,220,.45);background:linear-gradient(145deg,rgba(6,48,60,.70),rgba(4,22,32,.88));transform:translateY(-1px);}
+.apex-calendar-day.is-selected{border:1px solid rgba(20,225,235,.95)!important;background:linear-gradient(145deg,rgba(6,64,75,.78),rgba(4,28,38,.94))!important;box-shadow:0 0 18px rgba(20,220,230,.15)!important;}
+.apex-calendar-day.is-today .apex-cal-date-num{color:#20DDE8;font-weight:950;}
+.apex-calendar-day.is-other-month{opacity:.35;pointer-events:none;}
+.apex-calendar-day.no-events{cursor:default;}
+.apex-calendar-day.no-events:hover{transform:none;border-color:rgba(110,155,175,.15);background:linear-gradient(145deg,rgba(15,35,47,.78),rgba(6,20,29,.90));}
+.apex-cal-date-num{font-size:15px;font-weight:850;color:#F4F7FA;line-height:1;margin-bottom:7px;}
+.apex-cal-dots{display:flex;flex-wrap:wrap;gap:4px;align-items:center;justify-content:center;min-height:10px;}
+.apex-impact-dot{width:6.5px;height:6.5px;border-radius:50%;flex-shrink:0;}
+.apex-impact-dot.high{background:#A84DE3;box-shadow:0 0 6px rgba(168,77,227,.65);}
+.apex-impact-dot.medium{background:#FFBC26;box-shadow:0 0 6px rgba(255,188,38,.55);}
+.apex-impact-dot.low{background:#38D4E4;box-shadow:0 0 6px rgba(56,212,228,.50);}
+.apex-cal-overflow{font-size:8.5px;font-weight:850;color:#A5B2BF;}
+
+/* Legend */
+.apex-cal-legend{display:flex;align-items:center;gap:20px;justify-content:center;margin-top:16px;padding-top:14px;border-top:1px solid rgba(255,255,255,.06);}
+.apex-cal-legend-item{display:flex;align-items:center;gap:7px;font-size:10.5px;color:#A5B2BF;font-weight:650;}
+
+/* Selected day header */
+.apex-selected-day-header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px;flex-wrap:wrap;}
+.apex-selected-day-title-wrap{display:flex;align-items:center;gap:12px;}
+.apex-selected-day-title{font-size:16px;font-weight:900;color:#20DDE8;letter-spacing:1px;text-transform:uppercase;}
+.apex-selected-day-count{font-size:10px;font-weight:850;color:#20DDE8;background:rgba(20,221,232,.10);border:1px solid rgba(20,221,232,.25);padding:3px 10px;border-radius:999px;letter-spacing:.5px;}
+
+/* Day event cards */
+.apex-day-events-list{display:flex;flex-direction:column;gap:10px;margin-bottom:24px;}
+.apex-day-event-card{width:100%;display:grid;grid-template-columns:70px 80px minmax(0,1fr) 70px 70px 70px 28px;gap:12px;align-items:center;padding:16px 18px;box-sizing:border-box;background:linear-gradient(145deg,rgba(10,28,39,.82),rgba(5,17,26,.92));border:1px solid rgba(90,145,165,.18);border-radius:11px;transition:border-color 150ms ease,background 150ms ease,transform 150ms ease;}
+.apex-day-event-card:hover{border-color:rgba(20,205,220,.42);background:linear-gradient(145deg,rgba(6,42,58,.85),rgba(4,20,32,.95));}
+.apex-dec-time{font-size:13px;font-weight:800;color:#F2F6F8;line-height:1.2;}
+.apex-dec-time-sub{font-size:9.5px;color:#718795;font-weight:700;margin-top:2px;text-transform:uppercase;}
+.apex-dec-currency{display:flex;align-items:center;gap:6px;}
+.apex-dec-flag{font-size:18px;line-height:1;}
+.apex-dec-cur-code{font-size:12px;font-weight:850;color:#F2F6F8;}
+.apex-dec-body{min-width:0;}
+.apex-dec-impact-row{display:flex;align-items:center;gap:6px;margin-bottom:4px;}
+.apex-dec-impact-dot{width:7px;height:7px;border-radius:50%;}
+.apex-dec-impact-dot.high{background:#A84DE3;}
+.apex-dec-impact-dot.medium{background:#FFBC26;}
+.apex-dec-impact-dot.low{background:#38D4E4;}
+.apex-dec-impact-text{font-size:9.5px;font-weight:850;color:#8fa3b4;text-transform:uppercase;letter-spacing:.5px;}
+.apex-dec-name{font-size:13.5px;font-weight:850;color:#F2F6F8;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.apex-dec-val-box{text-align:center;}
+.apex-dec-val-lbl{font-size:8.5px;font-weight:850;color:#718795;text-transform:uppercase;letter-spacing:.6px;}
+.apex-dec-val{font-size:13px;font-weight:850;color:#F2F6F8;margin-top:2px;}
+.apex-dec-val.actual-live{color:#00ffa3;}
+.apex-dec-val.pending{color:#718795;}
+.apex-dec-arrow{font-size:16px;color:#8fa3b4;font-weight:800;text-align:right;}
+.apex-no-events-msg{padding:28px 16px;text-align:center;color:#718795;font-size:12.5px;background:rgba(5,18,28,.4);border:1px solid rgba(110,155,175,.10);border-radius:11px;margin-bottom:20px;}
+
+/* Modal overlay */
+.apex-event-modal-overlay{position:fixed;inset:0;z-index:9998;display:flex;align-items:center;justify-content:center;padding:24px;background:rgba(1,7,12,.58);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);}
+
+/* Modal */
+.apex-event-modal{position:relative;z-index:9999;width:min(980px,72vw);max-height:90vh;overflow-y:auto;padding:26px 28px;box-sizing:border-box;border-radius:16px;background:linear-gradient(145deg,rgba(5,20,30,.98),rgba(3,13,21,.99));border:1px solid rgba(20,215,225,.72);box-shadow:0 28px 90px rgba(0,0,0,.60),0 0 40px rgba(15,210,220,.05);scrollbar-width:thin;scrollbar-color:#20DDE8 rgba(8,16,24,.6);}
+.apex-event-modal::-webkit-scrollbar{width:6px;}.apex-event-modal::-webkit-scrollbar-track{background:rgba(8,16,24,.5);border-radius:4px;}.apex-event-modal::-webkit-scrollbar-thumb{background:linear-gradient(180deg,#20DDE8,#00ffa3);border-radius:4px;}
+
+/* Modal header */
+.apex-modal-header{position:sticky;top:-26px;z-index:10;background:rgba(5,20,30,.97);margin:-26px -28px 20px;padding:18px 28px 14px;border-bottom:1px solid rgba(20,215,225,.14);display:flex;align-items:flex-start;justify-content:space-between;gap:12px;}
+.apex-modal-header-left{}
+.apex-modal-title{font-size:17px;font-weight:900;color:#F2F6F8;letter-spacing:-.1px;}
+.apex-modal-date{font-size:12px;color:#8fa3b4;margin-top:3px;}
+.apex-modal-close-btn{width:36px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:9px;background:rgba(8,24,34,.72);border:1px solid rgba(90,145,165,.18);color:#F0F5F8;font-size:18px;cursor:pointer;line-height:1;}
+
+/* Form fields */
+.apex-form-grid-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:12px;}
+.apex-form-grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-bottom:12px;}
+.apex-form-field{display:flex;flex-direction:column;gap:5px;margin-bottom:12px;}
+.apex-form-label{font-size:9.5px;font-weight:800;color:#8fa3b4;text-transform:uppercase;letter-spacing:.6px;}
+.apex-form-box{padding:11px 14px;border-radius:9px;background:rgba(8,27,38,.76);border:1px solid rgba(90,145,165,.20);font-size:13px;font-weight:750;color:#F2F6F8;display:flex;align-items:center;justify-content:space-between;}
+
+/* Actual/Forecast/Previous values row */
+.apex-modal-values{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-bottom:14px;}
+.apex-modal-value{padding:13px 14px;border-radius:9px;background:rgba(8,27,38,.76);border:1px solid rgba(90,145,165,.20);}
+.apex-modal-value-lbl{font-size:9px;font-weight:850;color:#8fa3b4;text-transform:uppercase;letter-spacing:.6px;margin-bottom:5px;}
+.apex-modal-value-num{font-size:18px;font-weight:900;color:#F2F6F8;}
+.apex-modal-value-num.beat{color:#00ffa3;}
+.apex-modal-value-num.miss{color:#ff5e75;}
+.apex-modal-value-num.inline{color:#ffd166;}
+
+/* Causal card & AI panels */
+.apex-intelligence-card{padding:14px 16px;border-radius:11px;background:rgba(8,24,34,.72);border:1px solid rgba(90,145,165,.18);margin-bottom:14px;}
+.apex-card-header-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
+.apex-card-title{font-size:11px;font-weight:900;color:#F2F6F8;letter-spacing:.5px;text-transform:uppercase;}
+.apex-ai-badge{font-size:9px;font-weight:900;color:#20DDE8;background:rgba(32,221,232,.12);border:1px solid rgba(32,221,232,.30);padding:2px 7px;border-radius:6px;}
+.apex-conf-badge{font-size:10px;font-weight:850;color:#00ffa3;}
+.apex-evidence-list{margin:0;padding:0 0 0 16px;font-size:11px;color:#cbd8df;line-height:1.65;}
+.apex-evidence-list li{margin-bottom:4px;}
+
+/* Cross Asset Grid */
+.apex-cross-asset-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-bottom:14px;}
+.apex-cross-asset-card{padding:12px 10px;background:rgba(8,24,34,.72);border:1px solid rgba(90,145,165,.16);border-radius:10px;text-align:center;}
+.apex-cross-asset-name{font-size:11px;font-weight:850;color:#F2F6F8;display:flex;align-items:center;justify-content:center;gap:4px;margin-bottom:4px;}
+.apex-cross-asset-state{font-size:10px;font-weight:700;color:#8fa3b4;}
+
+/* Admin Box */
+.apex-admin-box{padding:14px 16px;border-radius:11px;background:rgba(12,28,40,.82);border:1px solid rgba(20,205,220,.25);margin-bottom:14px;}
+.apex-admin-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}
+.apex-admin-title{font-size:11.5px;font-weight:900;color:#20DDE8;letter-spacing:.5px;}
+.apex-admin-sub{font-size:10px;color:#8fa3b4;}
+
+/* Mobile responsiveness */
+@media(max-width:768px){
+  .apex-cal-wrap{padding:14px 10px 12px;}
+  .apex-cal-grid,.apex-cal-weekdays{gap:4px;}
+  .apex-calendar-day{min-height:48px;padding:6px 2px 4px;border-radius:7px;}
+  .apex-cal-date-num{font-size:13px;margin-bottom:3px;}
+  .apex-impact-dot{width:4.5px;height:4.5px;}
+  .apex-cal-dots{gap:2px;}
+  .apex-cal-legend{gap:10px;flex-wrap:wrap;}
+  .apex-day-event-card{grid-template-columns:1fr;gap:6px;padding:12px 14px;}
+  .apex-event-modal-overlay{padding:8px;}
+  .apex-event-modal{width:100%;max-width:none;height:min(94vh,100%);max-height:94vh;padding:18px 14px;border-radius:14px;}
+  .apex-modal-header{margin:-18px -14px 16px;padding:14px 14px 12px;top:-18px;}
+  .apex-form-grid-3,.apex-form-grid-2{grid-template-columns:1fr;}
+  .apex-modal-values{grid-template-columns:1fr 1fr 1fr;}
+  .apex-cross-asset-grid{grid-template-columns:repeat(2,minmax(0,1fr));}
+}
+@media(max-width:480px){
+  .apex-modal-values{grid-template-columns:1fr;}
+  .apex-cross-asset-grid{grid-template-columns:1fr;}
+}
+
+</style>
     """, unsafe_allow_html=True)
 
     with st.container(key="apex_public_header"):
@@ -6213,7 +10879,149 @@ def render_public_home() -> None:
         .apex-ref-hero-inner{width:76%;}
         .apex-ref-title{font-size:35px;}
       }
-    </style>
+    
+/* ===== ApexMacro Forecaster Calendar v1 — apex- scoped, safe ===== */
+.apex-forecaster-shell{width:100%;box-sizing:border-box;}
+
+/* Calendar container */
+.apex-cal-wrap{background:linear-gradient(145deg,rgba(5,18,28,.96),rgba(3,11,19,.98));border:1px solid rgba(20,205,220,.18);border-radius:18px;padding:20px 20px 16px;margin-bottom:20px;box-shadow:0 20px 60px rgba(0,0,0,.42);}
+.apex-cal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:12px;}
+.apex-cal-title-block{}
+.apex-cal-eyebrow{font-size:14px;font-weight:900;letter-spacing:1.5px;color:#20DDE8;text-transform:uppercase;margin-bottom:4px;}
+.apex-cal-sub{font-size:11.5px;color:#8fa3b4;}
+.apex-cal-nav{display:flex;align-items:center;gap:10px;}
+.apex-cal-month-label{font-size:14px;font-weight:850;color:#F2F6F8;letter-spacing:1px;text-transform:uppercase;}
+
+/* Weekday row */
+.apex-cal-weekdays{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;margin-bottom:8px;}
+.apex-cal-wd{font-size:9.5px;font-weight:900;color:#8fa3b4;text-transform:uppercase;letter-spacing:1px;text-align:center;padding:4px 0;}
+
+/* Day grid */
+.apex-cal-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;}
+.apex-calendar-day{position:relative;min-height:74px;padding:10px 6px 8px;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;box-sizing:border-box;background:linear-gradient(145deg,rgba(15,35,47,.78),rgba(6,20,29,.90));border:1px solid rgba(110,155,175,.15);border-radius:9px;color:#F4F7FA;cursor:pointer;transition:border-color 150ms ease,background 150ms ease,transform 150ms ease;user-select:none;}
+.apex-calendar-day:hover{border-color:rgba(20,205,220,.45);background:linear-gradient(145deg,rgba(6,48,60,.70),rgba(4,22,32,.88));transform:translateY(-1px);}
+.apex-calendar-day.is-selected{border:1px solid rgba(20,225,235,.95)!important;background:linear-gradient(145deg,rgba(6,64,75,.78),rgba(4,28,38,.94))!important;box-shadow:0 0 18px rgba(20,220,230,.15)!important;}
+.apex-calendar-day.is-today .apex-cal-date-num{color:#20DDE8;font-weight:950;}
+.apex-calendar-day.is-other-month{opacity:.35;pointer-events:none;}
+.apex-calendar-day.no-events{cursor:default;}
+.apex-calendar-day.no-events:hover{transform:none;border-color:rgba(110,155,175,.15);background:linear-gradient(145deg,rgba(15,35,47,.78),rgba(6,20,29,.90));}
+.apex-cal-date-num{font-size:15px;font-weight:850;color:#F4F7FA;line-height:1;margin-bottom:7px;}
+.apex-cal-dots{display:flex;flex-wrap:wrap;gap:4px;align-items:center;justify-content:center;min-height:10px;}
+.apex-impact-dot{width:6.5px;height:6.5px;border-radius:50%;flex-shrink:0;}
+.apex-impact-dot.high{background:#A84DE3;box-shadow:0 0 6px rgba(168,77,227,.65);}
+.apex-impact-dot.medium{background:#FFBC26;box-shadow:0 0 6px rgba(255,188,38,.55);}
+.apex-impact-dot.low{background:#38D4E4;box-shadow:0 0 6px rgba(56,212,228,.50);}
+.apex-cal-overflow{font-size:8.5px;font-weight:850;color:#A5B2BF;}
+
+/* Legend */
+.apex-cal-legend{display:flex;align-items:center;gap:20px;justify-content:center;margin-top:16px;padding-top:14px;border-top:1px solid rgba(255,255,255,.06);}
+.apex-cal-legend-item{display:flex;align-items:center;gap:7px;font-size:10.5px;color:#A5B2BF;font-weight:650;}
+
+/* Selected day header */
+.apex-selected-day-header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px;flex-wrap:wrap;}
+.apex-selected-day-title-wrap{display:flex;align-items:center;gap:12px;}
+.apex-selected-day-title{font-size:16px;font-weight:900;color:#20DDE8;letter-spacing:1px;text-transform:uppercase;}
+.apex-selected-day-count{font-size:10px;font-weight:850;color:#20DDE8;background:rgba(20,221,232,.10);border:1px solid rgba(20,221,232,.25);padding:3px 10px;border-radius:999px;letter-spacing:.5px;}
+
+/* Day event cards */
+.apex-day-events-list{display:flex;flex-direction:column;gap:10px;margin-bottom:24px;}
+.apex-day-event-card{width:100%;display:grid;grid-template-columns:70px 80px minmax(0,1fr) 70px 70px 70px 28px;gap:12px;align-items:center;padding:16px 18px;box-sizing:border-box;background:linear-gradient(145deg,rgba(10,28,39,.82),rgba(5,17,26,.92));border:1px solid rgba(90,145,165,.18);border-radius:11px;transition:border-color 150ms ease,background 150ms ease,transform 150ms ease;}
+.apex-day-event-card:hover{border-color:rgba(20,205,220,.42);background:linear-gradient(145deg,rgba(6,42,58,.85),rgba(4,20,32,.95));}
+.apex-dec-time{font-size:13px;font-weight:800;color:#F2F6F8;line-height:1.2;}
+.apex-dec-time-sub{font-size:9.5px;color:#718795;font-weight:700;margin-top:2px;text-transform:uppercase;}
+.apex-dec-currency{display:flex;align-items:center;gap:6px;}
+.apex-dec-flag{font-size:18px;line-height:1;}
+.apex-dec-cur-code{font-size:12px;font-weight:850;color:#F2F6F8;}
+.apex-dec-body{min-width:0;}
+.apex-dec-impact-row{display:flex;align-items:center;gap:6px;margin-bottom:4px;}
+.apex-dec-impact-dot{width:7px;height:7px;border-radius:50%;}
+.apex-dec-impact-dot.high{background:#A84DE3;}
+.apex-dec-impact-dot.medium{background:#FFBC26;}
+.apex-dec-impact-dot.low{background:#38D4E4;}
+.apex-dec-impact-text{font-size:9.5px;font-weight:850;color:#8fa3b4;text-transform:uppercase;letter-spacing:.5px;}
+.apex-dec-name{font-size:13.5px;font-weight:850;color:#F2F6F8;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.apex-dec-val-box{text-align:center;}
+.apex-dec-val-lbl{font-size:8.5px;font-weight:850;color:#718795;text-transform:uppercase;letter-spacing:.6px;}
+.apex-dec-val{font-size:13px;font-weight:850;color:#F2F6F8;margin-top:2px;}
+.apex-dec-val.actual-live{color:#00ffa3;}
+.apex-dec-val.pending{color:#718795;}
+.apex-dec-arrow{font-size:16px;color:#8fa3b4;font-weight:800;text-align:right;}
+.apex-no-events-msg{padding:28px 16px;text-align:center;color:#718795;font-size:12.5px;background:rgba(5,18,28,.4);border:1px solid rgba(110,155,175,.10);border-radius:11px;margin-bottom:20px;}
+
+/* Modal overlay */
+.apex-event-modal-overlay{position:fixed;inset:0;z-index:9998;display:flex;align-items:center;justify-content:center;padding:24px;background:rgba(1,7,12,.58);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);}
+
+/* Modal */
+.apex-event-modal{position:relative;z-index:9999;width:min(980px,72vw);max-height:90vh;overflow-y:auto;padding:26px 28px;box-sizing:border-box;border-radius:16px;background:linear-gradient(145deg,rgba(5,20,30,.98),rgba(3,13,21,.99));border:1px solid rgba(20,215,225,.72);box-shadow:0 28px 90px rgba(0,0,0,.60),0 0 40px rgba(15,210,220,.05);scrollbar-width:thin;scrollbar-color:#20DDE8 rgba(8,16,24,.6);}
+.apex-event-modal::-webkit-scrollbar{width:6px;}.apex-event-modal::-webkit-scrollbar-track{background:rgba(8,16,24,.5);border-radius:4px;}.apex-event-modal::-webkit-scrollbar-thumb{background:linear-gradient(180deg,#20DDE8,#00ffa3);border-radius:4px;}
+
+/* Modal header */
+.apex-modal-header{position:sticky;top:-26px;z-index:10;background:rgba(5,20,30,.97);margin:-26px -28px 20px;padding:18px 28px 14px;border-bottom:1px solid rgba(20,215,225,.14);display:flex;align-items:flex-start;justify-content:space-between;gap:12px;}
+.apex-modal-header-left{}
+.apex-modal-title{font-size:17px;font-weight:900;color:#F2F6F8;letter-spacing:-.1px;}
+.apex-modal-date{font-size:12px;color:#8fa3b4;margin-top:3px;}
+.apex-modal-close-btn{width:36px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:9px;background:rgba(8,24,34,.72);border:1px solid rgba(90,145,165,.18);color:#F0F5F8;font-size:18px;cursor:pointer;line-height:1;}
+
+/* Form fields */
+.apex-form-grid-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:12px;}
+.apex-form-grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-bottom:12px;}
+.apex-form-field{display:flex;flex-direction:column;gap:5px;margin-bottom:12px;}
+.apex-form-label{font-size:9.5px;font-weight:800;color:#8fa3b4;text-transform:uppercase;letter-spacing:.6px;}
+.apex-form-box{padding:11px 14px;border-radius:9px;background:rgba(8,27,38,.76);border:1px solid rgba(90,145,165,.20);font-size:13px;font-weight:750;color:#F2F6F8;display:flex;align-items:center;justify-content:space-between;}
+
+/* Actual/Forecast/Previous values row */
+.apex-modal-values{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-bottom:14px;}
+.apex-modal-value{padding:13px 14px;border-radius:9px;background:rgba(8,27,38,.76);border:1px solid rgba(90,145,165,.20);}
+.apex-modal-value-lbl{font-size:9px;font-weight:850;color:#8fa3b4;text-transform:uppercase;letter-spacing:.6px;margin-bottom:5px;}
+.apex-modal-value-num{font-size:18px;font-weight:900;color:#F2F6F8;}
+.apex-modal-value-num.beat{color:#00ffa3;}
+.apex-modal-value-num.miss{color:#ff5e75;}
+.apex-modal-value-num.inline{color:#ffd166;}
+
+/* Causal card & AI panels */
+.apex-intelligence-card{padding:14px 16px;border-radius:11px;background:rgba(8,24,34,.72);border:1px solid rgba(90,145,165,.18);margin-bottom:14px;}
+.apex-card-header-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
+.apex-card-title{font-size:11px;font-weight:900;color:#F2F6F8;letter-spacing:.5px;text-transform:uppercase;}
+.apex-ai-badge{font-size:9px;font-weight:900;color:#20DDE8;background:rgba(32,221,232,.12);border:1px solid rgba(32,221,232,.30);padding:2px 7px;border-radius:6px;}
+.apex-conf-badge{font-size:10px;font-weight:850;color:#00ffa3;}
+.apex-evidence-list{margin:0;padding:0 0 0 16px;font-size:11px;color:#cbd8df;line-height:1.65;}
+.apex-evidence-list li{margin-bottom:4px;}
+
+/* Cross Asset Grid */
+.apex-cross-asset-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-bottom:14px;}
+.apex-cross-asset-card{padding:12px 10px;background:rgba(8,24,34,.72);border:1px solid rgba(90,145,165,.16);border-radius:10px;text-align:center;}
+.apex-cross-asset-name{font-size:11px;font-weight:850;color:#F2F6F8;display:flex;align-items:center;justify-content:center;gap:4px;margin-bottom:4px;}
+.apex-cross-asset-state{font-size:10px;font-weight:700;color:#8fa3b4;}
+
+/* Admin Box */
+.apex-admin-box{padding:14px 16px;border-radius:11px;background:rgba(12,28,40,.82);border:1px solid rgba(20,205,220,.25);margin-bottom:14px;}
+.apex-admin-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}
+.apex-admin-title{font-size:11.5px;font-weight:900;color:#20DDE8;letter-spacing:.5px;}
+.apex-admin-sub{font-size:10px;color:#8fa3b4;}
+
+/* Mobile responsiveness */
+@media(max-width:768px){
+  .apex-cal-wrap{padding:14px 10px 12px;}
+  .apex-cal-grid,.apex-cal-weekdays{gap:4px;}
+  .apex-calendar-day{min-height:48px;padding:6px 2px 4px;border-radius:7px;}
+  .apex-cal-date-num{font-size:13px;margin-bottom:3px;}
+  .apex-impact-dot{width:4.5px;height:4.5px;}
+  .apex-cal-dots{gap:2px;}
+  .apex-cal-legend{gap:10px;flex-wrap:wrap;}
+  .apex-day-event-card{grid-template-columns:1fr;gap:6px;padding:12px 14px;}
+  .apex-event-modal-overlay{padding:8px;}
+  .apex-event-modal{width:100%;max-width:none;height:min(94vh,100%);max-height:94vh;padding:18px 14px;border-radius:14px;}
+  .apex-modal-header{margin:-18px -14px 16px;padding:14px 14px 12px;top:-18px;}
+  .apex-form-grid-3,.apex-form-grid-2{grid-template-columns:1fr;}
+  .apex-modal-values{grid-template-columns:1fr 1fr 1fr;}
+  .apex-cross-asset-grid{grid-template-columns:repeat(2,minmax(0,1fr));}
+}
+@media(max-width:480px){
+  .apex-modal-values{grid-template-columns:1fr;}
+  .apex-cross-asset-grid{grid-template-columns:1fr;}
+}
+
+</style>
     """, unsafe_allow_html=True)
 
     render_public_nav("home")
@@ -6546,6 +11354,43 @@ def render_admin_key_generator() -> None:
     </div>
     """)
 
+    # Durable master switch for all paid AI traffic. Fresh deployments default
+    # to OFF, which means every market/Forecaster page keeps deterministic
+    # analysis active but cannot contact RUAPI/OpenRouter.
+    ai_ctl = get_ai_control_state()
+    ai_on = bool(ai_ctl.get("enabled"))
+    status_color = "#00ffa3" if ai_on else "#ffd166"
+    status_text = "AI ON — background change detection active" if ai_on else "AI OFF — provider spending blocked"
+    last_update = str(ai_ctl.get("last_ai_update") or "No successful shared AI batch yet")
+    render_html(f"""
+    <div style="background:rgba(10,20,29,.92);border:1px solid rgba(255,209,102,.24);border-radius:14px;padding:16px 18px;margin-bottom:14px;">
+      <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap;">
+        <div>
+          <div style="font-size:12px;font-weight:900;color:#dceaf4;letter-spacing:.5px;">🤖 MASTER AI BILLING CONTROL</div>
+          <div style="font-size:10.5px;color:#8fa3b4;margin-top:4px;">One switch controls all paid AI requests across Forex, Gold, Oil, Nasdaq, Dashboard and Forecaster.</div>
+        </div>
+        <div style="font-size:11px;font-weight:900;color:{status_color};">● {status_text}</div>
+      </div>
+      <div style="font-size:9.8px;color:#718899;margin-top:8px;">Last successful shared AI update: {last_update}</div>
+    </div>
+    """)
+    ai_c1, ai_c2 = st.columns(2)
+    with ai_c1:
+        if st.button("▶ Enable AI", type="primary" if not ai_on else "secondary", use_container_width=True, disabled=ai_on, key="admin_enable_master_ai"):
+            set_ai_enabled(True, "ADMINISTRATOR")
+            start_shared_background_ai_worker()
+            st.success("AI enabled. The first/changed shared snapshot will be analyzed once in the background.")
+            time.sleep(0.25)
+            st.rerun()
+    with ai_c2:
+        if st.button("⏸ Disable AI / Stop Spending", type="primary" if ai_on else "secondary", use_container_width=True, disabled=not ai_on, key="admin_disable_master_ai"):
+            set_ai_enabled(False, "ADMINISTRATOR")
+            st.warning("AI disabled. New paid provider requests are blocked; rule-based and macro analysis remain active.")
+            time.sleep(0.25)
+            st.rerun()
+    st.caption("AI is OFF by default on a fresh deployment. Enabling it does not make page navigation billable; only the background changed-data/news snapshot can create one shared request.")
+    st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
+
     g1, g2, g3 = st.columns([2, 2, 1.5])
     with g1:
         c_name = st.text_input("Client Name:", placeholder="e.g. KARDO", key="adm_client_name")
@@ -6577,6 +11422,202 @@ def render_admin_key_generator() -> None:
         st.success(f"🎉 Generated & Registered License Key for **{name_val}** (Telegram ID: {tg_id_val or 'None'}):")
         st.code(generated_key, language="text")
         st.info("📋 Key has been saved to your VIP Client Registry below.")
+
+    st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
+    perf = _forecaster_performance()
+    hist_rows = list(_load_forecaster_history().get("records", {}).values())
+    resolved_rows = [r for r in hist_rows if r.get("resolved")]
+    wrong_rows = [r for r in resolved_rows if not r.get("correct")]
+    pending_rows = [r for r in hist_rows if not r.get("resolved")]
+    render_html('<div class="sec-title">FORECASTER PERFORMANCE &amp; AUDIT</div>')
+    p1, p2, p3, p4, p5 = st.columns(5)
+    p1.metric("Analyses", len(hist_rows)); p2.metric("Resolved", len(resolved_rows)); p3.metric("Correct", perf.get("correct", 0)); p4.metric("Wrong", len(wrong_rows)); p5.metric("Accuracy", f"{perf.get('accuracy', 0.0):.1f}%")
+    st.caption(
+        f"Pending releases: {len(pending_rows)}. Forecasts are frozen before release and scored after Actual is published. "
+        f"Layer accuracy — Quant: {perf.get('quantitative_accuracy', 0.0):.1f}% · "
+        f"AI: {perf.get('ai_accuracy', 0.0):.1f}% ({perf.get('ai_scored', 0)} scored) · "
+        f"Final: {perf.get('final_accuracy', 0.0):.1f}% · Consensus: {perf.get('consensus_accuracy', 0.0):.1f}%."
+    )
+    if resolved_rows:
+        audit = []
+        for r in sorted(resolved_rows, key=lambda x: str(x.get("resolved_at_utc", "")), reverse=True):
+            audit.append({
+                "Event": r.get("title", ""),
+                "Currency": r.get("currency", ""),
+                "Forecast": r.get("forecast", ""),
+                "Actual": r.get("actual", ""),
+                "Quant": str(r.get("quantitative_prediction") or r.get("predicted_outcome", "")).title(),
+                "AI": str(r.get("ai_judgment", "")).title() or "—",
+                "Final": str(r.get("final_prediction") or r.get("predicted_outcome", "")).title(),
+                "Outcome": str(r.get("actual_outcome", "")).title(),
+                "Quant Result": ("Correct" if r.get("quantitative_correct", r.get("correct")) else "Wrong"),
+                "AI Result": ("—" if r.get("ai_correct") is None else ("Correct" if r.get("ai_correct") else "Wrong")),
+                "Final Result": ("Correct" if r.get("final_correct", r.get("correct")) else "Wrong"),
+                "Confidence": f"{float(r.get('confidence', 0) or 0):.0f}%",
+                "Why": r.get("resolution_reason") or r.get("prediction_reason", ""),
+            })
+        st.dataframe(audit, use_container_width=True, hide_index=True)
+        with st.expander("Performance by event family", expanded=False):
+            fam_rows = [{"Event family": fam, "Resolved": stats.get("n", 0), "Accuracy": f"{stats.get('accuracy', 0.0):.1f}%"} for fam, stats in sorted((perf.get("by_family") or {}).items())]
+            if fam_rows: st.dataframe(fam_rows, use_container_width=True, hide_index=True)
+    else:
+        st.info("No completed forecast has been scored yet. Records resolve automatically when Actual values are published.")
+    st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
+    render_html('<div class="sec-title">AI ACTIVITY — SIMPLE VIEW</div>')
+    ai_logs = get_ai_activity_log(250)
+    state_now = get_shared_background_ai_state()
+
+    def _admin_local_time(entry):
+        try:
+            ts = float(entry.get("time", 0) or 0)
+            if ts > 0:
+                return datetime.fromtimestamp(ts, timezone.utc).astimezone(timezone(timedelta(hours=3))).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            pass
+        return str(entry.get("time_iso", ""))[:19].replace("T", " ")
+
+    def _admin_kind_label(kind):
+        return {
+            "control": "⚙️ کۆنترۆڵ",
+            "trigger": "🚨 هەواڵ/داتای گرنگ",
+            "ignored": "⚪ پشتگوێخراو",
+            "request": "🤖 نێردرا بۆ AI",
+            "success": "✅ وەڵامی AI",
+            "ai_decision": "🧠 بڕیاری AI + نرخی ئەو ساتە",
+            "price_confirmed": "🎯 پێشبینی پشتڕاست کرایەوە",
+            "price_contradicted": "⚠️ نرخ دژ بە پێشبینی چوو",
+            "error": "❌ هەڵە",
+        }.get(str(kind), str(kind).upper())
+
+    lc1, lc2, lc3, lc4 = st.columns(4)
+    lc1.metric("تۆمارەکان", len(ai_logs))
+    lc2.metric("دوایین نمرە", int(state_now.get("last_trigger_score", 0) or 0))
+    lc3.metric("نمرەی چاوەڕوان", int(state_now.get("pending_trigger_score", 0) or 0))
+    lc4.metric("مۆدێل", str(state_now.get("model", "—")))
+    st.caption("کاتەکان بە کاتی عێراق (+03:00) پیشان دەدرێن. لێرە بە سادەیی دەبینیت سیستەم چی بینیوە، بۆچی AI بانگ کراوە یان نەکراوە، چی بۆ AI نێردراوە و AI چی وەڵامی داوەتەوە.")
+
+    log_c1, log_c2 = st.columns([1, 1])
+    with log_c1:
+        simple_filter = st.selectbox("چی پیشان بدرێت؟", ["هەمووی", "تەنها گرنگەکان", "تەنها داواکاری و وەڵامی AI", "تەنها پشتگوێخراوەکان", "تەنها هەڵەکان"], key="admin_ai_simple_filter")
+    with log_c2:
+        if st.button("🗑️ پاککردنەوەی تۆمار", use_container_width=True, key="admin_clear_ai_log"):
+            clear_ai_activity_log(); st.success("تۆمارەکان پاککرانەوە."); time.sleep(0.15); st.rerun()
+
+    if simple_filter == "تەنها گرنگەکان":
+        filtered_logs = [x for x in ai_logs if x.get("kind") in {"trigger", "request", "success", "ai_decision", "price_confirmed", "price_contradicted", "price_missing", "error"}]
+    elif simple_filter == "تەنها داواکاری و وەڵامی AI":
+        filtered_logs = [x for x in ai_logs if x.get("kind") in {"request", "success", "ai_decision", "price_confirmed", "price_contradicted", "price_missing"}]
+    elif simple_filter == "تەنها پشتگوێخراوەکان":
+        filtered_logs = [x for x in ai_logs if x.get("kind") == "ignored"]
+    elif simple_filter == "تەنها هەڵەکان":
+        filtered_logs = [x for x in ai_logs if x.get("kind") == "error"]
+    else:
+        filtered_logs = ai_logs
+
+    if filtered_logs:
+        st.markdown("#### دوایین چالاکییەکان")
+        for idx, x in enumerate(filtered_logs[:35]):
+            d = x.get("details", {}) if isinstance(x.get("details"), dict) else {}
+            kind = str(x.get("kind", ""))
+            score = d.get("scan_score", d.get("trigger_score", d.get("max_score", "")))
+            news_items = d.get("new_news", d.get("news", [])) or []
+            title = f"{_admin_kind_label(kind)}  •  {_admin_local_time(x)}"
+            if score != "" and score is not None:
+                title += f"  •  نمرە {score}/100"
+            with st.expander(title, expanded=(idx == 0)):
+                if kind == "trigger":
+                    action = str(d.get("action", ""))
+                    action_ku = "یەکسەر شیکردنەوە" if "immediate" in action else ("چاوەڕوانی نزیکەی ٩٠ چرکە" if "90" in action else ("کۆکردنەوە بۆ ١٥ خولەک" if "15" in action else action))
+                    st.markdown(f"**بڕیاری سیستەم:** {action_ku or 'هەڵسەنگاندن کرا'}")
+                    st.markdown(f"**نمرەی گرنگی:** {d.get('scan_score', score)}/100")
+                    if news_items:
+                        st.markdown("**هەواڵە نوێکان:**")
+                        for n in news_items[:10]:
+                            if isinstance(n, dict):
+                                st.write(f"• {n.get('title','—')} — نمرە {n.get('score','—')}/100")
+                                if n.get("source"): st.caption(f"سەرچاوە: {n.get('source')} | هۆکار: {n.get('reason','—')}")
+                    reasons = d.get("reasons", []) or []
+                    if reasons:
+                        with st.expander("بۆچی ئەم نمرەیە درا؟", expanded=False):
+                            for r in reasons[:12]: st.write(f"• {r}")
+                elif kind == "ignored":
+                    st.markdown("**ئەنجام:** هیچ داواکارییەکی پارەدار بۆ AI نەنێردرا، چونکە هەواڵەکان نمرەی پێویستیان نەهێنا.")
+                    if news_items:
+                        for n in news_items[:10]:
+                            if isinstance(n, dict): st.write(f"• {n.get('title','—')} — نمرە {n.get('score','—')}/100")
+                elif kind == "request":
+                    st.markdown(f"**ئەنجام:** یەک داواکاری هاوبەش نێردرا بۆ `{d.get('model', state_now.get('model','AI'))}`.")
+                    st.markdown(f"**ژمارەی هەواڵ:** {d.get('news_count', len(news_items))}")
+                    if news_items:
+                        with st.expander("📰 ببینە کام هەواڵانە بۆ AI نێردران", expanded=False):
+                            for n in news_items[:20]:
+                                if isinstance(n, dict): st.write(f"• {n.get('title','—')} ({n.get('source','—')})")
+                    macro = d.get("macro_data", {}) or {}
+                    if macro:
+                        with st.expander("📊 داتای ماکرۆی نێردراو", expanded=False): st.json(macro, expanded=False)
+                    prices = d.get("live_price_context", {}) or {}
+                    if prices:
+                        with st.expander("📈 داتای نرخ بۆ پشتڕاستکردنەوە", expanded=False): st.json(prices, expanded=False)
+                    events = d.get("events", []) or []
+                    if events:
+                        with st.expander("📅 ڕووداوە ئابوورییەکان", expanded=False): st.dataframe(events, use_container_width=True, hide_index=True)
+                elif kind == "success":
+                    st.success("AI شیکردنەوەکەی بە سەرکەوتوویی تەواو کرد.")
+                    if d.get("summary"): st.markdown(f"**پوختەی AI:** {d.get('summary')}")
+                    assets = d.get("assets", {}) or {}
+                    if assets:
+                        rows=[]
+                        for asset, a in assets.items():
+                            if isinstance(a, dict):
+                                sc=float(a.get("score",0) or 0)
+                                direction="🟢 Bullish" if sc > 0.12 else ("🔴 Bearish" if sc < -0.12 else "⚖️ Neutral")
+                                rows.append({"بازاڕ": asset, "بڕیار": direction, "دڵنیایی": f"{float(a.get('confidence',0) or 0):.0f}%", "ماوە": a.get("horizon",""), "هۆکار": a.get("reason","")})
+                        st.dataframe(rows, use_container_width=True, hide_index=True)
+                    prices = d.get("live_price_context", {}) or {}
+                    if prices:
+                        with st.expander("📈 پشتڕاستکردنەوەی نرخ کە AI بینی", expanded=False): st.json(prices, expanded=False)
+                    events = d.get("events", {}) or {}
+                    if events:
+                        with st.expander("📅 شیکردنەوەی ڕووداوەکان", expanded=False):
+                            for code, ev in list(events.items())[:15]:
+                                if isinstance(ev, dict):
+                                    st.markdown(f"**{code}** — {ev.get('event_assessment','')}")
+                                    st.caption(f"دڵنیایی: {ev.get('confidence','—')}% | {ev.get('confidence_reason','')}")
+                elif kind == "ai_decision":
+                    direction_ku = "🟢 هەڵکشان" if d.get("direction") == "Bullish" else "🔴 دابەزین"
+                    st.markdown(f"**{d.get('asset','بازاڕ')} — بڕیاری AI:** {direction_ku}")
+                    st.markdown(f"**نرخی بازاڕ لە هەمان ساتدا:** `{d.get('decision_price','—')}`")
+                    st.markdown(f"**دڵنیایی:** {float(d.get('confidence',0) or 0):.0f}%")
+                    st.markdown(f"**دۆخ:** ⏳ چاوەڕوانی پشتڕاستکردنەوەی نرخ")
+                    if d.get("reason"): st.caption(f"هۆکار: {d.get('reason')}")
+                    st.info("ئەم نرخە لە هەمان ساتی دەرچوونی بڕیاری AI تۆمار کراوە؛ بۆیە دواتر دەتوانرێت بزانرێت AI پێش جووڵەکە بووە یان دوای ئەوە.")
+                elif kind in {"price_confirmed", "price_contradicted"}:
+                    ok = kind == "price_confirmed"
+                    direction_ku = "هەڵکشان" if d.get("direction") == "Bullish" else "دابەزین"
+                    if ok: st.success(f"🎯 پێشبینی {direction_ku}ی {d.get('asset','بازاڕ')} دواتر لەلایەن نرخەوە پشتڕاست کرایەوە.")
+                    else: st.warning(f"⚠️ نرخ دژ بە پێشبینی {direction_ku}ی {d.get('asset','بازاڕ')} جوڵاوە.")
+                    c1,c2,c3=st.columns(3)
+                    c1.metric("نرخی کاتی بڕیار", d.get("decision_price","—"))
+                    c2.metric("نرخی دواتر", d.get("resolved_price","—"))
+                    c3.metric("گۆڕانی نرخ", f"{float(d.get('move_pct',0) or 0):+.3f}%")
+                    try:
+                        dt1=datetime.fromtimestamp(float(d.get("decision_at",0)), timezone.utc).astimezone(timezone(timedelta(hours=3))).strftime("%H:%M:%S")
+                        dt2=datetime.fromtimestamp(float(d.get("resolved_at",0)), timezone.utc).astimezone(timezone(timedelta(hours=3))).strftime("%H:%M:%S")
+                        st.caption(f"کاتی بڕیاری AI: {dt1}  →  کاتی پشتڕاستکردنەوە: {dt2} (کاتی عێراق)")
+                    except Exception: pass
+                    if d.get("reason"): st.caption(f"هۆکاری بڕیاری سەرەتایی: {d.get('reason')}")
+                elif kind == "error":
+                    st.error(f"AI هەڵەی دا: {d.get('error', x.get('message','Unknown error'))}")
+                elif kind == "control":
+                    st.info("AI چالاک کرا." if d.get("enabled") else "AI ناچالاک کرا و داواکاری پارەدار وەستێنرا.")
+                else:
+                    st.write(x.get("message", ""))
+
+        with st.expander("🛠️ داتای تەکنیکی (تەنها بۆ پشکنین)", expanded=False):
+            chosen = st.selectbox("تۆمارێک هەڵبژێرە", options=list(range(min(len(filtered_logs), 120))), format_func=lambda i: f"{_admin_local_time(filtered_logs[i])} · {_admin_kind_label(filtered_logs[i].get('kind'))}", key="admin_ai_log_entry")
+            st.json(filtered_logs[chosen], expanded=False)
+    else:
+        st.info("هێشتا هیچ تۆمارێک نییە بۆ ئەم پاڵاوتنە.")
 
     st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
     render_html('<div class="sec-title">VIP Client Registry &amp; Subscription Database</div>')
