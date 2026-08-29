@@ -4514,6 +4514,15 @@ def _forecaster_ai_select_precompute_batch(
         elif error_class == "AUTH" and str(current.get("evidence_signature", "") or "") == sig:
             new_state = "ERROR"
             is_eligible = False
+        elif (
+            state_name == "ERROR"
+            and not current.get("batch_started_at")
+            and str(current.get("provider_status", "") or "") == "AI unavailable"
+        ):
+            # Recover immediately from the precompute build that failed before the
+            # paid batch started because _ai_batch_price_context() was missing.
+            new_state = "QUEUED"
+            is_eligible = True
         elif state_name == "ERROR" and last_error_at and now_ts - last_error_at < _FORECASTER_AI_TRANSIENT_RETRY_SECONDS:
             new_state = "ERROR"
             is_eligible = False
@@ -4935,6 +4944,51 @@ def _ai_batch_event_rows(events: list, all_news: list, actuals: dict, limit: int
         })
     return rows
 
+
+def _ai_batch_price_context() -> dict:
+    """Free live-price confirmation context for AI; price changes alone never trigger billing.
+
+    Uses the same tactical symbol registry as the UI. Gold explicitly falls back from
+    XAUUSD=X to GC=F so a temporary Yahoo spot-feed gap cannot silently remove Gold
+    from the AI decision/price audit.
+    """
+    asset_keys = ["Gold", "Oil", "NDX", "USD", "EUR", "GBP", "CAD", "JPY", "AUD", "NZD", "CHF"]
+    out = {}
+    for asset_key in asset_keys:
+        cfg = _tactical_symbol_config(asset_key) or {}
+        output_asset = "Nasdaq" if asset_key == "NDX" else asset_key
+        symbols = [cfg.get("symbol")] + list(cfg.get("fallback_symbols", []) or [])
+        invert = bool(cfg.get("invert", False))
+        for symbol in [x for x in symbols if x]:
+            try:
+                df = _fetch_tactical_price_series(str(symbol))
+                if df is None or df.empty or "close" not in df.columns:
+                    continue
+                closes = pd.to_numeric(df["close"], errors="coerce").dropna()
+                if closes.empty:
+                    continue
+                raw_last = float(closes.iloc[-1])
+                raw_prev = float(closes.iloc[-2]) if len(closes) >= 2 else raw_last
+                raw_old = float(closes.iloc[-13]) if len(closes) >= 13 else raw_last
+                if not raw_last or not raw_prev or not raw_old:
+                    continue
+                # For USDXXX pairs, invert the movement so the signal represents the target currency.
+                ret_1 = ((raw_last / raw_prev) - 1.0) * 100.0
+                ret_12 = ((raw_last / raw_old) - 1.0) * 100.0
+                if invert:
+                    ret_1, ret_12 = -ret_1, -ret_12
+                trend = "Bullish" if ret_12 > 0.20 else "Bearish" if ret_12 < -0.20 else "Neutral"
+                out[output_asset] = {
+                    "symbol": str(symbol), "last": round(raw_last, 5),
+                    "short_change_pct": round(ret_1, 4), "trend_change_pct": round(ret_12, 4),
+                    "price_confirmation": trend, "fallback_used": str(symbol) != str(cfg.get("symbol")),
+                }
+                break
+            except Exception:
+                continue
+    return out
+
+
 def _ai_batch_signature(news_rows: list, macro_snapshot: dict, event_rows: list) -> str:
     event_material = [
         {
@@ -5291,6 +5345,7 @@ def _run_shared_ai_batch_once() -> None:
     process_lock_fd = None
     batch_event_rows: list[dict] = []
     state: dict = {}
+    failure_stage = "PRECHECK"
 
     if not DEFAULT_AI_KEY or not is_ai_enabled():
         return
@@ -5301,11 +5356,13 @@ def _run_shared_ai_batch_once() -> None:
         _AI_BATCH_REQUEST_INFLIGHT = True
 
     try:
+        failure_stage = "NEWS_FETCH"
         try:
             all_news = fetch_all_instant_news(DEFAULT_TELEGRAM_CHANNEL)
         except Exception:
             all_news = []
         news_rows = _ai_batch_news_rows(all_news, _CAUSAL_AI_NEWS_BATCH_LIMIT)
+        failure_stage = "MACRO_SNAPSHOT"
         macro_snapshot = _ai_batch_macro_snapshot()
 
         try:
@@ -5317,8 +5374,10 @@ def _run_shared_ai_batch_once() -> None:
         except Exception:
             actuals = {}
 
+        failure_stage = "SHARED_STATE_LOAD"
         state = _ai_batch_load_state(force_refresh=True)
 
+        failure_stage = "EVENT_PREPARE"
         # Provider-free preparation of every High Impact event in the rolling
         # seven-day Forecaster horizon. Registry eligibility decides the paid subset.
         prepared_event_rows = _ai_batch_event_rows(events, all_news, actuals, limit=40)
@@ -5327,6 +5386,7 @@ def _run_shared_ai_batch_once() -> None:
             legacy_batch_state=state,
             limit=_CAUSAL_AI_EVENT_BATCH_LIMIT,
         )
+        failure_stage = "PRICE_CONTEXT"
         price_context = _ai_batch_price_context()
 
         # Nothing at all to analyze.
@@ -5337,6 +5397,7 @@ def _run_shared_ai_batch_once() -> None:
 
         # Keep the existing impact/change trigger for desk-wide assets. Missing or
         # materially stale Forecaster events are themselves a high-impact trigger.
+        failure_stage = "TRIGGER_DECISION"
         due, state = _ai_trigger_decision(state, news_rows, macro_snapshot, batch_event_rows)
         global_due_without_forecaster = bool(due)
         if batch_event_rows:
@@ -5384,6 +5445,7 @@ def _run_shared_ai_batch_once() -> None:
                 )
             return
 
+        failure_stage = "PROCESS_LOCK"
         process_lock_fd = _acquire_ai_batch_process_lock()
         if process_lock_fd is None:
             # Another local/process batch owns the paid path. The persistent
@@ -5398,6 +5460,7 @@ def _run_shared_ai_batch_once() -> None:
 
         # Cross-container safety: after acquiring the process lock, re-check the
         # registry. Another replica may already have completed some selected rows.
+        failure_stage = "REGISTRY_RECHECK"
         latest_registry = _forecaster_ai_registry_load()
         filtered_rows = []
         for row in batch_event_rows:
@@ -5468,6 +5531,7 @@ Keep output compact: each evidence array <= 4 concise items and prose fields <= 
             "high_impact_forecaster_events": batch_event_rows,
         }
 
+        failure_stage = "AUDIT_REQUEST"
         _ai_audit_append(
             "request",
             f"Sending one shared AI precompute batch via {provider} / {model}",
@@ -5498,6 +5562,7 @@ Keep output compact: each evidence array <= 4 concise items and prose fields <= 
             "last_paid_reserved_at": reserve_ts,
             "last_paid_reserved_at_iso": datetime.now(timezone.utc).isoformat(),
         }
+        failure_stage = "ATTEMPT_RESERVE"
         _ai_batch_save_state(attempt_state)
 
         if batch_event_rows:
@@ -5508,6 +5573,7 @@ Keep output compact: each evidence array <= 4 concise items and prose fields <= 
                 last_error="",
             )
 
+        failure_stage = "PROVIDER_HTTP"
         response = _post_ai_chat(
             provider=provider,
             url=url,
@@ -5528,6 +5594,7 @@ Keep output compact: each evidence array <= 4 concise items and prose fields <= 
                 http_status=response_status,
             )
 
+        failure_stage = "RESPONSE_JSON"
         try:
             response_json = response.json()
         except Exception as exc:
@@ -5540,6 +5607,7 @@ Keep output compact: each evidence array <= 4 concise items and prose fields <= 
                 f"{provider} returned empty choices/content "
                 f"(finish_reason={schema_meta.get('finish_reason') or 'unknown'})"
             )
+        failure_stage = "RESPONSE_PARSE"
         parsed = _extract_json_object(raw)
         if not isinstance(parsed, dict):
             raise RuntimeError(
@@ -5547,6 +5615,7 @@ Keep output compact: each evidence array <= 4 concise items and prose fields <= 
                 f"(content_chars={len(raw)}, finish_reason={schema_meta.get('finish_reason') or 'unknown'})"
             )
 
+        failure_stage = "EVENT_RESULT_EXTRACT"
         raw_events_obj = parsed.get("events", {})
         raw_event_items = []
         if isinstance(raw_events_obj, dict):
@@ -5671,6 +5740,7 @@ Keep output compact: each evidence array <= 4 concise items and prose fields <= 
         }
 
         now_ts = time.time()
+        failure_stage = "SHARED_STATE_SAVE"
         _ai_batch_save_state({
             "signature": signature,
             "updated_at": now_ts,
@@ -5749,6 +5819,12 @@ Keep output compact: each evidence array <= 4 concise items and prose fields <= 
         else:
             if batch_event_rows:
                 _forecaster_ai_registry_fail(batch_event_rows, err, blocked=False)
+                _forecaster_ai_registry_mark_batch(
+                    batch_event_rows,
+                    "ERROR",
+                    failure_stage=failure_stage,
+                    provider_status=_safe_ai_error_label(err),
+                )
             state = _ai_batch_load_state(force_refresh=True)
             state["last_error"] = err[:500]
             state["last_error_at"] = time.time()
@@ -5758,6 +5834,7 @@ Keep output compact: each evidence array <= 4 concise items and prose fields <= 
                 "Shared AI precompute request/analysis failed",
                 {
                     "error": _safe_ai_error_label(err),
+                    "failure_stage": failure_stage,
                     "event_count": len(batch_event_rows),
                 },
             )
@@ -8845,6 +8922,7 @@ def _render_forecaster_causal_ai_live(event: dict, nowcast: dict, auth_user: dic
                 "Completed at": entry.get("completed_at_iso") or entry.get("completed_at"),
                 "Batch inclusion status": entry.get("batch_inclusion_status"),
                 "Provider status": entry.get("provider_status"),
+                "Failure stage": entry.get("failure_stage"),
                 "Last error": entry.get("last_error") or "",
                 "Persistent state source": get_persistence_status().get("backend", "unknown"),
                 "Registry updated at": registry.get("updated_at_iso") or registry.get("updated_at"),
