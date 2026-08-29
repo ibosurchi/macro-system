@@ -3601,6 +3601,15 @@ def start_background_alert_daemon(fred_key: str, channel_name: str) -> None:
     t = threading.Thread(target=_daemon_loop, daemon=True, name="ApexMacroAlertDaemon")
     t.start()
 
+    # Forecaster Causal AI precompute is background-owned. If the durable Admin
+    # switch was already ON before this process started, recover the existing
+    # shared AI supervisor without waiting for any user to open an event.
+    try:
+        if is_ai_enabled(force_refresh=True):
+            start_shared_background_ai_worker()
+    except Exception:
+        pass
+
 
 def is_duplicate_news(title1: str, title2: str, threshold: float = 0.55) -> bool:
     stop_words = {"the", "a", "an", "in", "on", "of", "to", "for", "and", "is", "at", "by", "from", "as", "with", "news", "breaking", "update", "alert", "says", "report", "live"}
@@ -3908,6 +3917,15 @@ AI_BATCH_STATE_FILE = str(PROJECT_ROOT / "ai_batch_state_v2.json")
 AI_BATCH_PROCESS_LOCK_FILE = str(PROJECT_ROOT / ".apexmacro_ai_batch.lock")
 _AI_BATCH_STATE_ID = "shared_ai_batch_v2"
 
+# Persistent per-event Forecaster AI registry. This is the single source of truth
+# for Causal AI event state/results; Event Details only reads it.
+FORECASTER_AI_REGISTRY_FILE = str(PROJECT_ROOT / "forecaster_ai_registry_v1.json")
+_FORECASTER_AI_REGISTRY_STATE_ID = "forecaster_ai_registry_v1"
+_FORECASTER_AI_REGISTRY_LOCK = threading.RLock()
+_FORECASTER_AI_REGISTRY_VERSION = 1
+_FORECASTER_AI_PRECOMPUTE_HORIZON_SECONDS = 7 * 24 * 60 * 60
+_FORECASTER_AI_TRANSIENT_RETRY_SECONDS = 2 * 60
+
 # Master billing control. It is deliberately OFF by default so a fresh deploy
 # cannot spend provider credit until an administrator explicitly enables AI.
 AI_CONTROL_STATE_FILE = str(PROJECT_ROOT / "ai_control_state.json")
@@ -4204,6 +4222,24 @@ def set_ai_enabled(enabled: bool, updated_by: str = "ADMINISTRATOR") -> dict:
             state.pop("last_error", None)
             state.pop("last_error_at", None)
             _ai_batch_save_state(state)
+        # Admin re-enable is the explicit retry boundary for prior 401/403
+        # configuration failures. This does not call the provider here.
+        try:
+            if "_forecaster_ai_registry_load" in globals():
+                reg = _forecaster_ai_registry_load()
+                updates = {}
+                for ident, item in (reg.get("events", {}) or {}).items():
+                    if isinstance(item, dict) and str(item.get("error_class", "")).upper() == "AUTH":
+                        updates[str(ident)] = {
+                            "ai_state": "QUEUED",
+                            "error_class": "",
+                            "last_error": "",
+                            "last_error_at": 0.0,
+                        }
+                if updates:
+                    _forecaster_ai_registry_merge(updates)
+        except Exception:
+            pass
     _AI_BATCH_WAKE_EVENT.set()
     _ai_audit_append("control", f"Administrator {'enabled' if enabled else 'disabled'} paid AI", {"enabled": bool(enabled), "updated_by": updated_by})
     return payload
@@ -4265,6 +4301,348 @@ def _ai_batch_save_state(state: dict) -> None:
 def get_shared_background_ai_state() -> dict:
     """Read the latest background AI result without ever contacting the provider."""
     return _ai_batch_load_state()
+
+
+def _forecaster_ai_registry_load() -> dict:
+    """Supabase-first per-event AI registry read with local safety mirror."""
+    try:
+        state = _load_persistent_state(
+            _FORECASTER_AI_REGISTRY_STATE_ID,
+            FORECASTER_AI_REGISTRY_FILE,
+            {"version": _FORECASTER_AI_REGISTRY_VERSION, "events": {}, "queue_meta": {}},
+        )
+        if not isinstance(state, dict):
+            state = {}
+    except Exception:
+        state = {}
+    state.setdefault("version", _FORECASTER_AI_REGISTRY_VERSION)
+    state.setdefault("events", {})
+    state.setdefault("queue_meta", {})
+    if not isinstance(state.get("events"), dict):
+        state["events"] = {}
+    if not isinstance(state.get("queue_meta"), dict):
+        state["queue_meta"] = {}
+    return state
+
+
+def _forecaster_ai_registry_merge(entry_updates: dict | None = None, queue_meta: dict | None = None) -> dict:
+    """Merge per-event updates into the durable registry.
+
+    Completion is never regressed to QUEUED for the same evidence signature.
+    This keeps multi-replica preparers from overwriting a provider winner.
+    """
+    with _FORECASTER_AI_REGISTRY_LOCK:
+        state = _forecaster_ai_registry_load()
+        events = dict(state.get("events", {}) or {})
+        for identity, patch in (entry_updates or {}).items():
+            if not identity or not isinstance(patch, dict):
+                continue
+            current = dict(events.get(identity, {}) or {})
+            incoming = dict(patch)
+            current_completed_sig = str(current.get("completed_evidence_signature", "") or "")
+            incoming_sig = str(incoming.get("evidence_signature", "") or current.get("evidence_signature", "") or "")
+            incoming_state = str(incoming.get("ai_state", "") or "").upper()
+
+            # A preparer may have read stale data in another container. Never
+            # downgrade a valid completed analysis for unchanged evidence.
+            if (
+                str(current.get("ai_state", "")).upper() == "COMPLETED"
+                and current_completed_sig
+                and current_completed_sig == incoming_sig
+                and incoming_state in {"NOT_PREPARED", "QUEUED", "RUNNING"}
+            ):
+                incoming.pop("ai_state", None)
+                incoming.pop("requested_at", None)
+                incoming.pop("batch_started_at", None)
+
+            current.update(incoming)
+            current["event_identity"] = identity
+            current["updated_at"] = time.time()
+            events[identity] = current
+
+        state["events"] = events
+        if isinstance(queue_meta, dict):
+            qm = dict(state.get("queue_meta", {}) or {})
+            qm.update(queue_meta)
+            qm["updated_at"] = time.time()
+            state["queue_meta"] = qm
+        state["version"] = _FORECASTER_AI_REGISTRY_VERSION
+        state["updated_at"] = time.time()
+        state["updated_at_iso"] = datetime.now(timezone.utc).isoformat()
+        _save_persistent_state(
+            _FORECASTER_AI_REGISTRY_STATE_ID,
+            FORECASTER_AI_REGISTRY_FILE,
+            state,
+        )
+        return state
+
+
+def _forecaster_ai_registry_entry(event: dict, state: dict | None = None) -> dict:
+    registry = state if isinstance(state, dict) else _forecaster_ai_registry_load()
+    identity = _event_identity(event)
+    item = (registry.get("events", {}) or {}).get(identity, {})
+    return dict(item) if isinstance(item, dict) else {}
+
+
+def _forecaster_ai_registry_counts(state: dict | None = None) -> dict:
+    registry = state if isinstance(state, dict) else _forecaster_ai_registry_load()
+    entries = list((registry.get("events", {}) or {}).values())
+    counts = {"eligible": 0, "queued": 0, "running": 0, "completed": 0, "stale": 0, "error": 0}
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        s = str(item.get("ai_state", "") or "").upper()
+        if s == "QUEUED":
+            counts["queued"] += 1
+            counts["eligible"] += 1
+        elif s == "RUNNING":
+            counts["running"] += 1
+        elif s == "COMPLETED":
+            counts["completed"] += 1
+        elif s == "STALE":
+            counts["stale"] += 1
+            counts["eligible"] += 1
+        elif s == "ERROR":
+            counts["error"] += 1
+    return counts
+
+
+def _forecaster_ai_legacy_result(event: dict, batch_state: dict | None = None) -> tuple[dict | None, str]:
+    """Backward-compatible reader for pre-registry shared event results."""
+    state = batch_state if isinstance(batch_state, dict) else _ai_batch_load_state(force_refresh=True)
+    result = state.get("result", {}) if isinstance(state, dict) else {}
+    events = result.get("events", {}) if isinstance(result, dict) else {}
+    if not isinstance(events, dict):
+        return None, ""
+
+    code = str((event or {}).get("code", "")).strip()
+    if code and isinstance(events.get(code), dict):
+        return dict(events[code]), code
+    if code:
+        folded = code.casefold()
+        for key, value in events.items():
+            if str(key).strip().casefold() == folded and isinstance(value, dict):
+                return dict(value), str(key)
+
+    # Historical analyses used currency|normalized-title without release time.
+    legacy_identity = f"{str((event or {}).get('currency','')).upper()}|{_normalize_catalyst_title((event or {}).get('title',''))}"
+    for key, value in events.items():
+        if isinstance(value, dict) and str(value.get("_event_identity", "")) == legacy_identity:
+            return dict(value), str(key)
+    return None, ""
+
+
+def _forecaster_ai_registry_mark_batch(event_rows: list[dict], state_name: str, **extra) -> None:
+    updates = {}
+    now_ts = time.time()
+    for row in event_rows or []:
+        identity = str(row.get("event_identity", "") or "")
+        if not identity:
+            continue
+        patch = {
+            "event_code": str(row.get("code", "") or ""),
+            "currency": str(row.get("currency", "") or ""),
+            "title": str(row.get("title", "") or ""),
+            "release_time_utc": str(row.get("release_time_utc", "") or ""),
+            "evidence_signature": str(row.get("evidence_signature", "") or ""),
+            "analysis_version": CAUSAL_AI_JUDGE_VERSION,
+            "ai_state": state_name,
+        }
+        patch.update(extra)
+        if state_name == "RUNNING":
+            patch["batch_started_at"] = now_ts
+            patch["last_requested_batch"] = now_ts
+        updates[identity] = patch
+    if updates:
+        _forecaster_ai_registry_merge(updates)
+
+
+def _forecaster_ai_select_precompute_batch(
+    event_rows: list[dict],
+    legacy_batch_state: dict | None = None,
+    limit: int = _CAUSAL_AI_EVENT_BATCH_LIMIT,
+) -> tuple[list[dict], dict]:
+    """Prepare the persistent queue and return the next bounded eligible batch."""
+    now_ts = time.time()
+    registry = _forecaster_ai_registry_load()
+    current_events = dict(registry.get("events", {}) or {})
+    legacy_state = legacy_batch_state if isinstance(legacy_batch_state, dict) else {}
+    updates = {}
+    eligible = []
+
+    for row in event_rows or []:
+        identity = str(row.get("event_identity", "") or "")
+        if not identity:
+            continue
+        release_ts = float(row.get("release_epoch_utc", 0.0) or 0.0)
+        # Pre-release only, bounded to Today + next 6 days/rolling seven-day horizon.
+        if release_ts and (release_ts <= now_ts or release_ts > now_ts + _FORECASTER_AI_PRECOMPUTE_HORIZON_SECONDS):
+            continue
+        if str(row.get("actual", "") or "").strip():
+            continue
+
+        sig = str(row.get("evidence_signature", "") or "")
+        current = dict(current_events.get(identity, {}) or {})
+        analysis = current.get("analysis") if isinstance(current.get("analysis"), dict) else None
+        completed_sig = str(current.get("completed_evidence_signature", "") or "")
+        analysis_valid = isinstance(analysis, dict) and _causal_ai_result_is_current_judge(analysis)
+
+        # Safe migration: exact current event code maps a legacy shared result to
+        # this canonical release identity. It is retained as STALE until refreshed
+        # because the old storage did not freeze a comparable evidence signature.
+        if not analysis_valid:
+            legacy, legacy_key = _forecaster_ai_legacy_result(
+                {"code": row.get("code"), "currency": row.get("currency"), "title": row.get("title")},
+                legacy_state,
+            )
+            if isinstance(legacy, dict) and _causal_ai_result_is_current_judge(legacy):
+                analysis = dict(legacy)
+                analysis_valid = True
+                completed_sig = str(current.get("completed_evidence_signature", "") or "")
+                current["legacy_migrated_from"] = legacy_key
+                current["analysis"] = analysis
+                current["completed_at"] = current.get("completed_at") or legacy_state.get("updated_at")
+                current["analysis_version"] = CAUSAL_AI_JUDGE_VERSION
+
+        state_name = str(current.get("ai_state", "") or "").upper()
+        last_error_at = float(current.get("last_error_at", 0.0) or 0.0)
+        error_class = str(current.get("error_class", "") or "").upper()
+
+        if analysis_valid and completed_sig and completed_sig == sig:
+            new_state = "COMPLETED"
+            is_eligible = False
+        elif error_class == "AUTH" and str(current.get("evidence_signature", "") or "") == sig:
+            new_state = "ERROR"
+            is_eligible = False
+        elif state_name == "ERROR" and last_error_at and now_ts - last_error_at < _FORECASTER_AI_TRANSIENT_RETRY_SECONDS:
+            new_state = "ERROR"
+            is_eligible = False
+        elif analysis_valid:
+            new_state = "STALE"
+            is_eligible = True
+        else:
+            new_state = "QUEUED"
+            is_eligible = True
+
+        patch = {
+            "event_identity": identity,
+            "event_code": str(row.get("code", "") or ""),
+            "currency": str(row.get("currency", "") or ""),
+            "title": str(row.get("title", "") or ""),
+            "release_time_utc": str(row.get("release_time_utc", "") or ""),
+            "evidence_signature": sig,
+            "analysis_version": CAUSAL_AI_JUDGE_VERSION,
+            "ai_state": new_state,
+            "last_error": "" if new_state in {"QUEUED", "STALE", "COMPLETED"} else str(current.get("last_error", "") or ""),
+        }
+        if analysis_valid:
+            patch["analysis"] = analysis
+            if completed_sig:
+                patch["completed_evidence_signature"] = completed_sig
+        if is_eligible and not current.get("requested_at"):
+            patch["requested_at"] = now_ts
+        updates[identity] = patch
+
+        if is_eligible:
+            # Closest release first; if two are effectively simultaneous, missing
+            # analyses outrank stale refreshes.
+            missing_rank = 0 if not analysis_valid else 1
+            eligible.append((release_ts or 10**18, missing_rank, str(row.get("code", "")), row))
+
+    eligible.sort(key=lambda x: (x[0], x[1], x[2]))
+    selected = [x[3] for x in eligible[:max(1, int(limit))]]
+    selected_ids = {str(r.get("event_identity", "")) for r in selected}
+
+    for identity, patch in updates.items():
+        if identity in selected_ids and patch.get("ai_state") in {"QUEUED", "STALE"}:
+            patch["batch_inclusion_status"] = "SELECTED"
+            patch["last_requested_batch"] = now_ts
+        elif patch.get("ai_state") in {"QUEUED", "STALE"}:
+            patch["batch_inclusion_status"] = "WAITING_NEXT_BATCH"
+
+    queued_n = sum(1 for p in updates.values() if p.get("ai_state") == "QUEUED")
+    stale_n = sum(1 for p in updates.values() if p.get("ai_state") == "STALE")
+    completed_n = sum(1 for p in updates.values() if p.get("ai_state") == "COMPLETED")
+    error_n = sum(1 for p in updates.values() if p.get("ai_state") == "ERROR")
+    queue_meta = {
+        "eligible_event_count": len(eligible),
+        "selected_event_count": len(selected),
+        "queued_count": queued_n,
+        "stale_count": stale_n,
+        "completed_count": completed_n,
+        "error_count": error_n,
+        "last_queue_scan_at": now_ts,
+        "last_queue_scan_at_iso": datetime.now(timezone.utc).isoformat(),
+    }
+    registry = _forecaster_ai_registry_merge(updates, queue_meta)
+    return selected, registry
+
+
+def _forecaster_ai_registry_complete(event_row: dict, analysis: dict, provider: str, model: str) -> None:
+    identity = str(event_row.get("event_identity", "") or "")
+    if not identity or not isinstance(analysis, dict):
+        return
+    now_ts = time.time()
+    _forecaster_ai_registry_merge({
+        identity: {
+            "event_code": str(event_row.get("code", "") or ""),
+            "currency": str(event_row.get("currency", "") or ""),
+            "title": str(event_row.get("title", "") or ""),
+            "release_time_utc": str(event_row.get("release_time_utc", "") or ""),
+            "ai_state": "COMPLETED",
+            "evidence_signature": str(event_row.get("evidence_signature", "") or ""),
+            "completed_evidence_signature": str(event_row.get("evidence_signature", "") or ""),
+            "analysis_version": CAUSAL_AI_JUDGE_VERSION,
+            "analysis": dict(analysis),
+            "completed_at": now_ts,
+            "completed_at_iso": datetime.now(timezone.utc).isoformat(),
+            "last_error": "",
+            "last_error_at": 0.0,
+            "error_class": "",
+            "provider_status": "COMPLETED",
+            "provider": str(provider or "")[:40],
+            "model": str(model or "")[:120],
+            "batch_inclusion_status": "RETURNED",
+        }
+    }, {
+        "last_batch_completed_at": now_ts,
+        "last_batch_completed_at_iso": datetime.now(timezone.utc).isoformat(),
+    })
+
+
+def _forecaster_ai_registry_fail(event_rows: list[dict], error_text: str, blocked: bool = False) -> None:
+    label = _safe_ai_error_label(error_text)
+    now_ts = time.time()
+    raw_lower = str(error_text or "").lower()
+    error_class = (
+        "AUTH"
+        if label == "Authentication failed" or "403" in raw_lower or "forbidden" in raw_lower
+        else ("RATE_LIMIT" if label == "Rate limited" else "TRANSIENT")
+    )
+    updates = {}
+    for row in event_rows or []:
+        identity = str(row.get("event_identity", "") or "")
+        if not identity:
+            continue
+        updates[identity] = {
+            "event_code": str(row.get("code", "") or ""),
+            "currency": str(row.get("currency", "") or ""),
+            "title": str(row.get("title", "") or ""),
+            "release_time_utc": str(row.get("release_time_utc", "") or ""),
+            "evidence_signature": str(row.get("evidence_signature", "") or ""),
+            "analysis_version": CAUSAL_AI_JUDGE_VERSION,
+            "ai_state": "QUEUED" if blocked else "ERROR",
+            "provider_status": "BLOCKED_BY_GATE" if blocked else label,
+            "last_error": "" if blocked else label,
+            "last_error_at": 0.0 if blocked else now_ts,
+            "error_class": "" if blocked else error_class,
+            "batch_inclusion_status": "BLOCKED" if blocked else "FAILED",
+        }
+    if updates:
+        _forecaster_ai_registry_merge(updates, {
+            "last_batch_error": "" if blocked else label,
+            "last_batch_error_at": now_ts,
+        })
 
 
 def _acquire_ai_batch_process_lock(stale_seconds: int = 180) -> int | None:
@@ -4435,68 +4813,106 @@ def _ai_event_news_rows(event: dict, articles: list, limit: int = 4) -> list[dic
     return prepared
 
 
-def _ai_batch_event_rows(events: list, all_news: list, actuals: dict, limit: int = 14) -> list[dict]:
+def _ai_batch_event_rows(events: list, all_news: list, actuals: dict, limit: int = 40) -> list[dict]:
+    """Build deterministic evidence packets for High Impact events.
+
+    This function is provider-free. It prepares enough events for eligibility
+    scanning; the paid shared batch is capped later by the persistent queue.
+    """
     rows = []
-    now_local = datetime.utcnow() + timedelta(hours=3)
+    now_utc = datetime.now(timezone.utc)
     candidates = []
     for ev in events or []:
         if str(ev.get("impact", "")).title() != "High":
             continue
-        dt = ev.get("datetime_obj")
-        if isinstance(dt, datetime):
-            try:
-                delta = (dt.replace(tzinfo=None) - now_local).total_seconds()
-                if delta < -(48 * 3600) or delta > 10 * 24 * 3600:
-                    continue
-            except Exception:
-                pass
-        candidates.append(ev)
+        release_utc = _event_release_utc(ev)
+        if release_utc is None:
+            continue
+        delta = (release_utc - now_utc).total_seconds()
+        # Active Forecaster horizon: upcoming only, Today + next 6 days.
+        if delta <= 0 or delta > _FORECASTER_AI_PRECOMPUTE_HORIZON_SECONDS:
+            continue
+        candidates.append((release_utc, ev))
 
-    for ev in candidates[:limit]:
+    candidates.sort(key=lambda x: x[0])
+
+    for release_utc, ev in candidates[:max(1, int(limit))]:
         code = str(ev.get("code", "")).strip()
         if not code:
             continue
         saved = str((actuals or {}).get(code, "")).strip()
         published = _normalize_forex_factory_actual(ev.get("actual_str", ""))
         actual = saved or published
+        if actual:
+            continue
+
         try:
-            nowcast = compute_event_nowcast(ev, DEFAULT_FRED_KEY, all_news, actual_override=actual) if DEFAULT_FRED_KEY else {}
+            nowcast = compute_event_nowcast(
+                ev,
+                DEFAULT_FRED_KEY,
+                all_news,
+                actual_override="",
+            ) if DEFAULT_FRED_KEY else {}
         except Exception:
             nowcast = {}
+
+        # Freeze deterministic pre-release state even if nobody opens the modal.
+        try:
+            if nowcast:
+                _record_forecaster_snapshot(ev, nowcast, actual="")
+        except Exception:
+            pass
+
         rel_news = _forecaster_relevant_ai_articles(ev, all_news) if "_forecaster_relevant_ai_articles" in globals() else []
-        dt = ev.get("datetime_obj")
-        scheduled_release = dt.isoformat() if isinstance(dt, datetime) else f"{ev.get('date_str','')} {ev.get('time_str','')}".strip()
         probs = nowcast.get("probabilities", {}) if isinstance(nowcast.get("probabilities", {}), dict) else {}
         quant_prediction = max(probs, key=probs.get) if probs else str(nowcast.get("outcome_key", "inline"))
+        identity = _event_identity(ev)
+        release_iso = _event_release_utc_iso(ev)
+        evidence_sig = _forecaster_ai_evidence_signature(ev, nowcast, rel_news, "")
+
         rows.append({
             "code": code,
-            "event_identity": _event_identity(ev),
+            "event_identity": identity,
+            "release_time_utc": release_iso,
+            "release_epoch_utc": release_utc.timestamp(),
+            "evidence_signature": evidence_sig,
             "event": {
+                "event_identity": identity,
                 "currency": str(ev.get("currency", ""))[:12],
                 "title": str(ev.get("title", ""))[:180],
-                "scheduled_release": str(scheduled_release)[:100],
+                "scheduled_release_utc": release_iso,
                 "event_family": str(nowcast.get("event_family") or _event_family(ev))[:40],
-                "impact": str(ev.get("impact", ""))[:20],
+                "impact": "High",
             },
             "market_baseline": {
                 "consensus": str(ev.get("forecast_str", ""))[:80],
                 "previous": str(ev.get("prev_str", ""))[:80],
                 "market_expectations": str(ev.get("consensus_bias", ""))[:220],
-                "actual_if_already_released": str(actual)[:80],
             },
             "quantitative_evidence": {
                 "precursor_observations": _ai_event_precursor_rows(nowcast),
                 "same_release_history": _ai_event_history_rows(nowcast),
-                "same_release_history_signal": round(float(nowcast.get("history_release_signal", 0) or 0), 6),
-                "event_news_sentiment_score": round(float(nowcast.get("news_sentiment_pts", 0) or 0), 6),
-                "conflict_score": round(float(nowcast.get("conflict_score", 0) or 0), 6),
-                "evidence_quality": round(float(nowcast.get("evidence_quality", 0) or 0), 6),
-                "news_ambiguity": round(float(nowcast.get("news_ambiguity", 0) or 0), 6),
+                "same_release_history_signal": round(float(nowcast.get("history_release_signal", 0) or 0), 4),
+                "event_news_sentiment_score": round(float(nowcast.get("news_sentiment_pts", 0) or 0), 4),
+                "conflict_score": round(float(nowcast.get("conflict_score", 0) or 0), 4),
+                "evidence_quality": round(float(nowcast.get("evidence_quality", 0) or 0), 4),
+                "news_ambiguity": round(float(nowcast.get("news_ambiguity", 0) or 0), 4),
                 "consensus_hurdle": nowcast.get("consensus_hurdle"),
                 "model_estimate": nowcast.get("model_estimate"),
                 "evidence_framework": str(nowcast.get("evidence_framework", ""))[:80],
             },
-            "news_causal_evidence": _ai_event_news_rows(ev, rel_news, 6),
+            "news_causal_evidence": _ai_event_news_rows(ev, rel_news, 4),
+            "REFERENCE_QUANTITATIVE_OUTPUT_DO_NOT_ANCHOR": {
+                "prediction": quant_prediction,
+                "probabilities": probs,
+                "confidence": nowcast.get("confidence", 0),
+                "composite": nowcast.get("nowcast_composite", 0),
+                "conflict": nowcast.get("conflict_score", 0),
+                "evidence_quality": nowcast.get("evidence_quality", 0),
+                "label": nowcast.get("bias_label", ""),
+                "instruction": "REFERENCE QUANTITATIVE OUTPUT — DO NOT ANCHOR ON THIS. Assess raw evidence first.",
+            },
+            # Backward-compatible alias consumed by existing arbitration helpers.
             "REFERENCE_MODEL_OUTPUT_DO_NOT_ANCHOR": {
                 "prediction": quant_prediction,
                 "probabilities": probs,
@@ -4505,68 +4921,32 @@ def _ai_batch_event_rows(events: list, all_news: list, actuals: dict, limit: int
                 "conflict": nowcast.get("conflict_score", 0),
                 "evidence_quality": nowcast.get("evidence_quality", 0),
                 "label": nowcast.get("bias_label", ""),
-                "instruction": "Reference only. Form the causal evidence judgment first; do not assume this output is correct.",
+                "instruction": "Reference only. Form the causal evidence judgment first.",
             },
             "judge_version": CAUSAL_AI_JUDGE_VERSION,
             "title": str(ev.get("title", ""))[:180],
             "currency": str(ev.get("currency", ""))[:12],
-            "impact": str(ev.get("impact", ""))[:20],
+            "impact": "High",
             "date": str(ev.get("date_str", ""))[:80],
             "time": str(ev.get("time_str", ""))[:80],
             "forecast": str(ev.get("forecast_str", ""))[:80],
             "previous": str(ev.get("prev_str", ""))[:80],
-            "actual": str(actual)[:80],
+            "actual": "",
         })
     return rows
 
-
-def _ai_batch_price_context() -> dict:
-    """Free live-price confirmation context for AI; price changes alone never trigger billing.
-
-    Uses the same tactical symbol registry as the UI. Gold explicitly falls back from
-    XAUUSD=X to GC=F so a temporary Yahoo spot-feed gap cannot silently remove Gold
-    from the AI decision/price audit.
-    """
-    asset_keys = ["Gold", "Oil", "NDX", "USD", "EUR", "GBP", "CAD", "JPY", "AUD", "NZD", "CHF"]
-    out = {}
-    for asset_key in asset_keys:
-        cfg = _tactical_symbol_config(asset_key) or {}
-        output_asset = "Nasdaq" if asset_key == "NDX" else asset_key
-        symbols = [cfg.get("symbol")] + list(cfg.get("fallback_symbols", []) or [])
-        invert = bool(cfg.get("invert", False))
-        for symbol in [x for x in symbols if x]:
-            try:
-                df = _fetch_tactical_price_series(str(symbol))
-                if df is None or df.empty or "close" not in df.columns:
-                    continue
-                closes = pd.to_numeric(df["close"], errors="coerce").dropna()
-                if closes.empty:
-                    continue
-                raw_last = float(closes.iloc[-1])
-                raw_prev = float(closes.iloc[-2]) if len(closes) >= 2 else raw_last
-                raw_old = float(closes.iloc[-13]) if len(closes) >= 13 else raw_last
-                if not raw_last or not raw_prev or not raw_old:
-                    continue
-                # For USDXXX pairs, invert the movement so the signal represents the target currency.
-                ret_1 = ((raw_last / raw_prev) - 1.0) * 100.0
-                ret_12 = ((raw_last / raw_old) - 1.0) * 100.0
-                if invert:
-                    ret_1, ret_12 = -ret_1, -ret_12
-                trend = "Bullish" if ret_12 > 0.20 else "Bearish" if ret_12 < -0.20 else "Neutral"
-                out[output_asset] = {
-                    "symbol": str(symbol), "last": round(raw_last, 5),
-                    "short_change_pct": round(ret_1, 4), "trend_change_pct": round(ret_12, 4),
-                    "price_confirmation": trend, "fallback_used": str(symbol) != str(cfg.get("symbol")),
-                }
-                break
-            except Exception:
-                continue
-    return out
-
-
 def _ai_batch_signature(news_rows: list, macro_snapshot: dict, event_rows: list) -> str:
-    payload = {"news": news_rows, "macro": macro_snapshot, "events": event_rows}
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    event_material = [
+        {
+            "event_identity": str(row.get("event_identity", "") or ""),
+            "evidence_signature": str(row.get("evidence_signature", "") or ""),
+        }
+        for row in (event_rows or [])
+    ]
+    payload = {"news": news_rows, "macro": macro_snapshot, "events": event_material}
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
 
 
 
@@ -4848,30 +5228,16 @@ def _ai_diag_update(code: str = "", **fields) -> None:
 
 
 def _shared_ai_event_result(event: dict, state: dict | None = None) -> tuple[dict | None, str]:
-    """Find a persisted event result by stable code, then semantic identity fallback."""
-    state = state if isinstance(state, dict) else _ai_batch_load_state(force_refresh=True)
-    result = state.get("result", {}) if isinstance(state, dict) else {}
-    events = result.get("events", {}) if isinstance(result, dict) else {}
-    if not isinstance(events, dict):
-        return None, ""
-    code = str((event or {}).get("code", "")).strip()
-    if code and isinstance(events.get(code), dict):
-        return dict(events[code]), code
-    if code:
-        folded = code.casefold()
-        for key, value in events.items():
-            if str(key).strip().casefold() == folded and isinstance(value, dict):
-                return dict(value), str(key)
-    try:
-        ident = _event_identity(event)
-    except Exception:
-        ident = ""
-    if ident:
-        for key, value in events.items():
-            if isinstance(value, dict) and str(value.get("_event_identity", "")) == ident:
-                return dict(value), str(key)
-    return None, ""
-
+    """Registry-first lookup. Legacy shared result is migration fallback only."""
+    registry = _forecaster_ai_registry_load()
+    identity = _event_identity(event)
+    entry = (registry.get("events", {}) or {}).get(identity, {})
+    if isinstance(entry, dict) and isinstance(entry.get("analysis"), dict):
+        analysis = dict(entry.get("analysis") or {})
+        analysis["_registry_state"] = str(entry.get("ai_state", "") or "")
+        analysis["_registry_evidence_signature"] = str(entry.get("evidence_signature", "") or "")
+        return analysis, identity
+    return _forecaster_ai_legacy_result(event, state)
 
 def _forecaster_event_request_snapshot(event: dict) -> dict:
     """JSON-safe event snapshot so a transient calendar refetch cannot drop an opened event."""
@@ -4916,11 +5282,19 @@ def _restore_forecaster_event_request(snapshot: dict) -> dict:
 
 
 def _run_shared_ai_batch_once() -> None:
-    """Make at most one billable request for one changed evidence snapshot."""
+    """Run ONE bounded shared paid batch for desk assets + eligible Forecaster events.
+
+    Forecaster eligibility is discovered from the calendar/evidence registry.
+    UI interaction is never part of this paid path.
+    """
     global _AI_BATCH_REQUEST_INFLIGHT
     process_lock_fd = None
+    batch_event_rows: list[dict] = []
+    state: dict = {}
+
     if not DEFAULT_AI_KEY or not is_ai_enabled():
         return
+
     with _AI_BATCH_LOCK:
         if _AI_BATCH_REQUEST_INFLIGHT:
             return
@@ -4933,8 +5307,9 @@ def _run_shared_ai_batch_once() -> None:
             all_news = []
         news_rows = _ai_batch_news_rows(all_news, _CAUSAL_AI_NEWS_BATCH_LIMIT)
         macro_snapshot = _ai_batch_macro_snapshot()
+
         try:
-            events = get_upcoming_catalyst_events()
+            events = get_upcoming_catalyst_events(3, "KRD (UTC+3)")
         except Exception:
             events = []
         try:
@@ -4942,129 +5317,112 @@ def _run_shared_ai_batch_once() -> None:
         except Exception:
             actuals = {}
 
-        # Read explicit Forecaster requests BEFORE constructing the capped event payload.
-        # Otherwise an opened event can sit outside candidates[:14], meaning the paid
-        # shared request can never return that event even though the UI keeps waiting.
         state = _ai_batch_load_state(force_refresh=True)
-        requested_event_codes = set(state.get("requested_forecaster_event_codes", []) or [])
-        requested_snapshots = dict(state.get("requested_forecaster_events", {}) or {})
-        if requested_event_codes:
-            by_code = {str(ev.get("code", "")).strip(): ev for ev in events if str(ev.get("code", "")).strip()}
-            # A transient Forex Factory refetch must not erase the exact event the
-            # user opened. Restore its persisted request snapshot only when the
-            # fresh calendar does not contain that code.
-            for _code in requested_event_codes:
-                if _code not in by_code and isinstance(requested_snapshots.get(_code), dict):
-                    _restored = _restore_forecaster_event_request(requested_snapshots[_code])
-                    if _restored.get("code"):
-                        events.append(_restored)
-                        by_code[_code] = _restored
-            requested_events = [by_code[c] for c in sorted(requested_event_codes) if c in by_code]
-            other_events = [ev for ev in events if str(ev.get("code", "")).strip() not in requested_event_codes]
-            ordered_ai_events = requested_events + other_events
-        else:
-            ordered_ai_events = events
-        event_rows = _ai_batch_event_rows(ordered_ai_events, all_news, actuals, _CAUSAL_AI_EVENT_BATCH_LIMIT)
-        included_codes = {str(e.get("code", "")).strip() for e in event_rows}
-        for _code in requested_event_codes:
-            _ai_diag_update(
-                _code,
-                queue_state="QUEUED",
-                event_included=(_code in included_codes),
-                included_checked_at=time.time(),
-            )
+
+        # Provider-free preparation of every High Impact event in the rolling
+        # seven-day Forecaster horizon. Registry eligibility decides the paid subset.
+        prepared_event_rows = _ai_batch_event_rows(events, all_news, actuals, limit=40)
+        batch_event_rows, registry_state = _forecaster_ai_select_precompute_batch(
+            prepared_event_rows,
+            legacy_batch_state=state,
+            limit=_CAUSAL_AI_EVENT_BATCH_LIMIT,
+        )
         price_context = _ai_batch_price_context()
 
-        if not news_rows and not macro_snapshot and not event_rows:
+        # Nothing at all to analyze.
+        if not news_rows and not macro_snapshot and not batch_event_rows:
             return
 
-        signature = _ai_batch_signature(news_rows, macro_snapshot, event_rows)
-        existing_result = state.get("result", {}) if isinstance(state.get("result"), dict) else {}
-        existing_events = existing_result.get("events", {}) if isinstance(existing_result, dict) else {}
-        requested_missing = bool(requested_event_codes and any(
-            code not in existing_events
-            or not isinstance(existing_events.get(code), dict)
-            or not _causal_ai_result_is_current_judge(existing_events.get(code))
-            for code in requested_event_codes
-        ))
-        if state.get("signature") == signature and isinstance(state.get("result"), dict) and not requested_missing:
-            return
+        signature = _ai_batch_signature(news_rows, macro_snapshot, batch_event_rows)
 
-        # Free two-stage gate: only meaningful evidence is allowed to wake paid AI.
-        # Page navigation never reaches the provider.
-        due, state = _ai_trigger_decision(state, news_rows, macro_snapshot, event_rows)
-        if requested_missing:
+        # Keep the existing impact/change trigger for desk-wide assets. Missing or
+        # materially stale Forecaster events are themselves a high-impact trigger.
+        due, state = _ai_trigger_decision(state, news_rows, macro_snapshot, batch_event_rows)
+        global_due_without_forecaster = bool(due)
+        if batch_event_rows:
             state["pending_trigger_score"] = max(85, int(state.get("pending_trigger_score", 0) or 0))
             if float(state.get("pending_trigger_since", 0) or 0) <= 0:
                 state["pending_trigger_since"] = time.time()
+            reasons = list(state.get("pending_trigger_reasons", []) or [])
+            marker = f"forecaster_precompute:{len(batch_event_rows)}"
+            if marker not in reasons:
+                reasons.append(marker)
+            state["pending_trigger_reasons"] = reasons[-20:]
             state["pending_trigger_due"] = True
             due = True
+
         _ai_batch_save_state(state)
         if not due:
             return
+
+        # Duplicate request protection. Explicitly missing/stale event work gets
+        # the controlled short retry; normal desk-wide provider failures keep the
+        # existing longer backoff.
         if state.get("last_attempt_signature") == signature:
             last_attempt = float(state.get("last_attempt_at", 0) or 0)
-            # A failed very-first batch must not leave the whole desk stuck on
-            # "preparing" for the normal 15-minute steady-state backoff.
-            # Retry the bootstrap batch after two minutes until the first valid
-            # shared result exists. Once a valid result exists, retain the long
-            # backoff so provider errors cannot create repeated paid requests.
             has_result = isinstance(state.get("result"), dict) and bool(state.get("result"))
             backoff = (
                 _AI_BATCH_FIRST_RESULT_RETRY_SECONDS
-                if requested_missing
+                if batch_event_rows
                 else (_AI_BATCH_ERROR_BACKOFF_SECONDS if has_result else _AI_BATCH_FIRST_RESULT_RETRY_SECONDS)
             )
             if time.time() - last_attempt < backoff:
-                for _code in requested_event_codes:
-                    _ai_diag_update(
-                        str(_code),
-                        queue_state="QUEUED",
-                        provider_status="RETRY_BACKOFF_AFTER_PROVIDER_ATTEMPT",
-                        retry_after_seconds=round(max(0.0, backoff - (time.time() - last_attempt)), 1),
-                    )
                 return
 
-        # Admin may switch AI OFF while data/news are being collected. Re-check
-        # immediately before the only billable operation.
         if not is_ai_enabled(force_refresh=True):
-            for _code in requested_event_codes:
-                _ai_diag_update(str(_code), queue_state="DISABLED", provider_status="AI_DISABLED")
             return
 
-        provider, url, model, resolved_key = _ai_runtime(DEFAULT_AI_KEY, DEFAULT_AI_PROVIDER, DEFAULT_AI_MODEL)
+        provider, url, model, resolved_key = _ai_runtime(
+            DEFAULT_AI_KEY, DEFAULT_AI_PROVIDER, DEFAULT_AI_MODEL
+        )
         if not resolved_key:
-            for _code in requested_event_codes:
-                _ai_diag_update(
-                    str(_code), queue_state="ERROR", provider_status="AUTHENTICATION_FAILED",
-                    last_error="AI provider key is not configured.",
+            if batch_event_rows:
+                _forecaster_ai_registry_fail(
+                    batch_event_rows,
+                    "Authentication failed",
+                    blocked=False,
                 )
             return
 
         process_lock_fd = _acquire_ai_batch_process_lock()
         if process_lock_fd is None:
-            for _code in requested_event_codes:
-                _ai_diag_update(
-                    str(_code), queue_state="BLOCKED_BY_GATE", provider_status="PROCESS_LOCK_BUSY",
-                    last_error="",
+            # Another local/process batch owns the paid path. The persistent
+            # registry remains queued for a later supervisor cycle.
+            if batch_event_rows:
+                _forecaster_ai_registry_fail(
+                    batch_event_rows,
+                    "AI_PROVIDER_GLOBAL_LEASE:30",
+                    blocked=True,
                 )
             return
-        # Another process may have completed the same signature just before we got the lock.
-        latest_state = _ai_batch_load_state(force_refresh=True)
-        latest_result = latest_state.get("result", {}) if isinstance(latest_state.get("result"), dict) else {}
-        latest_events = latest_result.get("events", {}) if isinstance(latest_result, dict) else {}
-        latest_requested = set(latest_state.get("requested_forecaster_event_codes", []) or [])
-        latest_requested_missing = bool(latest_requested and any(
-            code not in latest_events
-            or not isinstance(latest_events.get(code), dict)
-            or not _causal_ai_result_is_current_judge(latest_events.get(code))
-            for code in latest_requested
-        ))
-        if (latest_state.get("signature") == signature
-                and isinstance(latest_state.get("result"), dict)
-                and not latest_requested_missing):
+
+        # Cross-container safety: after acquiring the process lock, re-check the
+        # registry. Another replica may already have completed some selected rows.
+        latest_registry = _forecaster_ai_registry_load()
+        filtered_rows = []
+        for row in batch_event_rows:
+            identity = str(row.get("event_identity", "") or "")
+            entry = (latest_registry.get("events", {}) or {}).get(identity, {})
+            if not isinstance(entry, dict):
+                filtered_rows.append(row)
+                continue
+            completed_same = (
+                str(entry.get("ai_state", "")).upper() == "COMPLETED"
+                and str(entry.get("completed_evidence_signature", "") or "")
+                == str(row.get("evidence_signature", "") or "")
+                and isinstance(entry.get("analysis"), dict)
+                and _causal_ai_result_is_current_judge(entry.get("analysis"))
+            )
+            if not completed_same:
+                filtered_rows.append(row)
+        batch_event_rows = filtered_rows
+        if not batch_event_rows and not global_due_without_forecaster:
             _release_ai_batch_process_lock(process_lock_fd)
+            process_lock_fd = None
             return
+
+        # Recompute signature after cross-container completion filtering.
+        signature = _ai_batch_signature(news_rows, macro_snapshot, batch_event_rows)
 
         system_prompt = """You are ApexMacro's ONE shared institutional causal-evidence judge. One response must serve the entire desk.
 Use ONLY supplied evidence; never invent facts, observations, release values, sources, or timestamps. Return ONE valid JSON object and no markdown.
@@ -5072,50 +5430,66 @@ Use ONLY supplied evidence; never invent facts, observations, release values, so
 Required top-level keys: summary, assets, events.
 assets MUST contain USD, EUR, GBP, CAD, JPY, AUD, NZD, CHF, Gold, Oil, Nasdaq.
 For each asset return: score (-1 to +1), confidence (0-100), reason, horizon. Judge each asset separately.
-Use macro observations plus current news. Also use supplied live_price_context as confirmation only: if the fundamental/news direction is not confirmed by price, explicitly weaken the directional wording and say it is unconfirmed; if price contradicts it, say there is a price conflict. Gold: real yields/USD/safe haven/central-bank demand. Oil: supply/demand/OPEC/geopolitics/inventories. Nasdaq: yields/Fed/growth/earnings/semiconductors/risk appetite.\nFor economic-event judgments specifically, live_price_context must never force the release forecast; judge the economic evidence first.\n
-For every supplied High Impact event, act as the FINAL CAUSAL EVIDENCE JUDGE, not an echo of the deterministic model.
-Required reasoning order:
-1) Read EVENT and MARKET BASELINE.
-2) Independently assess the supplied underlying evidence: direct event-specific hard data, high-correlation country-specific precursors, official/direct policy information, event-specific credible news, broader macro context, then generic sentiment.
-3) Identify contradictions, stale/missing evidence, numeric ambiguity, and evidence quality.
-4) Form your own BEAT / INLINE / MISS judgment relative to market consensus.
-5) ONLY AFTER forming that evidence-based judgment, inspect REFERENCE_MODEL_OUTPUT_DO_NOT_ANCHOR and compare.
-6) Agreement is allowed. Disagreement is allowed. Do NOT manufacture disagreement merely to appear independent.
-7) If you disagree or weaken the deterministic result, cite the actual supplied evidence that justifies it. If there is no decisive evidence, do not claim a strong override.
-8) Confidence must reflect evidence quality. If direct event-specific evidence is absent, sources are weak/stale, precursors conflict, or only the reference model is useful, keep confidence appropriately restrained and explicitly list what is missing.
-9) First decide the economic event judgment. Only then infer USD, Gold, Oil and Nasdaq implications. Never back-solve the event forecast from a preferred asset direction.
+Use macro observations plus current news. live_price_context is confirmation only. For economic-event judgments, never use a preferred asset direction to force the release forecast.
 
-events MUST be an object keyed by the supplied event code. For every supplied event return exactly these keys:
-ai_judgment, agreement_with_quant, confidence, reason, causal_chain, facts, supporting_evidence, contradictions, decisive_evidence, evidence_missing, override_reason, event_assessment, nowcast, confidence_reason, cross_source_confirmation, usd, gold, oil, nasdaq, invalidation, source_count, judge_version.
-ai_judgment MUST be one of: beat, inline, miss.
-agreement_with_quant MUST be one of: agree, partial, disagree.
+For every supplied High Impact event, act as the FINAL CAUSAL EVIDENCE JUDGE, not an echo of the deterministic model.
+Reasoning order:
+1) Read EVENT and MARKET BASELINE.
+2) Assess raw underlying evidence first: direct hard data, country-specific precursors, official/direct policy information, event-specific credible news, broader macro context, then generic sentiment.
+3) Identify contradictions, stale/missing evidence, numeric ambiguity, and evidence quality.
+4) Form BEAT / INLINE / MISS relative to consensus.
+5) ONLY THEN inspect REFERENCE_QUANTITATIVE_OUTPUT_DO_NOT_ANCHOR.
+Agreement is allowed. Disagreement is allowed. Do not manufacture disagreement.
+If disagreeing or weakening the quantitative result, identify the decisive supplied evidence.
+Confidence must fall when direct evidence is absent, stale, conflicting, or weak.
+First judge the economic event; only then infer USD, Gold, Oil and Nasdaq implications.
+Do not mathematically double-count evidence merely because both Quantitative and AI interpret it similarly.
+
+events MUST be an object keyed by the supplied event_identity.
+For every supplied event return exactly:
+event_identity, ai_judgment, agreement_with_quant, confidence, reason, causal_chain, facts,
+supporting_evidence, contradictions, decisive_evidence, evidence_missing, override_reason,
+event_assessment, nowcast, confidence_reason, cross_source_confirmation, usd, gold, oil,
+nasdaq, invalidation, source_count, judge_version.
+ai_judgment MUST be beat, inline, or miss.
+agreement_with_quant MUST be agree, partial, or disagree.
 causal_chain, facts, supporting_evidence, contradictions, decisive_evidence, evidence_missing MUST be arrays.
 confidence MUST be integer 0-100.
 judge_version MUST be evidence-judge-v1.
-event_assessment should be the short final causal judgment.
-nowcast is retained only for backward compatibility and should summarize the AI judgment, not repeat the deterministic model wording.
-override_reason must be empty when no override is justified.
-If evidence is insufficient, say so explicitly and reduce confidence.
-Keep output compact: each evidence array <= 4 concise items; reason/event_assessment/confidence_reason/invalidation <= 2 short sentences; each asset reason <= 2 short sentences. Do not omit required keys.
-
-Do not mathematically count the same precursor/news evidence twice merely because the reference quantitative model used it and you agree with it. AI agreement is an interpretation layer, not a second statistically independent signal."""
-
+Keep output compact: each evidence array <= 4 concise items and prose fields <= 2 short sentences."""
 
         user_payload = {
             "causal_ai_judge_version": CAUSAL_AI_JUDGE_VERSION,
-            "evidence_order_note": "Judge event evidence first. Inspect each REFERENCE_MODEL_OUTPUT_DO_NOT_ANCHOR only after forming an independent causal view.",
+            "architecture": "precompute_once_store_once_read_many",
+            "evidence_order_note": "Judge raw evidence first. Inspect REFERENCE_QUANTITATIVE_OUTPUT_DO_NOT_ANCHOR only afterward.",
             "news": news_rows,
             "macro_data": macro_snapshot,
             "live_price_context": price_context,
-            "high_impact_forecaster_events": event_rows,
+            "high_impact_forecaster_events": batch_event_rows,
         }
-        _ai_audit_append("request", f"Sending one shared AI request via {provider} / {model}", {
-            "trigger_score": state.get("pending_trigger_score", state.get("last_trigger_score", 0)),
-            "trigger_reasons": state.get("pending_trigger_reasons", state.get("last_trigger_reasons", [])),
-            "news_count": len(news_rows), "news": news_rows,
-            "macro_data": macro_snapshot, "live_price_context": price_context,
-            "events": [{"code": e.get("code"), "title": e.get("title"), "currency": e.get("currency"), "forecast": e.get("forecast"), "previous": e.get("previous"), "actual": e.get("actual")} for e in event_rows],
-        })
+
+        _ai_audit_append(
+            "request",
+            f"Sending one shared AI precompute batch via {provider} / {model}",
+            {
+                "trigger_score": state.get("pending_trigger_score", state.get("last_trigger_score", 0)),
+                "trigger_reasons": state.get("pending_trigger_reasons", state.get("last_trigger_reasons", [])),
+                "news_count": len(news_rows),
+                "event_count": len(batch_event_rows),
+                "events": [
+                    {
+                        "event_identity": row.get("event_identity"),
+                        "code": row.get("code"),
+                        "title": row.get("title"),
+                        "currency": row.get("currency"),
+                        "release_time_utc": row.get("release_time_utc"),
+                        "evidence_signature": row.get("evidence_signature"),
+                    }
+                    for row in batch_event_rows
+                ],
+            },
+        )
+
         reserve_ts = time.time()
         attempt_state = {
             **state,
@@ -5126,30 +5500,14 @@ Do not mathematically count the same precursor/news evidence twice merely becaus
         }
         _ai_batch_save_state(attempt_state)
 
-        batch_started_at = time.time()
-        for _code in requested_event_codes:
-            _ai_diag_update(
-                _code,
-                queue_state="RUNNING",
-                last_batch_started=batch_started_at,
-                event_included=(_code in included_codes),
-                provider_status="PROVIDER GATE PENDING",
-                # These fields belong to THIS batch. Do not display an HTTP 200
-                # inherited from an older shared batch while the current one has
-                # not even won the provider gate yet.
-                http_status=None,
-                parse_status=None,
-                response_choice_count=None,
-                response_finish_reason=None,
-                response_content_type=None,
-                response_content_chars=None,
-                response_top_level_keys=None,
-                batch_completed_at=None,
-                event_result_saved=False,
-                state_saved=False,
-                gate_remaining_seconds=None,
+        if batch_event_rows:
+            _forecaster_ai_registry_mark_batch(
+                batch_event_rows,
+                "RUNNING",
+                provider_status="PROVIDER_GATE_PENDING",
                 last_error="",
             )
+
         response = _post_ai_chat(
             provider=provider,
             url=url,
@@ -5160,128 +5518,165 @@ Do not mathematically count the same precursor/news evidence twice merely becaus
             temperature=0.1,
             timeout=_CAUSAL_AI_HTTP_TIMEOUT_SECONDS,
         )
-        _response_status = int(getattr(response, "status_code", 0) or 0)
-        for _code in requested_event_codes:
-            _ai_diag_update(
-                _code,
-                provider_status="HTTP RESPONSE RECEIVED",
-                http_status=_response_status,
+
+        response_status = int(getattr(response, "status_code", 0) or 0)
+        if batch_event_rows:
+            _forecaster_ai_registry_mark_batch(
+                batch_event_rows,
+                "RUNNING",
+                provider_status="HTTP_RESPONSE_RECEIVED",
+                http_status=response_status,
             )
+
         try:
             response_json = response.json()
         except Exception as exc:
-            for _code in requested_event_codes:
-                _ai_diag_update(
-                    _code,
-                    parse_status="PARSE FAILED",
-                    provider_status="HTTP 200 / NON-JSON BODY",
-                    last_error="Response parsing failed",
-                )
             raise RuntimeError(f"{provider} response parsing failed: non-JSON HTTP response") from exc
 
-        _schema_meta = _ai_response_metadata(response_json)
+        schema_meta = _ai_response_metadata(response_json)
         raw = _ai_message_content(response_json)
-        for _code in requested_event_codes:
-            _ai_diag_update(
-                _code,
-                response_choice_count=_schema_meta.get("choice_count"),
-                response_finish_reason=_schema_meta.get("finish_reason"),
-                response_content_type=_schema_meta.get("content_type"),
-                response_content_chars=_schema_meta.get("content_chars"),
-                response_top_level_keys=_schema_meta.get("top_level_keys"),
-            )
         if not raw:
             raise RuntimeError(
                 f"{provider} returned empty choices/content "
-                f"(finish_reason={_schema_meta.get('finish_reason') or 'unknown'})"
+                f"(finish_reason={schema_meta.get('finish_reason') or 'unknown'})"
             )
-
         parsed = _extract_json_object(raw)
         if not isinstance(parsed, dict):
             raise RuntimeError(
                 f"{provider} returned unstructured batch output "
-                f"(content_chars={len(raw)}, finish_reason={_schema_meta.get('finish_reason') or 'unknown'})"
+                f"(content_chars={len(raw)}, finish_reason={schema_meta.get('finish_reason') or 'unknown'})"
             )
 
-        raw_events = parsed.get("events", {}) if isinstance(parsed.get("events", {}), dict) else {}
-        expected_by_code = {str(e.get("code", "")).strip(): e for e in event_rows}
-        clean_events = {}
-        for _key, _value in raw_events.items():
-            if not isinstance(_value, dict):
+        raw_events_obj = parsed.get("events", {})
+        raw_event_items = []
+        if isinstance(raw_events_obj, dict):
+            raw_event_items = list(raw_events_obj.items())
+        elif isinstance(raw_events_obj, list):
+            for item in raw_events_obj:
+                if isinstance(item, dict):
+                    raw_event_items.append((str(item.get("event_identity") or item.get("code") or ""), item))
+
+        expected_by_identity = {
+            str(row.get("event_identity", "") or ""): row
+            for row in batch_event_rows
+            if str(row.get("event_identity", "") or "")
+        }
+        expected_by_code = {
+            str(row.get("code", "") or ""): row
+            for row in batch_event_rows
+            if str(row.get("code", "") or "")
+        }
+
+        clean_by_identity: dict[str, dict] = {}
+        clean_by_code: dict[str, dict] = {}
+
+        # Parse/persist each event independently: one malformed entry never
+        # discards another event's valid analysis.
+        for raw_key, raw_value in raw_event_items:
+            if not isinstance(raw_value, dict):
                 continue
-            _clean_key = str(_key).strip()
-            _expected = expected_by_code.get(_clean_key)
-            if _expected is None:
-                for _code, _row in expected_by_code.items():
-                    if _code.casefold() == _clean_key.casefold():
-                        _clean_key, _expected = _code, _row
+            key = str(raw_key or "").strip()
+            value_identity = str(raw_value.get("event_identity", "") or "").strip()
+            expected = expected_by_identity.get(value_identity) or expected_by_identity.get(key)
+            if expected is None:
+                expected = expected_by_code.get(key)
+            if expected is None:
+                # Case-insensitive code fallback for gateway/model formatting.
+                folded = key.casefold()
+                for code, row in expected_by_code.items():
+                    if code.casefold() == folded:
+                        expected = row
                         break
-            _item = dict(_value)
-            if _expected is not None:
-                _item["_event_identity"] = str(_expected.get("event_identity", ""))
-                _item["_event_code"] = _clean_key
-                _reference = _expected.get("REFERENCE_MODEL_OUTPUT_DO_NOT_ANCHOR", {})
-                _quant_prediction = _quantitative_outcome_from_reference(_reference)
-                _ai_judgment = _normalize_ai_judgment(_item.get("ai_judgment") or _item.get("nowcast"))
-                _agreement, _relationship_label = _causal_relationship(_quant_prediction, _ai_judgment)
-                _item["ai_judgment"] = _ai_judgment or str(_item.get("ai_judgment", "")).strip()
-                _item["agreement_with_quant"] = _agreement or str(_item.get("agreement_with_quant", "")).strip()
-                _item["relationship_label"] = _relationship_label
-                # Confidence guard: same evidence is not counted twice and weak
-                # independent evidence cannot become an unjustified high-confidence AI call.
-                _qe = _expected.get("quantitative_evidence", {}) if isinstance(_expected.get("quantitative_evidence", {}), dict) else {}
-                _prec_n = len(_qe.get("precursor_observations", []) or [])
-                _hist_n = len(_qe.get("same_release_history", []) or [])
-                _news_n = len(_expected.get("news_causal_evidence", []) or [])
-                try:
-                    _ai_conf = int(max(0, min(100, round(float(_item.get("confidence", 0) or 0)))))
-                except Exception:
-                    _ai_conf = 0
-                _conf_cap = 100
-                if (_prec_n + _hist_n + _news_n) == 0:
-                    _conf_cap = 45
-                elif _prec_n == 0 and _news_n == 0:
-                    _conf_cap = 55
-                try:
-                    if float(_qe.get("evidence_quality", 0) or 0) < 0.45:
-                        _conf_cap = min(_conf_cap, 60)
-                    if float(_qe.get("conflict_score", 0) or 0) >= 0.45:
-                        _conf_cap = min(_conf_cap, 64)
-                except Exception:
-                    pass
-                _item["confidence"] = min(_ai_conf, _conf_cap)
-                _item["_quantitative_prediction"] = _quant_prediction
-                _item["_quantitative_reference"] = dict(_reference) if isinstance(_reference, dict) else {}
-                _item["_judge_version"] = CAUSAL_AI_JUDGE_VERSION
-                _item["judge_version"] = CAUSAL_AI_JUDGE_VERSION
-                _final_prediction, _final_reason = _derive_final_forecast_state(_quant_prediction, _item)
-                _item["final_prediction"] = _final_prediction
-                _item["final_arbitration_reason"] = _final_reason
-            clean_events[_clean_key] = _item
-        for _code in requested_event_codes:
-            _ai_diag_update(
-                _code,
-                parse_status="PARSE SUCCESS",
-                event_result_saved=_causal_ai_result_is_current_judge(clean_events.get(_code)),
-            )
+            if expected is None:
+                continue
+
+            identity = str(expected.get("event_identity", "") or "")
+            code = str(expected.get("code", "") or "")
+            item = dict(raw_value)
+            item["event_identity"] = identity
+            item["_event_identity"] = identity
+            item["_event_code"] = code
+
+            reference = expected.get("REFERENCE_MODEL_OUTPUT_DO_NOT_ANCHOR", {})
+            quant_prediction = _quantitative_outcome_from_reference(reference)
+            ai_judgment = _normalize_ai_judgment(item.get("ai_judgment") or item.get("nowcast"))
+            if not ai_judgment:
+                # Malformed event only; leave it unresolved without discarding peers.
+                continue
+
+            agreement, relationship_label = _causal_relationship(quant_prediction, ai_judgment)
+            item["ai_judgment"] = ai_judgment
+            item["agreement_with_quant"] = agreement or str(item.get("agreement_with_quant", "") or "")
+            item["relationship_label"] = relationship_label
+
+            qe = expected.get("quantitative_evidence", {}) if isinstance(expected.get("quantitative_evidence"), dict) else {}
+            prec_n = len(qe.get("precursor_observations", []) or [])
+            hist_n = len(qe.get("same_release_history", []) or [])
+            news_n = len(expected.get("news_causal_evidence", []) or [])
+            try:
+                ai_conf = int(max(0, min(100, round(float(item.get("confidence", 0) or 0)))))
+            except Exception:
+                ai_conf = 0
+            conf_cap = 100
+            if (prec_n + hist_n + news_n) == 0:
+                conf_cap = 45
+            elif prec_n == 0 and news_n == 0:
+                conf_cap = 55
+            try:
+                if float(qe.get("evidence_quality", 0) or 0) < 0.45:
+                    conf_cap = min(conf_cap, 60)
+                if float(qe.get("conflict_score", 0) or 0) >= 0.45:
+                    conf_cap = min(conf_cap, 64)
+            except Exception:
+                pass
+            item["confidence"] = min(ai_conf, conf_cap)
+            item["_quantitative_prediction"] = quant_prediction
+            item["_quantitative_reference"] = dict(reference) if isinstance(reference, dict) else {}
+            item["_judge_version"] = CAUSAL_AI_JUDGE_VERSION
+            item["judge_version"] = CAUSAL_AI_JUDGE_VERSION
+            final_prediction, final_reason = _derive_final_forecast_state(quant_prediction, item)
+            item["final_prediction"] = final_prediction
+            item["final_arbitration_reason"] = final_reason
+
+            clean_by_identity[identity] = item
+            clean_by_code[code] = item
+
+            # Per-event persistent write is the Forecaster source of truth.
+            _forecaster_ai_registry_complete(expected, item, provider, model)
+            try:
+                _freeze_forecaster_ai_snapshot_from_batch_row(expected, item)
+            except Exception:
+                pass
+
+        # Mark only missing/malformed event entries as ERROR. Valid peers remain saved.
+        for row in batch_event_rows:
+            identity = str(row.get("event_identity", "") or "")
+            if identity and identity not in clean_by_identity:
+                _forecaster_ai_registry_fail(
+                    [row],
+                    "Response parsing failed: event result missing or malformed",
+                    blocked=False,
+                )
+
+        existing_result = state.get("result", {}) if isinstance(state.get("result"), dict) else {}
+        legacy_events = dict(existing_result.get("events", {}) or {}) if isinstance(existing_result.get("events"), dict) else {}
+        legacy_events.update(clean_by_code)
+
         result = {
             "summary": str(parsed.get("summary", ""))[:1800],
             "assets": _normalize_shared_asset_payload(parsed.get("assets", {})),
-            "events": clean_events,
+            # Legacy shared blob retained for other readers/migration only.
+            # Forecaster UI reads FORECASTER_AI_REGISTRY_FILE instead.
+            "events": legacy_events,
         }
-        for _code, _analysis in clean_events.items():
-            try:
-                _row = expected_by_code.get(_code)
-                if isinstance(_row, dict):
-                    _freeze_forecaster_ai_snapshot_from_batch_row(_row, _analysis)
-            except Exception:
-                pass
+
+        now_ts = time.time()
         _ai_batch_save_state({
             "signature": signature,
-            "updated_at": time.time(),
+            "updated_at": now_ts,
             "updated_at_iso": datetime.now(timezone.utc).isoformat(),
             "last_attempt_signature": signature,
-            "last_attempt_at": time.time(),
+            "last_attempt_at": now_ts,
             "provider": provider,
             "model": model,
             "result": result,
@@ -5292,121 +5687,139 @@ Do not mathematically count the same precursor/news evidence twice merely becaus
             "last_trigger_reasons": state.get("last_trigger_reasons", []),
             "last_trigger_consumed_score": state.get("pending_trigger_score", state.get("last_trigger_score", 0)),
             "last_trigger_consumed_reasons": state.get("pending_trigger_reasons", state.get("last_trigger_reasons", [])),
-            "last_paid_at": time.time(),
-            "last_paid_topics": {**(state.get("last_paid_topics", {}) if isinstance(state.get("last_paid_topics"), dict) else {}), **{topic: time.time() for topic in (state.get("pending_trigger_topics", []) or [])}},
-            # Keep explicit Forecaster requests until the returned-code cleanup below
-            # proves that the provider actually supplied each requested event.
-            "requested_forecaster_event_codes": sorted(requested_event_codes)[:40],
-            "requested_forecaster_events": requested_snapshots,
-            "causal_ai_diagnostics": (_ai_batch_load_state(force_refresh=True).get("causal_ai_diagnostics", {}) or {}),
+            "last_paid_at": now_ts,
+            "last_paid_topics": {
+                **(state.get("last_paid_topics", {}) if isinstance(state.get("last_paid_topics"), dict) else {}),
+                **{topic: now_ts for topic in (state.get("pending_trigger_topics", []) or [])},
+            },
+            # Obsolete event-open request queue is intentionally emptied.
+            "requested_forecaster_event_codes": [],
+            "requested_forecaster_events": {},
+            "causal_ai_diagnostics": (
+                _ai_batch_load_state(force_refresh=True).get("causal_ai_diagnostics", {}) or {}
+            ),
         })
-        _completed_at = time.time()
-        for _code in requested_event_codes:
-            _ai_diag_update(
-                _code,
-                queue_state="COMPLETED" if _causal_ai_result_is_current_judge(clean_events.get(_code)) else "ERROR",
-                batch_completed_at=_completed_at,
-                state_saved=True,
-                event_result_saved=_causal_ai_result_is_current_judge(clean_events.get(_code)),
-                last_error="" if _causal_ai_result_is_current_judge(clean_events.get(_code)) else "Current causal-judge event result missing from provider response",
-            )
-        try:
-            _state_after = _ai_batch_load_state(force_refresh=True)
-            _requested_after = set(_state_after.get("requested_forecaster_event_codes", []) or [])
-            _returned_codes = {
-                k for k, v in (result.get("events", {}) or {}).items()
-                if _causal_ai_result_is_current_judge(v)
-            }
-            if _requested_after:
-                _remaining = _requested_after - _returned_codes
-                _state_after["requested_forecaster_event_codes"] = sorted(_remaining)[:40]
-                _snapshots_after = dict(_state_after.get("requested_forecaster_events", {}) or {})
-                _state_after["requested_forecaster_events"] = {k: v for k, v in _snapshots_after.items() if k in _remaining}
-                _ai_batch_save_state(_state_after)
-        except Exception:
-            pass
+
+        _forecaster_ai_registry_merge(queue_meta={
+            "last_batch_completed_at": now_ts,
+            "last_batch_completed_at_iso": datetime.now(timezone.utc).isoformat(),
+            "last_batch_event_count": len(batch_event_rows),
+            "last_batch_provider_status": "COMPLETED",
+        })
+
         _register_ai_price_decisions(result, price_context)
-        _ai_audit_append("success", "Shared AI analysis completed successfully", {
-            "provider": provider, "model": model, "summary": result.get("summary", ""),
-            "assets": result.get("assets", {}), "event_count": len(result.get("events", {}) or {}),
-            "events": result.get("events", {}), "live_price_context": price_context,
-        })
+        _ai_audit_append(
+            "success",
+            "Shared AI precompute batch completed successfully",
+            {
+                "provider": provider,
+                "model": model,
+                "summary": result.get("summary", ""),
+                "event_count": len(clean_by_identity),
+                "event_identities": sorted(clean_by_identity.keys()),
+            },
+        )
+
     except Exception as exc:
         err = str(exc)
-        if err.startswith("AI_PROVIDER_HARD_COOLDOWN:") or err.startswith("AI_PROVIDER_GLOBAL_LEASE:"):
+        gate_blocked = (
+            err.startswith("AI_PROVIDER_HARD_COOLDOWN:")
+            or err.startswith("AI_PROVIDER_GLOBAL_LEASE:")
+        )
+        if gate_blocked:
+            if batch_event_rows:
+                _forecaster_ai_registry_fail(batch_event_rows, err, blocked=True)
             try:
                 remaining = float(err.split(":", 1)[1])
             except Exception:
                 remaining = _AI_PROVIDER_HARD_MIN_SECONDS
-            state = _ai_batch_load_state()
+            state = _ai_batch_load_state(force_refresh=True)
             state["provider_gate_blocked_at"] = time.time()
             state["provider_gate_remaining_seconds"] = round(max(0.0, remaining), 1)
             _ai_batch_save_state(state)
-            for _code in set(state.get("requested_forecaster_event_codes", []) or []):
-                _ai_diag_update(
-                    str(_code), queue_state="BLOCKED_BY_GATE", provider_status="BLOCKED",
-                    last_error="", gate_remaining_seconds=round(max(0.0, remaining), 1),
-                )
-            _ai_audit_append("blocked", "Paid AI request blocked by global provider billing gate", {
-                "remaining_seconds": round(max(0.0, remaining), 1),
-                "rule": "90-second hard minimum + cross-container durable lease",
-            })
+            _ai_audit_append(
+                "blocked",
+                "Paid AI precompute batch blocked by global provider billing gate",
+                {
+                    "remaining_seconds": round(max(0.0, remaining), 1),
+                    "event_count": len(batch_event_rows),
+                    "rule": "90-second hard minimum + distributed provider lease",
+                },
+            )
         else:
-            state = _ai_batch_load_state()
+            if batch_event_rows:
+                _forecaster_ai_registry_fail(batch_event_rows, err, blocked=False)
+            state = _ai_batch_load_state(force_refresh=True)
             state["last_error"] = err[:500]
             state["last_error_at"] = time.time()
             _ai_batch_save_state(state)
-            for _code in set(state.get("requested_forecaster_event_codes", []) or []):
-                _parse_status = "PARSE FAILED" if any(x in err.lower() for x in ("unstructured", "json", "parse", "empty choices")) else None
-                _fields = {
-                    "queue_state": "ERROR",
-                    "provider_status": _safe_ai_error_label(err),
-                    "last_error": _safe_ai_error_label(err),
-                }
-                if _parse_status:
-                    _fields["parse_status"] = _parse_status
-                _ai_diag_update(str(_code), **_fields)
-            _ai_audit_append("error", "Shared AI request/analysis failed", {"error": err[:500]})
+            _ai_audit_append(
+                "error",
+                "Shared AI precompute request/analysis failed",
+                {
+                    "error": _safe_ai_error_label(err),
+                    "event_count": len(batch_event_rows),
+                },
+            )
     finally:
         _release_ai_batch_process_lock(process_lock_fd)
         with _AI_BATCH_LOCK:
             _AI_BATCH_REQUEST_INFLIGHT = False
 
-
 def _shared_ai_supervisor_loop() -> None:
-    global _AI_BATCH_SUPERVISOR_RUNNING
+    """One controlled background cycle for desk AI + Forecaster precompute."""
+    global _AI_BATCH_SUPERVISOR_RUNNING, _AI_BATCH_SUPERVISOR_THREAD
     try:
         while True:
-            _check_ai_price_validations()
-            if is_ai_enabled(force_refresh=True):
-                _run_shared_ai_batch_once()
-            # Event wake-up makes Admin Enable immediate; ordinary polling still
-            # checks for meaningful changed news/data without page-triggered calls.
+            try:
+                try:
+                    _check_ai_price_validations()
+                except Exception:
+                    pass
+                if is_ai_enabled(force_refresh=True):
+                    _run_shared_ai_batch_once()
+            except Exception as exc:
+                _ai_audit_append(
+                    "error",
+                    "Shared AI supervisor iteration failed",
+                    {"error": _safe_ai_error_label(str(exc))},
+                )
             _AI_BATCH_WAKE_EVENT.wait(timeout=_AI_BATCH_POLL_SECONDS)
             _AI_BATCH_WAKE_EVENT.clear()
     finally:
         with _AI_BATCH_LOCK:
             _AI_BATCH_SUPERVISOR_RUNNING = False
+            if _AI_BATCH_SUPERVISOR_THREAD is threading.current_thread():
+                _AI_BATCH_SUPERVISOR_THREAD = None
 
 
 def start_shared_background_ai_worker() -> None:
-    """Start one process-local supervisor. Page navigation never contacts AI."""
-    global _AI_BATCH_SUPERVISOR_RUNNING
+    """Start/recover the one process-local supervisor; never a paid UI action."""
+    global _AI_BATCH_SUPERVISOR_RUNNING, _AI_BATCH_SUPERVISOR_THREAD
     if not DEFAULT_AI_KEY:
         return
     with _AI_BATCH_LOCK:
-        if _AI_BATCH_SUPERVISOR_RUNNING:
-            # A fresh page run can still wake an enabled worker if its first
-            # shared result has not been produced yet.
-            if is_ai_enabled() and not get_shared_background_ai_state().get("result"):
-                _AI_BATCH_WAKE_EVENT.set()
+        alive = bool(
+            _AI_BATCH_SUPERVISOR_THREAD is not None
+            and getattr(_AI_BATCH_SUPERVISOR_THREAD, "is_alive", lambda: False)()
+        )
+        if _AI_BATCH_SUPERVISOR_RUNNING and alive:
+            _AI_BATCH_WAKE_EVENT.set()
             return
         _AI_BATCH_SUPERVISOR_RUNNING = True
-    threading.Thread(
-        target=_shared_ai_supervisor_loop,
-        daemon=True,
-        name="ApexMacroSharedAI",
-    ).start()
+        _AI_BATCH_SUPERVISOR_THREAD = threading.Thread(
+            target=_shared_ai_supervisor_loop,
+            daemon=True,
+            name="ApexMacroSharedAI",
+        )
+        thread = _AI_BATCH_SUPERVISOR_THREAD
+    try:
+        thread.start()
+    except Exception:
+        with _AI_BATCH_LOCK:
+            _AI_BATCH_SUPERVISOR_RUNNING = False
+            _AI_BATCH_SUPERVISOR_THREAD = None
+        return
     if is_ai_enabled():
         _AI_BATCH_WAKE_EVENT.set()
 
@@ -7210,8 +7623,51 @@ def _universal_precursors(event: dict) -> list:
     for x in out: x["weight"] = max(0.0, float(x.get("weight", 0) or 0)) / total
     return out[:6]
 
+def _event_release_utc(event: dict) -> datetime | None:
+    """Return the scheduled release as timezone-aware UTC using deterministic fields."""
+    ev = event or {}
+    meta = ev.get("meta", {}) if isinstance(ev.get("meta", {}), dict) else {}
+
+    raw = str(meta.get("ff_date_raw", "") or "").strip()
+    if raw:
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except Exception:
+            pass
+
+    code = str(ev.get("code", "") or "")
+    m = re.match(r"^FF_[A-Z]+_(\d{12})_", code)
+    if m:
+        try:
+            return datetime.strptime(m.group(1), "%Y%m%d%H%M").replace(tzinfo=timezone.utc)
+        except Exception:
+            pass
+
+    dt = ev.get("datetime_obj")
+    if isinstance(dt, datetime) and dt.tzinfo is not None:
+        try:
+            return dt.astimezone(timezone.utc)
+        except Exception:
+            pass
+    return None
+
+
+def _event_release_utc_iso(event: dict) -> str:
+    dt = _event_release_utc(event)
+    if dt is None:
+        return ""
+    return dt.replace(second=0, microsecond=0).isoformat().replace("+00:00", "Z")
+
+
 def _event_identity(event: dict) -> str:
-    return f"{str(event.get('currency','')).upper()}|{_normalize_catalyst_title(event.get('title',''))}"
+    """ONE canonical Forecaster event identity used across AI/persistence/audit/UI."""
+    currency = str((event or {}).get("currency", "") or "").upper().strip()
+    title = _normalize_catalyst_title((event or {}).get("title", ""))
+    release_utc = _event_release_utc_iso(event)
+    return f"{currency}|{title}|{release_utc or 'unscheduled'}"
 
 def _same_event_history(event: dict, limit: int = 8) -> list:
     """Merge ApexMacro frozen outcomes with external Forex Factory release history."""
@@ -7788,70 +8244,118 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_ove
     return result
 
 
-def get_causal_macro_ai_analysis(event: dict, nowcast: dict, articles: list, api_key: str = DEFAULT_AI_KEY, provider_hint: str = DEFAULT_AI_PROVIDER, model_hint: str = DEFAULT_AI_MODEL, cache_version: str = AI_CACHE_VERSION) -> dict:
-    """Read Causal Intelligence from durable shared state; this function never calls a provider."""
+def get_causal_macro_ai_analysis(
+    event: dict,
+    nowcast: dict,
+    articles: list,
+    api_key: str = DEFAULT_AI_KEY,
+    provider_hint: str = DEFAULT_AI_PROVIDER,
+    model_hint: str = DEFAULT_AI_MODEL,
+    cache_version: str = AI_CACHE_VERSION,
+) -> dict:
+    """Read-only Forecaster Causal AI access from the persistent event registry."""
     if str(event.get("impact", "")).title() != "High":
-        return {"status": "skipped", "state": "NOT_REQUESTED", "raw": "Causal AI is enabled for High Impact events only."}
+        return {
+            "status": "skipped",
+            "state": "NOT_PREPARED",
+            "raw": "Causal AI is enabled for High Impact events only.",
+        }
     if not is_ai_enabled(force_refresh=True):
-        return {"status": "disabled", "state": "DISABLED", "raw": "AI analysis is disabled by Admin."}
+        return {
+            "status": "disabled",
+            "state": "DISABLED",
+            "raw": "AI analysis is disabled by Admin.",
+        }
 
-    code = str(event.get("code", "")).strip()
-    state = _ai_batch_load_state(force_refresh=True)
-    item, found_key = _shared_ai_event_result(event, state)
-    if isinstance(item, dict) and _causal_ai_result_is_current_judge(item):
+    identity = _event_identity(event)
+    registry = _forecaster_ai_registry_load()
+    entry = (registry.get("events", {}) or {}).get(identity, {})
+    entry = dict(entry) if isinstance(entry, dict) else {}
+
+    state_name = str(entry.get("ai_state", "") or "").upper()
+    analysis = entry.get("analysis") if isinstance(entry.get("analysis"), dict) else None
+
+    if state_name == "COMPLETED" and isinstance(analysis, dict) and _causal_ai_result_is_current_judge(analysis):
         try:
-            normalized = _normalize_causal_ai_payload(dict(item), int(item.get("source_count", 0) or 0))
+            normalized = _normalize_causal_ai_payload(
+                dict(analysis), int(analysis.get("source_count", 0) or 0)
+            )
         except Exception:
-            normalized = dict(item)
+            normalized = dict(analysis)
         normalized["status"] = "ok"
         normalized["state"] = "COMPLETED"
-        normalized["matched_event_key"] = found_key
-        diag_existing = dict((state.get("causal_ai_diagnostics", {}) or {}).get(code, {}) or {})
-        diag_fields = {"queue_state": "COMPLETED", "ui_lookup_found": True, "event_result_saved": True}
-        if not diag_existing.get("requested_at"):
-            diag_fields["request_stage"] = "RESULT_FROM_SHARED_CACHE"
-            diag_fields["result_source"] = "SHARED_CACHE"
-        _ai_diag_update(code, **diag_fields)
+        normalized["matched_event_key"] = identity
+        normalized["evidence_signature"] = entry.get("completed_evidence_signature") or entry.get("evidence_signature")
         try:
             _freeze_forecaster_ai_snapshot(event, nowcast, normalized)
         except Exception:
             pass
         return normalized
-    elif isinstance(item, dict):
-        _ai_diag_update(code, request_stage="LEGACY_RESULT_STALE", ui_lookup_found=False, event_result_saved=False)
 
-    diag = dict((state.get("causal_ai_diagnostics", {}) or {}).get(code, {}) or {})
-    requested_at = float(diag.get("requested_at", 0.0) or 0.0)
-    last_error_at = float(state.get("last_error_at", 0.0) or 0.0)
-    last_error = str(diag.get("last_error") or state.get("last_error") or "").strip()
-    queue_state = str(diag.get("queue_state", "") or "").upper()
+    if state_name == "STALE" and isinstance(analysis, dict) and _causal_ai_result_is_current_judge(analysis):
+        try:
+            normalized = _normalize_causal_ai_payload(
+                dict(analysis), int(analysis.get("source_count", 0) or 0)
+            )
+        except Exception:
+            normalized = dict(analysis)
+        normalized["status"] = "stale"
+        normalized["state"] = "STALE"
+        normalized["raw"] = "Evidence changed; refresh pending."
+        normalized["matched_event_key"] = identity
+        return normalized
 
-    if last_error and (not requested_at or last_error_at >= requested_at or queue_state == "ERROR"):
-        label = _safe_ai_error_label(last_error)
-        _ai_diag_update(code, queue_state="ERROR", ui_lookup_found=False, last_error=label)
-        return {"status": "error", "state": "ERROR", "raw": label}
-
-    if queue_state == "BLOCKED_BY_GATE":
-        return {"status": "blocked", "state": "BLOCKED_BY_GATE", "raw": "AI request is waiting for the global provider billing gate."}
-    if queue_state == "RUNNING":
-        return {"status": "updating", "state": "RUNNING", "raw": "Causal AI synthesis is running in the shared background batch."}
-    if requested_at and time.time() - requested_at > 6 * 60:
-        # UI timeout is not a queue-engine terminal state. Preserve the real
-        # QUEUED/BLOCKED/RUNNING state so the supervisor can continue and the
-        # Admin diagnostic remains truthful.
-        _ai_diag_update(code, ui_lookup_found=False, ui_wait_timed_out_at=time.time())
+    if state_name == "RUNNING":
         return {
-            "status": "timeout",
-            "state": "TIMEOUT",
-            "raw": "AI analysis is still pending in the shared engine; the UI wait window expired.",
+            "status": "updating",
+            "state": "RUNNING",
+            "raw": "Causal AI analysis is being prepared.",
         }
-    if requested_at or code in set(state.get("requested_forecaster_event_codes", []) or []):
-        return {"status": "deferred", "state": "QUEUED", "raw": "Causal AI is queued in the shared background batch."}
-    return {"status": "not_requested", "state": "NOT_REQUESTED", "raw": "Causal AI has not been requested for this event yet."}
+    if state_name == "QUEUED":
+        return {
+            "status": "deferred",
+            "state": "QUEUED",
+            "raw": "Causal AI analysis is queued.",
+        }
+    if state_name == "ERROR":
+        return {
+            "status": "error",
+            "state": "ERROR",
+            "raw": str(entry.get("last_error") or "Causal AI analysis is temporarily unavailable."),
+        }
 
+    # Backward-compatible read only. Legacy result is never treated as a fresh
+    # registry completion because its evidence signature was not frozen.
+    legacy, legacy_key = _forecaster_ai_legacy_result(event)
+    if isinstance(legacy, dict) and _causal_ai_result_is_current_judge(legacy):
+        try:
+            normalized = _normalize_causal_ai_payload(
+                dict(legacy), int(legacy.get("source_count", 0) or 0)
+            )
+        except Exception:
+            normalized = dict(legacy)
+        normalized["status"] = "stale"
+        normalized["state"] = "STALE"
+        normalized["raw"] = "Legacy Causal AI result available; evidence refresh pending."
+        normalized["matched_event_key"] = legacy_key
+        return normalized
+
+    return {
+        "status": "not_prepared",
+        "state": "NOT_PREPARED",
+        "raw": "Causal AI analysis has not been prepared yet.",
+    }
 
 def render_causal_macro_ai_panel(analysis: dict) -> None:
     # Compact visual layer for the existing causal AI output. No model logic is changed.
+    if analysis.get("status") == "stale":
+        render_html(
+            '<div class="fc-ai" style="border-color:rgba(255,209,102,.24);color:#ffd166;">'
+            '⚠️ Evidence changed; refresh pending. Showing the last completed Causal AI analysis.</div>'
+        )
+        analysis = dict(analysis)
+        analysis["status"] = "ok"
+
     if analysis.get("status") != "ok":
         if analysis.get("status") == "skipped":
             return
@@ -7862,11 +8366,22 @@ def render_causal_macro_ai_panel(analysis: dict) -> None:
                 'No paid AI requests are being sent; the quantitative Nowcast remains active.</div>'
             )
             return
-        if analysis.get("status") in {"updating", "deferred", "blocked"}:
+        if analysis.get("status") == "updating":
             render_html(
                 '<div class="fc-ai" style="border-color:rgba(173,123,255,.22);color:#bfa7ff;">'
-                '🧠 Causal Macro Intelligence is updating in the background. '
-                'The quantitative Nowcast is already available.</div>'
+                '🧠 Causal AI analysis is being prepared.</div>'
+            )
+            return
+        if analysis.get("status") == "deferred":
+            render_html(
+                '<div class="fc-ai" style="border-color:rgba(173,123,255,.22);color:#bfa7ff;">'
+                '🧠 Causal AI analysis is queued.</div>'
+            )
+            return
+        if analysis.get("status") == "not_prepared":
+            render_html(
+                '<div class="fc-ai" style="border-color:rgba(143,163,180,.22);color:#9eb0bc;">'
+                '🧠 Causal AI analysis has not been prepared yet.</div>'
             )
             return
         render_html(
@@ -7952,42 +8467,67 @@ def _forecaster_bg_signature(event: dict, actual: str = "") -> str:
 
 
 def _forecaster_ai_evidence_signature(event: dict, nowcast: dict, relevant_articles: list, actual: str = "") -> str:
-    """Fingerprint only evidence that can materially change causal AI output."""
+    """Stable signature of MATERIAL pre-release evidence only.
+
+    Quantization prevents tiny float noise from causing another paid batch.
+    """
+    def _q(value, step: float):
+        try:
+            x = float(value)
+            if not math.isfinite(x):
+                return None
+            return round(round(x / step) * step, 6)
+        except Exception:
+            return None
+
     precursor_rows = []
-    for row in (nowcast.get("precursor_results") or []):
+    for row in (nowcast.get("precursor_results") or [])[:10]:
         precursor_rows.append({
-            "name": row.get("name", ""),
-            "latest": round(float(row.get("latest", 0) or 0), 6),
-            "mom": round(float(row.get("mom", 0) or 0), 6),
-            "score": round(float(row.get("score", 0) or 0), 6),
+            "name": str(row.get("name", "") or "").strip().lower(),
+            "latest": _q(row.get("latest"), 0.05),
+            "mom": _q(row.get("mom"), 0.05),
+            "score": _q(row.get("score"), 0.05),
+            "weight": _q(row.get("weight", row.get("effective_weight")), 0.05),
         })
+    precursor_rows.sort(key=lambda x: x["name"])
+
+    probs = nowcast.get("probabilities", {}) if isinstance(nowcast.get("probabilities", {}), dict) else {}
+    quant_probs = {str(k): _q(v, 0.5) for k, v in sorted(probs.items())}
 
     news_rows = []
-    for art in (relevant_articles or [])[:10]:
+    for art in (relevant_articles or [])[:8]:
         source = art.get("source", {})
         source_name = source.get("name", "") if isinstance(source, dict) else str(source or "")
+        title = re.sub(r"\s+", " ", str(art.get("title", "") or "").strip().lower())
+        published = str(art.get("publishedAt", "") or "")[:19]
+        # Headline identity is stable; descriptions are intentionally excluded
+        # because feed edits must not create new provider billing.
         news_rows.append({
-            "source": source_name,
-            "published": str(art.get("publishedAt", "")),
-            "title": str(art.get("title", "")).strip(),
-            "description": str(art.get("description", "")).strip(),
+            "source": str(source_name).strip().lower()[:80],
+            "published": published,
+            "title": title[:240],
         })
     news_rows.sort(key=lambda x: (x["published"], x["source"], x["title"]))
 
     payload = {
-        "event": _forecaster_bg_signature(event, actual),
+        "event_identity": _event_identity(event),
+        "consensus": str(event.get("forecast_str", "") or "").strip(),
+        "previous": str(event.get("prev_str", "") or "").strip(),
         "precursors": precursor_rows,
-        "probabilities": nowcast.get("probabilities", {}),
-        "composite": round(float(nowcast.get("nowcast_composite", 0) or 0), 6),
-        "conflict": round(float(nowcast.get("conflict_score", 0) or 0), 6),
-        "evidence_quality": round(float(nowcast.get("evidence_quality", 0) or 0), 6),
-        "history_signal": round(float(nowcast.get("history_release_signal", 0) or 0), 6),
-        "same_release_history": _ai_event_history_rows(nowcast),
-        "causal_judge_version": CAUSAL_AI_JUDGE_VERSION,
+        "probabilities": quant_probs,
+        "quantitative_classification": (
+            max(probs, key=probs.get) if probs else str(nowcast.get("outcome_key", "inline"))
+        ),
+        "composite": _q(nowcast.get("nowcast_composite"), 0.05),
+        "conflict": _q(nowcast.get("conflict_score"), 0.05),
+        "evidence_quality": _q(nowcast.get("evidence_quality"), 0.05),
+        "history_signal": _q(nowcast.get("history_release_signal"), 0.05),
         "news": news_rows,
+        "analysis_version": CAUSAL_AI_JUDGE_VERSION,
     }
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
-
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
 
 def _forecaster_relevant_ai_articles(event: dict, all_news: list) -> list:
     """Use the same event-verification gate so unrelated feed churn cannot trigger AI spend."""
@@ -8127,44 +8667,21 @@ def _forecaster_background_worker(events: list[dict], fred_key: str, channel_nam
                         "effective_actual": effective_actual,
                     }
 
-                # Stage 2: causal AI is event-driven, not timer-driven.
-                # Unrelated news-feed churn and Streamlit reruns must not spend tokens.
+                # Stage 2: read already-precomputed Causal AI state only.
+                # This worker never requests/wakes the paid provider.
                 if str(ev.get("impact", "")).title() == "High":
-                    ev_dt = ev.get("datetime_obj")
-                    seconds_to_event = None
-                    if isinstance(ev_dt, datetime):
-                        try:
-                            local_now = datetime.utcnow() + timedelta(hours=3)
-                            seconds_to_event = (ev_dt.replace(tzinfo=None) - local_now).total_seconds()
-                        except Exception:
-                            seconds_to_event = None
-
-                    should_prewarm_ai = force_ai or effective_actual or (
-                        seconds_to_event is not None
-                        and -(48 * 3600) <= seconds_to_event <= _FORECASTER_AI_PREWARM_HORIZON_SECONDS
+                    relevant_ai_news = _forecaster_relevant_ai_articles(ev, all_news)
+                    causal_ai = get_causal_macro_ai_analysis(
+                        ev,
+                        nowcast,
+                        relevant_ai_news,
+                        DEFAULT_AI_KEY,
+                        DEFAULT_AI_PROVIDER,
+                        DEFAULT_AI_MODEL,
+                        AI_CACHE_VERSION,
                     )
-
-                    if should_prewarm_ai:
-                        relevant_ai_news = _forecaster_relevant_ai_articles(ev, all_news)
-                        evidence_sig = _forecaster_ai_evidence_signature(
-                            ev, nowcast, relevant_ai_news, effective_actual
-                        )
-                        causal_ai = _forecaster_ai_cache_get(code, evidence_sig)
-                        if causal_ai is None:
-                            causal_ai = get_causal_macro_ai_analysis(
-                                ev,
-                                nowcast,
-                                relevant_ai_news,
-                                DEFAULT_AI_KEY,
-                                DEFAULT_AI_PROVIDER,
-                                DEFAULT_AI_MODEL,
-                                AI_CACHE_VERSION,
-                            )
-                            _forecaster_ai_cache_put(code, evidence_sig, causal_ai)
-                    else:
-                        causal_ai = {"status": "deferred"}
                 else:
-                    causal_ai = {"status": "skipped"}
+                    causal_ai = {"status": "skipped", "state": "NOT_PREPARED"}
 
                 with _FORECASTER_BG_LOCK:
                     item = _FORECASTER_BG_CACHE.get(code, {})
@@ -8202,82 +8719,33 @@ def _forecaster_background_worker(events: list[dict], fred_key: str, channel_nam
             _FORECASTER_BG_WORKER_RUNNING = False
 
 def _request_shared_ai_for_forecaster_event(event: dict) -> None:
-    """Wake the ONE shared paid-AI batch for an explicitly opened High-Impact event.
+    """Compatibility no-op.
 
-    This never calls the provider directly.  It only raises the existing shared
-    trigger and wakes the supervisor, preserving the global billing gate and the
-    one-request-for-the-whole-desk architecture.
+    Forecaster AI is precomputed from the calendar/evidence registry. Opening an
+    event must never enqueue, wake, retry, or otherwise control paid AI.
     """
-    if str((event or {}).get("impact", "")).title() != "High" or not is_ai_enabled():
-        return
-    code = str((event or {}).get("code", "")).strip()
-    if not code:
-        return
-    try:
-        state = _ai_batch_load_state(force_refresh=True)
-        _existing_item, _matched_key = _shared_ai_event_result(event, state)
-        if isinstance(_existing_item, dict) and _causal_ai_result_is_current_judge(_existing_item):
-            _existing_diag = dict((state.get("causal_ai_diagnostics", {}) or {}).get(code, {}) or {})
-            _fields = {"queue_state": "COMPLETED", "ui_lookup_found": True, "event_result_saved": True}
-            if not _existing_diag.get("requested_at"):
-                _fields["request_stage"] = "RESULT_FROM_SHARED_CACHE"
-                _fields["result_source"] = "SHARED_CACHE"
-            _ai_diag_update(code, **_fields)
-            return
-
-        now_ts = time.time()
-        state["pending_trigger_score"] = max(85, int(state.get("pending_trigger_score", 0) or 0))
-        if float(state.get("pending_trigger_since", 0) or 0) <= 0:
-            state["pending_trigger_since"] = now_ts
-        reasons = list(state.get("pending_trigger_reasons", []) or [])
-        marker = f"forecaster_open:85:{code}"
-        if marker not in reasons:
-            reasons.append(marker)
-        state["pending_trigger_reasons"] = reasons[-20:]
-        state["pending_trigger_due"] = True
-        requested = set(state.get("requested_forecaster_event_codes", []) or [])
-        requested.add(code)
-        state["requested_forecaster_event_codes"] = sorted(requested)[:40]
-        requested_payloads = dict(state.get("requested_forecaster_events", {}) or {})
-        requested_payloads[code] = _forecaster_event_request_snapshot(event)
-        state["requested_forecaster_events"] = requested_payloads
-        diag = dict(state.get("causal_ai_diagnostics", {}) or {})
-        prior_diag = dict(diag.get(code, {}) or {})
-        diag[code] = {
-            **prior_diag,
-            "event_identity": _event_identity(event),
-            "requested_at": float(prior_diag.get("requested_at", 0.0) or now_ts),
-            "request_stage": "REQUESTED",
-            "queued_at": now_ts,
-            "queue_state": "QUEUED",
-            "ui_lookup_found": False,
-            "event_result_saved": False,
-            "updated_at": now_ts,
-        }
-        state["causal_ai_diagnostics"] = diag
-        _ai_batch_save_state(state)
-        # Critical: a wake flag is useless in a Streamlit replica/process that has
-        # no supervisor thread. Starting the existing singleton supervisor is free
-        # and does NOT contact the provider from the event/modal path.
-        start_shared_background_ai_worker()
-        _AI_BATCH_WAKE_EVENT.set()
-    except Exception:
-        pass
-
+    return
 
 def _ensure_forecaster_background_worker(events: list[dict], fred_key: str, channel_name: str, actuals_cache: dict, force_ai: bool = False) -> None:
-    """Start at most one daemon worker per process; reruns do not duplicate RUAPI calls."""
+    """Warm deterministic Forecaster data and ensure the shared precompute supervisor exists."""
     global _FORECASTER_BG_WORKER_RUNNING
     if not events:
         return
 
-    # Opening a High-Impact event is an explicit request for Causal Intelligence.
-    # Wake the existing shared batch instead of creating a second provider path.
-    if force_ai:
-        for _ev in events:
-            _request_shared_ai_for_forecaster_event(_ev)
+    # This is calendar/background discovery, not modal interaction. Starting or
+    # waking the singleton supervisor is free; paid execution still must win all
+    # existing shared batch, hard-cooldown and distributed-lease gates.
+    try:
+        if is_ai_enabled(force_refresh=True):
+            start_shared_background_ai_worker()
+            _AI_BATCH_WAKE_EVENT.set()
+    except Exception:
+        pass
 
-    # Start only when at least one event is missing/stale.
+    # force_ai is retained only for backward call compatibility and has no
+    # billing semantics in the precompute architecture.
+
+    # Start only when deterministic event data is missing/stale.
     needs_work = False
     for ev in events:
         code = str(ev.get("code", "")).strip()
@@ -8287,10 +8755,6 @@ def _ensure_forecaster_background_worker(events: list[dict], fred_key: str, chan
         if cached is None:
             needs_work = True
             break
-        if force_ai and str(ev.get("impact", "")).title() == "High":
-            if (cached.get("causal_ai") or {}).get("status") not in {"ok", "skipped"}:
-                needs_work = True
-                break
     if not needs_work:
         return
 
@@ -8314,72 +8778,85 @@ def _forecaster_radar_refresh_tick() -> None:
         st.caption("Live calendar refresh active.")
 
 
-@st.fragment(run_every=5)
+@st.fragment(run_every=10)
 def _render_forecaster_causal_ai_live(event: dict, nowcast: dict, auth_user: dict | None) -> None:
-    """Free polling reader: refreshes persisted AI state only while an event dialog is open."""
-    analysis = get_causal_macro_ai_analysis(event, nowcast, [], DEFAULT_AI_KEY, DEFAULT_AI_PROVIDER, DEFAULT_AI_MODEL, AI_CACHE_VERSION)
-    status = str(analysis.get("status", ""))
-    if status == "not_requested" and is_ai_enabled(force_refresh=True):
-        _request_shared_ai_for_forecaster_event(event)
-        analysis = {"status": "deferred", "state": "QUEUED", "raw": "Causal AI is queued in the shared background batch."}
+    """Free persistent-registry polling while dialog is open. Never wakes paid AI."""
+    analysis = get_causal_macro_ai_analysis(
+        event,
+        nowcast,
+        [],
+        DEFAULT_AI_KEY,
+        DEFAULT_AI_PROVIDER,
+        DEFAULT_AI_MODEL,
+        AI_CACHE_VERSION,
+    )
+    status = str(analysis.get("status", "") or "")
 
-    if analysis.get("status") == "ok":
-        _live_text = analysis.get("event_assessment", "") or nowcast.get("outcome_desc", "")
-        _relation = str(analysis.get("relationship_label") or "AI EVIDENCE REVIEW")
-        _live_source = f"Live Causal Macro Engine · {_relation}"
-    elif analysis.get("status") == "disabled":
-        _live_text = "AI analysis is disabled by Admin. The quantitative Nowcast remains available."
-        _live_source = "AI Disabled"
-    elif analysis.get("status") == "blocked":
-        _live_text = "Causal AI is queued and waiting for the global provider billing gate."
-        _live_source = "Blocked by billing gate"
-    elif analysis.get("status") in {"updating", "deferred", "not_requested"}:
-        _live_text = "Causal AI synthesis is updating in the shared background batch. The quantitative Nowcast is already available."
-        _live_source = analysis.get("state", "QUEUED")
+    if status == "ok":
+        live_text = analysis.get("event_assessment", "") or nowcast.get("outcome_desc", "")
+        relation = str(analysis.get("relationship_label") or "AI EVIDENCE REVIEW")
+        live_source = f"Persisted Causal Macro Engine · {relation}"
+    elif status == "stale":
+        live_text = "Evidence changed; refresh pending. The last completed Causal AI analysis is shown below."
+        live_source = "STALE · persistent registry"
+    elif status == "disabled":
+        live_text = "AI analysis is disabled by Admin. The quantitative Nowcast remains available."
+        live_source = "DISABLED"
+    elif status == "updating":
+        live_text = "Causal AI analysis is being prepared."
+        live_source = "RUNNING"
+    elif status == "deferred":
+        live_text = "Causal AI analysis is queued."
+        live_source = "QUEUED"
+    elif status == "not_prepared":
+        live_text = "Causal AI analysis has not been prepared yet."
+        live_source = "NOT_PREPARED"
     else:
-        _live_text = analysis.get("raw", "Causal AI is currently unavailable.")
-        _live_source = analysis.get("state", "ERROR")
+        live_text = analysis.get("raw", "Causal AI analysis is temporarily unavailable.")
+        live_source = analysis.get("state", "ERROR")
+
     render_html(f"""
     <div class="apex-intelligence-card">
       <div class="apex-card-header-row"><div class="apex-card-title">AI Analysis (Causal Intelligence)</div><span class="apex-ai-badge">AI</span></div>
-      <div class="apex-dialog-ai-text">{_live_text}</div>
-      <div class="apex-dialog-ai-source">Source: {_live_source} &nbsp;•&nbsp; Baseline: {event.get('consensus_bias','')}</div>
+      <div class="apex-dialog-ai-text">{live_text}</div>
+      <div class="apex-dialog-ai-source">Source: {live_source} &nbsp;•&nbsp; Baseline: {event.get('consensus_bias','')}</div>
     </div>
     """)
     render_causal_macro_ai_panel(analysis)
 
     if auth_user and auth_user.get("is_admin", False):
-        code = str(event.get("code", "")).strip()
-        state = _ai_batch_load_state(force_refresh=True)
-        diag_all = dict(state.get("causal_ai_diagnostics", {}) or {})
-        diag = dict(diag_all.get(code, {}) or {})
-        gdiag = dict(diag_all.get("_global", {}) or {})
-        _, found_key = _shared_ai_event_result(event, state)
-        with st.expander("🧪 Causal AI Diagnostics", expanded=False):
-            st.caption("Admin-only. No API keys, tokens or prompt bodies are shown.")
+        identity = _event_identity(event)
+        registry = _forecaster_ai_registry_load()
+        entry = dict((registry.get("events", {}) or {}).get(identity, {}) or {})
+        queue_meta = dict(registry.get("queue_meta", {}) or {})
+        counts = _forecaster_ai_registry_counts(registry)
+        with st.expander("🧪 Causal AI Precompute Diagnostics", expanded=False):
+            st.caption("Admin-only. Persistent precompute state; no API keys, tokens or prompt bodies are shown.")
             st.json({
-                "Event identity": diag.get("event_identity") or _event_identity(event),
-                "Event code": code,
-                "Request stage": diag.get("request_stage") or ("RESULT_FROM_SHARED_CACHE" if found_key else ("REQUESTED" if diag.get("requested_at") else "NOT_REQUESTED")),
-                "Requested at": diag.get("requested_at"),
-                "Queued at": diag.get("queued_at"),
-                "Queue state": analysis.get("state") or diag.get("queue_state") or "NOT_REQUESTED",
-                "Last batch started": diag.get("last_batch_started"),
-                "Was event included?": diag.get("event_included"),
-                "Provider status": diag.get("provider_status") or gdiag.get("provider_status"),
-                "HTTP status": gdiag.get("http_status"),
-                "Parse status": diag.get("parse_status"),
-                "Response choice count": diag.get("response_choice_count"),
-                "Response finish reason": diag.get("response_finish_reason"),
-                "Response content type": diag.get("response_content_type"),
-                "Response content chars": diag.get("response_content_chars"),
-                "Response top-level keys": diag.get("response_top_level_keys"),
-                "Batch completed at": diag.get("batch_completed_at"),
-                "Event result saved?": bool(diag.get("event_result_saved")),
-                "UI lookup found result?": bool(found_key),
-                "Matched persisted key": found_key or None,
-                "Last error": diag.get("last_error") or (_safe_ai_error_label(state.get("last_error")) if state.get("last_error") else ""),
-                "Persistent state timestamp": state.get("updated_at_iso") or state.get("updated_at"),
+                "Event identity": identity,
+                "Event code": str(event.get("code", "") or ""),
+                "Release time UTC": entry.get("release_time_utc") or _event_release_utc_iso(event),
+                "AI state": analysis.get("state") or entry.get("ai_state") or "NOT_PREPARED",
+                "Evidence signature": entry.get("evidence_signature"),
+                "Completed evidence signature": entry.get("completed_evidence_signature"),
+                "Analysis version": entry.get("analysis_version"),
+                "Requested/queued at": entry.get("requested_at"),
+                "Batch started at": entry.get("batch_started_at"),
+                "Completed at": entry.get("completed_at_iso") or entry.get("completed_at"),
+                "Batch inclusion status": entry.get("batch_inclusion_status"),
+                "Provider status": entry.get("provider_status"),
+                "Last error": entry.get("last_error") or "",
+                "Persistent state source": get_persistence_status().get("backend", "unknown"),
+                "Registry updated at": registry.get("updated_at_iso") or registry.get("updated_at"),
+                "Queue eligible count": queue_meta.get("eligible_event_count", counts.get("eligible")),
+                "Queue queued count": queue_meta.get("queued_count", counts.get("queued")),
+                "Queue running count": counts.get("running"),
+                "Queue completed count": queue_meta.get("completed_count", counts.get("completed")),
+                "Queue stale count": queue_meta.get("stale_count", counts.get("stale")),
+                "Queue error count": queue_meta.get("error_count", counts.get("error")),
+                "Last precompute batch": queue_meta.get("last_batch_completed_at_iso") or queue_meta.get("last_batch_completed_at"),
+                "Last precompute batch event count": queue_meta.get("last_batch_event_count"),
+                "Last precompute provider status": queue_meta.get("last_batch_provider_status"),
             })
 
 
@@ -8404,15 +8881,19 @@ def _show_forecaster_event_dialog(
         nowcast = bg_result["nowcast"]
         causal_ai = bg_result.get("causal_ai") or {"status": "skipped"}
         all_news = bg_result.get("all_news") or []
-        if str(modal_ev.get("impact", "")).title() == "High" and causal_ai.get("status") not in {"ok", "skipped"}:
-            _ensure_forecaster_background_worker([modal_ev], fred_key, channel_name, actuals_cache, force_ai=True)
+        # Causal AI state is read-only here; no modal-triggered queue/wake.
+        if str(modal_ev.get("impact", "")).title() == "High":
+            causal_ai = get_causal_macro_ai_analysis(modal_ev, nowcast, [], DEFAULT_AI_KEY, DEFAULT_AI_PROVIDER, DEFAULT_AI_MODEL, AI_CACHE_VERSION)
     else:
         with st.spinner(f"Loading Causal Intelligence for {modal_ev.get('title','catalyst')}..."):
             all_news = fetch_all_instant_news(channel_name)
             nowcast = compute_event_nowcast(
                 modal_ev, fred_key, all_news, actual_override=effective_actual
             )
-            causal_ai = {"status": "updating"}
+            causal_ai = get_causal_macro_ai_analysis(
+                modal_ev, nowcast, all_news,
+                DEFAULT_AI_KEY, DEFAULT_AI_PROVIDER, DEFAULT_AI_MODEL, AI_CACHE_VERSION
+            )
             with _FORECASTER_BG_LOCK:
                 _FORECASTER_BG_CACHE[ev_code] = {
                     "signature": _forecaster_bg_signature(modal_ev, effective_actual),
@@ -8422,7 +8903,6 @@ def _show_forecaster_event_dialog(
                     "all_news": all_news,
                     "effective_actual": effective_actual,
                 }
-            _ensure_forecaster_background_worker([modal_ev], fred_key, channel_name, actuals_cache, force_ai=True)
 
     try:
         _record_forecaster_snapshot(modal_ev, nowcast, actual=effective_actual)
@@ -8479,9 +8959,18 @@ def _show_forecaster_event_dialog(
     elif causal_ai.get("status") == "disabled":
         ai_text = nowcast.get("outcome_desc", "") + " (Causal AI paused by Admin; no provider request is being sent.)"
         ai_updated = "AI Paused"
-    elif causal_ai.get("status") in {"updating", "deferred"}:
-        ai_text = nowcast.get("outcome_desc", "") + " (Causal AI synthesis updating in background...)"
-        ai_updated = "Updating..."
+    elif causal_ai.get("status") == "updating":
+        ai_text = "Causal AI analysis is being prepared."
+        ai_updated = "RUNNING"
+    elif causal_ai.get("status") == "deferred":
+        ai_text = "Causal AI analysis is queued."
+        ai_updated = "QUEUED"
+    elif causal_ai.get("status") == "stale":
+        ai_text = "Evidence changed; refresh pending. Last completed AI analysis remains available."
+        ai_updated = "STALE"
+    elif causal_ai.get("status") == "not_prepared":
+        ai_text = "Causal AI analysis has not been prepared yet."
+        ai_updated = "NOT_PREPARED"
     else:
         ai_text = nowcast.get("outcome_desc", "Comprehensive three-way probabilistic model with evidence conflict penalties.")
         ai_updated = "Real-time Quant Model"
