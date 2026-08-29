@@ -1,0 +1,943 @@
+{
+  "events": {
+    "USD|ism manufacturing pmi|2026-09-01T16:00:00Z": {
+      "articles": []
+    },
+    "AUD|gdp q q|2026-09-02T03:30:00Z": {
+      "articles": [
+        {
+          "fingerprint": "886251343017009a822c",
+          "title": "investingLive European markets wrap: A more pensive mood in run up to Jackson Hole next",
+          "description": "Headlines:No guidance from Jackson Hole?USD/JPY extends gains as focus turns to Fed Chair Warsh's speechGold stays locked in ahead of Warsh's Jackson Hole speechHow have interest rate expectations changed after this week's events?France Q2 final GDP +0.0% vs +0.2% q/q prelimFrance August preliminary",
+          "publishedAt": "Fri, 28 Aug 2026 11:45:11 GMT",
+          "source": {
+            "name": "ForexLive"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "de6b7fd7f9966beae6f8",
+          "title": "investingLive Americas FX news wrap 28 Aug",
+          "description": "Fed's Warsh: Numbers on price stability are 'more concerning'Univ of Michigan final sentiment index for August 51.7 vs 51.0 estimateFed's Hammack: It's time to act with rate hikes, waiting will create painCanada GDP Q2 annualized 3.3% vs 3.4% estimateFed's Goolsbee: Agrees with Warsh that inflation ",
+          "publishedAt": "Fri, 28 Aug 2026 20:41:11 GMT",
+          "source": {
+            "name": "ForexLive"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "21344ea4b047864cec71",
+          "title": "Canada GDP Q2 annualized 3.3% vs 3.4% estimate",
+          "description": "Prior Q1 +0.3%Canada GDP Q2 annualized 3.3% vs 3.4% estimateImplicit price QoQ 2.5% vs 1.2% last quarterGDP MoM for June 0.3% vs 0.2% estimate. Prior month 0.3%. Preliminary July estimate 0.0%Solid growth.The USDCAD is trading in a narrow range with the price maintaining between a cluster of MAs wit",
+          "publishedAt": "Fri, 28 Aug 2026 12:35:45 GMT",
+          "source": {
+            "name": "ForexLive"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        }
+      ]
+    },
+    "NZD|official cash rate|2026-09-02T04:00:00Z": {
+      "articles": [
+        {
+          "fingerprint": "b132fef6156d40c5ba7a",
+          "title": "\ud83d\udd30  Markets are awaiting Jerome Powell's remarks on interest rates: Yields on U.S. Treasury bonds and the value...",
+          "description": "\ud83d\udd30  Markets are awaiting Jerome Powell's remarks on interest rates: Yields on U.S. Treasury bonds and the value of the dollar have not changed significantly before Jerome Powell, Chairman of the Federal Reserve, is scheduled to speak at the Jackson Hole conference. \ud83d\udd30  Investors are looking for clues about interest rates and inflation. \ud83d\udd30  UBS predicts that the Federal Reserve will keep interest rates steady until 2026, and a potential decline in inflation could pave the way for interest rate cuts in the first half of 2027. \ud83d\udd30  The yield on the 10-year U.S. Treasury bond is currently around 4.68% \ud83d\udd3a . #Gold   #USD   @Forex_LiveStream",
+          "publishedAt": "2026-08-28T13:53:35+00:00",
+          "source": {
+            "name": "Forex LiveStream"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "ad7d1c78d1f025d0f5bd",
+          "title": "72% of homebuyers have paused their search waiting for lower mortgage rates \u2014 and 41% already regret it",
+          "description": "",
+          "publishedAt": "2026-08-29T15:00:00Z",
+          "source": {
+            "name": "Yahoo Finance"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "886251343017009a822c",
+          "title": "investingLive European markets wrap: A more pensive mood in run up to Jackson Hole next",
+          "description": "Headlines:No guidance from Jackson Hole?USD/JPY extends gains as focus turns to Fed Chair Warsh's speechGold stays locked in ahead of Warsh's Jackson Hole speechHow have interest rate expectations changed after this week's events?France Q2 final GDP +0.0% vs +0.2% q/q prelimFrance August preliminary",
+          "publishedAt": "Fri, 28 Aug 2026 11:45:11 GMT",
+          "source": {
+            "name": "ForexLive"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "9024e3ef589627592b77",
+          "title": "Mortgage and refinance interest rates today, Saturday, August 29, 2026: Fixed rates move slightly higher into the weekend",
+          "description": "",
+          "publishedAt": "2026-08-29T11:44:38Z",
+          "source": {
+            "name": "Yahoo Finance"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "de6b7fd7f9966beae6f8",
+          "title": "investingLive Americas FX news wrap 28 Aug",
+          "description": "Fed's Warsh: Numbers on price stability are 'more concerning'Univ of Michigan final sentiment index for August 51.7 vs 51.0 estimateFed's Hammack: It's time to act with rate hikes, waiting will create painCanada GDP Q2 annualized 3.3% vs 3.4% estimateFed's Goolsbee: Agrees with Warsh that inflation ",
+          "publishedAt": "Fri, 28 Aug 2026 20:41:11 GMT",
+          "source": {
+            "name": "ForexLive"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "80715a01028d00f164e3",
+          "title": "Philippine Peso: BSP tightening bias on inflation risks \u2013 DBS",
+          "description": "DBS Group Research economists Radhika Rao and Chua Han Teng note that Bangko Sentral ng Pilipinas (BSP) raised its policy rate by 25 bps to 5.0% to anchor inflation expectations and support the Peso.",
+          "publishedAt": "Fri, 28 Aug 2026 21:56:00 GMT",
+          "source": {
+            "name": "FXStreet"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "56cc8f7e41040941b112",
+          "title": "South Korean Won: Higher rates and chip boom support gains \u2013 ING",
+          "description": "ING\u2019s Chris Turner reports that the Korean Won (KRW) continues to advance, driven by back-to-back Bank of Korea (BoK) rate hikes to 3.00% and a Dot Plot pointing to 3.25% in six months.",
+          "publishedAt": "Fri, 28 Aug 2026 21:18:00 GMT",
+          "source": {
+            "name": "FXStreet"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "4ac5ba5eb8157564f9ff",
+          "title": "Vietnam: Exports and consumption stay robust \u2013 DBS",
+          "description": "DBS Group strategists Taimur Baig and Nathan Chow forecast Vietnam\u2019s goods exports to maintain strong double-digit growth at 27% year-on-year in August 2026, led by electronics and supported by external demand.",
+          "publishedAt": "Fri, 28 Aug 2026 23:07:00 GMT",
+          "source": {
+            "name": "FXStreet"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "d2fdb5e7b9fc1863045d",
+          "title": "\ud83d\udd30  The probability of the US Federal Reserve raising interest rates next month has increased to 49% \ud83d\udd3a . #Gold ...",
+          "description": "\ud83d\udd30  The probability of the US Federal Reserve raising interest rates next month has increased to 49% \ud83d\udd3a . #Gold   #USD @Forex_LiveStream",
+          "publishedAt": "2026-08-28T16:52:52+00:00",
+          "source": {
+            "name": "Forex LiveStream"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "fe69728bebf87a524421",
+          "title": "#Stocks   \ud83d\udd3a  after stronger NVDA Earnings, Jackson Hole begins #USD   \ud83d\udd3a  on stronger data and higher US yields...",
+          "description": "#Stocks   \ud83d\udd3a  after stronger NVDA Earnings, Jackson Hole begins #USD   \ud83d\udd3a  on stronger data and higher US yields, Fed official warned rates may need to rise again #EUR   \ud83d\udd3b  ECB officials suggest neutral rate after next hike #JPY   \ud83d\udd04  Tokyo CPI data due tonight #AUD   \ud83d\udd3a  sharp rise in household spending @Forex_LiveStream",
+          "publishedAt": "2026-08-27T12:22:22+00:00",
+          "source": {
+            "name": "Forex LiveStream"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        }
+      ]
+    },
+    "NZD|rbnz monetary policy statement|2026-09-02T04:00:00Z": {
+      "articles": [
+        {
+          "fingerprint": "c8843e3d95161adf4c65",
+          "title": "UAE Central Bank: Branches of Banque Misr in UAE Subject to Local Laws and Regulations - Statement| FJ",
+          "description": "UAE Central Bank: Branches of Banque Misr in UAE Subject to Local Laws and Regulations - Statement| FJ",
+          "publishedAt": "2026-08-29T17:33:04+00:00",
+          "source": {
+            "name": "FinancialJuice"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "a2e3ab06f71ebe7c1de2",
+          "title": "Niger: armed forces reclaim control of sites after attack on capital - statement| FJ",
+          "description": "Niger: armed forces reclaim control of sites after attack on capital - statement| FJ",
+          "publishedAt": "2026-08-29T11:14:45+00:00",
+          "source": {
+            "name": "FinancialJuice"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "80715a01028d00f164e3",
+          "title": "Philippine Peso: BSP tightening bias on inflation risks \u2013 DBS",
+          "description": "DBS Group Research economists Radhika Rao and Chua Han Teng note that Bangko Sentral ng Pilipinas (BSP) raised its policy rate by 25 bps to 5.0% to anchor inflation expectations and support the Peso.",
+          "publishedAt": "Fri, 28 Aug 2026 21:56:00 GMT",
+          "source": {
+            "name": "FXStreet"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "266a0f54ec600711c7a9",
+          "title": "\ud83d\udd30   #Gold  prices fell by $80 \ud83d\udd3b  after remarks by Warsh at the Jackson Hole Economic Policy Symposium. #Gold @...",
+          "description": "\ud83d\udd30   #Gold  prices fell by $80 \ud83d\udd3b  after remarks by Warsh at the Jackson Hole Economic Policy Symposium. #Gold @Forex_LiveStream",
+          "publishedAt": "2026-08-28T14:34:00+00:00",
+          "source": {
+            "name": "Forex LiveStream"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "ca7b83a7776fc3d9daa7",
+          "title": "CrowdStrike CEO Says It Delivered Its Best Quarter Ever. Surprisingly, That May Be an Understatement.",
+          "description": "",
+          "publishedAt": "2026-08-29T15:00:02Z",
+          "source": {
+            "name": "Yahoo Finance"
+          },
+          "captured_at_utc": "2026-08-29T21:08:02Z"
+        }
+      ]
+    },
+    "NZD|rbnz rate statement|2026-09-02T04:00:00Z": {
+      "articles": [
+        {
+          "fingerprint": "c8843e3d95161adf4c65",
+          "title": "UAE Central Bank: Branches of Banque Misr in UAE Subject to Local Laws and Regulations - Statement| FJ",
+          "description": "UAE Central Bank: Branches of Banque Misr in UAE Subject to Local Laws and Regulations - Statement| FJ",
+          "publishedAt": "2026-08-29T17:33:04+00:00",
+          "source": {
+            "name": "FinancialJuice"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "a2e3ab06f71ebe7c1de2",
+          "title": "Niger: armed forces reclaim control of sites after attack on capital - statement| FJ",
+          "description": "Niger: armed forces reclaim control of sites after attack on capital - statement| FJ",
+          "publishedAt": "2026-08-29T11:14:45+00:00",
+          "source": {
+            "name": "FinancialJuice"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "b132fef6156d40c5ba7a",
+          "title": "\ud83d\udd30  Markets are awaiting Jerome Powell's remarks on interest rates: Yields on U.S. Treasury bonds and the value...",
+          "description": "\ud83d\udd30  Markets are awaiting Jerome Powell's remarks on interest rates: Yields on U.S. Treasury bonds and the value of the dollar have not changed significantly before Jerome Powell, Chairman of the Federal Reserve, is scheduled to speak at the Jackson Hole conference. \ud83d\udd30  Investors are looking for clues about interest rates and inflation. \ud83d\udd30  UBS predicts that the Federal Reserve will keep interest rates steady until 2026, and a potential decline in inflation could pave the way for interest rate cuts in the first half of 2027. \ud83d\udd30  The yield on the 10-year U.S. Treasury bond is currently around 4.68% \ud83d\udd3a . #Gold   #USD   @Forex_LiveStream",
+          "publishedAt": "2026-08-28T13:53:35+00:00",
+          "source": {
+            "name": "Forex LiveStream"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "ad7d1c78d1f025d0f5bd",
+          "title": "72% of homebuyers have paused their search waiting for lower mortgage rates \u2014 and 41% already regret it",
+          "description": "",
+          "publishedAt": "2026-08-29T15:00:00Z",
+          "source": {
+            "name": "Yahoo Finance"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "886251343017009a822c",
+          "title": "investingLive European markets wrap: A more pensive mood in run up to Jackson Hole next",
+          "description": "Headlines:No guidance from Jackson Hole?USD/JPY extends gains as focus turns to Fed Chair Warsh's speechGold stays locked in ahead of Warsh's Jackson Hole speechHow have interest rate expectations changed after this week's events?France Q2 final GDP +0.0% vs +0.2% q/q prelimFrance August preliminary",
+          "publishedAt": "Fri, 28 Aug 2026 11:45:11 GMT",
+          "source": {
+            "name": "ForexLive"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "9024e3ef589627592b77",
+          "title": "Mortgage and refinance interest rates today, Saturday, August 29, 2026: Fixed rates move slightly higher into the weekend",
+          "description": "",
+          "publishedAt": "2026-08-29T11:44:38Z",
+          "source": {
+            "name": "Yahoo Finance"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "de6b7fd7f9966beae6f8",
+          "title": "investingLive Americas FX news wrap 28 Aug",
+          "description": "Fed's Warsh: Numbers on price stability are 'more concerning'Univ of Michigan final sentiment index for August 51.7 vs 51.0 estimateFed's Hammack: It's time to act with rate hikes, waiting will create painCanada GDP Q2 annualized 3.3% vs 3.4% estimateFed's Goolsbee: Agrees with Warsh that inflation ",
+          "publishedAt": "Fri, 28 Aug 2026 20:41:11 GMT",
+          "source": {
+            "name": "ForexLive"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "80715a01028d00f164e3",
+          "title": "Philippine Peso: BSP tightening bias on inflation risks \u2013 DBS",
+          "description": "DBS Group Research economists Radhika Rao and Chua Han Teng note that Bangko Sentral ng Pilipinas (BSP) raised its policy rate by 25 bps to 5.0% to anchor inflation expectations and support the Peso.",
+          "publishedAt": "Fri, 28 Aug 2026 21:56:00 GMT",
+          "source": {
+            "name": "FXStreet"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "56cc8f7e41040941b112",
+          "title": "South Korean Won: Higher rates and chip boom support gains \u2013 ING",
+          "description": "ING\u2019s Chris Turner reports that the Korean Won (KRW) continues to advance, driven by back-to-back Bank of Korea (BoK) rate hikes to 3.00% and a Dot Plot pointing to 3.25% in six months.",
+          "publishedAt": "Fri, 28 Aug 2026 21:18:00 GMT",
+          "source": {
+            "name": "FXStreet"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "4ac5ba5eb8157564f9ff",
+          "title": "Vietnam: Exports and consumption stay robust \u2013 DBS",
+          "description": "DBS Group strategists Taimur Baig and Nathan Chow forecast Vietnam\u2019s goods exports to maintain strong double-digit growth at 27% year-on-year in August 2026, led by electronics and supported by external demand.",
+          "publishedAt": "Fri, 28 Aug 2026 23:07:00 GMT",
+          "source": {
+            "name": "FXStreet"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "d2fdb5e7b9fc1863045d",
+          "title": "\ud83d\udd30  The probability of the US Federal Reserve raising interest rates next month has increased to 49% \ud83d\udd3a . #Gold ...",
+          "description": "\ud83d\udd30  The probability of the US Federal Reserve raising interest rates next month has increased to 49% \ud83d\udd3a . #Gold   #USD @Forex_LiveStream",
+          "publishedAt": "2026-08-28T16:52:52+00:00",
+          "source": {
+            "name": "Forex LiveStream"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "fe69728bebf87a524421",
+          "title": "#Stocks   \ud83d\udd3a  after stronger NVDA Earnings, Jackson Hole begins #USD   \ud83d\udd3a  on stronger data and higher US yields...",
+          "description": "#Stocks   \ud83d\udd3a  after stronger NVDA Earnings, Jackson Hole begins #USD   \ud83d\udd3a  on stronger data and higher US yields, Fed official warned rates may need to rise again #EUR   \ud83d\udd3b  ECB officials suggest neutral rate after next hike #JPY   \ud83d\udd04  Tokyo CPI data due tonight #AUD   \ud83d\udd3a  sharp rise in household spending @Forex_LiveStream",
+          "publishedAt": "2026-08-27T12:22:22+00:00",
+          "source": {
+            "name": "Forex LiveStream"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "ca7b83a7776fc3d9daa7",
+          "title": "CrowdStrike CEO Says It Delivered Its Best Quarter Ever. Surprisingly, That May Be an Understatement.",
+          "description": "",
+          "publishedAt": "2026-08-29T15:00:02Z",
+          "source": {
+            "name": "Yahoo Finance"
+          },
+          "captured_at_utc": "2026-08-29T21:08:02Z"
+        }
+      ]
+    },
+    "NZD|rbnz press conference|2026-09-02T05:00:00Z": {
+      "articles": [
+        {
+          "fingerprint": "4b9760e2b82e7ed7e257",
+          "title": "HDFC Bank CEO Jagdishan to step down in October as governance pressures mount",
+          "description": "",
+          "publishedAt": "2026-08-29 16:04:26",
+          "source": {
+            "name": "Investing Macro"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "b132fef6156d40c5ba7a",
+          "title": "\ud83d\udd30  Markets are awaiting Jerome Powell's remarks on interest rates: Yields on U.S. Treasury bonds and the value...",
+          "description": "\ud83d\udd30  Markets are awaiting Jerome Powell's remarks on interest rates: Yields on U.S. Treasury bonds and the value of the dollar have not changed significantly before Jerome Powell, Chairman of the Federal Reserve, is scheduled to speak at the Jackson Hole conference. \ud83d\udd30  Investors are looking for clues about interest rates and inflation. \ud83d\udd30  UBS predicts that the Federal Reserve will keep interest rates steady until 2026, and a potential decline in inflation could pave the way for interest rate cuts in the first half of 2027. \ud83d\udd30  The yield on the 10-year U.S. Treasury bond is currently around 4.68% \ud83d\udd3a . #Gold   #USD   @Forex_LiveStream",
+          "publishedAt": "2026-08-28T13:53:35+00:00",
+          "source": {
+            "name": "Forex LiveStream"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        }
+      ]
+    },
+    "CAD|boc rate statement|2026-09-02T15:45:00Z": {
+      "articles": [
+        {
+          "fingerprint": "c8843e3d95161adf4c65",
+          "title": "UAE Central Bank: Branches of Banque Misr in UAE Subject to Local Laws and Regulations - Statement| FJ",
+          "description": "UAE Central Bank: Branches of Banque Misr in UAE Subject to Local Laws and Regulations - Statement| FJ",
+          "publishedAt": "2026-08-29T17:33:04+00:00",
+          "source": {
+            "name": "FinancialJuice"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "a2e3ab06f71ebe7c1de2",
+          "title": "Niger: armed forces reclaim control of sites after attack on capital - statement| FJ",
+          "description": "Niger: armed forces reclaim control of sites after attack on capital - statement| FJ",
+          "publishedAt": "2026-08-29T11:14:45+00:00",
+          "source": {
+            "name": "FinancialJuice"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "b132fef6156d40c5ba7a",
+          "title": "\ud83d\udd30  Markets are awaiting Jerome Powell's remarks on interest rates: Yields on U.S. Treasury bonds and the value...",
+          "description": "\ud83d\udd30  Markets are awaiting Jerome Powell's remarks on interest rates: Yields on U.S. Treasury bonds and the value of the dollar have not changed significantly before Jerome Powell, Chairman of the Federal Reserve, is scheduled to speak at the Jackson Hole conference. \ud83d\udd30  Investors are looking for clues about interest rates and inflation. \ud83d\udd30  UBS predicts that the Federal Reserve will keep interest rates steady until 2026, and a potential decline in inflation could pave the way for interest rate cuts in the first half of 2027. \ud83d\udd30  The yield on the 10-year U.S. Treasury bond is currently around 4.68% \ud83d\udd3a . #Gold   #USD   @Forex_LiveStream",
+          "publishedAt": "2026-08-28T13:53:35+00:00",
+          "source": {
+            "name": "Forex LiveStream"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "ad7d1c78d1f025d0f5bd",
+          "title": "72% of homebuyers have paused their search waiting for lower mortgage rates \u2014 and 41% already regret it",
+          "description": "",
+          "publishedAt": "2026-08-29T15:00:00Z",
+          "source": {
+            "name": "Yahoo Finance"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "886251343017009a822c",
+          "title": "investingLive European markets wrap: A more pensive mood in run up to Jackson Hole next",
+          "description": "Headlines:No guidance from Jackson Hole?USD/JPY extends gains as focus turns to Fed Chair Warsh's speechGold stays locked in ahead of Warsh's Jackson Hole speechHow have interest rate expectations changed after this week's events?France Q2 final GDP +0.0% vs +0.2% q/q prelimFrance August preliminary",
+          "publishedAt": "Fri, 28 Aug 2026 11:45:11 GMT",
+          "source": {
+            "name": "ForexLive"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "9024e3ef589627592b77",
+          "title": "Mortgage and refinance interest rates today, Saturday, August 29, 2026: Fixed rates move slightly higher into the weekend",
+          "description": "",
+          "publishedAt": "2026-08-29T11:44:38Z",
+          "source": {
+            "name": "Yahoo Finance"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "de6b7fd7f9966beae6f8",
+          "title": "investingLive Americas FX news wrap 28 Aug",
+          "description": "Fed's Warsh: Numbers on price stability are 'more concerning'Univ of Michigan final sentiment index for August 51.7 vs 51.0 estimateFed's Hammack: It's time to act with rate hikes, waiting will create painCanada GDP Q2 annualized 3.3% vs 3.4% estimateFed's Goolsbee: Agrees with Warsh that inflation ",
+          "publishedAt": "Fri, 28 Aug 2026 20:41:11 GMT",
+          "source": {
+            "name": "ForexLive"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "80715a01028d00f164e3",
+          "title": "Philippine Peso: BSP tightening bias on inflation risks \u2013 DBS",
+          "description": "DBS Group Research economists Radhika Rao and Chua Han Teng note that Bangko Sentral ng Pilipinas (BSP) raised its policy rate by 25 bps to 5.0% to anchor inflation expectations and support the Peso.",
+          "publishedAt": "Fri, 28 Aug 2026 21:56:00 GMT",
+          "source": {
+            "name": "FXStreet"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "56cc8f7e41040941b112",
+          "title": "South Korean Won: Higher rates and chip boom support gains \u2013 ING",
+          "description": "ING\u2019s Chris Turner reports that the Korean Won (KRW) continues to advance, driven by back-to-back Bank of Korea (BoK) rate hikes to 3.00% and a Dot Plot pointing to 3.25% in six months.",
+          "publishedAt": "Fri, 28 Aug 2026 21:18:00 GMT",
+          "source": {
+            "name": "FXStreet"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "4ac5ba5eb8157564f9ff",
+          "title": "Vietnam: Exports and consumption stay robust \u2013 DBS",
+          "description": "DBS Group strategists Taimur Baig and Nathan Chow forecast Vietnam\u2019s goods exports to maintain strong double-digit growth at 27% year-on-year in August 2026, led by electronics and supported by external demand.",
+          "publishedAt": "Fri, 28 Aug 2026 23:07:00 GMT",
+          "source": {
+            "name": "FXStreet"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "d2fdb5e7b9fc1863045d",
+          "title": "\ud83d\udd30  The probability of the US Federal Reserve raising interest rates next month has increased to 49% \ud83d\udd3a . #Gold ...",
+          "description": "\ud83d\udd30  The probability of the US Federal Reserve raising interest rates next month has increased to 49% \ud83d\udd3a . #Gold   #USD @Forex_LiveStream",
+          "publishedAt": "2026-08-28T16:52:52+00:00",
+          "source": {
+            "name": "Forex LiveStream"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "fe69728bebf87a524421",
+          "title": "#Stocks   \ud83d\udd3a  after stronger NVDA Earnings, Jackson Hole begins #USD   \ud83d\udd3a  on stronger data and higher US yields...",
+          "description": "#Stocks   \ud83d\udd3a  after stronger NVDA Earnings, Jackson Hole begins #USD   \ud83d\udd3a  on stronger data and higher US yields, Fed official warned rates may need to rise again #EUR   \ud83d\udd3b  ECB officials suggest neutral rate after next hike #JPY   \ud83d\udd04  Tokyo CPI data due tonight #AUD   \ud83d\udd3a  sharp rise in household spending @Forex_LiveStream",
+          "publishedAt": "2026-08-27T12:22:22+00:00",
+          "source": {
+            "name": "Forex LiveStream"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "ca7b83a7776fc3d9daa7",
+          "title": "CrowdStrike CEO Says It Delivered Its Best Quarter Ever. Surprisingly, That May Be an Understatement.",
+          "description": "",
+          "publishedAt": "2026-08-29T15:00:02Z",
+          "source": {
+            "name": "Yahoo Finance"
+          },
+          "captured_at_utc": "2026-08-29T21:08:02Z"
+        }
+      ]
+    },
+    "CAD|overnight rate|2026-09-02T15:45:00Z": {
+      "articles": [
+        {
+          "fingerprint": "b132fef6156d40c5ba7a",
+          "title": "\ud83d\udd30  Markets are awaiting Jerome Powell's remarks on interest rates: Yields on U.S. Treasury bonds and the value...",
+          "description": "\ud83d\udd30  Markets are awaiting Jerome Powell's remarks on interest rates: Yields on U.S. Treasury bonds and the value of the dollar have not changed significantly before Jerome Powell, Chairman of the Federal Reserve, is scheduled to speak at the Jackson Hole conference. \ud83d\udd30  Investors are looking for clues about interest rates and inflation. \ud83d\udd30  UBS predicts that the Federal Reserve will keep interest rates steady until 2026, and a potential decline in inflation could pave the way for interest rate cuts in the first half of 2027. \ud83d\udd30  The yield on the 10-year U.S. Treasury bond is currently around 4.68% \ud83d\udd3a . #Gold   #USD   @Forex_LiveStream",
+          "publishedAt": "2026-08-28T13:53:35+00:00",
+          "source": {
+            "name": "Forex LiveStream"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "ad7d1c78d1f025d0f5bd",
+          "title": "72% of homebuyers have paused their search waiting for lower mortgage rates \u2014 and 41% already regret it",
+          "description": "",
+          "publishedAt": "2026-08-29T15:00:00Z",
+          "source": {
+            "name": "Yahoo Finance"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "886251343017009a822c",
+          "title": "investingLive European markets wrap: A more pensive mood in run up to Jackson Hole next",
+          "description": "Headlines:No guidance from Jackson Hole?USD/JPY extends gains as focus turns to Fed Chair Warsh's speechGold stays locked in ahead of Warsh's Jackson Hole speechHow have interest rate expectations changed after this week's events?France Q2 final GDP +0.0% vs +0.2% q/q prelimFrance August preliminary",
+          "publishedAt": "Fri, 28 Aug 2026 11:45:11 GMT",
+          "source": {
+            "name": "ForexLive"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "9024e3ef589627592b77",
+          "title": "Mortgage and refinance interest rates today, Saturday, August 29, 2026: Fixed rates move slightly higher into the weekend",
+          "description": "",
+          "publishedAt": "2026-08-29T11:44:38Z",
+          "source": {
+            "name": "Yahoo Finance"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "de6b7fd7f9966beae6f8",
+          "title": "investingLive Americas FX news wrap 28 Aug",
+          "description": "Fed's Warsh: Numbers on price stability are 'more concerning'Univ of Michigan final sentiment index for August 51.7 vs 51.0 estimateFed's Hammack: It's time to act with rate hikes, waiting will create painCanada GDP Q2 annualized 3.3% vs 3.4% estimateFed's Goolsbee: Agrees with Warsh that inflation ",
+          "publishedAt": "Fri, 28 Aug 2026 20:41:11 GMT",
+          "source": {
+            "name": "ForexLive"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "80715a01028d00f164e3",
+          "title": "Philippine Peso: BSP tightening bias on inflation risks \u2013 DBS",
+          "description": "DBS Group Research economists Radhika Rao and Chua Han Teng note that Bangko Sentral ng Pilipinas (BSP) raised its policy rate by 25 bps to 5.0% to anchor inflation expectations and support the Peso.",
+          "publishedAt": "Fri, 28 Aug 2026 21:56:00 GMT",
+          "source": {
+            "name": "FXStreet"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "56cc8f7e41040941b112",
+          "title": "South Korean Won: Higher rates and chip boom support gains \u2013 ING",
+          "description": "ING\u2019s Chris Turner reports that the Korean Won (KRW) continues to advance, driven by back-to-back Bank of Korea (BoK) rate hikes to 3.00% and a Dot Plot pointing to 3.25% in six months.",
+          "publishedAt": "Fri, 28 Aug 2026 21:18:00 GMT",
+          "source": {
+            "name": "FXStreet"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "4ac5ba5eb8157564f9ff",
+          "title": "Vietnam: Exports and consumption stay robust \u2013 DBS",
+          "description": "DBS Group strategists Taimur Baig and Nathan Chow forecast Vietnam\u2019s goods exports to maintain strong double-digit growth at 27% year-on-year in August 2026, led by electronics and supported by external demand.",
+          "publishedAt": "Fri, 28 Aug 2026 23:07:00 GMT",
+          "source": {
+            "name": "FXStreet"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "d2fdb5e7b9fc1863045d",
+          "title": "\ud83d\udd30  The probability of the US Federal Reserve raising interest rates next month has increased to 49% \ud83d\udd3a . #Gold ...",
+          "description": "\ud83d\udd30  The probability of the US Federal Reserve raising interest rates next month has increased to 49% \ud83d\udd3a . #Gold   #USD @Forex_LiveStream",
+          "publishedAt": "2026-08-28T16:52:52+00:00",
+          "source": {
+            "name": "Forex LiveStream"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "fe69728bebf87a524421",
+          "title": "#Stocks   \ud83d\udd3a  after stronger NVDA Earnings, Jackson Hole begins #USD   \ud83d\udd3a  on stronger data and higher US yields...",
+          "description": "#Stocks   \ud83d\udd3a  after stronger NVDA Earnings, Jackson Hole begins #USD   \ud83d\udd3a  on stronger data and higher US yields, Fed official warned rates may need to rise again #EUR   \ud83d\udd3b  ECB officials suggest neutral rate after next hike #JPY   \ud83d\udd04  Tokyo CPI data due tonight #AUD   \ud83d\udd3a  sharp rise in household spending @Forex_LiveStream",
+          "publishedAt": "2026-08-27T12:22:22+00:00",
+          "source": {
+            "name": "Forex LiveStream"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        }
+      ]
+    },
+    "CAD|boc press conference|2026-09-02T16:30:00Z": {
+      "articles": [
+        {
+          "fingerprint": "4b9760e2b82e7ed7e257",
+          "title": "HDFC Bank CEO Jagdishan to step down in October as governance pressures mount",
+          "description": "",
+          "publishedAt": "2026-08-29 16:04:26",
+          "source": {
+            "name": "Investing Macro"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "b132fef6156d40c5ba7a",
+          "title": "\ud83d\udd30  Markets are awaiting Jerome Powell's remarks on interest rates: Yields on U.S. Treasury bonds and the value...",
+          "description": "\ud83d\udd30  Markets are awaiting Jerome Powell's remarks on interest rates: Yields on U.S. Treasury bonds and the value of the dollar have not changed significantly before Jerome Powell, Chairman of the Federal Reserve, is scheduled to speak at the Jackson Hole conference. \ud83d\udd30  Investors are looking for clues about interest rates and inflation. \ud83d\udd30  UBS predicts that the Federal Reserve will keep interest rates steady until 2026, and a potential decline in inflation could pave the way for interest rate cuts in the first half of 2027. \ud83d\udd30  The yield on the 10-year U.S. Treasury bond is currently around 4.68% \ud83d\udd3a . #Gold   #USD   @Forex_LiveStream",
+          "publishedAt": "2026-08-28T13:53:35+00:00",
+          "source": {
+            "name": "Forex LiveStream"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        }
+      ]
+    },
+    "GBP|boe gov bailey speaks|2026-09-04T10:50:00Z": {
+      "articles": [
+        {
+          "fingerprint": "8ebb56421a29ac5a9ad2",
+          "title": "Death toll in Russian strike on Kyiv-area warehouse rises to 37: governor| FJ",
+          "description": "Death toll in Russian strike on Kyiv-area warehouse rises to 37: governor| FJ",
+          "publishedAt": "2026-08-29T11:18:26+00:00",
+          "source": {
+            "name": "FinancialJuice"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "4b9760e2b82e7ed7e257",
+          "title": "HDFC Bank CEO Jagdishan to step down in October as governance pressures mount",
+          "description": "",
+          "publishedAt": "2026-08-29 16:04:26",
+          "source": {
+            "name": "Investing Macro"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        }
+      ]
+    },
+    "CAD|employment change|2026-09-04T14:30:00Z": {
+      "articles": [
+        {
+          "fingerprint": "b132fef6156d40c5ba7a",
+          "title": "\ud83d\udd30  Markets are awaiting Jerome Powell's remarks on interest rates: Yields on U.S. Treasury bonds and the value...",
+          "description": "\ud83d\udd30  Markets are awaiting Jerome Powell's remarks on interest rates: Yields on U.S. Treasury bonds and the value of the dollar have not changed significantly before Jerome Powell, Chairman of the Federal Reserve, is scheduled to speak at the Jackson Hole conference. \ud83d\udd30  Investors are looking for clues about interest rates and inflation. \ud83d\udd30  UBS predicts that the Federal Reserve will keep interest rates steady until 2026, and a potential decline in inflation could pave the way for interest rate cuts in the first half of 2027. \ud83d\udd30  The yield on the 10-year U.S. Treasury bond is currently around 4.68% \ud83d\udd3a . #Gold   #USD   @Forex_LiveStream",
+          "publishedAt": "2026-08-28T13:53:35+00:00",
+          "source": {
+            "name": "Forex LiveStream"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "886251343017009a822c",
+          "title": "investingLive European markets wrap: A more pensive mood in run up to Jackson Hole next",
+          "description": "Headlines:No guidance from Jackson Hole?USD/JPY extends gains as focus turns to Fed Chair Warsh's speechGold stays locked in ahead of Warsh's Jackson Hole speechHow have interest rate expectations changed after this week's events?France Q2 final GDP +0.0% vs +0.2% q/q prelimFrance August preliminary",
+          "publishedAt": "Fri, 28 Aug 2026 11:45:11 GMT",
+          "source": {
+            "name": "ForexLive"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "c25b8efe661a76250853",
+          "title": "Non-farm payrolls benchmark revisions trimmed employment by 79K jobs",
+          "description": "Last year at this time there was some serious hand-wringing about a non-farm payrolls benchmark revision that saw 911K jobs cut from payrolls.For the latest edition, the consensus was +183K jobs but instead, employment fell by 79K jobs for the year ending in March. That's an average of 6.6K jobs per",
+          "publishedAt": "Fri, 28 Aug 2026 18:36:44 GMT",
+          "source": {
+            "name": "ForexLive"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        }
+      ]
+    },
+    "CAD|unemployment rate|2026-09-04T14:30:00Z": {
+      "articles": [
+        {
+          "fingerprint": "b132fef6156d40c5ba7a",
+          "title": "\ud83d\udd30  Markets are awaiting Jerome Powell's remarks on interest rates: Yields on U.S. Treasury bonds and the value...",
+          "description": "\ud83d\udd30  Markets are awaiting Jerome Powell's remarks on interest rates: Yields on U.S. Treasury bonds and the value of the dollar have not changed significantly before Jerome Powell, Chairman of the Federal Reserve, is scheduled to speak at the Jackson Hole conference. \ud83d\udd30  Investors are looking for clues about interest rates and inflation. \ud83d\udd30  UBS predicts that the Federal Reserve will keep interest rates steady until 2026, and a potential decline in inflation could pave the way for interest rate cuts in the first half of 2027. \ud83d\udd30  The yield on the 10-year U.S. Treasury bond is currently around 4.68% \ud83d\udd3a . #Gold   #USD   @Forex_LiveStream",
+          "publishedAt": "2026-08-28T13:53:35+00:00",
+          "source": {
+            "name": "Forex LiveStream"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "ad7d1c78d1f025d0f5bd",
+          "title": "72% of homebuyers have paused their search waiting for lower mortgage rates \u2014 and 41% already regret it",
+          "description": "",
+          "publishedAt": "2026-08-29T15:00:00Z",
+          "source": {
+            "name": "Yahoo Finance"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "886251343017009a822c",
+          "title": "investingLive European markets wrap: A more pensive mood in run up to Jackson Hole next",
+          "description": "Headlines:No guidance from Jackson Hole?USD/JPY extends gains as focus turns to Fed Chair Warsh's speechGold stays locked in ahead of Warsh's Jackson Hole speechHow have interest rate expectations changed after this week's events?France Q2 final GDP +0.0% vs +0.2% q/q prelimFrance August preliminary",
+          "publishedAt": "Fri, 28 Aug 2026 11:45:11 GMT",
+          "source": {
+            "name": "ForexLive"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "9024e3ef589627592b77",
+          "title": "Mortgage and refinance interest rates today, Saturday, August 29, 2026: Fixed rates move slightly higher into the weekend",
+          "description": "",
+          "publishedAt": "2026-08-29T11:44:38Z",
+          "source": {
+            "name": "Yahoo Finance"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "de6b7fd7f9966beae6f8",
+          "title": "investingLive Americas FX news wrap 28 Aug",
+          "description": "Fed's Warsh: Numbers on price stability are 'more concerning'Univ of Michigan final sentiment index for August 51.7 vs 51.0 estimateFed's Hammack: It's time to act with rate hikes, waiting will create painCanada GDP Q2 annualized 3.3% vs 3.4% estimateFed's Goolsbee: Agrees with Warsh that inflation ",
+          "publishedAt": "Fri, 28 Aug 2026 20:41:11 GMT",
+          "source": {
+            "name": "ForexLive"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "80715a01028d00f164e3",
+          "title": "Philippine Peso: BSP tightening bias on inflation risks \u2013 DBS",
+          "description": "DBS Group Research economists Radhika Rao and Chua Han Teng note that Bangko Sentral ng Pilipinas (BSP) raised its policy rate by 25 bps to 5.0% to anchor inflation expectations and support the Peso.",
+          "publishedAt": "Fri, 28 Aug 2026 21:56:00 GMT",
+          "source": {
+            "name": "FXStreet"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "56cc8f7e41040941b112",
+          "title": "South Korean Won: Higher rates and chip boom support gains \u2013 ING",
+          "description": "ING\u2019s Chris Turner reports that the Korean Won (KRW) continues to advance, driven by back-to-back Bank of Korea (BoK) rate hikes to 3.00% and a Dot Plot pointing to 3.25% in six months.",
+          "publishedAt": "Fri, 28 Aug 2026 21:18:00 GMT",
+          "source": {
+            "name": "FXStreet"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "4ac5ba5eb8157564f9ff",
+          "title": "Vietnam: Exports and consumption stay robust \u2013 DBS",
+          "description": "DBS Group strategists Taimur Baig and Nathan Chow forecast Vietnam\u2019s goods exports to maintain strong double-digit growth at 27% year-on-year in August 2026, led by electronics and supported by external demand.",
+          "publishedAt": "Fri, 28 Aug 2026 23:07:00 GMT",
+          "source": {
+            "name": "FXStreet"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "d2fdb5e7b9fc1863045d",
+          "title": "\ud83d\udd30  The probability of the US Federal Reserve raising interest rates next month has increased to 49% \ud83d\udd3a . #Gold ...",
+          "description": "\ud83d\udd30  The probability of the US Federal Reserve raising interest rates next month has increased to 49% \ud83d\udd3a . #Gold   #USD @Forex_LiveStream",
+          "publishedAt": "2026-08-28T16:52:52+00:00",
+          "source": {
+            "name": "Forex LiveStream"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "fe69728bebf87a524421",
+          "title": "#Stocks   \ud83d\udd3a  after stronger NVDA Earnings, Jackson Hole begins #USD   \ud83d\udd3a  on stronger data and higher US yields...",
+          "description": "#Stocks   \ud83d\udd3a  after stronger NVDA Earnings, Jackson Hole begins #USD   \ud83d\udd3a  on stronger data and higher US yields, Fed official warned rates may need to rise again #EUR   \ud83d\udd3b  ECB officials suggest neutral rate after next hike #JPY   \ud83d\udd04  Tokyo CPI data due tonight #AUD   \ud83d\udd3a  sharp rise in household spending @Forex_LiveStream",
+          "publishedAt": "2026-08-27T12:22:22+00:00",
+          "source": {
+            "name": "Forex LiveStream"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        }
+      ]
+    },
+    "USD|average hourly earnings m m|2026-09-04T14:30:00Z": {
+      "articles": [
+        {
+          "fingerprint": "c25b8efe661a76250853",
+          "title": "Non-farm payrolls benchmark revisions trimmed employment by 79K jobs",
+          "description": "Last year at this time there was some serious hand-wringing about a non-farm payrolls benchmark revision that saw 911K jobs cut from payrolls.For the latest edition, the consensus was +183K jobs but instead, employment fell by 79K jobs for the year ending in March. That's an average of 6.6K jobs per",
+          "publishedAt": "Fri, 28 Aug 2026 18:36:44 GMT",
+          "source": {
+            "name": "ForexLive"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "fe69728bebf87a524421",
+          "title": "#Stocks   \ud83d\udd3a  after stronger NVDA Earnings, Jackson Hole begins #USD   \ud83d\udd3a  on stronger data and higher US yields...",
+          "description": "#Stocks   \ud83d\udd3a  after stronger NVDA Earnings, Jackson Hole begins #USD   \ud83d\udd3a  on stronger data and higher US yields, Fed official warned rates may need to rise again #EUR   \ud83d\udd3b  ECB officials suggest neutral rate after next hike #JPY   \ud83d\udd04  Tokyo CPI data due tonight #AUD   \ud83d\udd3a  sharp rise in household spending @Forex_LiveStream",
+          "publishedAt": "2026-08-27T12:22:22+00:00",
+          "source": {
+            "name": "Forex LiveStream"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        }
+      ]
+    },
+    "USD|non farm employment change|2026-09-04T14:30:00Z": {
+      "articles": [
+        {
+          "fingerprint": "b132fef6156d40c5ba7a",
+          "title": "\ud83d\udd30  Markets are awaiting Jerome Powell's remarks on interest rates: Yields on U.S. Treasury bonds and the value...",
+          "description": "\ud83d\udd30  Markets are awaiting Jerome Powell's remarks on interest rates: Yields on U.S. Treasury bonds and the value of the dollar have not changed significantly before Jerome Powell, Chairman of the Federal Reserve, is scheduled to speak at the Jackson Hole conference. \ud83d\udd30  Investors are looking for clues about interest rates and inflation. \ud83d\udd30  UBS predicts that the Federal Reserve will keep interest rates steady until 2026, and a potential decline in inflation could pave the way for interest rate cuts in the first half of 2027. \ud83d\udd30  The yield on the 10-year U.S. Treasury bond is currently around 4.68% \ud83d\udd3a . #Gold   #USD   @Forex_LiveStream",
+          "publishedAt": "2026-08-28T13:53:35+00:00",
+          "source": {
+            "name": "Forex LiveStream"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "886251343017009a822c",
+          "title": "investingLive European markets wrap: A more pensive mood in run up to Jackson Hole next",
+          "description": "Headlines:No guidance from Jackson Hole?USD/JPY extends gains as focus turns to Fed Chair Warsh's speechGold stays locked in ahead of Warsh's Jackson Hole speechHow have interest rate expectations changed after this week's events?France Q2 final GDP +0.0% vs +0.2% q/q prelimFrance August preliminary",
+          "publishedAt": "Fri, 28 Aug 2026 11:45:11 GMT",
+          "source": {
+            "name": "ForexLive"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "c25b8efe661a76250853",
+          "title": "Non-farm payrolls benchmark revisions trimmed employment by 79K jobs",
+          "description": "Last year at this time there was some serious hand-wringing about a non-farm payrolls benchmark revision that saw 911K jobs cut from payrolls.For the latest edition, the consensus was +183K jobs but instead, employment fell by 79K jobs for the year ending in March. That's an average of 6.6K jobs per",
+          "publishedAt": "Fri, 28 Aug 2026 18:36:44 GMT",
+          "source": {
+            "name": "ForexLive"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        }
+      ]
+    },
+    "USD|unemployment rate|2026-09-04T14:30:00Z": {
+      "articles": [
+        {
+          "fingerprint": "b132fef6156d40c5ba7a",
+          "title": "\ud83d\udd30  Markets are awaiting Jerome Powell's remarks on interest rates: Yields on U.S. Treasury bonds and the value...",
+          "description": "\ud83d\udd30  Markets are awaiting Jerome Powell's remarks on interest rates: Yields on U.S. Treasury bonds and the value of the dollar have not changed significantly before Jerome Powell, Chairman of the Federal Reserve, is scheduled to speak at the Jackson Hole conference. \ud83d\udd30  Investors are looking for clues about interest rates and inflation. \ud83d\udd30  UBS predicts that the Federal Reserve will keep interest rates steady until 2026, and a potential decline in inflation could pave the way for interest rate cuts in the first half of 2027. \ud83d\udd30  The yield on the 10-year U.S. Treasury bond is currently around 4.68% \ud83d\udd3a . #Gold   #USD   @Forex_LiveStream",
+          "publishedAt": "2026-08-28T13:53:35+00:00",
+          "source": {
+            "name": "Forex LiveStream"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "ad7d1c78d1f025d0f5bd",
+          "title": "72% of homebuyers have paused their search waiting for lower mortgage rates \u2014 and 41% already regret it",
+          "description": "",
+          "publishedAt": "2026-08-29T15:00:00Z",
+          "source": {
+            "name": "Yahoo Finance"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "886251343017009a822c",
+          "title": "investingLive European markets wrap: A more pensive mood in run up to Jackson Hole next",
+          "description": "Headlines:No guidance from Jackson Hole?USD/JPY extends gains as focus turns to Fed Chair Warsh's speechGold stays locked in ahead of Warsh's Jackson Hole speechHow have interest rate expectations changed after this week's events?France Q2 final GDP +0.0% vs +0.2% q/q prelimFrance August preliminary",
+          "publishedAt": "Fri, 28 Aug 2026 11:45:11 GMT",
+          "source": {
+            "name": "ForexLive"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "9024e3ef589627592b77",
+          "title": "Mortgage and refinance interest rates today, Saturday, August 29, 2026: Fixed rates move slightly higher into the weekend",
+          "description": "",
+          "publishedAt": "2026-08-29T11:44:38Z",
+          "source": {
+            "name": "Yahoo Finance"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "de6b7fd7f9966beae6f8",
+          "title": "investingLive Americas FX news wrap 28 Aug",
+          "description": "Fed's Warsh: Numbers on price stability are 'more concerning'Univ of Michigan final sentiment index for August 51.7 vs 51.0 estimateFed's Hammack: It's time to act with rate hikes, waiting will create painCanada GDP Q2 annualized 3.3% vs 3.4% estimateFed's Goolsbee: Agrees with Warsh that inflation ",
+          "publishedAt": "Fri, 28 Aug 2026 20:41:11 GMT",
+          "source": {
+            "name": "ForexLive"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "80715a01028d00f164e3",
+          "title": "Philippine Peso: BSP tightening bias on inflation risks \u2013 DBS",
+          "description": "DBS Group Research economists Radhika Rao and Chua Han Teng note that Bangko Sentral ng Pilipinas (BSP) raised its policy rate by 25 bps to 5.0% to anchor inflation expectations and support the Peso.",
+          "publishedAt": "Fri, 28 Aug 2026 21:56:00 GMT",
+          "source": {
+            "name": "FXStreet"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "56cc8f7e41040941b112",
+          "title": "South Korean Won: Higher rates and chip boom support gains \u2013 ING",
+          "description": "ING\u2019s Chris Turner reports that the Korean Won (KRW) continues to advance, driven by back-to-back Bank of Korea (BoK) rate hikes to 3.00% and a Dot Plot pointing to 3.25% in six months.",
+          "publishedAt": "Fri, 28 Aug 2026 21:18:00 GMT",
+          "source": {
+            "name": "FXStreet"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "4ac5ba5eb8157564f9ff",
+          "title": "Vietnam: Exports and consumption stay robust \u2013 DBS",
+          "description": "DBS Group strategists Taimur Baig and Nathan Chow forecast Vietnam\u2019s goods exports to maintain strong double-digit growth at 27% year-on-year in August 2026, led by electronics and supported by external demand.",
+          "publishedAt": "Fri, 28 Aug 2026 23:07:00 GMT",
+          "source": {
+            "name": "FXStreet"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "d2fdb5e7b9fc1863045d",
+          "title": "\ud83d\udd30  The probability of the US Federal Reserve raising interest rates next month has increased to 49% \ud83d\udd3a . #Gold ...",
+          "description": "\ud83d\udd30  The probability of the US Federal Reserve raising interest rates next month has increased to 49% \ud83d\udd3a . #Gold   #USD @Forex_LiveStream",
+          "publishedAt": "2026-08-28T16:52:52+00:00",
+          "source": {
+            "name": "Forex LiveStream"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        },
+        {
+          "fingerprint": "fe69728bebf87a524421",
+          "title": "#Stocks   \ud83d\udd3a  after stronger NVDA Earnings, Jackson Hole begins #USD   \ud83d\udd3a  on stronger data and higher US yields...",
+          "description": "#Stocks   \ud83d\udd3a  after stronger NVDA Earnings, Jackson Hole begins #USD   \ud83d\udd3a  on stronger data and higher US yields, Fed official warned rates may need to rise again #EUR   \ud83d\udd3b  ECB officials suggest neutral rate after next hike #JPY   \ud83d\udd04  Tokyo CPI data due tonight #AUD   \ud83d\udd3a  sharp rise in household spending @Forex_LiveStream",
+          "publishedAt": "2026-08-27T12:22:22+00:00",
+          "source": {
+            "name": "Forex LiveStream"
+          },
+          "captured_at_utc": "2026-08-29T20:46:06Z"
+        }
+      ]
+    }
+  }
+}

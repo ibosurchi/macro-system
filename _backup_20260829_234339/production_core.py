@@ -589,23 +589,10 @@ def _normalize_causal_ai_payload(parsed: dict, source_count: int) -> dict:
 
 
 def _normalize_ai_judgment(value: object) -> str:
-    """ONE canonical five-level forecast-conviction key used everywhere in the
-    project: beat / lean_beat / inline / lean_miss / miss. Never invents a
-    direction. Old three-state values (beat/inline/miss, from history predating
-    the five-level system or from any caller that never produces a lean state)
-    normalize exactly as before -- this only ADDS recognition of "lean beat" /
-    "lean miss" text and the machine tokens lean_beat/lean_miss; it never
-    collapses a lean state back down before returning, so every consumer reads
-    conviction from this one place instead of scattered ad hoc string checks.
-    """
+    """Canonical Beat/In-line/Miss key for AI/audit logic; never invents a direction."""
     text = re.sub(r"[^a-z]+", " ", str(value or "").lower()).strip()
     if not text:
         return ""
-    if "lean" in text:
-        if "miss" in text or "below" in text or "lower than" in text:
-            return "lean_miss"
-        if "beat" in text or "above" in text or "higher than" in text:
-            return "lean_beat"
     if "miss" in text or "below" in text or "lower than" in text:
         return "miss"
     if "beat" in text or "above" in text or "higher than" in text:
@@ -613,27 +600,6 @@ def _normalize_ai_judgment(value: object) -> str:
     if "inline" in text or "in line" in text or "consensus" in text or "neutral" in text:
         return "inline"
     return ""
-
-
-def _forecast_direction(value: object) -> str:
-    """Collapse a five-level conviction value to its underlying three-way
-    direction (beat/inline/miss). A Lean state is a conviction sub-state within
-    a direction, not a new direction -- BEAT and LEAN BEAT share a direction.
-    """
-    j = _normalize_ai_judgment(value)
-    if j in {"beat", "lean_beat"}:
-        return "beat"
-    if j in {"miss", "lean_miss"}:
-        return "miss"
-    if j == "inline":
-        return "inline"
-    return ""
-
-
-def _forecast_display_label(value: object) -> str:
-    """Human-readable five-level label: BEAT / LEAN BEAT / INLINE / LEAN MISS / MISS."""
-    canon = _normalize_ai_judgment(value)
-    return canon.replace("_", " ").upper() if canon else ""
 
 
 def _quantitative_outcome_from_reference(reference: dict) -> str:
@@ -652,61 +618,37 @@ def _quantitative_outcome_from_reference(reference: dict) -> str:
 
 
 def _causal_relationship(quantitative_prediction: str, ai_judgment: str) -> tuple[str, str]:
-    """Return machine agreement state and compact UI relationship label.
-
-    Classifies agree/partial/disagree by underlying DIRECTION (beat/lean_beat ->
-    beat, miss/lean_miss -> miss): BEAT vs LEAN BEAT is same-direction agreement
-    with a conviction difference, never the disagreement BEAT vs MISS is.
-    """
+    """Return machine agreement state and compact UI relationship label."""
     q = _normalize_ai_judgment(quantitative_prediction)
     a = _normalize_ai_judgment(ai_judgment)
     if not q or not a:
         return "", "AI EVIDENCE REVIEW"
     if q == a:
         return "agree", "QUANT + AI AGREEMENT"
-    qd, ad = _forecast_direction(q), _forecast_direction(a)
-    if qd == ad:
-        return "agree", f"AI AGREES ON {qd.upper()} (CONVICTION DIFFERS)"
-    if qd in {"beat", "miss"} and ad == "inline":
+    if q in {"beat", "miss"} and a == "inline":
         return "partial", "AI WEAKENS QUANT SIGNAL"
-    if qd == "inline" and ad in {"beat", "miss"}:
+    if q == "inline" and a in {"beat", "miss"}:
         return "disagree", "AI DISAGREES WITH QUANT"
-    if {qd, ad} == {"beat", "miss"}:
+    if {q, a} == {"beat", "miss"}:
         return "disagree", "MAJOR EVIDENCE CONFLICT"
     return "disagree", "AI DISAGREES WITH QUANT"
 
 
 def _derive_final_forecast_state(quantitative_prediction: str, analysis: dict) -> tuple[str, str]:
-    """Transparent arbitration without adding the same evidence twice.
-
-    Preserves the original agree/weaken/major-conflict/override architecture at
-    the DIRECTION level (beat/inline/miss). A Lean state is a conviction
-    sub-state, not a new direction: BEAT vs LEAN BEAT (or MISS vs LEAN MISS) is
-    same-direction partial agreement and downgrades to the weaker (lean)
-    conviction, rather than collapsing to In-line the way an actual opposite-
-    direction conflict does.
-    """
+    """Transparent arbitration without adding the same evidence twice."""
     q = _normalize_ai_judgment(quantitative_prediction) or "inline"
     a = _normalize_ai_judgment((analysis or {}).get("ai_judgment") or (analysis or {}).get("nowcast"))
     if not a:
         return q, "Quantitative foundation retained; AI judgment unavailable."
     if a == q:
         return q, "Quantitative and causal AI judgments agree; no evidence is double-counted."
-
-    qd, ad = _forecast_direction(q), _forecast_direction(a)
-    if qd == ad and qd in {"beat", "miss"}:
-        lean_value = f"lean_{qd}"
-        return lean_value, (
-            f"Quantitative and causal AI agree on direction ({qd.upper()}) but not "
-            f"conviction strength; final state uses the more conservative LEAN {qd.upper()}."
-        )
-    if ad == "inline" and qd in {"beat", "miss"}:
+    if a == "inline" and q in {"beat", "miss"}:
         return "inline", "AI weakens the directional quantitative signal to in-line."
     decisive = [str(x).strip() for x in ((analysis or {}).get("decisive_evidence") or []) if str(x).strip()]
     override_reason = str((analysis or {}).get("override_reason") or "").strip()
     if decisive and override_reason:
         return a, "AI override accepted because explicit decisive evidence and an override reason were supplied."
-    if {qd, ad} == {"beat", "miss"}:
+    if {q, a} == {"beat", "miss"}:
         return "inline", "Major directional conflict without a qualified override; final state is conservatively in-line."
     return q, "AI disagrees but did not supply a qualified decisive override; quantitative foundation retained."
 
@@ -1022,16 +964,7 @@ def fetch_forex_factory_calendar(force_refresh: bool = False) -> list[dict]:
 TELEGRAM_BOT_TOKEN = get_secret("TELEGRAM_BOT_TOKEN", "")
 
 APEX_MASTER_KEY = get_secret("APEX_MASTER_KEY", "")
-# The license-signing salt used to now be a literal in source, which meant anyone
-# with source access could compute valid VIP keys (including lifetime keys) for
-# free. It now reads from Streamlit secrets first. The old literal remains the
-# DEFAULT only so every previously-issued key keeps validating with zero
-# disruption -- set APEX_SECRET_SALT in st.secrets to actually close the hole.
-# Once set, only newly-issued keys are signed with it; existing keys signed under
-# the old default keep working until they are individually reissued (rotating the
-# secret fully would invalidate every outstanding key at once, so this is left as
-# an operator decision rather than an automatic migration).
-APEX_SECRET_SALT = get_secret("APEX_SECRET_SALT", "APEX_MACRO_SECRET_2026_SALT")
+APEX_SECRET_SALT = "APEX_MACRO_SECRET_2026_SALT"
 REGISTRY_FILE = str(PROJECT_ROOT / "vip_registry.json")
 
 # VIP checkout configuration. Only public receiving/API values are used; no wallet private key is required.
@@ -1512,15 +1445,20 @@ def get_persistence_status() -> dict[str, str]:
 
 
 def load_actuals_cache() -> dict:
-    # Previously a bare local-JSON read (non-atomic write, no Supabase mirror) --
-    # the only cache file in the project combining both risks at once. Routed
-    # through the same Supabase-first/atomic-local persistence every other cache
-    # already uses, so first-print Actual values are no longer lost on a redeploy.
-    data = _load_persistent_state("actual_releases", ACTUALS_FILE, {})
-    return data if isinstance(data, dict) else {}
+    if os.path.exists(ACTUALS_FILE):
+        try:
+            with open(ACTUALS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
 
 def save_actuals_cache(data: dict) -> None:
-    _save_persistent_state("actual_releases", ACTUALS_FILE, data if isinstance(data, dict) else {})
+    try:
+        with open(ACTUALS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
 
 def load_sessions_cache() -> dict:
     data = _load_persistent_state("vip_sessions", SESSIONS_FILE, {})
@@ -1682,7 +1620,7 @@ def verify_vip_key(key: str, client_id: str = "", dev_type: str = "💻 PC/Lapto
     return False, "", "Invalid or unrecognized License Key"
 
 def send_telegram_alert(message: str):
-    token = TELEGRAM_BOT_TOKEN
+    token = TELEGRAM_BOT_TOKEN or DEFAULT_TELEGRAM_BOT_TOKEN
     if not token or not message:
         return []
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -1775,39 +1713,6 @@ CURRENCY_SERIES = {
             "Interest Rate": {"series": "IRLTLT01CHM156N", "cat": "rate",       "w": 2.0, "impact": "high"},
         },
         "key_indicators": ["CPI", "Unemployment", "Interest Rate"],
-    },
-    # AUD/NZD were previously absent from CURRENCY_SERIES entirely, despite being
-    # assumed present in the AI prompt schema, alert lists, and Forecaster precursor
-    # map -- they got zero macro coverage, zero Smart Shift alerts, and no page
-    # display, with no error shown anywhere. These series IDs are not new: they are
-    # the exact ones already live-used by _CURRENCY_PRECURSOR_OVERRIDES elsewhere in
-    # this file for the Forecaster, ported here rather than invented. No live FRED
-    # policy-rate series could be verified for AUD/NZD from this environment (FRED's
-    # public endpoints were unreachable during this repair), so no "Interest Rate"
-    # indicator is added here -- see the final report for this as a documented,
-    # deliberate gap rather than a guessed series ID.
-    "AUD": {
-        "flag": "🇦🇺", "name": "Australian Dollar",
-        "indicators": {
-            "CPI":           {"series": "AUSCPIALLQINMEI",  "cat": "inflation",  "w": 1.8, "impact": "high"},
-            "PPI":           {"series": "AUSPPIALLQINMEI",  "cat": "inflation",  "w": 1.2, "impact": "medium"},
-            "Unemployment":  {"series": "LRUN64TTAUM156S",  "cat": "labor_neg",  "w": 1.8, "impact": "high"},
-            "Employment":    {"series": "LFEMTTTTAUM647S",  "cat": "labor_pos",  "w": 1.5, "impact": "high"},
-            "Production":    {"series": "AUSPROINDQISMEI",  "cat": "growth",     "w": 1.2, "impact": "medium"},
-            "Retail Sales":  {"series": "SLRSTT01AUM661S",  "cat": "growth",     "w": 1.2, "impact": "medium"},
-        },
-        "key_indicators": ["CPI", "Unemployment", "Employment", "Production"],
-    },
-    "NZD": {
-        "flag": "🇳🇿", "name": "New Zealand Dollar",
-        "indicators": {
-            "CPI":           {"series": "NZLCPIALLQINMEI",  "cat": "inflation",  "w": 2.0, "impact": "high"},
-            "Unemployment":  {"series": "LRUN64TTNZQ156S",  "cat": "labor_neg",  "w": 1.8, "impact": "high"},
-            "Employment":    {"series": "LFEMTTTTNZQ647S",  "cat": "labor_pos",  "w": 1.5, "impact": "high"},
-            "Production":    {"series": "NZLPROINDQISMEI",  "cat": "growth",     "w": 1.2, "impact": "medium"},
-            "Retail Sales":  {"series": "SLRSTT01NZM661S",  "cat": "growth",     "w": 1.2, "impact": "medium"},
-        },
-        "key_indicators": ["CPI", "Unemployment", "Employment", "Production"],
     },
 }
 
@@ -2587,32 +2492,31 @@ def fetch_fred(series_id: str, key: str, limit: int = 48) -> pd.DataFrame | None
 _ALERT_STATE_LOCK = threading.Lock()
 
 def _load_alert_state() -> dict[str, dict]:
-    """Load persisted broad-regime state. Invalid state is ignored safely.
-
-    Previously bypassed Supabase entirely (raw local JSON only), unlike every
-    other durable state file in the project -- confirmed-regime memory did not
-    survive a redeploy on Streamlit Cloud's ephemeral filesystem. Now routed
-    through the same Supabase-first/atomic-local persistence as tactical state,
-    payments, and the VIP registry. Failure mode stays benign either way (a lost
-    state re-arms silently via the existing first-observation logic below), this
-    just stops it from losing state on every routine redeploy.
-    """
+    """Load persisted broad-regime state. Invalid state is ignored safely."""
     try:
-        data = _load_persistent_state("alert_regime_state", ALERT_STATE_FILE, {})
-        if isinstance(data, dict):
-            for state in data.values():
-                if isinstance(state, dict):
-                    state["pending_regime"] = None
-                    state["pending_since"] = None
-            return data
+        if os.path.exists(ALERT_STATE_FILE):
+            with open(ALERT_STATE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                for state in data.values():
+                    if isinstance(state, dict):
+                        state["pending_regime"] = None
+                        state["pending_since"] = None
+                return data
     except Exception:
         pass
     return {}
 
 
 def _save_alert_state() -> None:
-    """Persist regime state (Supabase-first, atomic local mirror) so Streamlit reruns/restarts/redeploys do not duplicate shifts or lose confirmed-regime memory."""
-    _save_persistent_state("alert_regime_state", ALERT_STATE_FILE, GLOBAL_ALERT_STATE)
+    """Persist regime state atomically so Streamlit reruns/restarts do not duplicate shifts."""
+    try:
+        tmp_path = ALERT_STATE_FILE + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(GLOBAL_ALERT_STATE, f, indent=2)
+        os.replace(tmp_path, ALERT_STATE_FILE)
+    except Exception:
+        pass
 
 
 # Per-asset state:
@@ -2824,11 +2728,7 @@ def _calc_oil_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHA
     if w_df is None or w_df.empty:
         w_df = fetch_fred(OIL_SERIES["brent"], fred_key, limit=90)
     if w_df is None or w_df.empty:
-        # Missing data must never masquerade as real market evidence. This used to
-        # return a hardcoded (0.12, 0.08) -- a fabricated, mildly-bullish score --
-        # whenever every oil price source failed, instead of the same honest "no
-        # data" signal every other asset's score function already uses.
-        return None, 0.0
+        return 0.12, 0.08
 
     w_vals = w_df["value"].tolist()
     w_mf = calc_mtf(w_vals, "growth")
@@ -5144,17 +5044,6 @@ def _ai_batch_event_rows(events: list, all_news: list, actuals: dict, limit: int
         release_iso = _event_release_utc_iso(ev)
         evidence_sig = _forecaster_ai_evidence_signature(ev, nowcast, rel_news, "")
 
-        prec_n = len(nowcast.get("precursor_results", []) or [])
-        hist_n = len(nowcast.get("same_release_history", []) or [])
-        news_n = len(rel_news or [])
-        if (prec_n + hist_n + news_n) == 0:
-            # No precursor, history, or news evidence at all. The confidence cap
-            # already limits an all-empty packet to <=45%, but that still spends a
-            # paid request asking the model to guess from nothing. Skip the AI call
-            # entirely for this event; the deterministic Quantitative Nowcast
-            # (already computed/frozen above) remains available on its own.
-            continue
-
         rows.append({
             "code": code,
             "event_identity": identity,
@@ -5776,14 +5665,7 @@ Reasoning order:
 1) Read EVENT and MARKET BASELINE.
 2) Assess raw underlying evidence first: direct hard data, country-specific precursors, official/direct policy information, event-specific credible news, broader macro context, then generic sentiment.
 3) Identify contradictions, stale/missing evidence, numeric ambiguity, and evidence quality.
-4) Form a FORECAST CONVICTION relative to consensus: beat, lean_beat, inline, lean_miss, or miss.
-   - beat: evidence strongly supports Actual outperforming consensus.
-   - lean_beat: evidence modestly favors an upside surprise, but not strongly enough for full beat.
-   - inline: evidence does not justify a meaningful directional surprise.
-   - lean_miss: evidence modestly favors a downside surprise, but not strongly enough for full miss.
-   - miss: evidence strongly supports Actual underperforming consensus.
-   Do not use lean_beat/lean_miss as a cosmetic hedge -- pick it only when the direction is real but the
-   supporting evidence (quality, quantity, or agreement across precursors) is not strong enough for full conviction.
+4) Form BEAT / INLINE / MISS relative to consensus.
 5) ONLY THEN inspect REFERENCE_QUANTITATIVE_OUTPUT_DO_NOT_ANCHOR.
 Agreement is allowed. Disagreement is allowed. Do not manufacture disagreement.
 If disagreeing or weakening the quantitative result, identify the decisive supplied evidence.
@@ -5797,7 +5679,7 @@ event_identity, ai_judgment, agreement_with_quant, confidence, reason, causal_ch
 supporting_evidence, contradictions, decisive_evidence, evidence_missing, override_reason,
 event_assessment, nowcast, confidence_reason, cross_source_confirmation, usd, gold, oil,
 nasdaq, invalidation, source_count, judge_version.
-ai_judgment MUST be beat, lean_beat, inline, lean_miss, or miss.
+ai_judgment MUST be beat, inline, or miss.
 agreement_with_quant MUST be agree, partial, or disagree.
 causal_chain, facts, supporting_evidence, contradictions, decisive_evidence, evidence_missing MUST be arrays.
 confidence MUST be integer 0-100.
@@ -6494,31 +6376,22 @@ def calc_mtf(vals: list, cat: str) -> dict | None:
     if len(vals) >= 4:
         chg = [(vals[i] - vals[i-1]) / abs(vals[i-1]) * 100 for i in range(-3, 0) if vals[i-1] != 0]
         t3m = float(np.mean(chg)) if chg else None
-    z = None
+    z = 0.0
     if len(vals) >= 6:
         sub = vals[-12:] if len(vals) >= 12 else vals
         sd = np.std(sub)
         z = (vals[-1] - np.mean(sub)) / sd if sd != 0 else 0.0
 
-    # A timeframe component that's None (series too short for qoq/yoy/t3m/z) is
-    # excluded from both the numerator and the weight denominator, instead of being
-    # folded in as a fake tanh(0)=0 "neutral" vote while its fixed weight stayed
-    # counted -- that silently diluted a real momentum score toward zero purely
-    # because a series was short, with no signal that the score used partial data.
-    def tw(x, ref): return float(np.tanh(x / ref)) if x is not None and ref != 0 else None
-    candidates = [(tw(mom, 0.5), 0.30), (tw(qoq, 2.0), 0.25), (tw(yoy, 5.0), 0.25), (tw(t3m, 0.5), 0.10), (tw(z, 1.0), 0.10)]
-    parts = [(s, w) for s, w in candidates if s is not None]
+    def tw(x, ref): return float(np.tanh(x / ref)) if x is not None and ref != 0 else 0.0
+    parts = [(tw(mom, 0.5), 0.30), (tw(qoq, 2.0), 0.25), (tw(yoy, 5.0), 0.25), (tw(t3m, 0.5), 0.10), (tw(z, 1.0), 0.10)]
     wd = sum(w for _, w in parts)
     score = sum(s * w for s, w in parts) / wd if wd else 0.0
     if reverse: score = -score
-    total_w = sum(w for _, w in candidates)
-    completeness = round(wd / total_w, 3) if total_w else 0.0
 
     return {
         "latest": vals[-1], "mom": round(mom, 3), "qoq": round(qoq, 3) if qoq is not None else None,
         "yoy": round(yoy, 3) if yoy is not None else None, "t3m": round(t3m, 3) if t3m is not None else None,
-        "z": round(z, 2) if z is not None else None, "score": float(score), "reverse": reverse,
-        "completeness": completeness,
+        "z": round(z, 2), "score": float(score), "reverse": reverse,
     }
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -6698,11 +6571,7 @@ def page_forex(fred_key: str, channel_name: str) -> None:
     if "selected_currency" not in st.session_state:
         st.session_state["selected_currency"] = "USD"
 
-    # Derived from CURRENCY_SERIES itself so a currency can never again be silently
-    # absent from this picker while still existing in the scoring engine (or vice
-    # versa) -- this hardcoded list previously omitted AUD/NZD after they were added
-    # to CURRENCY_SERIES upstream.
-    curr_keys = list(CURRENCY_SERIES.keys())
+    curr_keys = ["USD", "EUR", "GBP", "CAD", "JPY", "CHF"]
     currency = st.session_state["selected_currency"]
     c_meta = CURRENCY_SERIES.get(currency, {"flag": "💵", "name": "US Dollar"})
     
@@ -7012,17 +6881,9 @@ def page_oil(fred_key: str, channel_name: str) -> None:
             w_df = b_df.copy()
             w_df["value"] = w_df["value"] - 3.80
         else:
-            # Missing data must never masquerade as real market evidence. This used
-            # to fabricate a synthetic 30-day price series and render it as if it
-            # were live spot data, with no indication anywhere on the page that it
-            # was invented. Show an honest unavailable state and stop instead --
-            # nothing downstream should compute a score or a chart from fake prices.
-            st.warning(
-                "🛢️ Oil pricing data is currently unavailable (WTI and Brent both "
-                "failed to load from FRED). No score or chart is shown rather than "
-                "one built on missing data."
-            )
-            return
+            dates = pd.date_range(end=datetime.today(), periods=30, freq="B").strftime("%Y-%m-%d")
+            w_df = pd.DataFrame({"date": dates, "value": [76.50 + float(i)*0.12 for i in range(30)]})
+            b_df = pd.DataFrame({"date": dates, "value": [80.30 + float(i)*0.14 for i in range(30)]})
 
     if b_df is None or b_df.empty:
         b_df = w_df.copy()
@@ -8183,25 +8044,9 @@ def _consensus_relative_adjustment(event: dict, composite: float) -> tuple[float
 
 
 def _three_way_probabilities(composite: float, conflict: float, evidence_quality: float, inline_prior: float) -> dict:
-    """Convert directional score into calibrated Beat/In-line/Miss probabilities.
-
-    Recalibrated: the original 0.30 sensitivity coefficient required a composite
-    near +/-0.6-0.75 before Beat/Miss could out-vote In-line even under strong
-    evidence quality. Realistic nowcast composites -- damped by the per-family
-    weight sum (<1.0), the conflict multiplier, and the consensus-hurdle
-    subtraction -- rarely reach that magnitude, so In-line structurally won the
-    plurality vote for nearly every event regardless of the underlying signal
-    (verified against the live production event feed and against the synthetic
-    strong/moderate/neutral/moderate-negative/strong-negative evidence ladder).
-    0.55 preserves the same zero-evidence baseline (In-line still dominates when
-    composite is genuinely flat) but lets moderate, real directional evidence
-    (composite ~0.3-0.4 with average-or-better evidence quality) actually win the
-    vote. Confidence is still capped separately by evidence_quality/conflict
-    below, so this changes which label wins, not how confident the model is
-    allowed to sound.
-    """
+    """Convert directional score into calibrated Beat/In-line/Miss probabilities."""
     strength = min(1.0, abs(float(composite)))
-    directional_mass = min(0.90, 0.50 + 0.55 * strength * max(.35, evidence_quality))
+    directional_mass = 0.50 + 0.30 * strength * max(.35, evidence_quality)
     directional_mass *= (1.0 - 0.35 * conflict)
     inline = max(inline_prior, 1.0 - directional_mass)
     remaining = max(0.0, 1.0 - inline)
@@ -8214,29 +8059,6 @@ def _three_way_probabilities(composite: float, conflict: float, evidence_quality
         "inline": round(100 * inline / total, 1),
         "miss": round(100 * miss / total, 1),
     }
-
-
-def _five_level_forecast_state(probabilities: dict, outcome_key: str, evidence_quality: float, conflict_score: float) -> str:
-    """Derive FORECAST CONVICTION (beat/lean_beat/inline/lean_miss/miss) from the
-    existing three-way Beat/In-line/Miss probability distribution -- this does
-    NOT create new probability buckets, it classifies conviction strength within
-    the distribution _three_way_probabilities already produced.
-
-    A winning Beat/Miss call only earns FULL conviction when all three of these
-    (reusing thresholds already load-bearing elsewhere in this file, not new
-    numbers) hold: it clears In-line by a real margin (>=15 probability points),
-    evidence quality is at least the same 0.45 floor that already caps
-    confidence downstream, and conflict is below the same 0.45 threshold that
-    already caps confidence downstream. Otherwise the call stands but is
-    reported as LEAN -- genuinely weaker conviction, not a cosmetic label.
-    """
-    if outcome_key not in {"beat", "miss"}:
-        return "inline"
-    winner_prob = float((probabilities or {}).get(outcome_key, 0.0) or 0.0)
-    inline_prob = float((probabilities or {}).get("inline", 0.0) or 0.0)
-    margin = winner_prob - inline_prob
-    full_conviction = margin >= 15.0 and float(evidence_quality or 0) >= 0.45 and float(conflict_score or 0) < 0.45
-    return outcome_key if full_conviction else f"lean_{outcome_key}"
 
 
 def _load_forecaster_history() -> dict:
@@ -8284,30 +8106,25 @@ def _history_learning_adjustment(event: dict) -> tuple[float, int]:
     return max(.82, min(1.08, acc / .60)), len(rows)
 
 
-def calculate_standardized_surprise(actual_val: float, consensus_val: float, history_rows: list[dict] | None = None) -> tuple[float | None, float, int]:
+def calculate_standardized_surprise(actual_val: float, consensus_val: float, history_rows: list[dict] | None = None) -> tuple[float, float]:
     """
     Standardized Surprise = (Actual - Consensus) / sigma_historical_consensus_error
-    Returns (standardized_z_score_or_None, raw_surprise, historical_sample_size).
+    Returns (standardized_z_score, raw_surprise).
     Z-scores are winsorized to [-3.5, 3.5] to protect against extreme outliers.
-
-    With fewer than 3 valid historical (actual, consensus) pairs there is no
-    statistically defensible sigma, so this returns None for the Z-score rather
-    than silently substituting the clamped raw surprise in that slot -- a raw,
-    unit-mismatched difference (e.g. a 0.3 percentage-point CPI surprise) used to
-    be stored and read downstream as if it were a genuine sigma-normalized
-    Z-score, with nothing to distinguish the two cases. Callers must check for
-    None (insufficient history) rather than assume a numeric Z-score is real.
     """
     raw_surprise = actual_val - consensus_val
+    if not history_rows or len(history_rows) < 3:
+        return round(max(-3.5, min(3.5, raw_surprise)), 3), round(raw_surprise, 4)
+
     historical_errors = []
-    for r in (history_rows or []):
+    for r in history_rows:
         act = _safe_numeric_release(str(r.get("first_print_actual") or r.get("actual") or ""))
         con = _safe_numeric_release(str(r.get("forecast") or r.get("consensus") or ""))
         if act is not None and con is not None:
             historical_errors.append(act - con)
 
     if len(historical_errors) < 3:
-        return None, round(raw_surprise, 4), len(historical_errors)
+        return round(max(-3.5, min(3.5, raw_surprise)), 3), round(raw_surprise, 4)
 
     mean_err = sum(historical_errors) / len(historical_errors)
     variance = sum((x - mean_err) ** 2 for x in historical_errors) / len(historical_errors)
@@ -8317,7 +8134,7 @@ def calculate_standardized_surprise(actual_val: float, consensus_val: float, his
 
     z_score = raw_surprise / sigma
     clamped_z = max(-3.5, min(3.5, z_score))
-    return round(float(clamped_z), 3), round(raw_surprise, 4), len(historical_errors)
+    return round(float(clamped_z), 3), round(raw_surprise, 4)
 
 
 def _freeze_forecaster_ai_snapshot(event: dict, nowcast: dict, analysis: dict) -> None:
@@ -8361,7 +8178,7 @@ def _freeze_forecaster_ai_snapshot(event: dict, nowcast: dict, analysis: dict) -
         "ai_override_reason": str(analysis.get("override_reason") or "")[:1200],
         "final_prediction": final_prediction,
         "final_forecast_reason": final_reason,
-        "final_displayed_forecast": f"{_forecast_display_label(final_prediction)} — {relationship}",
+        "final_displayed_forecast": f"{final_prediction.upper()} — {relationship}",
         "ai_frozen_at_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "causal_ai_version": CAUSAL_AI_JUDGE_VERSION,
         "model_version_identifier": f"{AI_CACHE_VERSION}|{CAUSAL_AI_JUDGE_VERSION}",
@@ -8399,7 +8216,7 @@ def _freeze_forecaster_ai_snapshot_from_batch_row(event_row: dict, analysis: dic
         "ai_override_reason": str(analysis.get("override_reason") or "")[:1200],
         "final_prediction": final_prediction,
         "final_forecast_reason": final_reason,
-        "final_displayed_forecast": f"{_forecast_display_label(final_prediction)} — {relationship}",
+        "final_displayed_forecast": f"{final_prediction.upper()} — {relationship}",
         "ai_frozen_at_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "causal_ai_version": CAUSAL_AI_JUDGE_VERSION,
         "model_version_identifier": f"{AI_CACHE_VERSION}|{CAUSAL_AI_JUDGE_VERSION}",
@@ -8420,14 +8237,11 @@ def _record_forecaster_snapshot(event: dict, nowcast: dict, actual: str = "") ->
             "family": _event_family(event), "forecast": event.get("forecast_str", ""), "previous": event.get("prev_str", ""),
             "captured_at_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "event_identity": _event_identity(event),
-            # Five-level FORECAST CONVICTION (beat/lean_beat/inline/lean_miss/miss),
-            # derived from the same three-way probabilities via _five_level_forecast_state
-            # -- not a new probability model, a conviction classification within it.
-            "predicted_outcome": nowcast.get("forecast_conviction") or (max(probs, key=probs.get) if probs else nowcast.get("outcome_key", "inline")),
-            "quantitative_prediction": nowcast.get("forecast_conviction") or (max(probs, key=probs.get) if probs else nowcast.get("outcome_key", "inline")),
+            "predicted_outcome": max(probs, key=probs.get) if probs else nowcast.get("outcome_key", "inline"),
+            "quantitative_prediction": max(probs, key=probs.get) if probs else nowcast.get("outcome_key", "inline"),
             "probabilities": probs, "quantitative_probabilities": probs, "confidence": nowcast.get("confidence", 0),
-            "final_prediction": nowcast.get("forecast_conviction") or (max(probs, key=probs.get) if probs else nowcast.get("outcome_key", "inline")),
-            "final_displayed_forecast": _forecast_display_label(nowcast.get("forecast_conviction") or (max(probs, key=probs.get) if probs else nowcast.get("outcome_key", "inline"))) + " — QUANTITATIVE FOUNDATION",
+            "final_prediction": max(probs, key=probs.get) if probs else nowcast.get("outcome_key", "inline"),
+            "final_displayed_forecast": str((max(probs, key=probs.get) if probs else nowcast.get("outcome_key", "inline"))).upper() + " — QUANTITATIVE FOUNDATION",
             "model_version_identifier": f"{AI_CACHE_VERSION}|quantitative",
             "model_estimate": nowcast.get("model_estimate"), "consensus_hurdle": nowcast.get("consensus_hurdle", 0),
             "composite": nowcast.get("nowcast_composite", 0), "conflict_score": nowcast.get("conflict_score", 0),
@@ -8442,64 +8256,48 @@ def _record_forecaster_snapshot(event: dict, nowcast: dict, actual: str = "") ->
         records[code] = rec
 
     if actual:
+        av = _safe_numeric_release(actual); fv = _safe_numeric_release(event.get("forecast_str", ""))
         is_first_resolution = not bool(rec.get("resolved"))
-        # latest_revised_actual tracks whatever value a later call passes, purely
-        # for visibility -- it is intentionally the ONLY field a post-resolution
-        # call is allowed to touch below.
+        if is_first_resolution:
+            rec["first_print_actual"] = str(actual).strip()
         rec["latest_revised_actual"] = str(actual).strip()
 
-        if is_first_resolution:
-            # Freeze the verdict once, against the first-print Actual only. A
-            # second/later call (e.g. a data-source revision arriving after the
-            # event was already resolved) used to recompute outcome/correct/error
-            # fields from whatever "actual" it was passed, silently rewriting an
-            # already-scored historical verdict even though first_print_actual
-            # itself stayed untouched. Gating the whole block on is_first_resolution
-            # makes the entire scoring outcome immutable after the first freeze, not
-            # just that one field.
-            rec["first_print_actual"] = str(actual).strip()
-            av = _safe_numeric_release(actual); fv = _safe_numeric_release(event.get("forecast_str", ""))
-            if av is not None and fv is not None:
-                eps = max(1e-9, abs(fv) * 1e-6)
-                outcome = "beat" if av > fv + eps else ("miss" if av < fv - eps else "inline")
-                model_est = rec.get("model_estimate")
-                try:
-                    model_err = round(abs(av - float(model_est)), 4) if model_est is not None else None
-                except Exception:
-                    model_err = None
-                consensus_err = round(abs(av - fv), 4)
+        if av is not None and fv is not None:
+            eps = max(1e-9, abs(fv) * 1e-6)
+            outcome = "beat" if av > fv + eps else ("miss" if av < fv - eps else "inline")
+            model_est = rec.get("model_estimate")
+            try:
+                model_err = round(abs(av - float(model_est)), 4) if model_est is not None else None
+            except Exception:
+                model_err = None
+            consensus_err = round(abs(av - fv), 4)
 
-                # Compute standardized surprise z-score against same-event history
-                hist_rows = _same_event_history(event, 12)
-                std_z, raw_surp, std_z_sample_n = calculate_standardized_surprise(av, fv, hist_rows)
+            # Compute standardized surprise z-score against same-event history
+            hist_rows = _same_event_history(event, 12)
+            std_z, raw_surp = calculate_standardized_surprise(av, fv, hist_rows)
 
-                _quant_pred = _normalize_ai_judgment(rec.get("quantitative_prediction") or rec.get("predicted_outcome"))
-                _ai_pred = _normalize_ai_judgment(rec.get("ai_judgment"))
-                _final_pred = _normalize_ai_judgment(rec.get("final_prediction") or _quant_pred)
-                rec.update({
-                    "actual": rec["first_print_actual"],
-                    "actual_outcome": outcome,
-                    "resolved": True,
-                    "resolved_at_utc": rec.get("resolved_at_utc") or (datetime.utcnow().isoformat(timespec="seconds") + "Z"),
-                    # Actual is always three-state (beat/inline/miss); a five-level
-                    # forecast is scored by DIRECTION against it, so LEAN BEAT vs
-                    # actual BEAT counts as correct (the lean called the right
-                    # direction) while LEAN BEAT vs actual INLINE does not (the
-                    # lean didn't materialize) -- there is no "ACTUAL LEAN BEAT".
-                    "correct": _forecast_direction(_quant_pred) == outcome,
-                    "quantitative_correct": _forecast_direction(_quant_pred) == outcome,
-                    "ai_correct": (_forecast_direction(_ai_pred) == outcome) if _ai_pred else None,
-                    "final_correct": _forecast_direction(_final_pred) == outcome,
-                    "consensus_correct": outcome == "inline",
-                    "model_error": model_err,
-                    "absolute_error": model_err,
-                    "consensus_error": consensus_err,
-                    "raw_surprise": raw_surp,
-                    "standardized_surprise_z": std_z,
-                    "standardized_surprise_insufficient_history": std_z is None,
-                    "standardized_surprise_sample_n": std_z_sample_n,
-                    "resolution_reason": _resolution_reason(rec, outcome, rec["first_print_actual"], str(event.get("forecast_str", ""))),
-                })
+            _quant_pred = _normalize_ai_judgment(rec.get("quantitative_prediction") or rec.get("predicted_outcome"))
+            _ai_pred = _normalize_ai_judgment(rec.get("ai_judgment"))
+            _final_pred = _normalize_ai_judgment(rec.get("final_prediction") or _quant_pred)
+            rec.update({
+                "actual": rec.get("first_print_actual") or actual,
+                "first_print_actual": rec.get("first_print_actual") or actual,
+                "latest_revised_actual": actual,
+                "actual_outcome": outcome,
+                "resolved": True,
+                "resolved_at_utc": rec.get("resolved_at_utc") or (datetime.utcnow().isoformat(timespec="seconds") + "Z"),
+                "correct": _quant_pred == outcome,
+                "quantitative_correct": _quant_pred == outcome,
+                "ai_correct": (_ai_pred == outcome) if _ai_pred else None,
+                "final_correct": _final_pred == outcome,
+                "consensus_correct": outcome == "inline",
+                "model_error": model_err,
+                "absolute_error": model_err,
+                "consensus_error": consensus_err,
+                "raw_surprise": raw_surp,
+                "standardized_surprise_z": std_z,
+                "resolution_reason": _resolution_reason(rec, outcome, rec.get("first_print_actual") or actual, str(event.get("forecast_str", ""))),
+            })
     _save_forecaster_history(data)
 
 
@@ -8670,7 +8468,6 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_ove
               "conflict_score": round(conflict_score, 3), "evidence_quality": round(evidence_quality, 3),
               "event_family": family, "learning_sample": learning_n, "news_ambiguity": round(news_ambiguity, 3),
               "same_release_history": same_release_history, "history_release_signal": round(history_signal, 3),
-              "forecast_conviction": _five_level_forecast_state(probabilities, outcome_key, evidence_quality, conflict_score),
               "evidence_framework": "universal_high_impact_v15_ff_history_actual" if str(event.get("impact", meta.get("impact", ""))).lower() == "high" else "legacy"}
 
     # Once an official print exists, classify Beat/In-line/Miss correctly, including exact consensus matches.
@@ -8841,8 +8638,8 @@ def render_causal_macro_ai_panel(analysis: dict) -> None:
 
     confidence = int(analysis.get("confidence", 0) or 0)
     relationship = str(analysis.get("relationship_label") or "AI EVIDENCE REVIEW")
-    ai_judgment = _forecast_display_label(analysis.get("ai_judgment") or analysis.get("nowcast")) or "UNKNOWN"
-    final_prediction = _forecast_display_label(analysis.get("final_prediction")) or _forecast_display_label(analysis.get("_quantitative_prediction")) or "UNKNOWN"
+    ai_judgment = (_normalize_ai_judgment(analysis.get("ai_judgment") or analysis.get("nowcast")) or "unknown").upper()
+    final_prediction = (_normalize_ai_judgment(analysis.get("final_prediction")) or _normalize_ai_judgment(analysis.get("_quantitative_prediction")) or "unknown").upper()
     render_html(f"""
     <div class="fc-ai">
       <div class="fc-ai-head">
@@ -11614,44 +11411,10 @@ def render_public_checkout_page() -> None:
 
 
 
-_SESSION_LICENSE_RECHECK_SECONDS = 600  # re-validate a cached session's license this often, not on every rerun
-
-
-def _registry_client_for_key(raw_key: str) -> dict | None:
-    """Find the VIP registry record for a stored session key, if any (admin/static keys have none)."""
-    clean_k = str(raw_key or "").strip().upper()
-    if not clean_k:
-        return None
-    for c in load_vip_registry():
-        if c.get("key") == clean_k:
-            return c
-    return None
-
-
 def restore_authenticated_session() -> dict | None:
     """Restore the existing in-memory or persisted five-day device session without rendering login UI."""
     auth_user = st.session_state.get("APEX_AUTH_USER")
     if auth_user and auth_user.get("is_authenticated"):
-        # A revoked/expired license used to keep working for the entire life of the
-        # cached session because this branch returned immediately with no registry
-        # check. Re-validate periodically (not on every rerun, to stay cheap) so a
-        # revoke/expiry takes effect within a bounded window. Admin sessions and keys
-        # with no matching registry record (static/demo keys) are left untouched --
-        # there is nothing in the registry to revoke for them.
-        if not auth_user.get("is_admin"):
-            checked_at = float(auth_user.get("_license_checked_at", 0) or 0)
-            if time.time() - checked_at > _SESSION_LICENSE_RECHECK_SECONDS:
-                matched = _registry_client_for_key(auth_user.get("key", ""))
-                if matched and not _client_license_is_current(matched):
-                    st.session_state.pop("APEX_AUTH_USER", None)
-                    client_id, _ = get_client_device_info()
-                    sessions = load_sessions_cache()
-                    if client_id in sessions:
-                        sessions.pop(client_id, None)
-                        save_sessions_cache(sessions)
-                    return None
-                auth_user["_license_checked_at"] = time.time()
-                st.session_state["APEX_AUTH_USER"] = auth_user
         return auth_user
 
     client_id, dev_type = get_client_device_info()
@@ -11664,12 +11427,6 @@ def restore_authenticated_session() -> dict | None:
         last_dt = datetime.strptime(dev_session.get("last_active", ""), "%Y-%m-%d %H:%M:%S")
         if (get_current_time() - last_dt).total_seconds() > (5 * 86400):
             return None
-        if not dev_session.get("is_admin", False):
-            matched = _registry_client_for_key(dev_session.get("key", ""))
-            if matched and not _client_license_is_current(matched):
-                sessions.pop(client_id, None)
-                save_sessions_cache(sessions)
-                return None
         dev_session["last_active"] = get_current_time().strftime("%Y-%m-%d %H:%M:%S")
         save_sessions_cache(sessions)
         auto_user = {
@@ -11678,7 +11435,6 @@ def restore_authenticated_session() -> dict | None:
             "expiry_info": dev_session.get("expiry_info", "5-Day Persistent Device Session Active"),
             "is_admin": dev_session.get("is_admin", False),
             "key": dev_session.get("key", ""),
-            "_license_checked_at": time.time(),
         }
         st.session_state["APEX_AUTH_USER"] = auto_user
         return auto_user
@@ -11868,9 +11624,9 @@ def render_admin_key_generator() -> None:
                 "Currency": r.get("currency", ""),
                 "Forecast": r.get("forecast", ""),
                 "Actual": r.get("actual", ""),
-                "Quant": _forecast_display_label(r.get("quantitative_prediction") or r.get("predicted_outcome", "")),
-                "AI": _forecast_display_label(r.get("ai_judgment", "")) or "—",
-                "Final": _forecast_display_label(r.get("final_prediction") or r.get("predicted_outcome", "")),
+                "Quant": str(r.get("quantitative_prediction") or r.get("predicted_outcome", "")).title(),
+                "AI": str(r.get("ai_judgment", "")).title() or "—",
+                "Final": str(r.get("final_prediction") or r.get("predicted_outcome", "")).title(),
                 "Outcome": str(r.get("actual_outcome", "")).title(),
                 "Quant Result": ("Correct" if r.get("quantitative_correct", r.get("correct")) else "Wrong"),
                 "AI Result": ("—" if r.get("ai_correct") is None else ("Correct" if r.get("ai_correct") else "Wrong")),
