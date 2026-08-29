@@ -3841,6 +3841,7 @@ _AI_BATCH_MEMORY: dict | None = None
 _AI_BATCH_MEMORY_LOADED_AT = 0.0
 _AI_BATCH_MEMORY_REFRESH_SECONDS = 5.0
 _AI_BATCH_SUPERVISOR_RUNNING = False
+_AI_BATCH_SUPERVISOR_THREAD = None
 _AI_BATCH_REQUEST_INFLIGHT = False
 _AI_BATCH_POLL_SECONDS = 30
 _AI_BATCH_MEDIUM_DELAY_SECONDS = 15 * 60
@@ -5332,13 +5333,16 @@ def _shared_ai_supervisor_loop() -> None:
             _AI_BATCH_WAKE_EVENT.wait(timeout=_AI_BATCH_POLL_SECONDS)
             _AI_BATCH_WAKE_EVENT.clear()
     finally:
+        global _AI_BATCH_SUPERVISOR_THREAD
         with _AI_BATCH_LOCK:
             _AI_BATCH_SUPERVISOR_RUNNING = False
+            if _AI_BATCH_SUPERVISOR_THREAD is threading.current_thread():
+                _AI_BATCH_SUPERVISOR_THREAD = None
 
 
 def start_shared_background_ai_worker() -> None:
     """Start one process-local supervisor. Page navigation never contacts AI."""
-    global _AI_BATCH_SUPERVISOR_RUNNING
+    global _AI_BATCH_SUPERVISOR_RUNNING, _AI_BATCH_SUPERVISOR_THREAD
     if not DEFAULT_AI_KEY:
         try:
             _ai_diag_update(
@@ -5349,18 +5353,32 @@ def start_shared_background_ai_worker() -> None:
             pass
         return
     with _AI_BATCH_LOCK:
-        if _AI_BATCH_SUPERVISOR_RUNNING:
-            # A fresh page run can still wake an enabled worker if its first
-            # shared result has not been produced yet.
-            if is_ai_enabled() and not get_shared_background_ai_state().get("result"):
+        _thread_alive = bool(
+            _AI_BATCH_SUPERVISOR_THREAD is not None
+            and getattr(_AI_BATCH_SUPERVISOR_THREAD, "is_alive", lambda: False)()
+        )
+        if _AI_BATCH_SUPERVISOR_RUNNING and _thread_alive:
+            if is_ai_enabled():
                 _AI_BATCH_WAKE_EVENT.set()
             return
         _AI_BATCH_SUPERVISOR_RUNNING = True
-    threading.Thread(
-        target=_shared_ai_supervisor_loop,
-        daemon=True,
-        name="ApexMacroSharedAI",
-    ).start()
+        _AI_BATCH_SUPERVISOR_THREAD = threading.Thread(
+            target=_shared_ai_supervisor_loop, daemon=True, name="ApexMacroSharedAI"
+        )
+        _thread = _AI_BATCH_SUPERVISOR_THREAD
+    try:
+        _thread.start()
+        _ai_diag_update("", global_supervisor_status="STARTED",
+                        global_supervisor_started_at=time.time(),
+                        global_supervisor_thread_alive=True)
+    except Exception as exc:
+        with _AI_BATCH_LOCK:
+            _AI_BATCH_SUPERVISOR_RUNNING = False
+            _AI_BATCH_SUPERVISOR_THREAD = None
+        _ai_diag_update("", global_supervisor_status="START_FAILED",
+                        global_supervisor_error=_safe_ai_error_label(str(exc)),
+                        global_supervisor_thread_alive=False)
+        return
     if is_ai_enabled():
         _AI_BATCH_WAKE_EVENT.set()
 
@@ -8210,7 +8228,16 @@ def _request_shared_ai_for_forecaster_event(event: dict) -> None:
             "request_stage": "REQUESTED",
             "queued_at": now_ts,
             "queue_state": "QUEUED",
+            "provider_status": "QUEUED",
+            "http_status": None,
+            "parse_status": None,
+            "last_batch_started": None,
+            "batch_completed_at": None,
+            "retry_after_seconds": None,
+            "gate_remaining_seconds": None,
+            "last_error": "",
             "ui_lookup_found": False,
+            "state_saved": False,
             "event_result_saved": False,
             "ui_wait_timed_out_at": None,
             "updated_at": now_ts,
