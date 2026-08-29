@@ -224,18 +224,8 @@ def _provider_gate_enter() -> dict:
     handle = open(_AI_PROVIDER_GATE_LOCK_FILE, "a+", encoding="utf-8")
     try:
         import fcntl
-        # Never let the shared-AI worker hang indefinitely before it can report
-        # a gate outcome. An active local owner is a normal billing-gate block,
-        # not a reason to block this supervisor thread inside flock().
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            _provider_gate_unlock_local(handle)
-            raise RuntimeError("AI_PROVIDER_LOCAL_LEASE:5.0")
-    except RuntimeError:
-        raise
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
     except Exception:
-        # Platforms without fcntl still retain the durable cross-container gate.
         pass
 
     now_ts = time.time()
@@ -4920,52 +4910,15 @@ def _run_shared_ai_batch_once() -> None:
             return
         if state.get("last_attempt_signature") == signature:
             last_attempt = float(state.get("last_attempt_at", 0) or 0)
-            # last_attempt_at is written BEFORE the provider gate. Therefore it
-            # cannot, by itself, prove that a paid HTTP attempt occurred. In a
-            # multi-replica deployment an older full-state diagnostic write can
-            # also resurrect that reservation after another replica cleared it.
-            # Only apply the long provider-error backoff when the durable billing
-            # gate proves that this reservation actually won a paid-provider slot.
-            _gate_state = _provider_gate_state_read()
-            _provider_started_at = float(_gate_state.get("last_started_at", 0.0) or 0.0)
-            _attempt_reached_provider_gate = (
-                last_attempt > 0.0
-                and _provider_started_at > 0.0
-                and abs(_provider_started_at - last_attempt) <= 8.0
-            )
-            if not _attempt_reached_provider_gate:
-                # Unspent/stale reservation: keep the explicit Forecaster request
-                # queued and let the real provider hard-minimum/lease decide.
-                state["last_attempt_signature"] = ""
-                state["last_attempt_at"] = 0.0
-                state["last_paid_reserved_at"] = 0.0
-                state["last_paid_reserved_at_iso"] = ""
-                state["pending_trigger_due"] = True
-                _ai_batch_save_state(state)
-                for _code in requested_event_codes:
-                    _ai_diag_update(
-                        str(_code),
-                        queue_state="QUEUED",
-                        provider_status="READY_FOR_PROVIDER_GATE",
-                        retry_after_seconds=0.0,
-                        event_included=(_code in included_codes),
-                    )
-            else:
-                # A failed very-first REAL provider attempt retries sooner; once a
-                # valid result exists, retain the long provider-error backoff.
-                has_result = isinstance(state.get("result"), dict) and bool(state.get("result"))
-                backoff = _AI_BATCH_ERROR_BACKOFF_SECONDS if has_result else _AI_BATCH_FIRST_RESULT_RETRY_SECONDS
-                if time.time() - last_attempt < backoff:
-                    _remaining = max(0.0, backoff - (time.time() - last_attempt))
-                    for _code in requested_event_codes:
-                        _ai_diag_update(
-                            str(_code),
-                            queue_state="QUEUED",
-                            provider_status="RETRY_BACKOFF_AFTER_PROVIDER_ATTEMPT",
-                            retry_after_seconds=round(_remaining, 1),
-                            event_included=(_code in included_codes),
-                        )
-                    return
+            # A failed very-first batch must not leave the whole desk stuck on
+            # "preparing" for the normal 15-minute steady-state backoff.
+            # Retry the bootstrap batch after two minutes until the first valid
+            # shared result exists. Once a valid result exists, retain the long
+            # backoff so provider errors cannot create repeated paid requests.
+            has_result = isinstance(state.get("result"), dict) and bool(state.get("result"))
+            backoff = _AI_BATCH_ERROR_BACKOFF_SECONDS if has_result else _AI_BATCH_FIRST_RESULT_RETRY_SECONDS
+            if time.time() - last_attempt < backoff:
+                return
 
         # Admin may switch AI OFF while data/news are being collected. Re-check
         # immediately before the only billable operation.
@@ -5238,45 +5191,23 @@ Do not mathematically count the same precursor/news evidence twice merely becaus
         })
     except Exception as exc:
         err = str(exc)
-        if (err.startswith("AI_PROVIDER_HARD_COOLDOWN:")
-                or err.startswith("AI_PROVIDER_GLOBAL_LEASE:")
-                or err.startswith("AI_PROVIDER_LOCAL_LEASE:")):
+        if err.startswith("AI_PROVIDER_HARD_COOLDOWN:") or err.startswith("AI_PROVIDER_GLOBAL_LEASE:"):
             try:
                 remaining = float(err.split(":", 1)[1])
             except Exception:
                 remaining = _AI_PROVIDER_HARD_MIN_SECONDS
-            state = _ai_batch_load_state(force_refresh=True)
+            state = _ai_batch_load_state()
             state["provider_gate_blocked_at"] = time.time()
             state["provider_gate_remaining_seconds"] = round(max(0.0, remaining), 1)
-            # Critical: reaching a CLOSED provider gate is not a provider
-            # attempt. The old code had already written last_attempt_signature
-            # before _post_ai_chat(), so a harmless lease/cooldown collision
-            # could activate the 15-minute error backoff and strand a newly
-            # requested Forecaster event. Remove only this unspent reservation;
-            # the real provider hard-minimum/lease remains fully authoritative.
-            if state.get("last_attempt_signature") == signature:
-                state["last_attempt_signature"] = ""
-                state["last_attempt_at"] = 0.0
-                state["last_paid_reserved_at"] = 0.0
-                state["last_paid_reserved_at_iso"] = ""
-            state["pending_trigger_due"] = True
-            if float(state.get("pending_trigger_since", 0) or 0) <= 0:
-                state["pending_trigger_since"] = time.time()
             _ai_batch_save_state(state)
-            _block_kind = (
-                "LOCAL_LOCK_BUSY" if err.startswith("AI_PROVIDER_LOCAL_LEASE:")
-                else "HARD_COOLDOWN" if err.startswith("AI_PROVIDER_HARD_COOLDOWN:")
-                else "GLOBAL_LEASE_BUSY"
-            )
             for _code in set(state.get("requested_forecaster_event_codes", []) or []):
                 _ai_diag_update(
-                    str(_code), queue_state="BLOCKED_BY_GATE", provider_status=_block_kind,
+                    str(_code), queue_state="BLOCKED_BY_GATE", provider_status="BLOCKED",
                     last_error="", gate_remaining_seconds=round(max(0.0, remaining), 1),
                 )
-            _ai_audit_append("blocked", "Paid AI request blocked by provider billing gate", {
+            _ai_audit_append("blocked", "Paid AI request blocked by global provider billing gate", {
                 "remaining_seconds": round(max(0.0, remaining), 1),
-                "gate": _block_kind,
-                "rule": "90-second hard minimum + local/process lock + cross-container durable lease",
+                "rule": "90-second hard minimum + cross-container durable lease",
             })
         else:
             state = _ai_batch_load_state()
@@ -5301,97 +5232,39 @@ Do not mathematically count the same precursor/news evidence twice merely becaus
 
 
 def _shared_ai_supervisor_loop() -> None:
-    """Resilient process-local supervisor for the ONE shared paid-AI batch.
-
-    A non-provider exception in validation/collection must never kill the daemon
-    and strand explicit Forecaster requests in QUEUED forever.
-    """
     global _AI_BATCH_SUPERVISOR_RUNNING
     try:
         while True:
-            try:
-                _ai_diag_update(
-                    "",
-                    global_supervisor_heartbeat=time.time(),
-                    global_supervisor_status="RUNNING",
-                    global_supervisor_thread_alive=True,
-                    global_supervisor_error="",
-                )
-                try:
-                    _check_ai_price_validations()
-                except Exception as exc:
-                    # Price-validation is auxiliary. It must not prevent the
-                    # Forecaster Causal-AI queue from reaching the shared batch.
-                    _ai_diag_update(
-                        "",
-                        global_validation_error=_safe_ai_error_label(str(exc)),
-                        global_validation_error_at=time.time(),
-                    )
-                if is_ai_enabled(force_refresh=True):
-                    _run_shared_ai_batch_once()
-                else:
-                    _ai_diag_update("", global_supervisor_status="AI_DISABLED")
-            except Exception as exc:
-                # Keep the supervisor alive. _run_shared_ai_batch_once normally
-                # contains its own error handling; this catches failures before
-                # that boundary (or future auxiliary code regressions).
-                _ai_diag_update(
-                    "",
-                    global_supervisor_status="ITERATION_ERROR",
-                    global_supervisor_error=_safe_ai_error_label(str(exc)),
-                    global_supervisor_error_at=time.time(),
-                )
-            # Wake-ups remain free: they only re-check durable state and the
-            # existing gates; they never bypass shared batching/cost protection.
+            _check_ai_price_validations()
+            if is_ai_enabled(force_refresh=True):
+                _run_shared_ai_batch_once()
+            # Event wake-up makes Admin Enable immediate; ordinary polling still
+            # checks for meaningful changed news/data without page-triggered calls.
             _AI_BATCH_WAKE_EVENT.wait(timeout=_AI_BATCH_POLL_SECONDS)
             _AI_BATCH_WAKE_EVENT.clear()
     finally:
-        global _AI_BATCH_SUPERVISOR_THREAD
         with _AI_BATCH_LOCK:
             _AI_BATCH_SUPERVISOR_RUNNING = False
-            if _AI_BATCH_SUPERVISOR_THREAD is threading.current_thread():
-                _AI_BATCH_SUPERVISOR_THREAD = None
 
 
 def start_shared_background_ai_worker() -> None:
     """Start one process-local supervisor. Page navigation never contacts AI."""
-    global _AI_BATCH_SUPERVISOR_RUNNING, _AI_BATCH_SUPERVISOR_THREAD
+    global _AI_BATCH_SUPERVISOR_RUNNING
     if not DEFAULT_AI_KEY:
-        try:
-            _ai_diag_update(
-                "", global_supervisor_status="NO_PROVIDER_KEY",
-                global_supervisor_error="AI provider key is not configured.",
-            )
-        except Exception:
-            pass
         return
     with _AI_BATCH_LOCK:
-        _thread_alive = bool(
-            _AI_BATCH_SUPERVISOR_THREAD is not None
-            and getattr(_AI_BATCH_SUPERVISOR_THREAD, "is_alive", lambda: False)()
-        )
-        if _AI_BATCH_SUPERVISOR_RUNNING and _thread_alive:
-            if is_ai_enabled():
+        if _AI_BATCH_SUPERVISOR_RUNNING:
+            # A fresh page run can still wake an enabled worker if its first
+            # shared result has not been produced yet.
+            if is_ai_enabled() and not get_shared_background_ai_state().get("result"):
                 _AI_BATCH_WAKE_EVENT.set()
             return
         _AI_BATCH_SUPERVISOR_RUNNING = True
-        _AI_BATCH_SUPERVISOR_THREAD = threading.Thread(
-            target=_shared_ai_supervisor_loop, daemon=True, name="ApexMacroSharedAI"
-        )
-        _thread = _AI_BATCH_SUPERVISOR_THREAD
-    try:
-        _thread.start()
-        _ai_diag_update("", global_supervisor_status="STARTED",
-                        global_supervisor_started_at=time.time(),
-                        global_supervisor_thread_alive=True)
-    except Exception as exc:
-        with _AI_BATCH_LOCK:
-            _AI_BATCH_SUPERVISOR_RUNNING = False
-            _AI_BATCH_SUPERVISOR_THREAD = None
-        _ai_diag_update("", global_supervisor_status="START_FAILED",
-                        global_supervisor_error=_safe_ai_error_label(str(exc)),
-                        global_supervisor_thread_alive=False)
-        return
+    threading.Thread(
+        target=_shared_ai_supervisor_loop,
+        daemon=True,
+        name="ApexMacroSharedAI",
+    ).start()
     if is_ai_enabled():
         _AI_BATCH_WAKE_EVENT.set()
 
@@ -8228,77 +8101,26 @@ def _request_shared_ai_for_forecaster_event(event: dict) -> None:
         state["requested_forecaster_events"] = requested_payloads
         diag = dict(state.get("causal_ai_diagnostics", {}) or {})
         prior_diag = dict(diag.get(code, {}) or {})
-        _prior_requested_at = float(prior_diag.get("requested_at", 0.0) or 0.0)
-        _prior_queue_state = str(prior_diag.get("queue_state", "") or "").upper()
-        _already_pending = (
-            code in requested
-            and _prior_queue_state in {"QUEUED", "RUNNING", "BLOCKED_BY_GATE"}
-            and _prior_requested_at > 0.0
-        )
-        # IMPORTANT: Streamlit/dialog reruns can call this function repeatedly.
-        # Once the durable request exists, never reset provider/batch diagnostics:
-        # doing so used to overwrite RUNNING/BLOCKED state with QUEUED and could
-        # race a worker write in another replica. Re-opening only refreshes the
-        # free supervisor wake; it does not create a new paid request.
-        if _already_pending:
-            prior_diag["event_identity"] = _event_identity(event)
-            prior_diag["request_stage"] = "REQUESTED"
-            prior_diag["last_ui_wake_at"] = now_ts
-            prior_diag["updated_at"] = now_ts
-            diag[code] = prior_diag
-        else:
-            _display_requested_at = now_ts if (
-                not _prior_requested_at or now_ts - _prior_requested_at > 6 * 60
-            ) else _prior_requested_at
-            diag[code] = {
-                **prior_diag,
-                "event_identity": _event_identity(event),
-                "requested_at": _display_requested_at,
-                "request_stage": "REQUESTED",
-                "queued_at": now_ts,
-                "queue_state": "QUEUED",
-                "provider_status": "QUEUED",
-                "http_status": None,
-                "parse_status": None,
-                "last_batch_started": None,
-                "batch_completed_at": None,
-                "retry_after_seconds": None,
-                "gate_remaining_seconds": None,
-                "last_error": "",
-                "ui_lookup_found": False,
-                "state_saved": False,
-                "event_result_saved": False,
-                "ui_wait_timed_out_at": None,
-                "updated_at": now_ts,
-            }
+        diag[code] = {
+            **prior_diag,
+            "event_identity": _event_identity(event),
+            "requested_at": float(prior_diag.get("requested_at", 0.0) or now_ts),
+            "request_stage": "REQUESTED",
+            "queued_at": now_ts,
+            "queue_state": "QUEUED",
+            "ui_lookup_found": False,
+            "event_result_saved": False,
+            "updated_at": now_ts,
+        }
         state["causal_ai_diagnostics"] = diag
         _ai_batch_save_state(state)
         # Critical: a wake flag is useless in a Streamlit replica/process that has
         # no supervisor thread. Starting the existing singleton supervisor is free
         # and does NOT contact the provider from the event/modal path.
-        # Set the wake before AND after startup. If the singleton already exists
-        # it wakes immediately; if it is being created, the initial loop also sees
-        # the durable request. No provider call occurs on this UI path.
-        _AI_BATCH_WAKE_EVENT.set()
         start_shared_background_ai_worker()
         _AI_BATCH_WAKE_EVENT.set()
-        _ai_diag_update(
-            code,
-            supervisor_requested=True,
-            supervisor_requested_at=time.time(),
-        )
-    except Exception as exc:
-        # Never let a hidden scheduling exception masquerade as a healthy QUEUED
-        # state. This is diagnostic only and does not contact the provider.
-        try:
-            _ai_diag_update(
-                code if 'code' in locals() else "",
-                queue_state="ERROR",
-                provider_status="SCHEDULER_ERROR",
-                last_error=_safe_ai_error_label(str(exc)),
-            )
-        except Exception:
-            pass
+    except Exception:
+        pass
 
 
 def _ensure_forecaster_background_worker(events: list[dict], fred_key: str, channel_name: str, actuals_cache: dict, force_ai: bool = False) -> None:
@@ -8358,13 +8180,6 @@ def _render_forecaster_causal_ai_live(event: dict, nowcast: dict, auth_user: dic
     if status == "not_requested" and is_ai_enabled(force_refresh=True):
         _request_shared_ai_for_forecaster_event(event)
         analysis = {"status": "deferred", "state": "QUEUED", "raw": "Causal AI is queued in the shared background batch."}
-        status = "deferred"
-    elif status in {"updating", "deferred", "blocked", "timeout"} and is_ai_enabled(force_refresh=True):
-        # Free watchdog only: verifies/restarts the process-local supervisor.
-        # It never calls the provider from the Streamlit fragment and therefore
-        # cannot bypass batching, leases, cooldowns or billing protection.
-        start_shared_background_ai_worker()
-        _AI_BATCH_WAKE_EVENT.set()
 
     if analysis.get("status") == "ok":
         _live_text = analysis.get("event_assessment", "") or nowcast.get("outcome_desc", "")
@@ -8400,31 +8215,6 @@ def _render_forecaster_causal_ai_live(event: dict, nowcast: dict, auth_user: dic
         _, found_key = _shared_ai_event_result(event, state)
         with st.expander("🧪 Causal AI Diagnostics", expanded=False):
             st.caption("Admin-only. No API keys, tokens or prompt bodies are shown.")
-            _batch_started = float(diag.get("last_batch_started", 0.0) or 0.0)
-            _global_http_at = float(gdiag.get("http_response_at", 0.0) or 0.0)
-            _current_http = diag.get("http_status")
-            if _current_http is None:
-                _current_http = (
-                    gdiag.get("http_status")
-                    if _batch_started > 0.0 and _global_http_at >= _batch_started
-                    else None
-                )
-            _heartbeat = float(gdiag.get("supervisor_heartbeat", 0.0) or 0.0)
-            _heartbeat_age = round(max(0.0, time.time() - _heartbeat), 1) if _heartbeat else None
-            _local_thread_alive = bool(
-                _AI_BATCH_SUPERVISOR_THREAD is not None
-                and getattr(_AI_BATCH_SUPERVISOR_THREAD, "is_alive", lambda: False)()
-            )
-            _state_error_at = float(state.get("last_error_at", 0.0) or 0.0)
-            _request_at = float(diag.get("requested_at", 0.0) or 0.0)
-            _current_error = (
-                diag.get("last_error")
-                or (
-                    _safe_ai_error_label(state.get("last_error"))
-                    if state.get("last_error") and (_request_at <= 0.0 or _state_error_at >= _request_at)
-                    else ""
-                )
-            )
             st.json({
                 "Event identity": diag.get("event_identity") or _event_identity(event),
                 "Event code": code,
@@ -8435,21 +8225,13 @@ def _render_forecaster_causal_ai_live(event: dict, nowcast: dict, auth_user: dic
                 "Last batch started": diag.get("last_batch_started"),
                 "Was event included?": diag.get("event_included"),
                 "Provider status": diag.get("provider_status") or gdiag.get("provider_status"),
-                "Current request HTTP status": _current_http,
-                "Last provider HTTP status (global)": gdiag.get("http_status"),
+                "HTTP status": gdiag.get("http_status"),
                 "Parse status": diag.get("parse_status"),
                 "Batch completed at": diag.get("batch_completed_at"),
                 "Event result saved?": bool(diag.get("event_result_saved")),
                 "UI lookup found result?": bool(found_key),
                 "Matched persisted key": found_key or None,
-                "Last error for this request": _current_error,
-                "Supervisor status": gdiag.get("supervisor_status"),
-                "Supervisor heartbeat age seconds": _heartbeat_age,
-                "Supervisor thread alive in this process": _local_thread_alive,
-                "Supervisor started at": gdiag.get("supervisor_started_at"),
-                "Supervisor last error": gdiag.get("supervisor_error") or "",
-                "Gate remaining seconds": diag.get("gate_remaining_seconds"),
-                "Retry after seconds": diag.get("retry_after_seconds"),
+                "Last error": diag.get("last_error") or (_safe_ai_error_label(state.get("last_error")) if state.get("last_error") else ""),
                 "Persistent state timestamp": state.get("updated_at_iso") or state.get("updated_at"),
             })
 
