@@ -130,6 +130,13 @@ _FOREX_FACTORY_DIAGNOSTICS: dict[str, object] = {
     "cache_status": "empty",
     "rolling_window": "",
     "daily_counts": {},
+    # Per-source technical status (SOURCE_OK / SOURCE_EMPTY / HTTP_ERROR /
+    # BLOCKED / TIMEOUT / INVALID_RESPONSE / SCHEMA_CHANGED), Admin-only.
+    "source_status_detail": {},
+    # fresh_full / fresh_partial_plus_preserved / fresh_partial_only /
+    # stale_fallback / empty — whether the returned window is entirely fresh,
+    # a merge of fresh + last-known-good, or a stale/empty fallback.
+    "coverage_status": "",
 }
 
 
@@ -785,6 +792,88 @@ def _parse_forex_factory_html(html_text: str, start_date, end_date) -> list[dict
     return rows
 
 
+_FF_JSON_URLS = (
+    "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+    "https://nfs.faireconomy.media/ff_calendar_nextweek.json",
+)
+
+
+def _fetch_ff_json_feeds_normalized() -> tuple[list[dict], dict[str, str]]:
+    """Fetch and normalize the public FairEconomy JSON calendar feed(s).
+
+    No date-window filtering happens here; callers filter to their own window.
+    `ff_calendar_nextweek.json` is not a documented/stable FairEconomy endpoint
+    (verified to return 404 as of this fix) but is still attempted defensively
+    in case it is published later — a 404 there is cheap and harmless.
+
+    Returns (rows, status_by_source). Each status is one of SOURCE_OK,
+    SOURCE_EMPTY, HTTP_ERROR[_<code>], BLOCKED, TIMEOUT, INVALID_RESPONSE,
+    SCHEMA_CHANGED — Admin-diagnostic only, never surfaced to normal users.
+    """
+    aliases = {
+        "Red": "High", "Orange": "Medium", "Yellow": "Low",
+        "High Impact": "High", "Medium Impact": "Medium", "Low Impact": "Low",
+    }
+    rows: list[dict] = []
+    status_by_source: dict[str, str] = {}
+    for json_url in _FF_JSON_URLS:
+        source_key = json_url.rsplit("/", 1)[-1]
+        try:
+            jr = requests.get(json_url, timeout=8, headers=_FF_BROWSER_HEADERS)
+        except requests.exceptions.Timeout:
+            status_by_source[source_key] = "TIMEOUT"
+            continue
+        except requests.exceptions.RequestException:
+            status_by_source[source_key] = "HTTP_ERROR"
+            continue
+        except Exception:
+            status_by_source[source_key] = "HTTP_ERROR"
+            continue
+
+        if jr.status_code in (403, 429):
+            status_by_source[source_key] = "BLOCKED"
+            continue
+        if jr.status_code != 200:
+            status_by_source[source_key] = f"HTTP_ERROR_{jr.status_code}"
+            continue
+        try:
+            payload = jr.json()
+        except Exception:
+            status_by_source[source_key] = "INVALID_RESPONSE"
+            continue
+        if not isinstance(payload, list):
+            status_by_source[source_key] = "SCHEMA_CHANGED"
+            continue
+        if not payload:
+            status_by_source[source_key] = "SOURCE_EMPTY"
+            continue
+
+        found = 0
+        for row in payload:
+            if not isinstance(row, dict):
+                continue
+            title = str(row.get("title") or row.get("event") or row.get("name") or "").strip()
+            country = str(row.get("country") or row.get("currency") or "").strip().upper()
+            raw_date = row.get("date") or row.get("datetime") or row.get("time")
+            if not title or not country or not raw_date:
+                continue
+            raw_impact = str(row.get("impact") or "").strip()
+            rows.append({
+                **row,
+                "title": title,
+                "country": country,
+                "impact": aliases.get(raw_impact.title(), raw_impact.title()) or "Low",
+                "date": raw_date,
+                "forecast": row.get("forecast", ""),
+                "previous": row.get("previous", ""),
+                "actual": row.get("actual", ""),
+                "source": "FairEconomy/Forex Factory JSON",
+            })
+            found += 1
+        status_by_source[source_key] = "SOURCE_OK" if found else "SOURCE_EMPTY"
+    return rows, status_by_source
+
+
 def fetch_forex_factory_calendar(force_refresh: bool = False) -> list[dict]:
     """
     Load and normalize the live Forex Factory weekly calendar.
@@ -936,9 +1025,21 @@ def fetch_forex_factory_calendar_week(week_offset: int = 0) -> list[dict]:
     return []
 
 
-def fetch_forex_factory_calendar_range(start_date, end_date) -> list[dict]:
-    """Fetch an exact Forex Factory calendar date range from the public calendar page.
-    Times published by Forex Factory are interpreted in Europe/London and converted to UTC ISO timestamps.
+def fetch_forex_factory_calendar_range(start_date, end_date, *, json_fallback: bool = True) -> list[dict]:
+    """Fetch an exact Forex Factory calendar date range.
+
+    Primary: the public calendar HTML page (kept for when Cloudflare's
+    bot-protection ever allows it through). Fallback (when json_fallback=True,
+    the default): the FairEconomy JSON feed(s), filtered to the exact requested
+    range, so callers such as Forecaster board navigation do not silently get
+    an empty list whenever the HTML endpoint is blocked (verified 403 as of
+    this fix). `json_fallback=False` is used internally by the rolling fetcher,
+    which already tries the JSON feeds itself and does not need this function
+    to repeat that work.
+
+    Times published by Forex Factory are interpreted in Europe/London (HTML
+    path) or the feed's own UTC offset (JSON fallback path) and converted to
+    UTC ISO timestamps.
     """
     try:
         if isinstance(start_date, datetime):
@@ -955,12 +1056,44 @@ def fetch_forex_factory_calendar_range(start_date, end_date) -> list[dict]:
             "https://www.forexfactory.com/calendar?range="
             f"{_ff_range_date(start_date)}-{_ff_range_date(end_date)}"
         )
-        r = requests.get(url, timeout=14, headers=_FF_BROWSER_HEADERS)
+        r = requests.get(url, timeout=10, headers=_FF_BROWSER_HEADERS)
         if r.status_code == 200 and r.text:
-            return _parse_forex_factory_html(r.text, start_date, end_date)
+            html_rows = _parse_forex_factory_html(r.text, start_date, end_date)
+            if html_rows:
+                _FOREX_FACTORY_DIAGNOSTICS["source_status_detail"]["html_range"] = "SOURCE_OK"
+                return html_rows
+            _FOREX_FACTORY_DIAGNOSTICS["source_status_detail"]["html_range"] = "SOURCE_EMPTY"
+        elif r.status_code in (403, 429):
+            _FOREX_FACTORY_DIAGNOSTICS["source_status_detail"]["html_range"] = "BLOCKED"
+        else:
+            _FOREX_FACTORY_DIAGNOSTICS["source_status_detail"]["html_range"] = f"HTTP_ERROR_{r.status_code}"
+    except requests.exceptions.Timeout:
+        _FOREX_FACTORY_DIAGNOSTICS["source_status_detail"]["html_range"] = "TIMEOUT"
     except Exception as e:
         _FOREX_FACTORY_DIAGNOSTICS["last_error"] = str(e)
-    return []
+        _FOREX_FACTORY_DIAGNOSTICS["source_status_detail"]["html_range"] = "HTTP_ERROR"
+
+    if not json_fallback:
+        return []
+
+    json_rows, json_status = _fetch_ff_json_feeds_normalized()
+    _FOREX_FACTORY_DIAGNOSTICS["source_status_detail"].update(
+        {f"range_fallback_{k}": v for k, v in json_status.items()}
+    )
+    if not json_rows:
+        return []
+    filtered = []
+    for row in json_rows:
+        try:
+            dt = datetime.fromisoformat(str(row.get("date", "")).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            local_day = dt.astimezone(timezone.utc).date()
+        except Exception:
+            continue
+        if start_date <= local_day <= end_date:
+            filtered.append(row)
+    return filtered
 
 
 def _update_ff_cache_and_diagnostics(events: list[dict], tier_name: str) -> None:
@@ -995,12 +1128,25 @@ def get_forex_factory_diagnostics() -> dict[str, object]:
 
 def fetch_forex_factory_calendar_rolling(days: int = 7, tz_offset: int = 3, force_refresh: bool = False) -> list[dict]:
     """Return a true rolling Today + N-1 day Forex Factory window.
-    Strategy:
-      Tier 1) exact range page (fast path),
-      Tier 2) each calendar day separately (robust fallback for future dates),
-      Tier 3) weekly pages (week=this and week=next),
-      Tier 4) FairEconomy weekly JSON feed,
-      Tier 5) Persistent/memory cache fallback.
+
+    Source order (2026 fix): forexfactory.com's HTML calendar now sits behind
+    Cloudflare bot-protection and returns HTTP 403 Forbidden for automated
+    requests on every path this fetcher used to rely on (verified live:
+    ?week=this, ?week=next, ?day=..., ?range=...). The FairEconomy JSON feed is
+    the only endpoint that still answers reliably, so it is tried FIRST. The
+    HTML tiers remain as a fallback (kept in case that protection is ever
+    relaxed) but a single BLOCKED response short-circuits the remaining HTML
+    attempts, instead of burning 100+ seconds retrying the same wall on every
+    refresh — that latency, not missing data, was the main reason the
+    Forecaster looked broken on both desktop and mobile.
+
+      Tier A) FairEconomy JSON feed(s) — reliable primary source
+      Tier B) HTML exact-range page (fallback)
+      Tier C) HTML per-day pages (fallback; skipped once BLOCKED is seen)
+      Tier D) HTML weekly pages (fallback; skipped once BLOCKED is seen)
+      Tier E) Persistent/memory last-known-good (used only if Tier A produced
+              nothing at all for the window; partial Tier A coverage is merged
+              with last-known-good instead of falling through to here)
     """
     global _FOREX_FACTORY_LAST_GOOD_EVENTS, _FOREX_FACTORY_LAST_GOOD_AT, _FOREX_FACTORY_DIAGNOSTICS
 
@@ -1008,6 +1154,8 @@ def fetch_forex_factory_calendar_rolling(days: int = 7, tz_offset: int = 3, forc
     now_utc = datetime.now(timezone.utc)
     today_local = (now_utc + timedelta(hours=tz_offset)).date()
     end_local = today_local + timedelta(days=safe_days - 1)
+    window_days = [today_local + timedelta(days=i) for i in range(safe_days)]
+    window_days_set = set(window_days)
 
     with _FOREX_FACTORY_LAST_GOOD_LOCK:
         if (not force_refresh and _FOREX_FACTORY_LAST_GOOD_EVENTS and
@@ -1030,132 +1178,149 @@ def fetch_forex_factory_calendar_rolling(days: int = 7, tz_offset: int = 3, forc
             out.append(dict(row))
         return out
 
+    def _local_day_of(row):
+        try:
+            dt = datetime.fromisoformat(str(row.get("date", "")).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return (dt.astimezone(timezone.utc) + timedelta(hours=tz_offset)).date()
+        except Exception:
+            return None
+
     _FOREX_FACTORY_DIAGNOSTICS["last_fetch_ts"] = time.time()
     _FOREX_FACTORY_DIAGNOSTICS["last_fetch_time"] = now_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
     _FOREX_FACTORY_DIAGNOSTICS["rolling_window"] = f"{today_local.isoformat()} to {end_local.isoformat()}"
+    _FOREX_FACTORY_DIAGNOSTICS["source_status_detail"] = {}
 
-    # ── Tier 1: HTML Range Request ──────────────────────────
-    t1_rows = fetch_forex_factory_calendar_range(today_local, end_local)
+    # ── Tier A: FairEconomy JSON feed(s) ──────────────────────────
+    json_rows, json_status = _fetch_ff_json_feeds_normalized()
+    _FOREX_FACTORY_DIAGNOSTICS["source_status_detail"].update(json_status)
+    windowed = [row for row in json_rows if _local_day_of(row) in window_days_set]
+    _FOREX_FACTORY_DIAGNOSTICS["tier4_json_count"] = len(windowed)
+    _FOREX_FACTORY_DIAGNOSTICS["tier4_json_sources"] = dict(json_status)
+
+    if windowed:
+        deduped = _dedupe(windowed)
+        covered_days = {d for d in window_days if any(_local_day_of(r) == d for r in deduped)}
+        if len(covered_days) >= safe_days:
+            _update_ff_cache_and_diagnostics(deduped, "Tier A: FairEconomy JSON")
+            _FOREX_FACTORY_DIAGNOSTICS["coverage_status"] = "fresh_full"
+            return deduped
+
+        # Partial coverage: FairEconomy's JSON export is bound to Forex
+        # Factory's own calendar week and there is no legitimate "next week"
+        # endpoint (verified 404), so the feed structurally cannot reach every
+        # day once the rolling window crosses a week boundary. Merge the fresh
+        # data for the days it DOES cover with the most recent known-good
+        # events for the remaining days, instead of silently truncating a real
+        # dataset down to an empty-looking calendar (see Part 8/9 policy).
+        with _FOREX_FACTORY_LAST_GOOD_LOCK:
+            candidate_pool = [dict(item) for item in _FOREX_FACTORY_LAST_GOOD_EVENTS]
+        if not candidate_pool:
+            saved_state = _load_persistent_state("forex_factory_schedule_state", FF_SCHEDULE_FILE, [])
+            if isinstance(saved_state, list):
+                candidate_pool = saved_state
+        preserved = [
+            dict(row) for row in candidate_pool
+            if _local_day_of(row) in window_days_set and _local_day_of(row) not in covered_days
+        ]
+        merged = _dedupe(deduped + preserved)
+        if merged:
+            _update_ff_cache_and_diagnostics(
+                merged, "Tier A: FairEconomy JSON (partial) + preserved last-known-good"
+            )
+            _FOREX_FACTORY_DIAGNOSTICS["coverage_status"] = (
+                "fresh_partial_plus_preserved" if preserved else "fresh_partial_only"
+            )
+            return merged
+
+    # ── HTML fallback tiers. Kept for resilience; circuit-break on the first
+    # BLOCKED response so a Cloudflare wall cannot stall a refresh. ──
+    html_blocked = False
+
+    # Tier B: HTML exact-range page (json_fallback=False: Tier A already tried
+    # the JSON feeds above, no need to repeat that work here).
+    t1_rows = fetch_forex_factory_calendar_range(today_local, end_local, json_fallback=False)
     _FOREX_FACTORY_DIAGNOSTICS["tier1_range_count"] = len(t1_rows)
+    if _FOREX_FACTORY_DIAGNOSTICS["source_status_detail"].get("html_range") == "BLOCKED":
+        html_blocked = True
     if t1_rows and len(t1_rows) >= 5:
         deduped = _dedupe(t1_rows)
-        _update_ff_cache_and_diagnostics(deduped, "Tier 1: HTML Range")
+        _update_ff_cache_and_diagnostics(deduped, "Tier B: HTML Range")
+        _FOREX_FACTORY_DIAGNOSTICS["coverage_status"] = "fresh_full"
         return deduped
 
-    # ── Tier 2: Individual Day Pages ─────────────────────────
+    # Tier C: Individual Day Pages (skipped once the domain is known BLOCKED)
     daily_rows = []
-    for i in range(safe_days):
-        day = today_local + timedelta(days=i)
-        try:
-            day_url = f"https://www.forexfactory.com/calendar?day={day.strftime('%b').lower()}{day.day}.{day.year}"
-            r = requests.get(day_url, timeout=8, headers=_FF_BROWSER_HEADERS)
-            if r.status_code == 200 and r.text:
-                batch = _parse_forex_factory_html(r.text, day, day)
-                if batch:
-                    daily_rows.extend(batch)
-        except Exception:
-            pass
+    if not html_blocked:
+        for i in range(safe_days):
+            day = today_local + timedelta(days=i)
+            try:
+                day_url = f"https://www.forexfactory.com/calendar?day={day.strftime('%b').lower()}{day.day}.{day.year}"
+                r = requests.get(day_url, timeout=6, headers=_FF_BROWSER_HEADERS)
+                if r.status_code in (403, 429):
+                    html_blocked = True
+                    _FOREX_FACTORY_DIAGNOSTICS["source_status_detail"]["html_daily"] = "BLOCKED"
+                    break
+                if r.status_code == 200 and r.text:
+                    batch = _parse_forex_factory_html(r.text, day, day)
+                    if batch:
+                        daily_rows.extend(batch)
+            except requests.exceptions.Timeout:
+                _FOREX_FACTORY_DIAGNOSTICS["source_status_detail"]["html_daily"] = "TIMEOUT"
+            except Exception:
+                _FOREX_FACTORY_DIAGNOSTICS["source_status_detail"]["html_daily"] = "HTTP_ERROR"
     _FOREX_FACTORY_DIAGNOSTICS["tier2_daily_count"] = len(daily_rows)
     if daily_rows and len(daily_rows) >= 5:
         deduped = _dedupe(daily_rows)
-        _update_ff_cache_and_diagnostics(deduped, "Tier 2: Daily Pages")
+        _update_ff_cache_and_diagnostics(deduped, "Tier C: Daily Pages")
+        _FOREX_FACTORY_DIAGNOSTICS["coverage_status"] = "fresh_full"
         return deduped
 
-    # ── Tier 3: Weekly Pages (this + next week) ──────────────
+    # Tier D: Weekly Pages (this + next week; skipped once BLOCKED is known)
     weekly_rows = []
-    for w_slug in ("this", "next"):
-        try:
-            w_url = f"https://www.forexfactory.com/calendar?week={w_slug}"
-            r = requests.get(w_url, timeout=10, headers=_FF_BROWSER_HEADERS)
-            if r.status_code == 200 and r.text:
-                w_batch = _parse_forex_factory_html(r.text, today_local, end_local)
-                if w_batch:
-                    weekly_rows.extend(w_batch)
-        except Exception:
-            pass
+    if not html_blocked:
+        for w_slug in ("this", "next"):
+            try:
+                w_url = f"https://www.forexfactory.com/calendar?week={w_slug}"
+                r = requests.get(w_url, timeout=6, headers=_FF_BROWSER_HEADERS)
+                if r.status_code in (403, 429):
+                    html_blocked = True
+                    _FOREX_FACTORY_DIAGNOSTICS["source_status_detail"]["html_weekly"] = "BLOCKED"
+                    break
+                if r.status_code == 200 and r.text:
+                    w_batch = _parse_forex_factory_html(r.text, today_local, end_local)
+                    if w_batch:
+                        weekly_rows.extend(w_batch)
+            except requests.exceptions.Timeout:
+                _FOREX_FACTORY_DIAGNOSTICS["source_status_detail"]["html_weekly"] = "TIMEOUT"
+            except Exception:
+                _FOREX_FACTORY_DIAGNOSTICS["source_status_detail"]["html_weekly"] = "HTTP_ERROR"
     _FOREX_FACTORY_DIAGNOSTICS["tier3_weekly_count"] = len(weekly_rows)
     if weekly_rows and len(weekly_rows) >= 3:
         deduped = _dedupe(weekly_rows)
-        _update_ff_cache_and_diagnostics(deduped, "Tier 3: Weekly Pages")
+        _update_ff_cache_and_diagnostics(deduped, "Tier D: Weekly Pages")
+        _FOREX_FACTORY_DIAGNOSTICS["coverage_status"] = "fresh_full"
         return deduped
 
-    # ── Tier 4: FairEconomy JSON Feeds (current + next week) ─────────────
-    # The rolling board can cross a week boundary, so a current-week-only JSON
-    # fallback is insufficient. Merge both public feeds, then clip strictly to
-    # the requested local Today..Today+N-1 window before deduplication.
-    json_rows = []
-    json_aliases = {
-        "Red": "High", "Orange": "Medium", "Yellow": "Low",
-        "High Impact": "High", "Medium Impact": "Medium", "Low Impact": "Low",
-    }
-    json_urls = (
-        "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
-        "https://nfs.faireconomy.media/ff_calendar_nextweek.json",
-    )
-    json_source_counts = {}
-    for json_url in json_urls:
-        source_rows = []
-        try:
-            jr = requests.get(json_url, timeout=8, headers=_FF_BROWSER_HEADERS)
-            if jr.status_code == 200:
-                payload = jr.json()
-                if isinstance(payload, list):
-                    for row in payload:
-                        if not isinstance(row, dict):
-                            continue
-                        title = str(row.get("title") or row.get("event") or row.get("name") or "").strip()
-                        country = str(row.get("country") or row.get("currency") or "").strip().upper()
-                        raw_date = row.get("date") or row.get("datetime") or row.get("time")
-                        if not title or not country or not raw_date:
-                            continue
-                        try:
-                            dt = datetime.fromisoformat(str(raw_date).replace("Z", "+00:00"))
-                            if dt.tzinfo is None:
-                                dt = dt.replace(tzinfo=timezone.utc)
-                            local_day = (dt.astimezone(timezone.utc) + timedelta(hours=tz_offset)).date()
-                            if local_day < today_local or local_day > end_local:
-                                continue
-                        except Exception:
-                            continue
-                        raw_impact = str(row.get("impact") or "").strip()
-                        source_rows.append({
-                            **row,
-                            "title": title,
-                            "country": country,
-                            "impact": json_aliases.get(raw_impact.title(), raw_impact.title()) or "Low",
-                            "date": raw_date,
-                            "forecast": row.get("forecast", ""),
-                            "previous": row.get("previous", ""),
-                            "actual": row.get("actual", ""),
-                            "source": "FairEconomy/Forex Factory JSON",
-                        })
-        except Exception:
-            source_rows = []
-        json_source_counts[json_url.rsplit("/", 1)[-1]] = len(source_rows)
-        json_rows.extend(source_rows)
-
-    # Keep the older current-week loader as a final JSON compatibility fallback.
-    if not json_rows:
-        json_rows = fetch_forex_factory_calendar(force_refresh=True)
-    _FOREX_FACTORY_DIAGNOSTICS["tier4_json_count"] = len(json_rows)
-    _FOREX_FACTORY_DIAGNOSTICS["tier4_json_sources"] = json_source_counts
-    if json_rows:
-        deduped = _dedupe(json_rows)
-        _update_ff_cache_and_diagnostics(deduped, "Tier 4: FairEconomy JSON (This + Next Week)")
-        return deduped
-
-    # ── Tier 5: Fallback to Memory & Persistent State Cache ──
+    # ── Tier E: Fallback to Memory & Persistent State Cache ──
+    # Reached only when every source above produced nothing at all for the
+    # window (SOURCE_EMPTY/BLOCKED everywhere); a partial Tier A result is
+    # already merged with last-known-good above and returned, never dropped.
     with _FOREX_FACTORY_LAST_GOOD_LOCK:
         if _FOREX_FACTORY_LAST_GOOD_EVENTS:
             _FOREX_FACTORY_DIAGNOSTICS["cache_status"] = "fallback_memory"
+            _FOREX_FACTORY_DIAGNOSTICS["coverage_status"] = "stale_fallback"
             return [dict(item) for item in _FOREX_FACTORY_LAST_GOOD_EVENTS]
 
     saved_state = _load_persistent_state("forex_factory_schedule_state", FF_SCHEDULE_FILE, [])
     if isinstance(saved_state, list) and saved_state:
         _FOREX_FACTORY_DIAGNOSTICS["cache_status"] = "fallback_disk"
+        _FOREX_FACTORY_DIAGNOSTICS["coverage_status"] = "stale_fallback"
         return [dict(item) for item in saved_state]
 
     _FOREX_FACTORY_DIAGNOSTICS["cache_status"] = "empty"
+    _FOREX_FACTORY_DIAGNOSTICS["coverage_status"] = "empty"
     return []
 
 
@@ -9312,15 +9477,28 @@ def page_catalyst_forecaster(fred_key: str, channel_name: str, auth_user: dict |
             d_col1, d_col2, d_col3 = st.columns(3)
             with d_col1:
                 st.write(f"**Tier Used:** `{diag.get('tier_used', '—')}`")
-                st.write(f"**Total Events (7 Days):** `{diag.get('total_deduped_events', len(events))}`")
+                st.write(f"**Total Events (Window):** `{diag.get('total_deduped_events', len(events))}`")
+                st.write(f"**Coverage:** `{diag.get('coverage_status', '—')}`")
             with d_col2:
                 st.write(f"**Cache Status:** `{diag.get('cache_status', '—')}`")
-                st.write(f"**Tier 1 (Range) Rows:** `{diag.get('tier1_range_count', 0)}`")
+                st.write(f"**JSON Feed Rows (primary):** `{diag.get('tier4_json_count', 0)}`")
+                st.write(f"**HTML Range Rows (fallback):** `{diag.get('tier1_range_count', 0)}`")
             with d_col3:
                 st.write(f"**Last Fetch (UTC):** `{diag.get('last_fetch_time', '—')}`")
-                st.write(f"**Tier 2 (Daily) Rows:** `{diag.get('tier2_daily_count', 0)}`")
+                st.write(f"**HTML Daily Rows (fallback):** `{diag.get('tier2_daily_count', 0)}`")
+                st.write(f"**HTML Weekly Rows (fallback):** `{diag.get('tier3_weekly_count', 0)}`")
+            if diag.get("source_status_detail"):
+                st.write("**Per-source status:**", diag.get("source_status_detail"))
             if diag.get("daily_counts"):
                 st.write("**Events per Rolling Day:**", diag.get("daily_counts"))
+            st.caption(
+                "forexfactory.com's HTML calendar is currently behind Cloudflare bot-protection "
+                "(HTTP 403 on every automated request). The FairEconomy JSON feed is the primary "
+                "source; HTML tiers are a fallback only. `coverage_status` shows whether the "
+                "returned window is fully fresh, a merge of fresh + preserved last-known-good "
+                "data (when the live feed cannot reach every day of the window), or a stale "
+                "fallback used because every source failed."
+            )
             if st.button("🔄 Force Refresh Calendar Now", key="btn_admin_force_ff_refresh"):
                 fetch_forex_factory_calendar_rolling(7, tz_info["offset"], force_refresh=True)
                 st.rerun()
