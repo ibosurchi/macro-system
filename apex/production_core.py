@@ -905,12 +905,69 @@ def fetch_forex_factory_calendar_rolling(days: int = 7, tz_offset: int = 3, forc
         _update_ff_cache_and_diagnostics(deduped, "Tier 3: Weekly Pages")
         return deduped
 
-    # ── Tier 4: Faireconomy JSON Feed ────────────────────────
-    json_rows = fetch_forex_factory_calendar(force_refresh=True)
+    # ── Tier 4: FairEconomy JSON Feeds (current + next week) ─────────────
+    # The rolling board can cross a week boundary, so a current-week-only JSON
+    # fallback is insufficient. Merge both public feeds, then clip strictly to
+    # the requested local Today..Today+N-1 window before deduplication.
+    json_rows = []
+    json_aliases = {
+        "Red": "High", "Orange": "Medium", "Yellow": "Low",
+        "High Impact": "High", "Medium Impact": "Medium", "Low Impact": "Low",
+    }
+    json_urls = (
+        "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+        "https://nfs.faireconomy.media/ff_calendar_nextweek.json",
+    )
+    json_source_counts = {}
+    for json_url in json_urls:
+        source_rows = []
+        try:
+            jr = requests.get(json_url, timeout=8, headers=_FF_BROWSER_HEADERS)
+            if jr.status_code == 200:
+                payload = jr.json()
+                if isinstance(payload, list):
+                    for row in payload:
+                        if not isinstance(row, dict):
+                            continue
+                        title = str(row.get("title") or row.get("event") or row.get("name") or "").strip()
+                        country = str(row.get("country") or row.get("currency") or "").strip().upper()
+                        raw_date = row.get("date") or row.get("datetime") or row.get("time")
+                        if not title or not country or not raw_date:
+                            continue
+                        try:
+                            dt = datetime.fromisoformat(str(raw_date).replace("Z", "+00:00"))
+                            if dt.tzinfo is None:
+                                dt = dt.replace(tzinfo=timezone.utc)
+                            local_day = (dt.astimezone(timezone.utc) + timedelta(hours=tz_offset)).date()
+                            if local_day < today_local or local_day > end_local:
+                                continue
+                        except Exception:
+                            continue
+                        raw_impact = str(row.get("impact") or "").strip()
+                        source_rows.append({
+                            **row,
+                            "title": title,
+                            "country": country,
+                            "impact": json_aliases.get(raw_impact.title(), raw_impact.title()) or "Low",
+                            "date": raw_date,
+                            "forecast": row.get("forecast", ""),
+                            "previous": row.get("previous", ""),
+                            "actual": row.get("actual", ""),
+                            "source": "FairEconomy/Forex Factory JSON",
+                        })
+        except Exception:
+            source_rows = []
+        json_source_counts[json_url.rsplit("/", 1)[-1]] = len(source_rows)
+        json_rows.extend(source_rows)
+
+    # Keep the older current-week loader as a final JSON compatibility fallback.
+    if not json_rows:
+        json_rows = fetch_forex_factory_calendar(force_refresh=True)
     _FOREX_FACTORY_DIAGNOSTICS["tier4_json_count"] = len(json_rows)
+    _FOREX_FACTORY_DIAGNOSTICS["tier4_json_sources"] = json_source_counts
     if json_rows:
         deduped = _dedupe(json_rows)
-        _update_ff_cache_and_diagnostics(deduped, "Tier 4: FairEconomy JSON")
+        _update_ff_cache_and_diagnostics(deduped, "Tier 4: FairEconomy JSON (This + Next Week)")
         return deduped
 
     # ── Tier 5: Fallback to Memory & Persistent State Cache ──
@@ -3731,13 +3788,51 @@ _ASSET_VOLATILITY_CONFIRM_THRESHOLDS = {
 }
 
 
-def _get_asset_confirmation_threshold(asset: str) -> float:
-    """Return volatility-calibrated percentage move required to confirm AI direction."""
+def _asset_base_confirmation_threshold(asset: str) -> float:
+    """Static safety anchor used only when live volatility cannot be measured."""
     a_clean = str(asset or "").strip()
     for k, v in _ASSET_VOLATILITY_CONFIRM_THRESHOLDS.items():
         if k.lower() in a_clean.lower() or a_clean.lower() in k.lower():
-            return v
-    return _AI_PRICE_CONFIRM_MOVE_PCT
+            return float(v)
+    return float(_AI_PRICE_CONFIRM_MOVE_PCT)
+
+
+def _get_asset_confirmation_threshold(asset: str) -> float:
+    """Return a live volatility-adaptive confirmation threshold in percent.
+
+    The old implementation used one fixed threshold per asset.  This version
+    keeps that value only as a safety anchor, then adapts it to recent 5-minute
+    realized volatility.  The threshold is frozen with each AI decision so a
+    later volatility change cannot rewrite the audit outcome.
+    """
+    base = _asset_base_confirmation_threshold(asset)
+    key = "NDX" if str(asset).strip().lower() == "nasdaq" else str(asset).strip().upper()
+    cfg = _tactical_symbol_config(key) or {}
+    symbols = [cfg.get("symbol")] + list(cfg.get("fallback_symbols", []) or [])
+    for symbol in [x for x in symbols if x]:
+        try:
+            df = _fetch_tactical_price_series(str(symbol))
+            if df is None or df.empty or "close" not in df.columns:
+                continue
+            closes = pd.to_numeric(df["close"], errors="coerce").dropna().tail(145)
+            if len(closes) < 24:
+                continue
+            # 5-minute log-return volatility, scaled to a one-hour (12 bar) move.
+            log_ret = np.log(closes / closes.shift(1)).replace([np.inf, -np.inf], np.nan).dropna()
+            if len(log_ret) < 20:
+                continue
+            hourly_sigma_pct = float(log_ret.tail(72).std(ddof=0) * np.sqrt(12.0) * 100.0)
+            if not np.isfinite(hourly_sigma_pct) or hourly_sigma_pct <= 0:
+                continue
+            # About 0.9 sigma is enough to establish directional follow-through.
+            # Clamp around the asset anchor to avoid unstable thresholds in data spikes.
+            adaptive = 0.90 * hourly_sigma_pct
+            lower = max(0.05, base * 0.60)
+            upper = base * 1.80
+            return round(max(lower, min(upper, adaptive)), 3)
+        except Exception:
+            continue
+    return round(base, 3)
 
 
 def _ai_audit_append(kind: str, message: str, details: dict | None = None) -> None:
@@ -4462,12 +4557,25 @@ def _run_shared_ai_batch_once() -> None:
 
         signature = _ai_batch_signature(news_rows, macro_snapshot, event_rows)
         state = _ai_batch_load_state()
-        if state.get("signature") == signature and isinstance(state.get("result"), dict):
+        requested_event_codes = set(state.get("requested_forecaster_event_codes", []) or [])
+        existing_result = state.get("result", {}) if isinstance(state.get("result"), dict) else {}
+        existing_events = existing_result.get("events", {}) if isinstance(existing_result, dict) else {}
+        requested_missing = bool(requested_event_codes and any(
+            code not in existing_events or not isinstance(existing_events.get(code), dict)
+            for code in requested_event_codes
+        ))
+        if state.get("signature") == signature and isinstance(state.get("result"), dict) and not requested_missing:
             return
 
         # Free two-stage gate: only meaningful evidence is allowed to wake paid AI.
         # Page navigation never reaches the provider.
         due, state = _ai_trigger_decision(state, news_rows, macro_snapshot, event_rows)
+        if requested_missing:
+            state["pending_trigger_score"] = max(85, int(state.get("pending_trigger_score", 0) or 0))
+            if float(state.get("pending_trigger_since", 0) or 0) <= 0:
+                state["pending_trigger_since"] = time.time()
+            state["pending_trigger_due"] = True
+            due = True
         _ai_batch_save_state(state)
         if not due:
             return
@@ -4577,6 +4685,15 @@ If evidence is insufficient, say so explicitly."""
             "last_paid_at": time.time(),
             "last_paid_topics": {**(state.get("last_paid_topics", {}) if isinstance(state.get("last_paid_topics"), dict) else {}), **{topic: time.time() for topic in (state.get("pending_trigger_topics", []) or [])}},
         })
+        try:
+            _state_after = _ai_batch_load_state(force_refresh=True)
+            _requested_after = set(_state_after.get("requested_forecaster_event_codes", []) or [])
+            _returned_codes = set((result.get("events", {}) or {}).keys())
+            if _requested_after:
+                _state_after["requested_forecaster_event_codes"] = sorted(_requested_after - _returned_codes)[:40]
+                _ai_batch_save_state(_state_after)
+        except Exception:
+            pass
         _register_ai_price_decisions(result, price_context)
         _ai_audit_append("success", "Shared AI analysis completed successfully", {
             "provider": provider, "model": model, "summary": result.get("summary", ""),
@@ -6428,7 +6545,14 @@ def _universal_precursors(event: dict) -> list:
     explicit = list(meta.get("precursors") or [])
     family = _event_family(event)
     cur = str(meta.get("currency", event.get("currency", ""))).upper()
-    fallback = list((_CURRENCY_PRECURSOR_OVERRIDES.get(cur, {}) or {}).get(family) or _GENERIC_PRECURSORS.get(family) or _GENERIC_PRECURSORS["general"])
+    country_map = (_CURRENCY_PRECURSOR_OVERRIDES.get(cur, {}) or {})
+    # For supported currencies, never silently substitute the generic (mostly US)
+    # template. If a niche family is absent, use that country's own growth/policy
+    # basket instead. Generic templates are reserved for unsupported currencies.
+    if country_map:
+        fallback = list(country_map.get(family) or country_map.get("growth") or country_map.get("policy") or [])
+    else:
+        fallback = list(_GENERIC_PRECURSORS.get(family) or _GENERIC_PRECURSORS["general"])
     # Preserve curated inputs, then fill gaps from the universal family model without duplicate series.
     out, seen = [], set()
     for row in explicit + fallback:
@@ -7260,11 +7384,55 @@ def _forecaster_background_worker(events: list[dict], fred_key: str, channel_nam
         with _FORECASTER_BG_LOCK:
             _FORECASTER_BG_WORKER_RUNNING = False
 
+def _request_shared_ai_for_forecaster_event(event: dict) -> None:
+    """Wake the ONE shared paid-AI batch for an explicitly opened High-Impact event.
+
+    This never calls the provider directly.  It only raises the existing shared
+    trigger and wakes the supervisor, preserving the global billing gate and the
+    one-request-for-the-whole-desk architecture.
+    """
+    if str((event or {}).get("impact", "")).title() != "High" or not is_ai_enabled():
+        return
+    code = str((event or {}).get("code", "")).strip()
+    if not code:
+        return
+    try:
+        state = _ai_batch_load_state(force_refresh=True)
+        result = state.get("result", {}) if isinstance(state, dict) else {}
+        event_map = result.get("events", {}) if isinstance(result, dict) else {}
+        if isinstance(event_map, dict) and isinstance(event_map.get(code), dict):
+            return
+
+        now_ts = time.time()
+        state["pending_trigger_score"] = max(85, int(state.get("pending_trigger_score", 0) or 0))
+        if float(state.get("pending_trigger_since", 0) or 0) <= 0:
+            state["pending_trigger_since"] = now_ts
+        reasons = list(state.get("pending_trigger_reasons", []) or [])
+        marker = f"forecaster_open:85:{code}"
+        if marker not in reasons:
+            reasons.append(marker)
+        state["pending_trigger_reasons"] = reasons[-20:]
+        state["pending_trigger_due"] = True
+        requested = set(state.get("requested_forecaster_event_codes", []) or [])
+        requested.add(code)
+        state["requested_forecaster_event_codes"] = sorted(requested)[:40]
+        _ai_batch_save_state(state)
+        _AI_BATCH_WAKE_EVENT.set()
+    except Exception:
+        pass
+
+
 def _ensure_forecaster_background_worker(events: list[dict], fred_key: str, channel_name: str, actuals_cache: dict, force_ai: bool = False) -> None:
     """Start at most one daemon worker per process; reruns do not duplicate RUAPI calls."""
     global _FORECASTER_BG_WORKER_RUNNING
     if not events:
         return
+
+    # Opening a High-Impact event is an explicit request for Causal Intelligence.
+    # Wake the existing shared batch instead of creating a second provider path.
+    if force_ai:
+        for _ev in events:
+            _request_shared_ai_for_forecaster_event(_ev)
 
     # Start only when at least one event is missing/stale.
     needs_work = False
