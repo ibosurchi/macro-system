@@ -4917,19 +4917,40 @@ def _run_shared_ai_batch_once() -> None:
             has_result = isinstance(state.get("result"), dict) and bool(state.get("result"))
             backoff = _AI_BATCH_ERROR_BACKOFF_SECONDS if has_result else _AI_BATCH_FIRST_RESULT_RETRY_SECONDS
             if time.time() - last_attempt < backoff:
+                _remaining = max(0.0, backoff - (time.time() - last_attempt))
+                for _code in requested_event_codes:
+                    _ai_diag_update(
+                        str(_code),
+                        queue_state="QUEUED",
+                        provider_status="RETRY_BACKOFF",
+                        retry_after_seconds=round(_remaining, 1),
+                        event_included=(_code in included_codes),
+                    )
                 return
 
         # Admin may switch AI OFF while data/news are being collected. Re-check
         # immediately before the only billable operation.
         if not is_ai_enabled(force_refresh=True):
+            for _code in requested_event_codes:
+                _ai_diag_update(str(_code), queue_state="DISABLED", provider_status="AI_DISABLED")
             return
 
         provider, url, model, resolved_key = _ai_runtime(DEFAULT_AI_KEY, DEFAULT_AI_PROVIDER, DEFAULT_AI_MODEL)
         if not resolved_key:
+            for _code in requested_event_codes:
+                _ai_diag_update(
+                    str(_code), queue_state="ERROR", provider_status="AUTHENTICATION_FAILED",
+                    last_error="AI provider key is not configured.",
+                )
             return
 
         process_lock_fd = _acquire_ai_batch_process_lock()
         if process_lock_fd is None:
+            for _code in requested_event_codes:
+                _ai_diag_update(
+                    str(_code), queue_state="BLOCKED_BY_GATE", provider_status="PROCESS_LOCK_BUSY",
+                    last_error="",
+                )
             return
         # Another process may have completed the same signature just before we got the lock.
         latest_state = _ai_batch_load_state(force_refresh=True)
@@ -5202,14 +5223,42 @@ Do not mathematically count the same precursor/news evidence twice merely becaus
 
 
 def _shared_ai_supervisor_loop() -> None:
+    """Resilient process-local supervisor for the ONE shared paid-AI batch.
+
+    A non-provider exception in validation/collection must never kill the daemon
+    and strand explicit Forecaster requests in QUEUED forever.
+    """
     global _AI_BATCH_SUPERVISOR_RUNNING
     try:
         while True:
-            _check_ai_price_validations()
-            if is_ai_enabled(force_refresh=True):
-                _run_shared_ai_batch_once()
-            # Event wake-up makes Admin Enable immediate; ordinary polling still
-            # checks for meaningful changed news/data without page-triggered calls.
+            try:
+                _ai_diag_update("", global_supervisor_heartbeat=time.time(), global_supervisor_status="RUNNING")
+                try:
+                    _check_ai_price_validations()
+                except Exception as exc:
+                    # Price-validation is auxiliary. It must not prevent the
+                    # Forecaster Causal-AI queue from reaching the shared batch.
+                    _ai_diag_update(
+                        "",
+                        global_validation_error=_safe_ai_error_label(str(exc)),
+                        global_validation_error_at=time.time(),
+                    )
+                if is_ai_enabled(force_refresh=True):
+                    _run_shared_ai_batch_once()
+                else:
+                    _ai_diag_update("", global_supervisor_status="AI_DISABLED")
+            except Exception as exc:
+                # Keep the supervisor alive. _run_shared_ai_batch_once normally
+                # contains its own error handling; this catches failures before
+                # that boundary (or future auxiliary code regressions).
+                _ai_diag_update(
+                    "",
+                    global_supervisor_status="ITERATION_ERROR",
+                    global_supervisor_error=_safe_ai_error_label(str(exc)),
+                    global_supervisor_error_at=time.time(),
+                )
+            # Wake-ups remain free: they only re-check durable state and the
+            # existing gates; they never bypass shared batching/cost protection.
             _AI_BATCH_WAKE_EVENT.wait(timeout=_AI_BATCH_POLL_SECONDS)
             _AI_BATCH_WAKE_EVENT.clear()
     finally:
@@ -5221,6 +5270,13 @@ def start_shared_background_ai_worker() -> None:
     """Start one process-local supervisor. Page navigation never contacts AI."""
     global _AI_BATCH_SUPERVISOR_RUNNING
     if not DEFAULT_AI_KEY:
+        try:
+            _ai_diag_update(
+                "", global_supervisor_status="NO_PROVIDER_KEY",
+                global_supervisor_error="AI provider key is not configured.",
+            )
+        except Exception:
+            pass
         return
     with _AI_BATCH_LOCK:
         if _AI_BATCH_SUPERVISOR_RUNNING:
@@ -8080,10 +8136,29 @@ def _request_shared_ai_for_forecaster_event(event: dict) -> None:
         # Critical: a wake flag is useless in a Streamlit replica/process that has
         # no supervisor thread. Starting the existing singleton supervisor is free
         # and does NOT contact the provider from the event/modal path.
+        # Set the wake before AND after startup. If the singleton already exists
+        # it wakes immediately; if it is being created, the initial loop also sees
+        # the durable request. No provider call occurs on this UI path.
+        _AI_BATCH_WAKE_EVENT.set()
         start_shared_background_ai_worker()
         _AI_BATCH_WAKE_EVENT.set()
-    except Exception:
-        pass
+        _ai_diag_update(
+            code,
+            supervisor_requested=True,
+            supervisor_requested_at=time.time(),
+        )
+    except Exception as exc:
+        # Never let a hidden scheduling exception masquerade as a healthy QUEUED
+        # state. This is diagnostic only and does not contact the provider.
+        try:
+            _ai_diag_update(
+                code if 'code' in locals() else "",
+                queue_state="ERROR",
+                provider_status="SCHEDULER_ERROR",
+                last_error=_safe_ai_error_label(str(exc)),
+            )
+        except Exception:
+            pass
 
 
 def _ensure_forecaster_background_worker(events: list[dict], fred_key: str, channel_name: str, actuals_cache: dict, force_ai: bool = False) -> None:
