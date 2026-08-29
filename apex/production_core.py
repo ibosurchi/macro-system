@@ -224,8 +224,18 @@ def _provider_gate_enter() -> dict:
     handle = open(_AI_PROVIDER_GATE_LOCK_FILE, "a+", encoding="utf-8")
     try:
         import fcntl
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        # Never let the shared-AI worker hang indefinitely before it can report
+        # a gate outcome. An active local owner is a normal billing-gate block,
+        # not a reason to block this supervisor thread inside flock().
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            _provider_gate_unlock_local(handle)
+            raise RuntimeError("AI_PROVIDER_LOCAL_LEASE:5.0")
+    except RuntimeError:
+        raise
     except Exception:
+        # Platforms without fcntl still retain the durable cross-container gate.
         pass
 
     now_ts = time.time()
@@ -5036,6 +5046,16 @@ Do not mathematically count the same precursor/news evidence twice merely becaus
                 last_batch_started=batch_started_at,
                 event_included=(_code in included_codes),
                 provider_status="PROVIDER GATE PENDING",
+                # These fields belong to THIS batch. Do not display an HTTP 200
+                # inherited from an older shared batch while the current one has
+                # not even won the provider gate yet.
+                http_status=None,
+                parse_status=None,
+                batch_completed_at=None,
+                event_result_saved=False,
+                state_saved=False,
+                gate_remaining_seconds=None,
+                last_error="",
             )
         response = _post_ai_chat(
             provider=provider,
@@ -5182,23 +5202,45 @@ Do not mathematically count the same precursor/news evidence twice merely becaus
         })
     except Exception as exc:
         err = str(exc)
-        if err.startswith("AI_PROVIDER_HARD_COOLDOWN:") or err.startswith("AI_PROVIDER_GLOBAL_LEASE:"):
+        if (err.startswith("AI_PROVIDER_HARD_COOLDOWN:")
+                or err.startswith("AI_PROVIDER_GLOBAL_LEASE:")
+                or err.startswith("AI_PROVIDER_LOCAL_LEASE:")):
             try:
                 remaining = float(err.split(":", 1)[1])
             except Exception:
                 remaining = _AI_PROVIDER_HARD_MIN_SECONDS
-            state = _ai_batch_load_state()
+            state = _ai_batch_load_state(force_refresh=True)
             state["provider_gate_blocked_at"] = time.time()
             state["provider_gate_remaining_seconds"] = round(max(0.0, remaining), 1)
+            # Critical: reaching a CLOSED provider gate is not a provider
+            # attempt. The old code had already written last_attempt_signature
+            # before _post_ai_chat(), so a harmless lease/cooldown collision
+            # could activate the 15-minute error backoff and strand a newly
+            # requested Forecaster event. Remove only this unspent reservation;
+            # the real provider hard-minimum/lease remains fully authoritative.
+            if state.get("last_attempt_signature") == signature:
+                state["last_attempt_signature"] = ""
+                state["last_attempt_at"] = 0.0
+                state["last_paid_reserved_at"] = 0.0
+                state["last_paid_reserved_at_iso"] = ""
+            state["pending_trigger_due"] = True
+            if float(state.get("pending_trigger_since", 0) or 0) <= 0:
+                state["pending_trigger_since"] = time.time()
             _ai_batch_save_state(state)
+            _block_kind = (
+                "LOCAL_LOCK_BUSY" if err.startswith("AI_PROVIDER_LOCAL_LEASE:")
+                else "HARD_COOLDOWN" if err.startswith("AI_PROVIDER_HARD_COOLDOWN:")
+                else "GLOBAL_LEASE_BUSY"
+            )
             for _code in set(state.get("requested_forecaster_event_codes", []) or []):
                 _ai_diag_update(
-                    str(_code), queue_state="BLOCKED_BY_GATE", provider_status="BLOCKED",
+                    str(_code), queue_state="BLOCKED_BY_GATE", provider_status=_block_kind,
                     last_error="", gate_remaining_seconds=round(max(0.0, remaining), 1),
                 )
-            _ai_audit_append("blocked", "Paid AI request blocked by global provider billing gate", {
+            _ai_audit_append("blocked", "Paid AI request blocked by provider billing gate", {
                 "remaining_seconds": round(max(0.0, remaining), 1),
-                "rule": "90-second hard minimum + cross-container durable lease",
+                "gate": _block_kind,
+                "rule": "90-second hard minimum + local/process lock + cross-container durable lease",
             })
         else:
             state = _ai_batch_load_state()
