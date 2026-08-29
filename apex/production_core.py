@@ -4549,15 +4549,25 @@ def _run_shared_ai_batch_once() -> None:
             actuals = load_actuals_cache()
         except Exception:
             actuals = {}
-        event_rows = _ai_batch_event_rows(events, all_news, actuals, 14)
+
+        # Read explicit Forecaster requests BEFORE constructing the capped event payload.
+        # Otherwise an opened event can sit outside candidates[:14], meaning the paid
+        # shared request can never return that event even though the UI keeps waiting.
+        state = _ai_batch_load_state(force_refresh=True)
+        requested_event_codes = set(state.get("requested_forecaster_event_codes", []) or [])
+        if requested_event_codes:
+            requested_events = [ev for ev in events if str(ev.get("code", "")).strip() in requested_event_codes]
+            other_events = [ev for ev in events if str(ev.get("code", "")).strip() not in requested_event_codes]
+            ordered_ai_events = requested_events + other_events
+        else:
+            ordered_ai_events = events
+        event_rows = _ai_batch_event_rows(ordered_ai_events, all_news, actuals, 14)
         price_context = _ai_batch_price_context()
 
         if not news_rows and not macro_snapshot and not event_rows:
             return
 
         signature = _ai_batch_signature(news_rows, macro_snapshot, event_rows)
-        state = _ai_batch_load_state()
-        requested_event_codes = set(state.get("requested_forecaster_event_codes", []) or [])
         existing_result = state.get("result", {}) if isinstance(state.get("result"), dict) else {}
         existing_events = existing_result.get("events", {}) if isinstance(existing_result, dict) else {}
         requested_missing = bool(requested_event_codes and any(
@@ -4605,7 +4615,16 @@ def _run_shared_ai_batch_once() -> None:
             return
         # Another process may have completed the same signature just before we got the lock.
         latest_state = _ai_batch_load_state(force_refresh=True)
-        if latest_state.get("signature") == signature and isinstance(latest_state.get("result"), dict):
+        latest_result = latest_state.get("result", {}) if isinstance(latest_state.get("result"), dict) else {}
+        latest_events = latest_result.get("events", {}) if isinstance(latest_result, dict) else {}
+        latest_requested = set(latest_state.get("requested_forecaster_event_codes", []) or [])
+        latest_requested_missing = bool(latest_requested and any(
+            code not in latest_events or not isinstance(latest_events.get(code), dict)
+            for code in latest_requested
+        ))
+        if (latest_state.get("signature") == signature
+                and isinstance(latest_state.get("result"), dict)
+                and not latest_requested_missing):
             _release_ai_batch_process_lock(process_lock_fd)
             return
 
@@ -4684,6 +4703,9 @@ If evidence is insufficient, say so explicitly."""
             "last_trigger_consumed_reasons": state.get("pending_trigger_reasons", state.get("last_trigger_reasons", [])),
             "last_paid_at": time.time(),
             "last_paid_topics": {**(state.get("last_paid_topics", {}) if isinstance(state.get("last_paid_topics"), dict) else {}), **{topic: time.time() for topic in (state.get("pending_trigger_topics", []) or [])}},
+            # Keep explicit Forecaster requests until the returned-code cleanup below
+            # proves that the provider actually supplied each requested event.
+            "requested_forecaster_event_codes": sorted(requested_event_codes)[:40],
         })
         try:
             _state_after = _ai_batch_load_state(force_refresh=True)
@@ -7196,13 +7218,23 @@ def _forecaster_ai_cache_get(code: str, evidence_sig: str) -> dict | None:
             return None
         age = now_ts - float(item.get("updated_at", 0))
         result = item.get("result") or {}
-        max_age = _FORECASTER_AI_ERROR_RETRY_SECONDS if result.get("status") == "error" else _FORECASTER_AI_MAX_AGE_SECONDS
+        status = str(result.get("status", ""))
+        # deferred/updating are transient states, never reusable AI answers.
+        # Caching them for 48h was able to leave the dialog permanently on
+        # "updating in background" even after the shared batch succeeded.
+        if status in {"deferred", "updating"}:
+            return None
+        max_age = _FORECASTER_AI_ERROR_RETRY_SECONDS if status == "error" else _FORECASTER_AI_MAX_AGE_SECONDS
         if age > max_age:
             return None
         return result
 
 
 def _forecaster_ai_cache_put(code: str, evidence_sig: str, result: dict) -> None:
+    status = str((result or {}).get("status", ""))
+    # Only durable outcomes belong in the long-lived reuse cache.
+    if status in {"deferred", "updating"}:
+        return
     with _FORECASTER_BG_LOCK:
         _FORECASTER_AI_REUSE_CACHE[code] = {
             "evidence_signature": evidence_sig,
