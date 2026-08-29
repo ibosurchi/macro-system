@@ -92,6 +92,7 @@ else:
     DEFAULT_AI_CHAT_URL = f"{DEFAULT_RUAPI_BASE_URL}/chat/completions"
 
 AI_CACHE_VERSION = "ruapi-provider-v2"
+CAUSAL_AI_JUDGE_VERSION = "evidence-judge-v1"
 
 REQUEST_TIMEOUT = 8
 
@@ -447,6 +448,8 @@ def _normalize_causal_ai_payload(parsed: dict, source_count: int) -> dict:
         "facts",
         "supporting_evidence",
         "contradictions",
+        "decisive_evidence",
+        "evidence_missing",
     ]
     for field in list_fields:
         value = result.get(field, [])
@@ -464,6 +467,10 @@ def _normalize_causal_ai_payload(parsed: dict, source_count: int) -> dict:
     for field, default in {
         "event_assessment": "Insufficient Evidence",
         "nowcast": "Insufficient Evidence",
+        "ai_judgment": "",
+        "agreement_with_quant": "",
+        "reason": "",
+        "override_reason": "",
         "confidence_reason": "Insufficient structured AI evidence.",
         "cross_source_confirmation": "Unavailable",
         "usd": "Neutral",
@@ -481,6 +488,75 @@ def _normalize_causal_ai_payload(parsed: dict, source_count: int) -> dict:
         result["source_count"] = int(source_count)
 
     return result
+
+
+def _normalize_ai_judgment(value: object) -> str:
+    """Canonical Beat/In-line/Miss key for AI/audit logic; never invents a direction."""
+    text = re.sub(r"[^a-z]+", " ", str(value or "").lower()).strip()
+    if not text:
+        return ""
+    if "miss" in text or "below" in text or "lower than" in text:
+        return "miss"
+    if "beat" in text or "above" in text or "higher than" in text:
+        return "beat"
+    if "inline" in text or "in line" in text or "consensus" in text or "neutral" in text:
+        return "inline"
+    return ""
+
+
+def _quantitative_outcome_from_reference(reference: dict) -> str:
+    reference = reference if isinstance(reference, dict) else {}
+    direct = _normalize_ai_judgment(reference.get("prediction") or reference.get("outcome_key") or reference.get("bias"))
+    if direct:
+        return direct
+    probs = reference.get("probabilities", {}) if isinstance(reference.get("probabilities", {}), dict) else {}
+    clean = {}
+    for key in ("beat", "inline", "miss"):
+        try:
+            clean[key] = float(probs.get(key, 0) or 0)
+        except Exception:
+            clean[key] = 0.0
+    return max(clean, key=clean.get) if any(clean.values()) else ""
+
+
+def _causal_relationship(quantitative_prediction: str, ai_judgment: str) -> tuple[str, str]:
+    """Return machine agreement state and compact UI relationship label."""
+    q = _normalize_ai_judgment(quantitative_prediction)
+    a = _normalize_ai_judgment(ai_judgment)
+    if not q or not a:
+        return "", "AI EVIDENCE REVIEW"
+    if q == a:
+        return "agree", "QUANT + AI AGREEMENT"
+    if q in {"beat", "miss"} and a == "inline":
+        return "partial", "AI WEAKENS QUANT SIGNAL"
+    if q == "inline" and a in {"beat", "miss"}:
+        return "disagree", "AI DISAGREES WITH QUANT"
+    if {q, a} == {"beat", "miss"}:
+        return "disagree", "MAJOR EVIDENCE CONFLICT"
+    return "disagree", "AI DISAGREES WITH QUANT"
+
+
+def _derive_final_forecast_state(quantitative_prediction: str, analysis: dict) -> tuple[str, str]:
+    """Transparent arbitration without adding the same evidence twice."""
+    q = _normalize_ai_judgment(quantitative_prediction) or "inline"
+    a = _normalize_ai_judgment((analysis or {}).get("ai_judgment") or (analysis or {}).get("nowcast"))
+    if not a:
+        return q, "Quantitative foundation retained; AI judgment unavailable."
+    if a == q:
+        return q, "Quantitative and causal AI judgments agree; no evidence is double-counted."
+    if a == "inline" and q in {"beat", "miss"}:
+        return "inline", "AI weakens the directional quantitative signal to in-line."
+    decisive = [str(x).strip() for x in ((analysis or {}).get("decisive_evidence") or []) if str(x).strip()]
+    override_reason = str((analysis or {}).get("override_reason") or "").strip()
+    if decisive and override_reason:
+        return a, "AI override accepted because explicit decisive evidence and an override reason were supplied."
+    if {q, a} == {"beat", "miss"}:
+        return "inline", "Major directional conflict without a qualified override; final state is conservatively in-line."
+    return q, "AI disagrees but did not supply a qualified decisive override; quantitative foundation retained."
+
+
+def _causal_ai_result_is_current_judge(item: dict | None) -> bool:
+    return bool(isinstance(item, dict) and str(item.get("_judge_version", "") or item.get("judge_version", "")) == CAUSAL_AI_JUDGE_VERSION)
 
 
 def _get_london_tz():
@@ -4195,6 +4271,75 @@ def _ai_batch_macro_snapshot() -> dict:
     return snapshot
 
 
+def _ai_event_precursor_rows(nowcast: dict) -> list[dict]:
+    rows = []
+    for p in (nowcast.get("precursor_results") or [])[:12]:
+        try:
+            score = float(p.get("score", 0) or 0)
+        except Exception:
+            score = 0.0
+        try:
+            weight = float(p.get("weight", 0) or 0)
+        except Exception:
+            weight = 0.0
+        try:
+            mom = float(p.get("mom", 0) or 0)
+        except Exception:
+            mom = 0.0
+        direction = "up" if score > 0.03 else ("down" if score < -0.03 else "flat/mixed")
+        rows.append({
+            "name": str(p.get("name", ""))[:120],
+            "latest": p.get("latest"),
+            "momentum": round(mom, 6),
+            "direction": direction,
+            "score": round(score, 6),
+            "weight": round(weight, 6),
+            "weighted_contribution": round(score * weight, 6),
+        })
+    return rows
+
+
+def _ai_event_history_rows(nowcast: dict) -> list[dict]:
+    out = []
+    for row in (nowcast.get("same_release_history") or [])[:8]:
+        if not isinstance(row, dict):
+            continue
+        out.append({
+            "date": str(row.get("date_label") or row.get("resolved_at_utc") or "")[:40],
+            "forecast": str(row.get("forecast") or row.get("consensus") or "")[:60],
+            "actual": str(row.get("first_print_actual") or row.get("actual") or "")[:60],
+            "actual_outcome": str(row.get("actual_outcome") or "")[:20],
+            "standardized_surprise_z": row.get("standardized_surprise_z"),
+        })
+    return out
+
+
+def _ai_event_news_rows(event: dict, articles: list, limit: int = 6) -> list[dict]:
+    currency = str(event.get("currency", "")).upper()
+    prepared = []
+    for art in (articles or [])[:max(1, int(limit))]:
+        if not isinstance(art, dict):
+            continue
+        source = art.get("source", {})
+        source_name = source.get("name", "Unknown Source") if isinstance(source, dict) else str(source or "")
+        try:
+            pts = float(analyze_news_rule_based([art]).get("scores", {}).get(currency, 0.0) or 0.0)
+        except Exception:
+            pts = 0.0
+        direction = "supportive" if pts > 0.01 else ("negative" if pts < -0.01 else "neutral/unclear")
+        prepared.append({
+            "source": str(source_name)[:80],
+            "timestamp": str(art.get("publishedAt", ""))[:80],
+            "title": str(art.get("title", ""))[:240],
+            "description": str(art.get("description", ""))[:360],
+            "event_verified": bool(art.get("_event_verified", False)),
+            "numeric_ambiguous": bool(art.get("_numeric_ambiguous", False)),
+            "deterministic_direction": direction,
+            "deterministic_currency_score": round(pts, 6),
+        })
+    return prepared
+
+
 def _ai_batch_event_rows(events: list, all_news: list, actuals: dict, limit: int = 14) -> list[dict]:
     rows = []
     now_local = datetime.utcnow() + timedelta(hours=3)
@@ -4224,9 +4369,50 @@ def _ai_batch_event_rows(events: list, all_news: list, actuals: dict, limit: int
         except Exception:
             nowcast = {}
         rel_news = _forecaster_relevant_ai_articles(ev, all_news) if "_forecaster_relevant_ai_articles" in globals() else []
+        dt = ev.get("datetime_obj")
+        scheduled_release = dt.isoformat() if isinstance(dt, datetime) else f"{ev.get('date_str','')} {ev.get('time_str','')}".strip()
+        probs = nowcast.get("probabilities", {}) if isinstance(nowcast.get("probabilities", {}), dict) else {}
+        quant_prediction = max(probs, key=probs.get) if probs else str(nowcast.get("outcome_key", "inline"))
         rows.append({
             "code": code,
             "event_identity": _event_identity(ev),
+            "event": {
+                "currency": str(ev.get("currency", ""))[:12],
+                "title": str(ev.get("title", ""))[:180],
+                "scheduled_release": str(scheduled_release)[:100],
+                "event_family": str(nowcast.get("event_family") or _event_family(ev))[:40],
+                "impact": str(ev.get("impact", ""))[:20],
+            },
+            "market_baseline": {
+                "consensus": str(ev.get("forecast_str", ""))[:80],
+                "previous": str(ev.get("prev_str", ""))[:80],
+                "market_expectations": str(ev.get("consensus_bias", ""))[:220],
+                "actual_if_already_released": str(actual)[:80],
+            },
+            "quantitative_evidence": {
+                "precursor_observations": _ai_event_precursor_rows(nowcast),
+                "same_release_history": _ai_event_history_rows(nowcast),
+                "same_release_history_signal": round(float(nowcast.get("history_release_signal", 0) or 0), 6),
+                "event_news_sentiment_score": round(float(nowcast.get("news_sentiment_pts", 0) or 0), 6),
+                "conflict_score": round(float(nowcast.get("conflict_score", 0) or 0), 6),
+                "evidence_quality": round(float(nowcast.get("evidence_quality", 0) or 0), 6),
+                "news_ambiguity": round(float(nowcast.get("news_ambiguity", 0) or 0), 6),
+                "consensus_hurdle": nowcast.get("consensus_hurdle"),
+                "model_estimate": nowcast.get("model_estimate"),
+                "evidence_framework": str(nowcast.get("evidence_framework", ""))[:80],
+            },
+            "news_causal_evidence": _ai_event_news_rows(ev, rel_news, 6),
+            "REFERENCE_MODEL_OUTPUT_DO_NOT_ANCHOR": {
+                "prediction": quant_prediction,
+                "probabilities": probs,
+                "confidence": nowcast.get("confidence", 0),
+                "composite": nowcast.get("nowcast_composite", 0),
+                "conflict": nowcast.get("conflict_score", 0),
+                "evidence_quality": nowcast.get("evidence_quality", 0),
+                "label": nowcast.get("bias_label", ""),
+                "instruction": "Reference only. Form the causal evidence judgment first; do not assume this output is correct.",
+            },
+            "judge_version": CAUSAL_AI_JUDGE_VERSION,
             "title": str(ev.get("title", ""))[:180],
             "currency": str(ev.get("currency", ""))[:12],
             "impact": str(ev.get("impact", ""))[:20],
@@ -4235,16 +4421,6 @@ def _ai_batch_event_rows(events: list, all_news: list, actuals: dict, limit: int
             "forecast": str(ev.get("forecast_str", ""))[:80],
             "previous": str(ev.get("prev_str", ""))[:80],
             "actual": str(actual)[:80],
-            "quantitative_nowcast": {
-                "bias": nowcast.get("bias_label", ""),
-                "confidence": nowcast.get("confidence", 0),
-                "composite": nowcast.get("nowcast_composite", 0),
-                "probabilities": nowcast.get("probabilities", {}),
-                "conflict": nowcast.get("conflict_score", 0),
-                "evidence_quality": nowcast.get("evidence_quality", 0),
-                "family": nowcast.get("event_family", ""),
-            },
-            "relevant_news": _ai_batch_news_rows(rel_news, 5),
         })
     return rows
 
@@ -4711,7 +4887,9 @@ def _run_shared_ai_batch_once() -> None:
         existing_result = state.get("result", {}) if isinstance(state.get("result"), dict) else {}
         existing_events = existing_result.get("events", {}) if isinstance(existing_result, dict) else {}
         requested_missing = bool(requested_event_codes and any(
-            code not in existing_events or not isinstance(existing_events.get(code), dict)
+            code not in existing_events
+            or not isinstance(existing_events.get(code), dict)
+            or not _causal_ai_result_is_current_judge(existing_events.get(code))
             for code in requested_event_codes
         ))
         if state.get("signature") == signature and isinstance(state.get("result"), dict) and not requested_missing:
@@ -4759,7 +4937,9 @@ def _run_shared_ai_batch_once() -> None:
         latest_events = latest_result.get("events", {}) if isinstance(latest_result, dict) else {}
         latest_requested = set(latest_state.get("requested_forecaster_event_codes", []) or [])
         latest_requested_missing = bool(latest_requested and any(
-            code not in latest_events or not isinstance(latest_events.get(code), dict)
+            code not in latest_events
+            or not isinstance(latest_events.get(code), dict)
+            or not _causal_ai_result_is_current_judge(latest_events.get(code))
             for code in latest_requested
         ))
         if (latest_state.get("signature") == signature
@@ -4768,20 +4948,43 @@ def _run_shared_ai_batch_once() -> None:
             _release_ai_batch_process_lock(process_lock_fd)
             return
 
-        system_prompt = """You are ApexMacro's ONE shared institutional AI judge. One response must serve the entire desk.
-Use ONLY supplied evidence; never invent facts. Return ONE valid JSON object and no markdown.
+        system_prompt = """You are ApexMacro's ONE shared institutional causal-evidence judge. One response must serve the entire desk.
+Use ONLY supplied evidence; never invent facts, observations, release values, sources, or timestamps. Return ONE valid JSON object and no markdown.
 
 Required top-level keys: summary, assets, events.
 assets MUST contain USD, EUR, GBP, CAD, JPY, AUD, NZD, CHF, Gold, Oil, Nasdaq.
 For each asset return: score (-1 to +1), confidence (0-100), reason, horizon. Judge each asset separately.
-Use macro observations plus current news. Also use supplied live_price_context as confirmation only: if the fundamental/news direction is not confirmed by price, explicitly weaken the directional wording and say it is unconfirmed; if price contradicts it, say there is a price conflict. Gold: real yields/USD/safe haven/central-bank demand. Oil: supply/demand/OPEC/geopolitics/inventories. Nasdaq: yields/Fed/growth/earnings/semiconductors/risk appetite.
+Use macro observations plus current news. Also use supplied live_price_context as confirmation only: if the fundamental/news direction is not confirmed by price, explicitly weaken the directional wording and say it is unconfirmed; if price contradicts it, say there is a price conflict. Gold: real yields/USD/safe haven/central-bank demand. Oil: supply/demand/OPEC/geopolitics/inventories. Nasdaq: yields/Fed/growth/earnings/semiconductors/risk appetite.\nFor economic-event judgments specifically, live_price_context must never force the release forecast; judge the economic evidence first.\n
+For every supplied High Impact event, act as the FINAL CAUSAL EVIDENCE JUDGE, not an echo of the deterministic model.
+Required reasoning order:
+1) Read EVENT and MARKET BASELINE.
+2) Independently assess the supplied underlying evidence: direct event-specific hard data, high-correlation country-specific precursors, official/direct policy information, event-specific credible news, broader macro context, then generic sentiment.
+3) Identify contradictions, stale/missing evidence, numeric ambiguity, and evidence quality.
+4) Form your own BEAT / INLINE / MISS judgment relative to market consensus.
+5) ONLY AFTER forming that evidence-based judgment, inspect REFERENCE_MODEL_OUTPUT_DO_NOT_ANCHOR and compare.
+6) Agreement is allowed. Disagreement is allowed. Do NOT manufacture disagreement merely to appear independent.
+7) If you disagree or weaken the deterministic result, cite the actual supplied evidence that justifies it. If there is no decisive evidence, do not claim a strong override.
+8) Confidence must reflect evidence quality. If direct event-specific evidence is absent, sources are weak/stale, precursors conflict, or only the reference model is useful, keep confidence appropriately restrained and explicitly list what is missing.
+9) First decide the economic event judgment. Only then infer USD, Gold, Oil and Nasdaq implications. Never back-solve the event forecast from a preferred asset direction.
 
 events MUST be an object keyed by the supplied event code. For every supplied event return exactly these keys:
-event_assessment, causal_chain, facts, supporting_evidence, contradictions, nowcast, confidence, confidence_reason, cross_source_confirmation, usd, gold, oil, nasdaq, invalidation, source_count.
-The four list fields causal_chain, facts, supporting_evidence, contradictions must be arrays. Confidence is integer 0-100. Respect the supplied quantitative nowcast; do not create release values.
-If evidence is insufficient, say so explicitly."""
+ai_judgment, agreement_with_quant, confidence, reason, causal_chain, facts, supporting_evidence, contradictions, decisive_evidence, evidence_missing, override_reason, event_assessment, nowcast, confidence_reason, cross_source_confirmation, usd, gold, oil, nasdaq, invalidation, source_count, judge_version.
+ai_judgment MUST be one of: beat, inline, miss.
+agreement_with_quant MUST be one of: agree, partial, disagree.
+causal_chain, facts, supporting_evidence, contradictions, decisive_evidence, evidence_missing MUST be arrays.
+confidence MUST be integer 0-100.
+judge_version MUST be evidence-judge-v1.
+event_assessment should be the short final causal judgment.
+nowcast is retained only for backward compatibility and should summarize the AI judgment, not repeat the deterministic model wording.
+override_reason must be empty when no override is justified.
+If evidence is insufficient, say so explicitly and reduce confidence.
+
+Do not mathematically count the same precursor/news evidence twice merely because the reference quantitative model used it and you agree with it. AI agreement is an interpretation layer, not a second statistically independent signal."""
+
 
         user_payload = {
+            "causal_ai_judge_version": CAUSAL_AI_JUDGE_VERSION,
+            "evidence_order_note": "Judge event evidence first. Inspect each REFERENCE_MODEL_OUTPUT_DO_NOT_ANCHOR only after forming an independent causal view.",
             "news": news_rows,
             "macro_data": macro_snapshot,
             "live_price_context": price_context,
@@ -4845,18 +5048,62 @@ If evidence is insufficient, say so explicitly."""
             if _expected is not None:
                 _item["_event_identity"] = str(_expected.get("event_identity", ""))
                 _item["_event_code"] = _clean_key
+                _reference = _expected.get("REFERENCE_MODEL_OUTPUT_DO_NOT_ANCHOR", {})
+                _quant_prediction = _quantitative_outcome_from_reference(_reference)
+                _ai_judgment = _normalize_ai_judgment(_item.get("ai_judgment") or _item.get("nowcast"))
+                _agreement, _relationship_label = _causal_relationship(_quant_prediction, _ai_judgment)
+                _item["ai_judgment"] = _ai_judgment or str(_item.get("ai_judgment", "")).strip()
+                _item["agreement_with_quant"] = _agreement or str(_item.get("agreement_with_quant", "")).strip()
+                _item["relationship_label"] = _relationship_label
+                # Confidence guard: same evidence is not counted twice and weak
+                # independent evidence cannot become an unjustified high-confidence AI call.
+                _qe = _expected.get("quantitative_evidence", {}) if isinstance(_expected.get("quantitative_evidence", {}), dict) else {}
+                _prec_n = len(_qe.get("precursor_observations", []) or [])
+                _hist_n = len(_qe.get("same_release_history", []) or [])
+                _news_n = len(_expected.get("news_causal_evidence", []) or [])
+                try:
+                    _ai_conf = int(max(0, min(100, round(float(_item.get("confidence", 0) or 0)))))
+                except Exception:
+                    _ai_conf = 0
+                _conf_cap = 100
+                if (_prec_n + _hist_n + _news_n) == 0:
+                    _conf_cap = 45
+                elif _prec_n == 0 and _news_n == 0:
+                    _conf_cap = 55
+                try:
+                    if float(_qe.get("evidence_quality", 0) or 0) < 0.45:
+                        _conf_cap = min(_conf_cap, 60)
+                    if float(_qe.get("conflict_score", 0) or 0) >= 0.45:
+                        _conf_cap = min(_conf_cap, 64)
+                except Exception:
+                    pass
+                _item["confidence"] = min(_ai_conf, _conf_cap)
+                _item["_quantitative_prediction"] = _quant_prediction
+                _item["_quantitative_reference"] = dict(_reference) if isinstance(_reference, dict) else {}
+                _item["_judge_version"] = CAUSAL_AI_JUDGE_VERSION
+                _item["judge_version"] = CAUSAL_AI_JUDGE_VERSION
+                _final_prediction, _final_reason = _derive_final_forecast_state(_quant_prediction, _item)
+                _item["final_prediction"] = _final_prediction
+                _item["final_arbitration_reason"] = _final_reason
             clean_events[_clean_key] = _item
         for _code in requested_event_codes:
             _ai_diag_update(
                 _code,
                 parse_status="PARSE SUCCESS",
-                event_result_saved=isinstance(clean_events.get(_code), dict),
+                event_result_saved=_causal_ai_result_is_current_judge(clean_events.get(_code)),
             )
         result = {
             "summary": str(parsed.get("summary", ""))[:1800],
             "assets": _normalize_shared_asset_payload(parsed.get("assets", {})),
             "events": clean_events,
         }
+        for _code, _analysis in clean_events.items():
+            try:
+                _row = expected_by_code.get(_code)
+                if isinstance(_row, dict):
+                    _freeze_forecaster_ai_snapshot_from_batch_row(_row, _analysis)
+            except Exception:
+                pass
         _ai_batch_save_state({
             "signature": signature,
             "updated_at": time.time(),
@@ -4885,16 +5132,19 @@ If evidence is insufficient, say so explicitly."""
         for _code in requested_event_codes:
             _ai_diag_update(
                 _code,
-                queue_state="COMPLETED" if isinstance(clean_events.get(_code), dict) else "ERROR",
+                queue_state="COMPLETED" if _causal_ai_result_is_current_judge(clean_events.get(_code)) else "ERROR",
                 batch_completed_at=_completed_at,
                 state_saved=True,
-                event_result_saved=isinstance(clean_events.get(_code), dict),
-                last_error="" if isinstance(clean_events.get(_code), dict) else "Event result missing from provider response",
+                event_result_saved=_causal_ai_result_is_current_judge(clean_events.get(_code)),
+                last_error="" if _causal_ai_result_is_current_judge(clean_events.get(_code)) else "Current causal-judge event result missing from provider response",
             )
         try:
             _state_after = _ai_batch_load_state(force_refresh=True)
             _requested_after = set(_state_after.get("requested_forecaster_event_codes", []) or [])
-            _returned_codes = set((result.get("events", {}) or {}).keys())
+            _returned_codes = {
+                k for k, v in (result.get("events", {}) or {}).items()
+                if _causal_ai_result_is_current_judge(v)
+            }
             if _requested_after:
                 _remaining = _requested_after - _returned_codes
                 _state_after["requested_forecaster_event_codes"] = sorted(_remaining)[:40]
@@ -7017,6 +7267,93 @@ def calculate_standardized_surprise(actual_val: float, consensus_val: float, his
     return round(float(clamped_z), 3), round(raw_surprise, 4)
 
 
+def _freeze_forecaster_ai_snapshot(event: dict, nowcast: dict, analysis: dict) -> None:
+    """Freeze AI + final arbitration once, before Actual, without rewriting history."""
+    code = str((event or {}).get("code", "")).strip()
+    if not code or not isinstance(analysis, dict) or analysis.get("status") not in {None, "", "ok"}:
+        return
+    if not _causal_ai_result_is_current_judge(analysis):
+        return
+    if _normalize_forex_factory_actual((event or {}).get("actual_str", "")):
+        return
+    data = _load_forecaster_history()
+    records = data.setdefault("records", {})
+    rec = records.get(code)
+    if not isinstance(rec, dict):
+        _record_forecaster_snapshot(event, nowcast, actual="")
+        data = _load_forecaster_history()
+        records = data.setdefault("records", {})
+        rec = records.get(code)
+    if not isinstance(rec, dict) or rec.get("resolved") or rec.get("ai_frozen_at_utc"):
+        return
+
+    probs = dict(nowcast.get("probabilities", {}) or {})
+    quant_prediction = _normalize_ai_judgment(rec.get("quantitative_prediction") or rec.get("predicted_outcome") or nowcast.get("outcome_key"))
+    if not quant_prediction and probs:
+        quant_prediction = max(probs, key=probs.get)
+    ai_judgment = _normalize_ai_judgment(analysis.get("ai_judgment") or analysis.get("nowcast"))
+    agreement, relationship = _causal_relationship(quant_prediction, ai_judgment)
+    final_prediction, final_reason = _derive_final_forecast_state(quant_prediction, analysis)
+
+    rec.update({
+        "quantitative_prediction": quant_prediction,
+        "quantitative_probabilities": probs or dict(rec.get("probabilities", {}) or {}),
+        "ai_judgment": ai_judgment,
+        "ai_confidence": int(analysis.get("confidence", 0) or 0),
+        "agreement_with_quant": agreement,
+        "ai_relationship_label": relationship,
+        "ai_reason": str(analysis.get("reason") or analysis.get("event_assessment") or "")[:1200],
+        "ai_decisive_evidence": list(analysis.get("decisive_evidence") or [])[:12],
+        "ai_evidence_missing": list(analysis.get("evidence_missing") or [])[:12],
+        "ai_override_reason": str(analysis.get("override_reason") or "")[:1200],
+        "final_prediction": final_prediction,
+        "final_forecast_reason": final_reason,
+        "final_displayed_forecast": f"{final_prediction.upper()} — {relationship}",
+        "ai_frozen_at_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "causal_ai_version": CAUSAL_AI_JUDGE_VERSION,
+        "model_version_identifier": f"{AI_CACHE_VERSION}|{CAUSAL_AI_JUDGE_VERSION}",
+    })
+    _save_forecaster_history(data)
+
+
+def _freeze_forecaster_ai_snapshot_from_batch_row(event_row: dict, analysis: dict) -> None:
+    """Freeze shared-batch AI output even if the user never reopens the event."""
+    if not isinstance(event_row, dict) or not isinstance(analysis, dict) or not _causal_ai_result_is_current_judge(analysis):
+        return
+    code = str(event_row.get("code", "")).strip()
+    if not code or _normalize_forex_factory_actual(event_row.get("actual", "")):
+        return
+    data = _load_forecaster_history()
+    records = data.setdefault("records", {})
+    rec = records.get(code)
+    if not isinstance(rec, dict) or rec.get("resolved") or rec.get("ai_frozen_at_utc"):
+        return
+    reference = event_row.get("REFERENCE_MODEL_OUTPUT_DO_NOT_ANCHOR", {}) if isinstance(event_row.get("REFERENCE_MODEL_OUTPUT_DO_NOT_ANCHOR", {}), dict) else {}
+    quant_prediction = _quantitative_outcome_from_reference(reference) or _normalize_ai_judgment(rec.get("predicted_outcome"))
+    ai_judgment = _normalize_ai_judgment(analysis.get("ai_judgment") or analysis.get("nowcast"))
+    agreement, relationship = _causal_relationship(quant_prediction, ai_judgment)
+    final_prediction, final_reason = _derive_final_forecast_state(quant_prediction, analysis)
+    rec.update({
+        "quantitative_prediction": quant_prediction,
+        "quantitative_probabilities": dict(reference.get("probabilities", {}) or rec.get("probabilities", {}) or {}),
+        "ai_judgment": ai_judgment,
+        "ai_confidence": int(analysis.get("confidence", 0) or 0),
+        "agreement_with_quant": agreement,
+        "ai_relationship_label": relationship,
+        "ai_reason": str(analysis.get("reason") or analysis.get("event_assessment") or "")[:1200],
+        "ai_decisive_evidence": list(analysis.get("decisive_evidence") or [])[:12],
+        "ai_evidence_missing": list(analysis.get("evidence_missing") or [])[:12],
+        "ai_override_reason": str(analysis.get("override_reason") or "")[:1200],
+        "final_prediction": final_prediction,
+        "final_forecast_reason": final_reason,
+        "final_displayed_forecast": f"{final_prediction.upper()} — {relationship}",
+        "ai_frozen_at_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "causal_ai_version": CAUSAL_AI_JUDGE_VERSION,
+        "model_version_identifier": f"{AI_CACHE_VERSION}|{CAUSAL_AI_JUDGE_VERSION}",
+    })
+    _save_forecaster_history(data)
+
+
 def _record_forecaster_snapshot(event: dict, nowcast: dict, actual: str = "") -> None:
     code = str(event.get("code", "")).strip()
     if not code:
@@ -7031,7 +7368,11 @@ def _record_forecaster_snapshot(event: dict, nowcast: dict, actual: str = "") ->
             "captured_at_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "event_identity": _event_identity(event),
             "predicted_outcome": max(probs, key=probs.get) if probs else nowcast.get("outcome_key", "inline"),
-            "probabilities": probs, "confidence": nowcast.get("confidence", 0),
+            "quantitative_prediction": max(probs, key=probs.get) if probs else nowcast.get("outcome_key", "inline"),
+            "probabilities": probs, "quantitative_probabilities": probs, "confidence": nowcast.get("confidence", 0),
+            "final_prediction": max(probs, key=probs.get) if probs else nowcast.get("outcome_key", "inline"),
+            "final_displayed_forecast": str((max(probs, key=probs.get) if probs else nowcast.get("outcome_key", "inline"))).upper() + " — QUANTITATIVE FOUNDATION",
+            "model_version_identifier": f"{AI_CACHE_VERSION}|quantitative",
             "model_estimate": nowcast.get("model_estimate"), "consensus_hurdle": nowcast.get("consensus_hurdle", 0),
             "composite": nowcast.get("nowcast_composite", 0), "conflict_score": nowcast.get("conflict_score", 0),
             "evidence_quality": nowcast.get("evidence_quality", 0),
@@ -7065,6 +7406,9 @@ def _record_forecaster_snapshot(event: dict, nowcast: dict, actual: str = "") ->
             hist_rows = _same_event_history(event, 12)
             std_z, raw_surp = calculate_standardized_surprise(av, fv, hist_rows)
 
+            _quant_pred = _normalize_ai_judgment(rec.get("quantitative_prediction") or rec.get("predicted_outcome"))
+            _ai_pred = _normalize_ai_judgment(rec.get("ai_judgment"))
+            _final_pred = _normalize_ai_judgment(rec.get("final_prediction") or _quant_pred)
             rec.update({
                 "actual": rec.get("first_print_actual") or actual,
                 "first_print_actual": rec.get("first_print_actual") or actual,
@@ -7072,7 +7416,11 @@ def _record_forecaster_snapshot(event: dict, nowcast: dict, actual: str = "") ->
                 "actual_outcome": outcome,
                 "resolved": True,
                 "resolved_at_utc": rec.get("resolved_at_utc") or (datetime.utcnow().isoformat(timespec="seconds") + "Z"),
-                "correct": rec.get("predicted_outcome") == outcome,
+                "correct": _quant_pred == outcome,
+                "quantitative_correct": _quant_pred == outcome,
+                "ai_correct": (_ai_pred == outcome) if _ai_pred else None,
+                "final_correct": _final_pred == outcome,
+                "consensus_correct": outcome == "inline",
                 "model_error": model_err,
                 "absolute_error": model_err,
                 "consensus_error": consensus_err,
@@ -7088,6 +7436,10 @@ def _forecaster_performance() -> dict:
     rows = list(_load_forecaster_history().get("records", {}).values())
     done = [r for r in rows if r.get("resolved")]
     correct = sum(1 for r in done if r.get("correct"))
+    quant_scored = [r for r in done if _normalize_ai_judgment(r.get("quantitative_prediction") or r.get("predicted_outcome"))]
+    ai_scored = [r for r in done if _normalize_ai_judgment(r.get("ai_judgment"))]
+    final_scored = [r for r in done if _normalize_ai_judgment(r.get("final_prediction") or r.get("predicted_outcome"))]
+    consensus_correct = sum(1 for r in done if str(r.get("actual_outcome", "")) == "inline")
 
     model_errs = []
     cons_errs = []
@@ -7128,6 +7480,11 @@ def _forecaster_performance() -> dict:
         "resolved": len(done),
         "correct": correct,
         "accuracy": round(100.0 * correct / len(done), 1) if done else 0.0,
+        "quantitative_accuracy": round(100.0 * sum(1 for r in quant_scored if bool(r.get("quantitative_correct", r.get("correct")))) / len(quant_scored), 1) if quant_scored else 0.0,
+        "ai_accuracy": round(100.0 * sum(1 for r in ai_scored if r.get("ai_correct") is True) / len(ai_scored), 1) if ai_scored else 0.0,
+        "final_accuracy": round(100.0 * sum(1 for r in final_scored if bool(r.get("final_correct", r.get("correct")))) / len(final_scored), 1) if final_scored else 0.0,
+        "consensus_accuracy": round(100.0 * consensus_correct / len(done), 1) if done else 0.0,
+        "ai_scored": len(ai_scored),
         "mean_model_error": mean_model_err,
         "mean_consensus_error": mean_cons_err,
         "median_model_error": median_model_err,
@@ -7269,7 +7626,7 @@ def get_causal_macro_ai_analysis(event: dict, nowcast: dict, articles: list, api
     code = str(event.get("code", "")).strip()
     state = _ai_batch_load_state(force_refresh=True)
     item, found_key = _shared_ai_event_result(event, state)
-    if isinstance(item, dict):
+    if isinstance(item, dict) and _causal_ai_result_is_current_judge(item):
         try:
             normalized = _normalize_causal_ai_payload(dict(item), int(item.get("source_count", 0) or 0))
         except Exception:
@@ -7277,8 +7634,19 @@ def get_causal_macro_ai_analysis(event: dict, nowcast: dict, articles: list, api
         normalized["status"] = "ok"
         normalized["state"] = "COMPLETED"
         normalized["matched_event_key"] = found_key
-        _ai_diag_update(code, queue_state="COMPLETED", ui_lookup_found=True, event_result_saved=True)
+        diag_existing = dict((state.get("causal_ai_diagnostics", {}) or {}).get(code, {}) or {})
+        diag_fields = {"queue_state": "COMPLETED", "ui_lookup_found": True, "event_result_saved": True}
+        if not diag_existing.get("requested_at"):
+            diag_fields["request_stage"] = "RESULT_FROM_SHARED_CACHE"
+            diag_fields["result_source"] = "SHARED_CACHE"
+        _ai_diag_update(code, **diag_fields)
+        try:
+            _freeze_forecaster_ai_snapshot(event, nowcast, normalized)
+        except Exception:
+            pass
         return normalized
+    elif isinstance(item, dict):
+        _ai_diag_update(code, request_stage="LEGACY_RESULT_STALE", ui_lookup_found=False, event_result_saved=False)
 
     diag = dict((state.get("causal_ai_diagnostics", {}) or {}).get(code, {}) or {})
     requested_at = float(diag.get("requested_at", 0.0) or 0.0)
@@ -7333,21 +7701,31 @@ def render_causal_macro_ai_panel(analysis: dict) -> None:
         return "".join(f"<div style='margin:2px 0;'>• {str(v)}</div>" for v in vals) or "<div>• None identified.</div>"
 
     confidence = int(analysis.get("confidence", 0) or 0)
+    relationship = str(analysis.get("relationship_label") or "AI EVIDENCE REVIEW")
+    ai_judgment = (_normalize_ai_judgment(analysis.get("ai_judgment") or analysis.get("nowcast")) or "unknown").upper()
+    final_prediction = (_normalize_ai_judgment(analysis.get("final_prediction")) or _normalize_ai_judgment(analysis.get("_quantitative_prediction")) or "unknown").upper()
     render_html(f"""
     <div class="fc-ai">
       <div class="fc-ai-head">
         <div class="fc-ai-title">🧠 Causal Macro Intelligence</div>
         <div class="fc-ai-conf">{confidence}% AI confidence</div>
       </div>
+      <div style="display:inline-block;margin:2px 0 7px;padding:4px 8px;border-radius:999px;border:1px solid rgba(0,245,255,.18);font-size:9px;font-weight:900;letter-spacing:.06em;color:#cfeef5;">{relationship}</div>
       <div class="fc-ai-assess">{analysis.get("event_assessment","—")}</div>
       <div style="font-size:9.8px;color:#8fa3b4;margin-top:4px;line-height:1.45;">
-        <b style="color:#00f5ff;">Nowcast:</b> {analysis.get("nowcast","Insufficient Evidence")}
-        &nbsp;•&nbsp; <b style="color:#ffd166;">Basis:</b> {analysis.get("confidence_reason","—")}
+        <b style="color:#00f5ff;">AI Judgment:</b> {ai_judgment}
+        &nbsp;•&nbsp; <b style="color:#ad7bff;">Final:</b> {final_prediction}
+        &nbsp;•&nbsp; <b style="color:#ffd166;">Basis:</b> {analysis.get("confidence_reason") or analysis.get("reason") or "—"}
       </div>
       <div class="fc-ai-grid">
         <div class="fc-ai-box"><b style="color:#00f5ff;">CAUSAL CHAIN</b><div style="margin-top:4px;">{items("causal_chain")}</div></div>
         <div class="fc-ai-box"><b style="color:#00ffa3;">SUPPORTING EVIDENCE</b><div style="margin-top:4px;">{items("supporting_evidence")}</div></div>
         <div class="fc-ai-box"><b style="color:#ff788a;">CONTRADICTIONS</b><div style="margin-top:4px;">{items("contradictions")}</div></div>
+      </div>
+      <div class="fc-ai-grid" style="margin-top:6px;">
+        <div class="fc-ai-box"><b style="color:#00ffa3;">DECISIVE EVIDENCE</b><div style="margin-top:4px;">{items("decisive_evidence")}</div></div>
+        <div class="fc-ai-box"><b style="color:#ffd166;">EVIDENCE MISSING</b><div style="margin-top:4px;">{items("evidence_missing")}</div></div>
+        <div class="fc-ai-box"><b style="color:#ad7bff;">OVERRIDE / ARBITRATION</b><div style="margin-top:4px;">{analysis.get("override_reason") or analysis.get("final_arbitration_reason") or "No override required."}</div></div>
       </div>
       <div class="fc-ai-foot">
         Cross-source: <b style="color:#cbd8df;">{analysis.get("cross_source_confirmation","—")}</b>
@@ -7389,6 +7767,7 @@ def _forecaster_bg_signature(event: dict, actual: str = "") -> str:
         "impact": event.get("impact", ""),
         "ai_model": DEFAULT_AI_MODEL,
         "ai_cache": AI_CACHE_VERSION,
+        "causal_judge_version": CAUSAL_AI_JUDGE_VERSION,
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
@@ -7423,6 +7802,9 @@ def _forecaster_ai_evidence_signature(event: dict, nowcast: dict, relevant_artic
         "composite": round(float(nowcast.get("nowcast_composite", 0) or 0), 6),
         "conflict": round(float(nowcast.get("conflict_score", 0) or 0), 6),
         "evidence_quality": round(float(nowcast.get("evidence_quality", 0) or 0), 6),
+        "history_signal": round(float(nowcast.get("history_release_signal", 0) or 0), 6),
+        "same_release_history": _ai_event_history_rows(nowcast),
+        "causal_judge_version": CAUSAL_AI_JUDGE_VERSION,
         "news": news_rows,
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
@@ -7655,8 +8037,13 @@ def _request_shared_ai_for_forecaster_event(event: dict) -> None:
     try:
         state = _ai_batch_load_state(force_refresh=True)
         _existing_item, _matched_key = _shared_ai_event_result(event, state)
-        if isinstance(_existing_item, dict):
-            _ai_diag_update(code, queue_state="COMPLETED", ui_lookup_found=True, event_result_saved=True)
+        if isinstance(_existing_item, dict) and _causal_ai_result_is_current_judge(_existing_item):
+            _existing_diag = dict((state.get("causal_ai_diagnostics", {}) or {}).get(code, {}) or {})
+            _fields = {"queue_state": "COMPLETED", "ui_lookup_found": True, "event_result_saved": True}
+            if not _existing_diag.get("requested_at"):
+                _fields["request_stage"] = "RESULT_FROM_SHARED_CACHE"
+                _fields["result_source"] = "SHARED_CACHE"
+            _ai_diag_update(code, **_fields)
             return
 
         now_ts = time.time()
@@ -7759,7 +8146,8 @@ def _render_forecaster_causal_ai_live(event: dict, nowcast: dict, auth_user: dic
 
     if analysis.get("status") == "ok":
         _live_text = analysis.get("event_assessment", "") or nowcast.get("outcome_desc", "")
-        _live_source = "Live Causal Macro Engine"
+        _relation = str(analysis.get("relationship_label") or "AI EVIDENCE REVIEW")
+        _live_source = f"Live Causal Macro Engine · {_relation}"
     elif analysis.get("status") == "disabled":
         _live_text = "AI analysis is disabled by Admin. The quantitative Nowcast remains available."
         _live_source = "AI Disabled"
@@ -7793,7 +8181,7 @@ def _render_forecaster_causal_ai_live(event: dict, nowcast: dict, auth_user: dic
             st.json({
                 "Event identity": diag.get("event_identity") or _event_identity(event),
                 "Event code": code,
-                "Request stage": diag.get("request_stage") or ("REQUESTED" if diag.get("requested_at") else "NOT_REQUESTED"),
+                "Request stage": diag.get("request_stage") or ("RESULT_FROM_SHARED_CACHE" if found_key else ("REQUESTED" if diag.get("requested_at") else "NOT_REQUESTED")),
                 "Requested at": diag.get("requested_at"),
                 "Queued at": diag.get("queued_at"),
                 "Queue state": analysis.get("state") or diag.get("queue_state") or "NOT_REQUESTED",
@@ -7951,7 +8339,7 @@ def _show_forecaster_event_dialog(
       <div class="apex-modal-value"><div class="apex-modal-value-lbl">Previous</div><div class="apex-modal-value-num">{prev_disp}</div></div>
     </div>
     <div class="apex-form-grid-2">
-      <div class="apex-form-field"><div class="apex-form-label">Causal Intelligence</div><div class="apex-form-box" style="color:{causal_intel_color};">{causal_intel_label}</div></div>
+      <div class="apex-form-field"><div class="apex-form-label">Quantitative Nowcast</div><div class="apex-form-box" style="color:{causal_intel_color};">{causal_intel_label}</div></div>
       <div class="apex-form-field"><div class="apex-form-label">Market Impact</div><div class="apex-form-box" style="color:#ffd166;">{market_impact_label}</div></div>
     </div>
     <div class="apex-intelligence-card">
@@ -10293,11 +10681,30 @@ def render_admin_key_generator() -> None:
     render_html('<div class="sec-title">FORECASTER PERFORMANCE &amp; AUDIT</div>')
     p1, p2, p3, p4, p5 = st.columns(5)
     p1.metric("Analyses", len(hist_rows)); p2.metric("Resolved", len(resolved_rows)); p3.metric("Correct", perf.get("correct", 0)); p4.metric("Wrong", len(wrong_rows)); p5.metric("Accuracy", f"{perf.get('accuracy', 0.0):.1f}%")
-    st.caption(f"Pending releases: {len(pending_rows)}. Forecasts are frozen before release and scored after Actual is published.")
+    st.caption(
+        f"Pending releases: {len(pending_rows)}. Forecasts are frozen before release and scored after Actual is published. "
+        f"Layer accuracy — Quant: {perf.get('quantitative_accuracy', 0.0):.1f}% · "
+        f"AI: {perf.get('ai_accuracy', 0.0):.1f}% ({perf.get('ai_scored', 0)} scored) · "
+        f"Final: {perf.get('final_accuracy', 0.0):.1f}% · Consensus: {perf.get('consensus_accuracy', 0.0):.1f}%."
+    )
     if resolved_rows:
         audit = []
         for r in sorted(resolved_rows, key=lambda x: str(x.get("resolved_at_utc", "")), reverse=True):
-            audit.append({"Event": r.get("title", ""), "Currency": r.get("currency", ""), "Forecast": r.get("forecast", ""), "Actual": r.get("actual", ""), "Prediction": str(r.get("predicted_outcome", "")).title(), "Outcome": str(r.get("actual_outcome", "")).title(), "Result": "Correct" if r.get("correct") else "Wrong", "Confidence": f"{float(r.get('confidence', 0) or 0):.0f}%", "Why": r.get("resolution_reason") or r.get("prediction_reason", "")})
+            audit.append({
+                "Event": r.get("title", ""),
+                "Currency": r.get("currency", ""),
+                "Forecast": r.get("forecast", ""),
+                "Actual": r.get("actual", ""),
+                "Quant": str(r.get("quantitative_prediction") or r.get("predicted_outcome", "")).title(),
+                "AI": str(r.get("ai_judgment", "")).title() or "—",
+                "Final": str(r.get("final_prediction") or r.get("predicted_outcome", "")).title(),
+                "Outcome": str(r.get("actual_outcome", "")).title(),
+                "Quant Result": ("Correct" if r.get("quantitative_correct", r.get("correct")) else "Wrong"),
+                "AI Result": ("—" if r.get("ai_correct") is None else ("Correct" if r.get("ai_correct") else "Wrong")),
+                "Final Result": ("Correct" if r.get("final_correct", r.get("correct")) else "Wrong"),
+                "Confidence": f"{float(r.get('confidence', 0) or 0):.0f}%",
+                "Why": r.get("resolution_reason") or r.get("prediction_reason", ""),
+            })
         st.dataframe(audit, use_container_width=True, hide_index=True)
         with st.expander("Performance by event family", expanded=False):
             fam_rows = [{"Event family": fam, "Resolved": stats.get("n", 0), "Accuracy": f"{stats.get('accuracy', 0.0):.1f}%"} for fam, stats in sorted((perf.get("by_family") or {}).items())]
