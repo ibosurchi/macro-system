@@ -348,93 +348,184 @@ def _post_ai_chat(
     raise RuntimeError(f"{provider} HTTP {response.status_code}: {detail}" if detail else f"{provider} HTTP {response.status_code}")
 
 def _ai_message_content(response_json: dict) -> str:
-    """Extract text from an OpenAI-compatible chat-completions response."""
-    try:
-        choices = response_json.get("choices") or []
-        if not choices:
-            return ""
-        message = (choices[0] or {}).get("message") or {}
-        content = message.get("content", "")
-        if isinstance(content, str):
-            return content.strip()
-        # Some gateways can return structured content parts.
-        if isinstance(content, list):
-            parts = []
-            for item in content:
-                if isinstance(item, dict):
-                    txt = item.get("text") or item.get("content") or ""
-                    if txt:
-                        parts.append(str(txt))
-                elif item:
-                    parts.append(str(item))
-            return "\n".join(parts).strip()
-        return str(content or "").strip()
-    except Exception:
+    """Extract assistant text from common OpenAI-compatible gateway schemas."""
+    if not isinstance(response_json, dict):
         return ""
 
+    def _to_text(content) -> str:
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            out = []
+            for part in content:
+                if isinstance(part, dict):
+                    value = (
+                        part.get("text")
+                        or part.get("content")
+                        or part.get("output_text")
+                        or part.get("value")
+                        or ""
+                    )
+                    if isinstance(value, dict):
+                        value = value.get("value") or value.get("text") or ""
+                    if value:
+                        out.append(str(value))
+                elif part:
+                    out.append(str(part))
+            return "\n".join(out).strip()
+        if isinstance(content, dict):
+            return str(
+                content.get("text")
+                or content.get("value")
+                or content.get("content")
+                or ""
+            ).strip()
+        return str(content or "").strip()
+
+    try:
+        choices = response_json.get("choices") or []
+        if isinstance(choices, list) and choices:
+            first = choices[0] if isinstance(choices[0], dict) else {}
+            message = first.get("message") if isinstance(first, dict) else {}
+            if isinstance(message, dict):
+                text = _to_text(message.get("content"))
+                if text:
+                    return text
+
+                # Compatible gateways sometimes return JSON in tool/function args.
+                for call in (message.get("tool_calls") or []):
+                    if isinstance(call, dict):
+                        fn = call.get("function") or {}
+                        if isinstance(fn, dict) and fn.get("arguments"):
+                            return str(fn.get("arguments")).strip()
+                fcall = message.get("function_call")
+                if isinstance(fcall, dict) and fcall.get("arguments"):
+                    return str(fcall.get("arguments")).strip()
+
+            text = _to_text(first.get("text") if isinstance(first, dict) else "")
+            if text:
+                return text
+
+        text = _to_text(response_json.get("output_text"))
+        if text:
+            return text
+
+        output = response_json.get("output")
+        if isinstance(output, list):
+            for item in output:
+                if isinstance(item, dict):
+                    text = _to_text(item.get("content") or item.get("text") or item.get("output_text"))
+                    if text:
+                        return text
+
+        # Proxy wrappers.
+        for key in ("data", "response", "result"):
+            wrapped = response_json.get(key)
+            if isinstance(wrapped, dict):
+                text = _ai_message_content(wrapped)
+                if text:
+                    return text
+    except Exception:
+        return ""
+    return ""
+
+
+def _ai_response_metadata(response_json: object) -> dict:
+    """Safe HTTP-200 schema diagnostics. Never stores response content or secrets."""
+    meta = {
+        "top_level_keys": [],
+        "choice_count": 0,
+        "finish_reason": "",
+        "content_type": "",
+        "content_chars": 0,
+    }
+    if not isinstance(response_json, dict):
+        return meta
+    meta["top_level_keys"] = sorted(str(k)[:60] for k in response_json.keys())[:24]
+    choices = response_json.get("choices")
+    if isinstance(choices, list):
+        meta["choice_count"] = len(choices)
+        if choices and isinstance(choices[0], dict):
+            first = choices[0]
+            meta["finish_reason"] = str(first.get("finish_reason", ""))[:80]
+            msg = first.get("message")
+            if isinstance(msg, dict):
+                content = msg.get("content")
+                meta["content_type"] = type(content).__name__
+                if isinstance(content, str):
+                    meta["content_chars"] = len(content)
+                elif isinstance(content, list):
+                    meta["content_chars"] = sum(len(str(x)) for x in content)
+    if not meta["content_type"] and "output_text" in response_json:
+        value = response_json.get("output_text")
+        meta["content_type"] = type(value).__name__
+        meta["content_chars"] = len(str(value or ""))
+    return meta
 
 def _extract_json_object(raw_text: str) -> dict | None:
-    """Parse strict/fenced/embedded JSON without changing model semantics."""
+    """Parse strict, fenced, embedded, or double-encoded model JSON."""
     raw = str(raw_text or "").strip()
     if not raw:
         return None
 
-    # 1) Direct JSON.
-    try:
-        parsed = json.loads(raw)
-        return parsed if isinstance(parsed, dict) else None
-    except Exception:
-        pass
-
-    # 2) Markdown fenced JSON.
-    cleaned = re.sub(
-        r"^\s*```(?:json)?\s*|\s*```\s*$",
-        "",
-        raw,
-        flags=re.I | re.S,
-    ).strip()
-    try:
-        parsed = json.loads(cleaned)
-        return parsed if isinstance(parsed, dict) else None
-    except Exception:
-        pass
-
-    # 3) Extract the first balanced {...} object even if the model adds prose.
-    start = cleaned.find("{")
-    if start < 0:
+    def _accept(value):
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            try:
+                inner = json.loads(value.strip())
+                return inner if isinstance(inner, dict) else None
+            except Exception:
+                return None
+        if isinstance(value, list) and len(value) == 1 and isinstance(value[0], dict):
+            return value[0]
         return None
 
-    depth = 0
-    in_string = False
-    escaped = False
-    for i in range(start, len(cleaned)):
-        ch = cleaned[i]
+    for candidate in (raw, re.sub(
+        r"^\s*```[a-zA-Z0-9_-]*\s*|\s*```\s*$", "", raw, flags=re.I | re.S
+    ).strip()):
+        try:
+            accepted = _accept(json.loads(candidate))
+            if isinstance(accepted, dict):
+                return accepted
+        except Exception:
+            pass
 
-        if in_string:
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == '"':
-                in_string = False
-            continue
+    cleaned = re.sub(
+        r"^\s*```[a-zA-Z0-9_-]*\s*|\s*```\s*$", "", raw, flags=re.I | re.S
+    ).strip()
 
-        if ch == '"':
-            in_string = True
-        elif ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                candidate = cleaned[start:i + 1]
-                try:
-                    parsed = json.loads(candidate)
-                    return parsed if isinstance(parsed, dict) else None
-                except Exception:
-                    return None
-
+    # Try each balanced object candidate; do not stop at the first malformed brace block.
+    starts = [i for i, ch in enumerate(cleaned) if ch == "{"][:12]
+    for start in starts:
+        depth = 0
+        in_string = False
+        escaped = False
+        for i in range(start, len(cleaned)):
+            ch = cleaned[i]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        accepted = _accept(json.loads(cleaned[start:i + 1]))
+                        if isinstance(accepted, dict):
+                            return accepted
+                    except Exception:
+                        pass
+                    break
     return None
-
 
 def _normalize_causal_ai_payload(parsed: dict, source_count: int) -> dict:
     """Normalize only schema/typing; do not invent analytical content."""
@@ -3840,6 +3931,9 @@ _AI_BATCH_GLOBAL_MIN_PAID_SECONDS = 90
 _AI_BATCH_SAME_TOPIC_COOLDOWN_SECONDS = 5 * 60
 _AI_BATCH_ERROR_BACKOFF_SECONDS = 15 * 60
 _AI_BATCH_FIRST_RESULT_RETRY_SECONDS = 2 * 60
+_CAUSAL_AI_EVENT_BATCH_LIMIT = 6
+_CAUSAL_AI_NEWS_BATCH_LIMIT = 14
+_CAUSAL_AI_HTTP_TIMEOUT_SECONDS = 120
 _AI_BATCH_MACRO_REFRESH_SECONDS = 15 * 60
 _AI_BATCH_MACRO_CACHE = {"at": 0.0, "data": {}}
 _AI_BATCH_WAKE_EVENT = threading.Event()
@@ -4274,7 +4368,7 @@ def _ai_batch_macro_snapshot() -> dict:
 
 def _ai_event_precursor_rows(nowcast: dict) -> list[dict]:
     rows = []
-    for p in (nowcast.get("precursor_results") or [])[:12]:
+    for p in (nowcast.get("precursor_results") or [])[:8]:
         try:
             score = float(p.get("score", 0) or 0)
         except Exception:
@@ -4302,7 +4396,7 @@ def _ai_event_precursor_rows(nowcast: dict) -> list[dict]:
 
 def _ai_event_history_rows(nowcast: dict) -> list[dict]:
     out = []
-    for row in (nowcast.get("same_release_history") or [])[:8]:
+    for row in (nowcast.get("same_release_history") or [])[:5]:
         if not isinstance(row, dict):
             continue
         out.append({
@@ -4315,7 +4409,7 @@ def _ai_event_history_rows(nowcast: dict) -> list[dict]:
     return out
 
 
-def _ai_event_news_rows(event: dict, articles: list, limit: int = 6) -> list[dict]:
+def _ai_event_news_rows(event: dict, articles: list, limit: int = 4) -> list[dict]:
     currency = str(event.get("currency", "")).upper()
     prepared = []
     for art in (articles or [])[:max(1, int(limit))]:
@@ -4332,7 +4426,7 @@ def _ai_event_news_rows(event: dict, articles: list, limit: int = 6) -> list[dic
             "source": str(source_name)[:80],
             "timestamp": str(art.get("publishedAt", ""))[:80],
             "title": str(art.get("title", ""))[:240],
-            "description": str(art.get("description", ""))[:360],
+            "description": str(art.get("description", ""))[:220],
             "event_verified": bool(art.get("_event_verified", False)),
             "numeric_ambiguous": bool(art.get("_numeric_ambiguous", False)),
             "deterministic_direction": direction,
@@ -4837,7 +4931,7 @@ def _run_shared_ai_batch_once() -> None:
             all_news = fetch_all_instant_news(DEFAULT_TELEGRAM_CHANNEL)
         except Exception:
             all_news = []
-        news_rows = _ai_batch_news_rows(all_news, 20)
+        news_rows = _ai_batch_news_rows(all_news, _CAUSAL_AI_NEWS_BATCH_LIMIT)
         macro_snapshot = _ai_batch_macro_snapshot()
         try:
             events = get_upcoming_catalyst_events()
@@ -4865,12 +4959,12 @@ def _run_shared_ai_batch_once() -> None:
                     if _restored.get("code"):
                         events.append(_restored)
                         by_code[_code] = _restored
-            requested_events = [by_code[c] for c in requested_event_codes if c in by_code]
+            requested_events = [by_code[c] for c in sorted(requested_event_codes) if c in by_code]
             other_events = [ev for ev in events if str(ev.get("code", "")).strip() not in requested_event_codes]
             ordered_ai_events = requested_events + other_events
         else:
             ordered_ai_events = events
-        event_rows = _ai_batch_event_rows(ordered_ai_events, all_news, actuals, 14)
+        event_rows = _ai_batch_event_rows(ordered_ai_events, all_news, actuals, _CAUSAL_AI_EVENT_BATCH_LIMIT)
         included_codes = {str(e.get("code", "")).strip() for e in event_rows}
         for _code in requested_event_codes:
             _ai_diag_update(
@@ -4916,8 +5010,19 @@ def _run_shared_ai_batch_once() -> None:
             # shared result exists. Once a valid result exists, retain the long
             # backoff so provider errors cannot create repeated paid requests.
             has_result = isinstance(state.get("result"), dict) and bool(state.get("result"))
-            backoff = _AI_BATCH_ERROR_BACKOFF_SECONDS if has_result else _AI_BATCH_FIRST_RESULT_RETRY_SECONDS
+            backoff = (
+                _AI_BATCH_FIRST_RESULT_RETRY_SECONDS
+                if requested_missing
+                else (_AI_BATCH_ERROR_BACKOFF_SECONDS if has_result else _AI_BATCH_FIRST_RESULT_RETRY_SECONDS)
+            )
             if time.time() - last_attempt < backoff:
+                for _code in requested_event_codes:
+                    _ai_diag_update(
+                        str(_code),
+                        queue_state="QUEUED",
+                        provider_status="RETRY_BACKOFF_AFTER_PROVIDER_ATTEMPT",
+                        retry_after_seconds=round(max(0.0, backoff - (time.time() - last_attempt)), 1),
+                    )
                 return
 
         # Admin may switch AI OFF while data/news are being collected. Re-check
@@ -4991,6 +5096,7 @@ event_assessment should be the short final causal judgment.
 nowcast is retained only for backward compatibility and should summarize the AI judgment, not repeat the deterministic model wording.
 override_reason must be empty when no override is justified.
 If evidence is insufficient, say so explicitly and reduce confidence.
+Keep output compact: each evidence array <= 4 concise items; reason/event_assessment/confidence_reason/invalidation <= 2 short sentences; each asset reason <= 2 short sentences. Do not omit required keys.
 
 Do not mathematically count the same precursor/news evidence twice merely because the reference quantitative model used it and you agree with it. AI agreement is an interpretation layer, not a second statistically independent signal."""
 
@@ -5033,6 +5139,11 @@ Do not mathematically count the same precursor/news evidence twice merely becaus
                 # not even won the provider gate yet.
                 http_status=None,
                 parse_status=None,
+                response_choice_count=None,
+                response_finish_reason=None,
+                response_content_type=None,
+                response_content_chars=None,
+                response_top_level_keys=None,
                 batch_completed_at=None,
                 event_result_saved=False,
                 state_saved=False,
@@ -5047,7 +5158,7 @@ Do not mathematically count the same precursor/news evidence twice merely becaus
             system_prompt=system_prompt,
             user_prompt=json.dumps(user_payload, ensure_ascii=False, separators=(",", ":")),
             temperature=0.1,
-            timeout=75,
+            timeout=_CAUSAL_AI_HTTP_TIMEOUT_SECONDS,
         )
         _response_status = int(getattr(response, "status_code", 0) or 0)
         for _code in requested_event_codes:
@@ -5056,10 +5167,41 @@ Do not mathematically count the same precursor/news evidence twice merely becaus
                 provider_status="HTTP RESPONSE RECEIVED",
                 http_status=_response_status,
             )
-        raw = _ai_message_content(response.json())
+        try:
+            response_json = response.json()
+        except Exception as exc:
+            for _code in requested_event_codes:
+                _ai_diag_update(
+                    _code,
+                    parse_status="PARSE FAILED",
+                    provider_status="HTTP 200 / NON-JSON BODY",
+                    last_error="Response parsing failed",
+                )
+            raise RuntimeError(f"{provider} response parsing failed: non-JSON HTTP response") from exc
+
+        _schema_meta = _ai_response_metadata(response_json)
+        raw = _ai_message_content(response_json)
+        for _code in requested_event_codes:
+            _ai_diag_update(
+                _code,
+                response_choice_count=_schema_meta.get("choice_count"),
+                response_finish_reason=_schema_meta.get("finish_reason"),
+                response_content_type=_schema_meta.get("content_type"),
+                response_content_chars=_schema_meta.get("content_chars"),
+                response_top_level_keys=_schema_meta.get("top_level_keys"),
+            )
+        if not raw:
+            raise RuntimeError(
+                f"{provider} returned empty choices/content "
+                f"(finish_reason={_schema_meta.get('finish_reason') or 'unknown'})"
+            )
+
         parsed = _extract_json_object(raw)
         if not isinstance(parsed, dict):
-            raise RuntimeError(f"{provider} returned unstructured batch output")
+            raise RuntimeError(
+                f"{provider} returned unstructured batch output "
+                f"(content_chars={len(raw)}, finish_reason={_schema_meta.get('finish_reason') or 'unknown'})"
+            )
 
         raw_events = parsed.get("events", {}) if isinstance(parsed.get("events", {}), dict) else {}
         expected_by_code = {str(e.get("code", "")).strip(): e for e in event_rows}
@@ -8227,6 +8369,11 @@ def _render_forecaster_causal_ai_live(event: dict, nowcast: dict, auth_user: dic
                 "Provider status": diag.get("provider_status") or gdiag.get("provider_status"),
                 "HTTP status": gdiag.get("http_status"),
                 "Parse status": diag.get("parse_status"),
+                "Response choice count": diag.get("response_choice_count"),
+                "Response finish reason": diag.get("response_finish_reason"),
+                "Response content type": diag.get("response_content_type"),
+                "Response content chars": diag.get("response_content_chars"),
+                "Response top-level keys": diag.get("response_top_level_keys"),
                 "Batch completed at": diag.get("batch_completed_at"),
                 "Event result saved?": bool(diag.get("event_result_saved")),
                 "UI lookup found result?": bool(found_key),
