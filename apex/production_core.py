@@ -317,7 +317,14 @@ def _post_ai_chat(
     gate_ticket = None
     try:
         gate_ticket = _provider_gate_enter()
+        _ai_diag_update(global_provider_status="PROVIDER GATE WON", global_gate_won_at=time.time())
+        _ai_diag_update(global_provider_status="HTTP SENT", global_http_sent_at=time.time())
         response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+        _ai_diag_update(
+            global_provider_status="HTTP RESPONSE RECEIVED",
+            global_http_response_at=time.time(),
+            global_http_status=int(getattr(response, "status_code", 0) or 0),
+        )
     except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout, requests.exceptions.ConnectionError) as exc:
         raise RuntimeError(f"{provider} temporarily unavailable.") from exc
     finally:
@@ -4219,6 +4226,7 @@ def _ai_batch_event_rows(events: list, all_news: list, actuals: dict, limit: int
         rel_news = _forecaster_relevant_ai_articles(ev, all_news) if "_forecaster_relevant_ai_articles" in globals() else []
         rows.append({
             "code": code,
+            "event_identity": _event_identity(ev),
             "title": str(ev.get("title", ""))[:180],
             "currency": str(ev.get("currency", ""))[:12],
             "impact": str(ev.get("impact", ""))[:20],
@@ -4523,6 +4531,119 @@ def _normalize_shared_asset_payload(raw: dict) -> dict:
     return out
 
 
+def _safe_ai_error_label(error_text: str) -> str:
+    """Return a client-safe provider failure label without secrets or raw credentials."""
+    text = str(error_text or "").lower()
+    if "401" in text or "authentication" in text or "unauthorized" in text or "invalid api key" in text:
+        return "Authentication failed"
+    if "403" in text or "forbidden" in text:
+        return "AI unavailable"
+    if "429" in text or "rate limit" in text or "too many requests" in text:
+        return "Rate limited"
+    if "timeout" in text or "temporarily unavailable" in text or "connection" in text:
+        return "Provider temporarily unavailable"
+    if "unstructured" in text or "json" in text or "empty choices" in text or "parse" in text:
+        return "Response parsing failed"
+    if "model" in text and any(x in text for x in ("invalid", "not found", "unsupported")):
+        return "AI unavailable"
+    return "AI unavailable"
+
+
+def _ai_diag_update(code: str = "", **fields) -> None:
+    """Persist compact shared-AI diagnostics. Never stores prompts, tokens or API keys."""
+    try:
+        state = _ai_batch_load_state(force_refresh=True)
+        diag = dict(state.get("causal_ai_diagnostics", {}) or {})
+        global_diag = dict(diag.get("_global", {}) or {})
+        now_ts = time.time()
+        if fields:
+            global_fields = {k: v for k, v in fields.items() if k.startswith("global_")}
+            if global_fields:
+                for k, v in global_fields.items():
+                    global_diag[k[7:]] = v
+                global_diag["updated_at"] = now_ts
+                diag["_global"] = global_diag
+            if code:
+                item = dict(diag.get(code, {}) or {})
+                for k, v in fields.items():
+                    if not k.startswith("global_"):
+                        item[k] = v
+                item["updated_at"] = now_ts
+                diag[code] = item
+        state["causal_ai_diagnostics"] = diag
+        _ai_batch_save_state(state)
+    except Exception:
+        pass
+
+
+def _shared_ai_event_result(event: dict, state: dict | None = None) -> tuple[dict | None, str]:
+    """Find a persisted event result by stable code, then semantic identity fallback."""
+    state = state if isinstance(state, dict) else _ai_batch_load_state(force_refresh=True)
+    result = state.get("result", {}) if isinstance(state, dict) else {}
+    events = result.get("events", {}) if isinstance(result, dict) else {}
+    if not isinstance(events, dict):
+        return None, ""
+    code = str((event or {}).get("code", "")).strip()
+    if code and isinstance(events.get(code), dict):
+        return dict(events[code]), code
+    if code:
+        folded = code.casefold()
+        for key, value in events.items():
+            if str(key).strip().casefold() == folded and isinstance(value, dict):
+                return dict(value), str(key)
+    try:
+        ident = _event_identity(event)
+    except Exception:
+        ident = ""
+    if ident:
+        for key, value in events.items():
+            if isinstance(value, dict) and str(value.get("_event_identity", "")) == ident:
+                return dict(value), str(key)
+    return None, ""
+
+
+def _forecaster_event_request_snapshot(event: dict) -> dict:
+    """JSON-safe event snapshot so a transient calendar refetch cannot drop an opened event."""
+    ev = dict(event or {})
+    dt = ev.get("datetime_obj")
+    meta = ev.get("meta", {}) if isinstance(ev.get("meta", {}), dict) else {}
+    safe_meta = {}
+    for k, v in meta.items():
+        if isinstance(v, (str, int, float, bool)) or v is None:
+            safe_meta[str(k)] = v
+        elif isinstance(v, list):
+            safe_meta[str(k)] = [x for x in v if isinstance(x, (str, int, float, bool)) or x is None]
+        elif isinstance(v, dict):
+            safe_meta[str(k)] = {str(a): b for a, b in v.items() if isinstance(b, (str, int, float, bool)) or b is None}
+    return {
+        "code": str(ev.get("code", "")).strip(),
+        "event_identity": _event_identity(ev),
+        "title": str(ev.get("title", "")),
+        "currency": str(ev.get("currency", "")),
+        "impact": str(ev.get("impact", "High")),
+        "datetime_iso": dt.isoformat() if isinstance(dt, datetime) else "",
+        "date_str": str(ev.get("date_str", "")),
+        "time_str": str(ev.get("time_str", "")),
+        "forecast_str": str(ev.get("forecast_str", "")),
+        "prev_str": str(ev.get("prev_str", "")),
+        "actual_str": str(ev.get("actual_str", "")),
+        "consensus_bias": str(ev.get("consensus_bias", "")),
+        "meta": safe_meta,
+    }
+
+
+def _restore_forecaster_event_request(snapshot: dict) -> dict:
+    ev = dict(snapshot or {})
+    iso = str(ev.pop("datetime_iso", "") or "")
+    if iso:
+        try:
+            ev["datetime_obj"] = datetime.fromisoformat(iso)
+        except Exception:
+            pass
+    ev.pop("event_identity", None)
+    return ev
+
+
 def _run_shared_ai_batch_once() -> None:
     """Make at most one billable request for one changed evidence snapshot."""
     global _AI_BATCH_REQUEST_INFLIGHT
@@ -4555,13 +4676,32 @@ def _run_shared_ai_batch_once() -> None:
         # shared request can never return that event even though the UI keeps waiting.
         state = _ai_batch_load_state(force_refresh=True)
         requested_event_codes = set(state.get("requested_forecaster_event_codes", []) or [])
+        requested_snapshots = dict(state.get("requested_forecaster_events", {}) or {})
         if requested_event_codes:
-            requested_events = [ev for ev in events if str(ev.get("code", "")).strip() in requested_event_codes]
+            by_code = {str(ev.get("code", "")).strip(): ev for ev in events if str(ev.get("code", "")).strip()}
+            # A transient Forex Factory refetch must not erase the exact event the
+            # user opened. Restore its persisted request snapshot only when the
+            # fresh calendar does not contain that code.
+            for _code in requested_event_codes:
+                if _code not in by_code and isinstance(requested_snapshots.get(_code), dict):
+                    _restored = _restore_forecaster_event_request(requested_snapshots[_code])
+                    if _restored.get("code"):
+                        events.append(_restored)
+                        by_code[_code] = _restored
+            requested_events = [by_code[c] for c in requested_event_codes if c in by_code]
             other_events = [ev for ev in events if str(ev.get("code", "")).strip() not in requested_event_codes]
             ordered_ai_events = requested_events + other_events
         else:
             ordered_ai_events = events
         event_rows = _ai_batch_event_rows(ordered_ai_events, all_news, actuals, 14)
+        included_codes = {str(e.get("code", "")).strip() for e in event_rows}
+        for _code in requested_event_codes:
+            _ai_diag_update(
+                _code,
+                queue_state="QUEUED",
+                event_included=(_code in included_codes),
+                included_checked_at=time.time(),
+            )
         price_context = _ai_batch_price_context()
 
         if not news_rows and not macro_snapshot and not event_rows:
@@ -4664,6 +4804,15 @@ If evidence is insufficient, say so explicitly."""
         }
         _ai_batch_save_state(attempt_state)
 
+        batch_started_at = time.time()
+        for _code in requested_event_codes:
+            _ai_diag_update(
+                _code,
+                queue_state="RUNNING",
+                last_batch_started=batch_started_at,
+                event_included=(_code in included_codes),
+                provider_status="PROVIDER GATE PENDING",
+            )
         response = _post_ai_chat(
             provider=provider,
             url=url,
@@ -4679,7 +4828,30 @@ If evidence is insufficient, say so explicitly."""
         if not isinstance(parsed, dict):
             raise RuntimeError(f"{provider} returned unstructured batch output")
 
-        clean_events = parsed.get("events", {}) if isinstance(parsed.get("events", {}), dict) else {}
+        raw_events = parsed.get("events", {}) if isinstance(parsed.get("events", {}), dict) else {}
+        expected_by_code = {str(e.get("code", "")).strip(): e for e in event_rows}
+        clean_events = {}
+        for _key, _value in raw_events.items():
+            if not isinstance(_value, dict):
+                continue
+            _clean_key = str(_key).strip()
+            _expected = expected_by_code.get(_clean_key)
+            if _expected is None:
+                for _code, _row in expected_by_code.items():
+                    if _code.casefold() == _clean_key.casefold():
+                        _clean_key, _expected = _code, _row
+                        break
+            _item = dict(_value)
+            if _expected is not None:
+                _item["_event_identity"] = str(_expected.get("event_identity", ""))
+                _item["_event_code"] = _clean_key
+            clean_events[_clean_key] = _item
+        for _code in requested_event_codes:
+            _ai_diag_update(
+                _code,
+                parse_status="PARSE SUCCESS",
+                event_result_saved=isinstance(clean_events.get(_code), dict),
+            )
         result = {
             "summary": str(parsed.get("summary", ""))[:1800],
             "assets": _normalize_shared_asset_payload(parsed.get("assets", {})),
@@ -4706,13 +4878,28 @@ If evidence is insufficient, say so explicitly."""
             # Keep explicit Forecaster requests until the returned-code cleanup below
             # proves that the provider actually supplied each requested event.
             "requested_forecaster_event_codes": sorted(requested_event_codes)[:40],
+            "requested_forecaster_events": requested_snapshots,
+            "causal_ai_diagnostics": (_ai_batch_load_state(force_refresh=True).get("causal_ai_diagnostics", {}) or {}),
         })
+        _completed_at = time.time()
+        for _code in requested_event_codes:
+            _ai_diag_update(
+                _code,
+                queue_state="COMPLETED" if isinstance(clean_events.get(_code), dict) else "ERROR",
+                batch_completed_at=_completed_at,
+                state_saved=True,
+                event_result_saved=isinstance(clean_events.get(_code), dict),
+                last_error="" if isinstance(clean_events.get(_code), dict) else "Event result missing from provider response",
+            )
         try:
             _state_after = _ai_batch_load_state(force_refresh=True)
             _requested_after = set(_state_after.get("requested_forecaster_event_codes", []) or [])
             _returned_codes = set((result.get("events", {}) or {}).keys())
             if _requested_after:
-                _state_after["requested_forecaster_event_codes"] = sorted(_requested_after - _returned_codes)[:40]
+                _remaining = _requested_after - _returned_codes
+                _state_after["requested_forecaster_event_codes"] = sorted(_remaining)[:40]
+                _snapshots_after = dict(_state_after.get("requested_forecaster_events", {}) or {})
+                _state_after["requested_forecaster_events"] = {k: v for k, v in _snapshots_after.items() if k in _remaining}
                 _ai_batch_save_state(_state_after)
         except Exception:
             pass
@@ -4733,6 +4920,11 @@ If evidence is insufficient, say so explicitly."""
             state["provider_gate_blocked_at"] = time.time()
             state["provider_gate_remaining_seconds"] = round(max(0.0, remaining), 1)
             _ai_batch_save_state(state)
+            for _code in set(state.get("requested_forecaster_event_codes", []) or []):
+                _ai_diag_update(
+                    str(_code), queue_state="BLOCKED_BY_GATE", provider_status="BLOCKED",
+                    last_error="", gate_remaining_seconds=round(max(0.0, remaining), 1),
+                )
             _ai_audit_append("blocked", "Paid AI request blocked by global provider billing gate", {
                 "remaining_seconds": round(max(0.0, remaining), 1),
                 "rule": "90-second hard minimum + cross-container durable lease",
@@ -4742,6 +4934,16 @@ If evidence is insufficient, say so explicitly."""
             state["last_error"] = err[:500]
             state["last_error_at"] = time.time()
             _ai_batch_save_state(state)
+            for _code in set(state.get("requested_forecaster_event_codes", []) or []):
+                _parse_status = "PARSE FAILED" if any(x in err.lower() for x in ("unstructured", "json", "parse", "empty choices")) else None
+                _fields = {
+                    "queue_state": "ERROR",
+                    "provider_status": _safe_ai_error_label(err),
+                    "last_error": _safe_ai_error_label(err),
+                }
+                if _parse_status:
+                    _fields["parse_status"] = _parse_status
+                _ai_diag_update(str(_code), **_fields)
             _ai_audit_append("error", "Shared AI request/analysis failed", {"error": err[:500]})
     finally:
         _release_ai_batch_process_lock(process_lock_fd)
@@ -7057,26 +7259,48 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_ove
     return result
 
 
-@st.cache_data(ttl=30, show_spinner=False)
 def get_causal_macro_ai_analysis(event: dict, nowcast: dict, articles: list, api_key: str = DEFAULT_AI_KEY, provider_hint: str = DEFAULT_AI_PROVIDER, model_hint: str = DEFAULT_AI_MODEL, cache_version: str = AI_CACHE_VERSION) -> dict:
-    """Read event Causal Intelligence from the shared background batch only."""
+    """Read Causal Intelligence from durable shared state; this function never calls a provider."""
     if str(event.get("impact", "")).title() != "High":
-        return {"status": "skipped", "raw": "Causal AI is enabled for High Impact events only."}
-    if not is_ai_enabled():
-        return {"status": "disabled", "raw": "Causal AI is paused by the administrator to prevent provider spending. Quantitative Nowcast remains active."}
+        return {"status": "skipped", "state": "NOT_REQUESTED", "raw": "Causal AI is enabled for High Impact events only."}
+    if not is_ai_enabled(force_refresh=True):
+        return {"status": "disabled", "state": "DISABLED", "raw": "AI analysis is disabled by Admin."}
+
     code = str(event.get("code", "")).strip()
-    state = _ai_batch_load_state()
-    result = state.get("result", {}) if isinstance(state, dict) else {}
-    events = result.get("events", {}) if isinstance(result, dict) else {}
-    item = events.get(code) if isinstance(events, dict) else None
-    if not isinstance(item, dict):
-        return {"status": "deferred", "raw": "Background AI is preparing the shared event/news/data snapshot in the background."}
-    try:
-        normalized = _normalize_causal_ai_payload(dict(item), int(item.get("source_count", 0) or 0))
-    except Exception:
-        normalized = dict(item)
-    normalized["status"] = "ok"
-    return normalized
+    state = _ai_batch_load_state(force_refresh=True)
+    item, found_key = _shared_ai_event_result(event, state)
+    if isinstance(item, dict):
+        try:
+            normalized = _normalize_causal_ai_payload(dict(item), int(item.get("source_count", 0) or 0))
+        except Exception:
+            normalized = dict(item)
+        normalized["status"] = "ok"
+        normalized["state"] = "COMPLETED"
+        normalized["matched_event_key"] = found_key
+        _ai_diag_update(code, queue_state="COMPLETED", ui_lookup_found=True, event_result_saved=True)
+        return normalized
+
+    diag = dict((state.get("causal_ai_diagnostics", {}) or {}).get(code, {}) or {})
+    requested_at = float(diag.get("requested_at", 0.0) or 0.0)
+    last_error_at = float(state.get("last_error_at", 0.0) or 0.0)
+    last_error = str(diag.get("last_error") or state.get("last_error") or "").strip()
+    queue_state = str(diag.get("queue_state", "") or "").upper()
+
+    if last_error and (not requested_at or last_error_at >= requested_at or queue_state == "ERROR"):
+        label = _safe_ai_error_label(last_error)
+        _ai_diag_update(code, queue_state="ERROR", ui_lookup_found=False, last_error=label)
+        return {"status": "error", "state": "ERROR", "raw": label}
+
+    if queue_state == "BLOCKED_BY_GATE":
+        return {"status": "blocked", "state": "BLOCKED_BY_GATE", "raw": "AI request is waiting for the global provider billing gate."}
+    if queue_state == "RUNNING":
+        return {"status": "updating", "state": "RUNNING", "raw": "Causal AI synthesis is running in the shared background batch."}
+    if requested_at and time.time() - requested_at > 6 * 60:
+        _ai_diag_update(code, queue_state="TIMEOUT", ui_lookup_found=False)
+        return {"status": "timeout", "state": "TIMEOUT", "raw": "AI analysis timed out while waiting for a completed shared result."}
+    if requested_at or code in set(state.get("requested_forecaster_event_codes", []) or []):
+        return {"status": "deferred", "state": "QUEUED", "raw": "Causal AI is queued in the shared background batch."}
+    return {"status": "not_requested", "state": "NOT_REQUESTED", "raw": "Causal AI has not been requested for this event yet."}
 
 
 def render_causal_macro_ai_panel(analysis: dict) -> None:
@@ -7087,11 +7311,11 @@ def render_causal_macro_ai_panel(analysis: dict) -> None:
         if analysis.get("status") == "disabled":
             render_html(
                 '<div class="fc-ai" style="border-color:rgba(255,209,102,.24);color:#ffd166;">'
-                '⏸️ Causal Macro Intelligence is paused by Admin. '
+                '⏸️ AI analysis is disabled by Admin. '
                 'No paid AI requests are being sent; the quantitative Nowcast remains active.</div>'
             )
             return
-        if analysis.get("status") in {"updating", "deferred"}:
+        if analysis.get("status") in {"updating", "deferred", "blocked"}:
             render_html(
                 '<div class="fc-ai" style="border-color:rgba(173,123,255,.22);color:#bfa7ff;">'
                 '🧠 Causal Macro Intelligence is updating in the background. '
@@ -7430,9 +7654,9 @@ def _request_shared_ai_for_forecaster_event(event: dict) -> None:
         return
     try:
         state = _ai_batch_load_state(force_refresh=True)
-        result = state.get("result", {}) if isinstance(state, dict) else {}
-        event_map = result.get("events", {}) if isinstance(result, dict) else {}
-        if isinstance(event_map, dict) and isinstance(event_map.get(code), dict):
+        _existing_item, _matched_key = _shared_ai_event_result(event, state)
+        if isinstance(_existing_item, dict):
+            _ai_diag_update(code, queue_state="COMPLETED", ui_lookup_found=True, event_result_saved=True)
             return
 
         now_ts = time.time()
@@ -7448,7 +7672,28 @@ def _request_shared_ai_for_forecaster_event(event: dict) -> None:
         requested = set(state.get("requested_forecaster_event_codes", []) or [])
         requested.add(code)
         state["requested_forecaster_event_codes"] = sorted(requested)[:40]
+        requested_payloads = dict(state.get("requested_forecaster_events", {}) or {})
+        requested_payloads[code] = _forecaster_event_request_snapshot(event)
+        state["requested_forecaster_events"] = requested_payloads
+        diag = dict(state.get("causal_ai_diagnostics", {}) or {})
+        prior_diag = dict(diag.get(code, {}) or {})
+        diag[code] = {
+            **prior_diag,
+            "event_identity": _event_identity(event),
+            "requested_at": float(prior_diag.get("requested_at", 0.0) or now_ts),
+            "request_stage": "REQUESTED",
+            "queued_at": now_ts,
+            "queue_state": "QUEUED",
+            "ui_lookup_found": False,
+            "event_result_saved": False,
+            "updated_at": now_ts,
+        }
+        state["causal_ai_diagnostics"] = diag
         _ai_batch_save_state(state)
+        # Critical: a wake flag is useless in a Streamlit replica/process that has
+        # no supervisor thread. Starting the existing singleton supervisor is free
+        # and does NOT contact the provider from the event/modal path.
+        start_shared_background_ai_worker()
         _AI_BATCH_WAKE_EVENT.set()
     except Exception:
         pass
@@ -7501,6 +7746,69 @@ def _forecaster_radar_refresh_tick() -> None:
     """Trigger periodic radar refresh without running while a catalyst is selected."""
     if not st.session_state.get("APEX_FORECASTER_SELECTED_EVENT"):
         st.caption("Live calendar refresh active.")
+
+
+@st.fragment(run_every=5)
+def _render_forecaster_causal_ai_live(event: dict, nowcast: dict, auth_user: dict | None) -> None:
+    """Free polling reader: refreshes persisted AI state only while an event dialog is open."""
+    analysis = get_causal_macro_ai_analysis(event, nowcast, [], DEFAULT_AI_KEY, DEFAULT_AI_PROVIDER, DEFAULT_AI_MODEL, AI_CACHE_VERSION)
+    status = str(analysis.get("status", ""))
+    if status == "not_requested" and is_ai_enabled(force_refresh=True):
+        _request_shared_ai_for_forecaster_event(event)
+        analysis = {"status": "deferred", "state": "QUEUED", "raw": "Causal AI is queued in the shared background batch."}
+
+    if analysis.get("status") == "ok":
+        _live_text = analysis.get("event_assessment", "") or nowcast.get("outcome_desc", "")
+        _live_source = "Live Causal Macro Engine"
+    elif analysis.get("status") == "disabled":
+        _live_text = "AI analysis is disabled by Admin. The quantitative Nowcast remains available."
+        _live_source = "AI Disabled"
+    elif analysis.get("status") == "blocked":
+        _live_text = "Causal AI is queued and waiting for the global provider billing gate."
+        _live_source = "Blocked by billing gate"
+    elif analysis.get("status") in {"updating", "deferred", "not_requested"}:
+        _live_text = "Causal AI synthesis is updating in the shared background batch. The quantitative Nowcast is already available."
+        _live_source = analysis.get("state", "QUEUED")
+    else:
+        _live_text = analysis.get("raw", "Causal AI is currently unavailable.")
+        _live_source = analysis.get("state", "ERROR")
+    render_html(f"""
+    <div class="apex-intelligence-card">
+      <div class="apex-card-header-row"><div class="apex-card-title">AI Analysis (Causal Intelligence)</div><span class="apex-ai-badge">AI</span></div>
+      <div class="apex-dialog-ai-text">{_live_text}</div>
+      <div class="apex-dialog-ai-source">Source: {_live_source} &nbsp;•&nbsp; Baseline: {event.get('consensus_bias','')}</div>
+    </div>
+    """)
+    render_causal_macro_ai_panel(analysis)
+
+    if auth_user and auth_user.get("is_admin", False):
+        code = str(event.get("code", "")).strip()
+        state = _ai_batch_load_state(force_refresh=True)
+        diag_all = dict(state.get("causal_ai_diagnostics", {}) or {})
+        diag = dict(diag_all.get(code, {}) or {})
+        gdiag = dict(diag_all.get("_global", {}) or {})
+        _, found_key = _shared_ai_event_result(event, state)
+        with st.expander("🧪 Causal AI Diagnostics", expanded=False):
+            st.caption("Admin-only. No API keys, tokens or prompt bodies are shown.")
+            st.json({
+                "Event identity": diag.get("event_identity") or _event_identity(event),
+                "Event code": code,
+                "Request stage": diag.get("request_stage") or ("REQUESTED" if diag.get("requested_at") else "NOT_REQUESTED"),
+                "Requested at": diag.get("requested_at"),
+                "Queued at": diag.get("queued_at"),
+                "Queue state": analysis.get("state") or diag.get("queue_state") or "NOT_REQUESTED",
+                "Last batch started": diag.get("last_batch_started"),
+                "Was event included?": diag.get("event_included"),
+                "Provider status": diag.get("provider_status") or gdiag.get("provider_status"),
+                "HTTP status": gdiag.get("http_status"),
+                "Parse status": diag.get("parse_status"),
+                "Batch completed at": diag.get("batch_completed_at"),
+                "Event result saved?": bool(diag.get("event_result_saved")),
+                "UI lookup found result?": bool(found_key),
+                "Matched persisted key": found_key or None,
+                "Last error": diag.get("last_error") or (_safe_ai_error_label(state.get("last_error")) if state.get("last_error") else ""),
+                "Persistent state timestamp": state.get("updated_at_iso") or state.get("updated_at"),
+            })
 
 
 @st.dialog("Event Details")
@@ -7650,18 +7958,13 @@ def _show_forecaster_event_dialog(
       <div class="apex-card-header-row"><div class="apex-card-title">Evidence &amp; Precursors</div><div><span class="apex-ai-badge">AI</span> <span class="apex-conf-badge">{nowcast.get('confidence', 0)}% Confidence</span></div></div>
       <ul class="apex-evidence-list">{evidence_html}</ul>
     </div>
-    <div class="apex-intelligence-card">
-      <div class="apex-card-header-row"><div class="apex-card-title">AI Analysis (Causal Intelligence)</div><span class="apex-ai-badge">AI</span></div>
-      <div class="apex-dialog-ai-text">{ai_text}</div>
-      <div class="apex-dialog-ai-source">Source: {ai_updated} &nbsp;•&nbsp; Baseline: {modal_ev.get('consensus_bias','')}</div>
-    </div>
     <div class="apex-dialog-section-title">Cross-Asset Impact</div>
     <div class="apex-cross-asset-grid">{cross_cards_html}</div>
     """)
 
-    # Preserve the complete existing causal-AI panel (causal chain, evidence,
-    # contradictions, cross-source confirmation and asset implications).
-    render_causal_macro_ai_panel(causal_ai)
+    # Poll only durable shared state. This is provider-free and stops automatically
+    # when the dialog is closed; it never creates a paid call per rerun.
+    _render_forecaster_causal_ai_live(modal_ev, nowcast, auth_user)
 
     if is_admin:
         render_html(f"""
