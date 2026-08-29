@@ -5096,6 +5096,13 @@ Do not mathematically count the same precursor/news evidence twice merely becaus
             temperature=0.1,
             timeout=75,
         )
+        _response_status = int(getattr(response, "status_code", 0) or 0)
+        for _code in requested_event_codes:
+            _ai_diag_update(
+                _code,
+                provider_status="HTTP RESPONSE RECEIVED",
+                http_status=_response_status,
+            )
         raw = _ai_message_content(response.json())
         parsed = _extract_json_object(raw)
         if not isinstance(parsed, dict):
@@ -5303,7 +5310,13 @@ def _shared_ai_supervisor_loop() -> None:
     try:
         while True:
             try:
-                _ai_diag_update("", global_supervisor_heartbeat=time.time(), global_supervisor_status="RUNNING")
+                _ai_diag_update(
+                    "",
+                    global_supervisor_heartbeat=time.time(),
+                    global_supervisor_status="RUNNING",
+                    global_supervisor_thread_alive=True,
+                    global_supervisor_error="",
+                )
                 try:
                     _check_ai_price_validations()
                 except Exception as exc:
@@ -8216,32 +8229,48 @@ def _request_shared_ai_for_forecaster_event(event: dict) -> None:
         diag = dict(state.get("causal_ai_diagnostics", {}) or {})
         prior_diag = dict(diag.get(code, {}) or {})
         _prior_requested_at = float(prior_diag.get("requested_at", 0.0) or 0.0)
-        # Re-opening an unresolved event after the UI wait window is a fresh UI
-        # observation of the SAME durable request, not a new paid request.
-        _display_requested_at = now_ts if (
-            not _prior_requested_at or now_ts - _prior_requested_at > 6 * 60
-        ) else _prior_requested_at
-        diag[code] = {
-            **prior_diag,
-            "event_identity": _event_identity(event),
-            "requested_at": _display_requested_at,
-            "request_stage": "REQUESTED",
-            "queued_at": now_ts,
-            "queue_state": "QUEUED",
-            "provider_status": "QUEUED",
-            "http_status": None,
-            "parse_status": None,
-            "last_batch_started": None,
-            "batch_completed_at": None,
-            "retry_after_seconds": None,
-            "gate_remaining_seconds": None,
-            "last_error": "",
-            "ui_lookup_found": False,
-            "state_saved": False,
-            "event_result_saved": False,
-            "ui_wait_timed_out_at": None,
-            "updated_at": now_ts,
-        }
+        _prior_queue_state = str(prior_diag.get("queue_state", "") or "").upper()
+        _already_pending = (
+            code in requested
+            and _prior_queue_state in {"QUEUED", "RUNNING", "BLOCKED_BY_GATE"}
+            and _prior_requested_at > 0.0
+        )
+        # IMPORTANT: Streamlit/dialog reruns can call this function repeatedly.
+        # Once the durable request exists, never reset provider/batch diagnostics:
+        # doing so used to overwrite RUNNING/BLOCKED state with QUEUED and could
+        # race a worker write in another replica. Re-opening only refreshes the
+        # free supervisor wake; it does not create a new paid request.
+        if _already_pending:
+            prior_diag["event_identity"] = _event_identity(event)
+            prior_diag["request_stage"] = "REQUESTED"
+            prior_diag["last_ui_wake_at"] = now_ts
+            prior_diag["updated_at"] = now_ts
+            diag[code] = prior_diag
+        else:
+            _display_requested_at = now_ts if (
+                not _prior_requested_at or now_ts - _prior_requested_at > 6 * 60
+            ) else _prior_requested_at
+            diag[code] = {
+                **prior_diag,
+                "event_identity": _event_identity(event),
+                "requested_at": _display_requested_at,
+                "request_stage": "REQUESTED",
+                "queued_at": now_ts,
+                "queue_state": "QUEUED",
+                "provider_status": "QUEUED",
+                "http_status": None,
+                "parse_status": None,
+                "last_batch_started": None,
+                "batch_completed_at": None,
+                "retry_after_seconds": None,
+                "gate_remaining_seconds": None,
+                "last_error": "",
+                "ui_lookup_found": False,
+                "state_saved": False,
+                "event_result_saved": False,
+                "ui_wait_timed_out_at": None,
+                "updated_at": now_ts,
+            }
         state["causal_ai_diagnostics"] = diag
         _ai_batch_save_state(state)
         # Critical: a wake flag is useless in a Streamlit replica/process that has
@@ -8329,6 +8358,13 @@ def _render_forecaster_causal_ai_live(event: dict, nowcast: dict, auth_user: dic
     if status == "not_requested" and is_ai_enabled(force_refresh=True):
         _request_shared_ai_for_forecaster_event(event)
         analysis = {"status": "deferred", "state": "QUEUED", "raw": "Causal AI is queued in the shared background batch."}
+        status = "deferred"
+    elif status in {"updating", "deferred", "blocked", "timeout"} and is_ai_enabled(force_refresh=True):
+        # Free watchdog only: verifies/restarts the process-local supervisor.
+        # It never calls the provider from the Streamlit fragment and therefore
+        # cannot bypass batching, leases, cooldowns or billing protection.
+        start_shared_background_ai_worker()
+        _AI_BATCH_WAKE_EVENT.set()
 
     if analysis.get("status") == "ok":
         _live_text = analysis.get("event_assessment", "") or nowcast.get("outcome_desc", "")
@@ -8364,6 +8400,31 @@ def _render_forecaster_causal_ai_live(event: dict, nowcast: dict, auth_user: dic
         _, found_key = _shared_ai_event_result(event, state)
         with st.expander("🧪 Causal AI Diagnostics", expanded=False):
             st.caption("Admin-only. No API keys, tokens or prompt bodies are shown.")
+            _batch_started = float(diag.get("last_batch_started", 0.0) or 0.0)
+            _global_http_at = float(gdiag.get("http_response_at", 0.0) or 0.0)
+            _current_http = diag.get("http_status")
+            if _current_http is None:
+                _current_http = (
+                    gdiag.get("http_status")
+                    if _batch_started > 0.0 and _global_http_at >= _batch_started
+                    else None
+                )
+            _heartbeat = float(gdiag.get("supervisor_heartbeat", 0.0) or 0.0)
+            _heartbeat_age = round(max(0.0, time.time() - _heartbeat), 1) if _heartbeat else None
+            _local_thread_alive = bool(
+                _AI_BATCH_SUPERVISOR_THREAD is not None
+                and getattr(_AI_BATCH_SUPERVISOR_THREAD, "is_alive", lambda: False)()
+            )
+            _state_error_at = float(state.get("last_error_at", 0.0) or 0.0)
+            _request_at = float(diag.get("requested_at", 0.0) or 0.0)
+            _current_error = (
+                diag.get("last_error")
+                or (
+                    _safe_ai_error_label(state.get("last_error"))
+                    if state.get("last_error") and (_request_at <= 0.0 or _state_error_at >= _request_at)
+                    else ""
+                )
+            )
             st.json({
                 "Event identity": diag.get("event_identity") or _event_identity(event),
                 "Event code": code,
@@ -8374,13 +8435,21 @@ def _render_forecaster_causal_ai_live(event: dict, nowcast: dict, auth_user: dic
                 "Last batch started": diag.get("last_batch_started"),
                 "Was event included?": diag.get("event_included"),
                 "Provider status": diag.get("provider_status") or gdiag.get("provider_status"),
-                "HTTP status": gdiag.get("http_status"),
+                "Current request HTTP status": _current_http,
+                "Last provider HTTP status (global)": gdiag.get("http_status"),
                 "Parse status": diag.get("parse_status"),
                 "Batch completed at": diag.get("batch_completed_at"),
                 "Event result saved?": bool(diag.get("event_result_saved")),
                 "UI lookup found result?": bool(found_key),
                 "Matched persisted key": found_key or None,
-                "Last error": diag.get("last_error") or (_safe_ai_error_label(state.get("last_error")) if state.get("last_error") else ""),
+                "Last error for this request": _current_error,
+                "Supervisor status": gdiag.get("supervisor_status"),
+                "Supervisor heartbeat age seconds": _heartbeat_age,
+                "Supervisor thread alive in this process": _local_thread_alive,
+                "Supervisor started at": gdiag.get("supervisor_started_at"),
+                "Supervisor last error": gdiag.get("supervisor_error") or "",
+                "Gate remaining seconds": diag.get("gate_remaining_seconds"),
+                "Retry after seconds": diag.get("retry_after_seconds"),
                 "Persistent state timestamp": state.get("updated_at_iso") or state.get("updated_at"),
             })
 
