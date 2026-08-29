@@ -4919,24 +4919,52 @@ def _run_shared_ai_batch_once() -> None:
             return
         if state.get("last_attempt_signature") == signature:
             last_attempt = float(state.get("last_attempt_at", 0) or 0)
-            # A failed very-first batch must not leave the whole desk stuck on
-            # "preparing" for the normal 15-minute steady-state backoff.
-            # Retry the bootstrap batch after two minutes until the first valid
-            # shared result exists. Once a valid result exists, retain the long
-            # backoff so provider errors cannot create repeated paid requests.
-            has_result = isinstance(state.get("result"), dict) and bool(state.get("result"))
-            backoff = _AI_BATCH_ERROR_BACKOFF_SECONDS if has_result else _AI_BATCH_FIRST_RESULT_RETRY_SECONDS
-            if time.time() - last_attempt < backoff:
-                _remaining = max(0.0, backoff - (time.time() - last_attempt))
+            # last_attempt_at is written BEFORE the provider gate. Therefore it
+            # cannot, by itself, prove that a paid HTTP attempt occurred. In a
+            # multi-replica deployment an older full-state diagnostic write can
+            # also resurrect that reservation after another replica cleared it.
+            # Only apply the long provider-error backoff when the durable billing
+            # gate proves that this reservation actually won a paid-provider slot.
+            _gate_state = _provider_gate_state_read()
+            _provider_started_at = float(_gate_state.get("last_started_at", 0.0) or 0.0)
+            _attempt_reached_provider_gate = (
+                last_attempt > 0.0
+                and _provider_started_at > 0.0
+                and abs(_provider_started_at - last_attempt) <= 8.0
+            )
+            if not _attempt_reached_provider_gate:
+                # Unspent/stale reservation: keep the explicit Forecaster request
+                # queued and let the real provider hard-minimum/lease decide.
+                state["last_attempt_signature"] = ""
+                state["last_attempt_at"] = 0.0
+                state["last_paid_reserved_at"] = 0.0
+                state["last_paid_reserved_at_iso"] = ""
+                state["pending_trigger_due"] = True
+                _ai_batch_save_state(state)
                 for _code in requested_event_codes:
                     _ai_diag_update(
                         str(_code),
                         queue_state="QUEUED",
-                        provider_status="RETRY_BACKOFF",
-                        retry_after_seconds=round(_remaining, 1),
+                        provider_status="READY_FOR_PROVIDER_GATE",
+                        retry_after_seconds=0.0,
                         event_included=(_code in included_codes),
                     )
-                return
+            else:
+                # A failed very-first REAL provider attempt retries sooner; once a
+                # valid result exists, retain the long provider-error backoff.
+                has_result = isinstance(state.get("result"), dict) and bool(state.get("result"))
+                backoff = _AI_BATCH_ERROR_BACKOFF_SECONDS if has_result else _AI_BATCH_FIRST_RESULT_RETRY_SECONDS
+                if time.time() - last_attempt < backoff:
+                    _remaining = max(0.0, backoff - (time.time() - last_attempt))
+                    for _code in requested_event_codes:
+                        _ai_diag_update(
+                            str(_code),
+                            queue_state="QUEUED",
+                            provider_status="RETRY_BACKOFF_AFTER_PROVIDER_ATTEMPT",
+                            retry_after_seconds=round(_remaining, 1),
+                            event_included=(_code in included_codes),
+                        )
+                    return
 
         # Admin may switch AI OFF while data/news are being collected. Re-check
         # immediately before the only billable operation.
@@ -7762,8 +7790,15 @@ def get_causal_macro_ai_analysis(event: dict, nowcast: dict, articles: list, api
     if queue_state == "RUNNING":
         return {"status": "updating", "state": "RUNNING", "raw": "Causal AI synthesis is running in the shared background batch."}
     if requested_at and time.time() - requested_at > 6 * 60:
-        _ai_diag_update(code, queue_state="TIMEOUT", ui_lookup_found=False)
-        return {"status": "timeout", "state": "TIMEOUT", "raw": "AI analysis timed out while waiting for a completed shared result."}
+        # UI timeout is not a queue-engine terminal state. Preserve the real
+        # QUEUED/BLOCKED/RUNNING state so the supervisor can continue and the
+        # Admin diagnostic remains truthful.
+        _ai_diag_update(code, ui_lookup_found=False, ui_wait_timed_out_at=time.time())
+        return {
+            "status": "timeout",
+            "state": "TIMEOUT",
+            "raw": "AI analysis is still pending in the shared engine; the UI wait window expired.",
+        }
     if requested_at or code in set(state.get("requested_forecaster_event_codes", []) or []):
         return {"status": "deferred", "state": "QUEUED", "raw": "Causal AI is queued in the shared background batch."}
     return {"status": "not_requested", "state": "NOT_REQUESTED", "raw": "Causal AI has not been requested for this event yet."}
@@ -8162,15 +8197,22 @@ def _request_shared_ai_for_forecaster_event(event: dict) -> None:
         state["requested_forecaster_events"] = requested_payloads
         diag = dict(state.get("causal_ai_diagnostics", {}) or {})
         prior_diag = dict(diag.get(code, {}) or {})
+        _prior_requested_at = float(prior_diag.get("requested_at", 0.0) or 0.0)
+        # Re-opening an unresolved event after the UI wait window is a fresh UI
+        # observation of the SAME durable request, not a new paid request.
+        _display_requested_at = now_ts if (
+            not _prior_requested_at or now_ts - _prior_requested_at > 6 * 60
+        ) else _prior_requested_at
         diag[code] = {
             **prior_diag,
             "event_identity": _event_identity(event),
-            "requested_at": float(prior_diag.get("requested_at", 0.0) or now_ts),
+            "requested_at": _display_requested_at,
             "request_stage": "REQUESTED",
             "queued_at": now_ts,
             "queue_state": "QUEUED",
             "ui_lookup_found": False,
             "event_result_saved": False,
+            "ui_wait_timed_out_at": None,
             "updated_at": now_ts,
         }
         state["causal_ai_diagnostics"] = diag
