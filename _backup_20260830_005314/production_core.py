@@ -1795,16 +1795,8 @@ CURRENCY_SERIES = {
             "Employment":    {"series": "LFEMTTTTAUM647S",  "cat": "labor_pos",  "w": 1.5, "impact": "high"},
             "Production":    {"series": "AUSPROINDQISMEI",  "cat": "growth",     "w": 1.2, "impact": "medium"},
             "Retail Sales":  {"series": "SLRSTT01AUM661S",  "cat": "growth",     "w": 1.2, "impact": "medium"},
-            # Verified live via FRED's own indexed series page (web search
-            # confirmation, since direct FRED endpoint access was unreliable
-            # from this environment) -- an interbank/call-money rate, not the
-            # RBA cash rate proper, but the closest verified short-rate proxy
-            # available; the previously-guessed "IRSTCB01AUM156N" pattern used
-            # for CAD/JPY does NOT exist for Australia and was deliberately
-            # left out rather than assumed.
-            "Interest Rate": {"series": "IRSTCI01AUM156N", "cat": "rate", "w": 1.8, "impact": "high"},
         },
-        "key_indicators": ["CPI", "Unemployment", "Employment", "Interest Rate"],
+        "key_indicators": ["CPI", "Unemployment", "Employment", "Production"],
     },
     "NZD": {
         "flag": "🇳🇿", "name": "New Zealand Dollar",
@@ -1814,11 +1806,8 @@ CURRENCY_SERIES = {
             "Employment":    {"series": "LFEMTTTTNZQ647S",  "cat": "labor_pos",  "w": 1.5, "impact": "high"},
             "Production":    {"series": "NZLPROINDQISMEI",  "cat": "growth",     "w": 1.2, "impact": "medium"},
             "Retail Sales":  {"series": "SLRSTT01NZM661S",  "cat": "growth",     "w": 1.2, "impact": "medium"},
-            # Same verification basis as AUD above -- IRSTCI01NZM156N confirmed
-            # live on FRED's own site; the guessed "IRSTCB01NZM156N" does not exist.
-            "Interest Rate": {"series": "IRSTCI01NZM156N", "cat": "rate", "w": 1.8, "impact": "high"},
         },
-        "key_indicators": ["CPI", "Unemployment", "Employment", "Interest Rate"],
+        "key_indicators": ["CPI", "Unemployment", "Employment", "Production"],
     },
 }
 
@@ -2728,28 +2717,6 @@ def _check_regime_shift(
 
 
 @st.cache_data(ttl=30, show_spinner=False)
-def _oil_price_momentum_score(fred_key: str) -> float | None:
-    """Pure WTI/Brent price-momentum score, no USD/news mixed in.
-
-    Used ONLY as CAD's Oil evidence leg. Deliberately the pure price-momentum
-    component rather than Oil's own full blended score (which itself now
-    includes an inverse-USD leg and Oil-specific news) -- CAD's own domestic
-    news sentiment can already independently pick up oil-related stories that
-    mention Canada, so reusing Oil's full score (which has its own separate
-    news layer) here would risk the same story influencing CAD twice through
-    two different paths. A pure price read has no such overlap.
-    """
-    w_df = fetch_fred(OIL_SERIES["wti"], fred_key, limit=90)
-    if w_df is None or w_df.empty:
-        w_df = fetch_fred("POILWTIUSDM", fred_key, limit=60)
-    if w_df is None or w_df.empty:
-        w_df = fetch_fred(OIL_SERIES["brent"], fred_key, limit=90)
-    if w_df is None or w_df.empty:
-        return None
-    mf = calc_mtf(w_df["value"].tolist(), "growth")
-    return mf["score"] if mf else None
-
-
 def _calc_currency_score_only(currency: str, fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> float | None:
     cfg = CURRENCY_SERIES[currency]
     weighted, tw = [], 0.0
@@ -2770,65 +2737,8 @@ def _calc_currency_score_only(currency: str, fred_key: str, channel_name: str = 
     sentiment_res = analyze_news_rule_based(all_news)
     news_points = sentiment_res["scores"].get(currency, 0.0)
 
-    if currency == "CAD":
-        # CAD is a textbook petrocurrency with zero oil linkage previously.
-        # Domestic macro stays clearly dominant (45%, was 50%) and news gives up
-        # only 10 of its 50 points -- Oil is a real but secondary, independent
-        # evidence family, not a co-equal or dominant one. Falls back to the
-        # unchanged 50/50 formula if oil data is unavailable.
-        oil_leg = _oil_price_momentum_score(fred_key)
-        if oil_leg is not None:
-            final_score = (0.45 * macro_score) + (0.15 * oil_leg) + (0.40 * (news_points / 0.50))
-        else:
-            final_score = (0.50 * macro_score) + (0.50 * (news_points / 0.50))
-    else:
-        final_score = (0.50 * macro_score) + (0.50 * (news_points / 0.50))
+    final_score = (0.50 * macro_score) + (0.50 * (news_points / 0.50))
     return final_score
-
-
-def _gold_evidence_conflict_diagnostics(gold_ry: float, gold_usd: float, gold_news_pts: float) -> dict:
-    """Evidence-agreement/conflict metadata for Gold -- diagnostic only.
-
-    Exposes whether real yields, USD, and news currently agree or disagree on
-    direction, instead of hiding that disagreement inside one final number.
-    This does NOT change the deterministic score -- conflict here describes
-    evidence quality/coherence and is never automatically converted into a
-    Neutral read.
-
-    Honest limitation: this function only sees the three already-collapsed
-    float inputs, not whether each one reflects real data or a missing-data
-    default -- it cannot distinguish "genuinely flat evidence" from "the
-    underlying series failed to fetch" at this layer. All three exactly at
-    0.0 is reported as insufficient_evidence rather than falsely asserting a
-    confirmed/conflicted read from what may be missing data.
-    """
-    threshold = 0.05  # below this, a component is a "flat" vote, not directional
-    def _dir(x):
-        if x > threshold: return "bullish"
-        if x < -threshold: return "bearish"
-        return "flat"
-
-    directions = {"real_yields": _dir(gold_ry), "usd": _dir(gold_usd), "news": _dir(gold_news_pts)}
-    voting = [d for d in directions.values() if d != "flat"]
-    if not voting:
-        agreement_state = "insufficient_evidence"
-    elif len(set(voting)) == 1:
-        agreement_state = "confirmed" if len(voting) >= 2 else "single_driver"
-    else:
-        agreement_state = "conflicted"
-
-    weights = {"real_yields": 0.30, "usd": 0.20, "news": 0.50}
-    contributions = {"real_yields": abs(gold_ry) * weights["real_yields"],
-                      "usd": abs(gold_usd) * weights["usd"],
-                      "news": abs(gold_news_pts) * weights["news"]}
-    dominant_driver = max(contributions, key=contributions.get) if any(contributions.values()) else None
-
-    return {
-        "directions": directions,
-        "agreement_state": agreement_state,
-        "dominant_driver": dominant_driver,
-        "contribution_magnitudes": contributions,
-    }
 
 
 def _compose_gold_intelligence_score(gold_ry: float, gold_usd: float, sentiment_res: dict) -> dict:
@@ -2861,7 +2771,6 @@ def _compose_gold_intelligence_score(gold_ry: float, gold_usd: float, sentiment_
         "gold_rule_points": float(sentiment_res.get("gold_rule_points", 0.0)),
         "gold_ai_points": float(sentiment_res.get("gold_ai_points", 0.0)),
         "gold_relevant_news_count": int(sentiment_res.get("gold_relevant_news_count", 0)),
-        "evidence_diagnostics": _gold_evidence_conflict_diagnostics(gold_ry, gold_usd, gold_news_pts),
     }
 
 
@@ -2909,20 +2818,6 @@ def _calc_gold_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CH
 
 @st.cache_data(ttl=30, show_spinner=False)
 def _calc_oil_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> tuple[float | None, float]:
-    """Oil: 40% price momentum + 20% inverse USD (macro-only) + 40% news.
-
-    USD was previously entirely absent from Oil's score despite being the most
-    economically obvious missing input: Oil is USD-denominated with a
-    well-documented inverse relationship, and USD's score is already fully
-    computed elsewhere in this file -- adding it needed no new data source.
-    Weighting: price momentum and news each give up 10 of their prior 50 points
-    to fund USD's 20%, a symmetric, conservative rebalance rather than an
-    arbitrary large new weight -- comparable in shape to Gold's 20% USD leg and
-    Nasdaq's 15%. The USD leg uses compute_composite's macro_score (not the
-    blended macro+news score) so USD's own news sentiment cannot double-count
-    against Oil's separate, direct 40% news leg below -- the same macro-only
-    pattern already proven correct for Gold and now Nasdaq.
-    """
     w_df = fetch_fred(OIL_SERIES["wti"], fred_key, limit=90)
     if w_df is None or w_df.empty:
         w_df = fetch_fred("POILWTIUSDM", fred_key, limit=60)
@@ -2940,13 +2835,7 @@ def _calc_oil_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHA
     all_news = fetch_all_instant_news(channel_name)
     sentiment_res = analyze_news_rule_based(all_news)
     oil_news_pts = sentiment_res["scores"].get("Oil", 0.0)
-    usd_composite = compute_composite("USD", fred_key, channel_name)
-    inv_usd_oil = -((usd_composite or {}).get("macro_score", 0.0) or 0.0)
-    final_oil_score = (
-        (0.40 * (w_mf["score"] if w_mf else 0.0))
-        + (0.20 * inv_usd_oil)
-        + (0.40 * (oil_news_pts / 0.50))
-    )
+    final_oil_score = (0.50 * (w_mf["score"] if w_mf else 0.0)) + (0.50 * (oil_news_pts / 0.50))
     return final_oil_score, oil_news_pts
 
 @st.cache_data(ttl=30, show_spinner=False)
@@ -2968,15 +2857,8 @@ def _calc_ndx_score_only(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHA
             ry_mf = calc_mtf(ry_df["value"].tail(36).tolist(), "rate")
             inv_ry = -ry_mf["score"] if ry_mf else 0.0
 
-        # Macro-only USD leg (mirrors Gold's proven pattern in
-        # _compose_gold_intelligence_score): _calc_currency_score_only returns
-        # USD's *blended* macro+news score, which would let USD's own news
-        # sentiment leak into NDX's score through this leg on top of NDX's
-        # separate, direct 25% news leg below -- a real double-count of the same
-        # underlying news data through two paths.
-        usd_composite = compute_composite("USD", fred_key, channel_name)
-        usd_macro_only = (usd_composite or {}).get("macro_score", 0.0) or 0.0
-        inv_usd = -usd_macro_only
+        usd_score = _calc_currency_score_only("USD", fred_key, channel_name)
+        inv_usd = -(usd_score or 0.0)
 
         all_news = fetch_all_instant_news(channel_name)
         sentiment_res = analyze_news_rule_based(all_news)
@@ -3121,18 +3003,6 @@ def _entry_price_decimals(price: float) -> int:
 
 
 def _get_asset_relevant_currencies(asset_key: str) -> set[str]:
-    """Currencies whose High Impact calendar events are relevant to this asset's
-    Entry Zone event-risk gate.
-
-    Bare currency codes ("EUR", "GBP", ...) are how the Forex page actually calls
-    this (render_tactical_move_panel(currency, s)) -- they used to match none of
-    the pair-notation branches below and silently fall through to {"USD"} only,
-    so the event-risk hard-block never protected a EUR/GBP/JPY/CAD/CHF/AUD/NZD
-    entry against its OWN currency's central-bank decisions or data releases,
-    only against USD ones. Bare-code branches are checked after the pair
-    branches so an actual pair identifier (e.g. "EURUSD") is still matched first
-    and correctly returns both legs, unchanged from before.
-    """
     k = str(asset_key or "").upper()
     if "GOLD" in k or "XAU" in k: return {"USD"}
     if "OIL" in k or "WTI" in k or "BRENT" in k: return {"USD"}
@@ -3144,13 +3014,6 @@ def _get_asset_relevant_currencies(asset_key: str) -> set[str]:
     if "AUDUSD" in k: return {"AUD", "USD"}
     if "NZDUSD" in k: return {"NZD", "USD"}
     if "USDCHF" in k: return {"USD", "CHF"}
-    bare_map = {
-        "USD": {"USD"}, "EUR": {"EUR", "USD"}, "GBP": {"GBP", "USD"},
-        "JPY": {"JPY", "USD"}, "CAD": {"CAD", "USD"}, "CHF": {"CHF", "USD"},
-        "AUD": {"AUD", "USD"}, "NZD": {"NZD", "USD"},
-    }
-    if k in bare_map:
-        return bare_map[k]
     return {"USD"}
 
 
@@ -3226,8 +3089,6 @@ def _build_macro_entry_plan(df: pd.DataFrame, macro_regime: str, macro_score: fl
         "entry_score": 0, "zone_score": 0, "confirmation_score": 0,
         "macro_points": 0, "event_points": 0, "confluences": [],
         "confirmation": "Macro direction is neutral; no entry is allowed.",
-        "opportunity_quality": None, "volatility_regime": "unavailable",
-        "invalidation_structure_warning": None,
     }
     if macro_regime not in {"Bullish", "Bearish"} or len(df) < 45:
         return neutral
@@ -3288,17 +3149,6 @@ def _build_macro_entry_plan(df: pd.DataFrame, macro_regime: str, macro_score: fl
         neutral.update({"direction": "BUY" if direction > 0 else "SELL", "status": "WAIT FOR RETRACEMENT", "status_icon": "🟡", "confirmation": "Macro direction exists, but no high-quality price zone is close enough."})
         return neutral
 
-    # Volatility regime: current 14-period ATR vs. its own longer-window (50-period)
-    # average -- a genuinely independent confirmation dimension using data already
-    # in memory, not a new indicator. Diagnostic only.
-    long_atr_series = pd.Series(tr).rolling(50, min_periods=20).mean()
-    long_atr = float(long_atr_series.iloc[-1]) if len(long_atr_series) and np.isfinite(long_atr_series.iloc[-1]) else None
-    if long_atr and long_atr > 0:
-        vol_ratio = atr / long_atr
-        volatility_regime = "compression" if vol_ratio < 0.70 else ("expansion" if vol_ratio > 1.40 else "normal")
-    else:
-        volatility_regime = "unavailable"
-
     # Cluster nearby evidence and select the strongest/nearest cluster.
     cluster_radius = max(atr * 0.75, current * 0.0004)
     clusters = []
@@ -3316,49 +3166,6 @@ def _build_macro_entry_plan(df: pd.DataFrame, macro_regime: str, macro_score: fl
     zone_low, zone_high = center-half, center+half
     # Invalidation lives beyond the zone plus volatility buffer, not at an arbitrary fixed distance.
     invalidation = zone_high + 0.55*atr if direction < 0 else zone_low - 0.55*atr
-
-    # Opportunity quality (diagnostic only -- does not gate ENTRY READY until
-    # historical testing justifies it). Room to the nearest opposing structural
-    # level (a swing pivot beyond the zone in the direction the trade would
-    # travel) versus the ATR-normalized invalidation distance. Deliberately not
-    # collapsed into a naive universal "2:1" rule -- the ratio and both raw
-    # distances are exposed so the reader judges the actual asymmetry.
-    opposing_candidates = []
-    for i in range(max(2, start), len(c)-2):
-        if direction > 0 and h[i] >= max(h[i-2:i+3]) and h[i] > zone_high:
-            opposing_candidates.append(float(h[i]))
-        if direction < 0 and l[i] <= min(l[i-2:i+3]) and l[i] < zone_low:
-            opposing_candidates.append(float(l[i]))
-    opposing_level = None
-    if opposing_candidates:
-        opposing_level = min(opposing_candidates) if direction > 0 else max(opposing_candidates)
-    if opposing_level is not None:
-        room_atr = abs(opposing_level - center) / max(atr, 1e-9)
-        invalidation_dist_atr = abs(invalidation - center) / max(atr, 1e-9)
-        asymmetry_ratio = round(room_atr / max(invalidation_dist_atr, 1e-9), 2)
-        quality_label = ("ASYMMETRIC — room favors the trade" if asymmetry_ratio >= 2.0
-                          else "BALANCED" if asymmetry_ratio >= 1.0
-                          else "CONSTRAINED — limited room before opposing structure")
-        opportunity_quality = {
-            "opposing_structure_level": opposing_level,
-            "room_to_opposing_structure_atr": round(room_atr, 2),
-            "invalidation_distance_atr": round(invalidation_dist_atr, 2),
-            "asymmetry_ratio": asymmetry_ratio,
-            "quality_label": quality_label,
-        }
-    else:
-        opportunity_quality = {"unavailable": True, "reason": "No opposing structural level detected within the analyzed lookback window."}
-
-    # Does the ATR-based invalidation respect real structure, or does a
-    # stronger structural level (already detected as a zone candidate) sit
-    # between the zone and the invalidation point? Diagnostic warning only --
-    # never auto-widens the stop.
-    invalidation_structure_warning = None
-    for level, reason, _w in valid:
-        between = (zone_high < level < invalidation) if direction < 0 else (invalidation < level < zone_low)
-        if between:
-            invalidation_structure_warning = f"{reason} at {level:.5g} sits between the zone and the ATR-based invalidation point -- confirm this invalidation actually respects that structure."
-            break
 
     in_zone = zone_low <= current <= zone_high
     distance = (zone_low-current) if direction < 0 else (current-zone_high)
@@ -3406,8 +3213,6 @@ def _build_macro_entry_plan(df: pd.DataFrame, macro_regime: str, macro_score: fl
         "macro_points": macro_points, "event_points": event_points, "confluences": reasons[:5],
         "confirmation": ", ".join(confirmation_text), "event_safety_desc": event_safety_text,
         "atr": atr, "current_analysis_price": current,
-        "opportunity_quality": opportunity_quality, "volatility_regime": volatility_regime,
-        "invalidation_structure_warning": invalidation_structure_warning,
     }
 
 def _tactical_label(score: float) -> str:
@@ -4137,61 +3942,34 @@ def _parse_news_datetime(value: object) -> datetime | None:
         return None
 
 
-_NEWS_SOURCE_PRIORITIES = {
-    "first squawk": 1.00,
-    "financialjuice": 0.96,
-    "kitco gold": 0.96,
-    "kitco commodities": 0.94,
-    "forexlive": 0.90,
-    "fxstreet": 0.86,
-    "axios world": 0.84,
-    "axios business": 0.84,
-    "axios energy & climate": 0.84,
-    "dailyfx": 0.80,
-    "marketwatch": 0.78,
-    "investing macro": 0.77,
-    "yahoo finance": 0.72,
-    "forex livestream": 0.82,
-}
-_NEWS_SOURCE_WEIGHT_DEFAULT = 0.45  # unranked / social / unverified-forward floor
-
-
-def _news_source_weight(article: dict) -> float:
-    """ONE canonical source-credibility weight (0.45-1.00), shared by ranking
-    (_news_priority_score) and now by the scoring functions themselves. Source
-    quality previously only affected which articles got ranked toward the top
-    of the feed; once an article cleared the relevance gate, a Telegram forward
-    scored identically to a wire-tier source. Callers that want a scoring
-    contribution (not just a ranking weight) should use
-    _news_credibility_multiplier below, not this raw weight directly.
-    """
-    source_name = str((article.get("source") or {}).get("name", "")).strip().lower()
-    weight = _NEWS_SOURCE_WEIGHT_DEFAULT
-    for key, w in _NEWS_SOURCE_PRIORITIES.items():
-        if key in source_name:
-            weight = max(weight, w)
-    return weight
-
-
-def _news_credibility_multiplier(article: dict) -> float:
-    """Map the 0.45-1.00 source weight to a 0.725-1.00 scoring multiplier.
-
-    Deliberately never reaches zero: a low-credibility repost is weaker
-    evidence, not zero evidence. A top-tier source (weight 1.00) keeps its full
-    existing point contribution unchanged; an unranked/social source (weight
-    0.45, the previous universal default) is now discounted to ~72.5% of what
-    it used to silently count for.
-    """
-    return 0.5 + 0.5 * _news_source_weight(article)
-
-
 def _news_priority_score(article: dict) -> float:
     """
     Ranking affects which CURRENT headlines reach AI first.
     It does not change any macro, Gold, Tactical, alert, or strategy thresholds.
     """
+    source_name = str((article.get("source") or {}).get("name", "")).strip().lower()
     text = f"{article.get('title', '')} {article.get('description', '')}".lower()
-    source_weight = _news_source_weight(article)
+
+    source_weight = 0.45
+    source_priorities = {
+        "first squawk": 1.00,
+        "financialjuice": 0.96,
+        "kitco gold": 0.96,
+        "kitco commodities": 0.94,
+        "forexlive": 0.90,
+        "fxstreet": 0.86,
+        "axios world": 0.84,
+        "axios business": 0.84,
+        "axios energy & climate": 0.84,
+        "dailyfx": 0.80,
+        "marketwatch": 0.78,
+        "investing macro": 0.77,
+        "yahoo finance": 0.72,
+        "forex livestream": 0.82,
+    }
+    for key, weight in source_priorities.items():
+        if key in source_name:
+            source_weight = max(source_weight, weight)
 
     # Freshness is deliberately bounded: unknown timestamps are not treated as "fresh".
     freshness = 0.22
@@ -6457,87 +6235,77 @@ def _gold_relevant_articles(articles: list, limit: int = 14) -> list:
 
 
 def _gold_rule_based_news_points(articles: list) -> float:
-    """Contextual XAUUSD news score in the existing [-0.50, +0.50] convention.
-
-    Each article's total keyword-driven delta is now scaled by its source
-    credibility multiplier (0.725-1.00) before being added -- previously a
-    Telegram forward and a top-tier wire source contributed identical points
-    once past the relevance filter. A top-tier source's contribution is
-    unchanged from before; only lower-credibility sources are now discounted.
-    """
+    """Contextual XAUUSD news score in the existing [-0.50, +0.50] convention."""
     score = 0.0
     for art in _gold_relevant_articles(articles, 20):
         text = f"{art.get('title', '')} {art.get('description', '')}".lower()
-        art_delta = 0.0
 
         if any(k in text for k in [
             "gold rises", "gold rise", "gold gains", "gold jumps", "gold surges", "gold rallies",
             "bullion rises", "bullion gains", "xauusd rises", "xauusd rallies",
             "gold hits record", "gold record high", "gold breaks higher"
         ]):
-            art_delta += 0.11
+            score += 0.11
         if any(k in text for k in [
             "gold falls", "gold drops", "gold slides", "gold slumps", "gold tumbles",
             "bullion falls", "xauusd falls", "gold selloff", "gold breaks lower"
         ]):
-            art_delta -= 0.11
+            score -= 0.11
 
         if any(k in text for k in [
             "real yields fall", "real yield falls", "real yields decline", "treasury yields fall",
             "yields drop", "yields retreat", "bond yields fall"
         ]):
-            art_delta += 0.075
+            score += 0.075
         if any(k in text for k in [
             "real yields rise", "real yield rises", "real yields climb", "treasury yields rise",
             "yields jump", "yield spike", "yields spike", "bond yields rise"
         ]):
-            art_delta -= 0.075
+            score -= 0.075
 
         if any(k in text for k in [
             "dollar weakens", "dollar falls", "dollar drops", "dxy falls", "dxy weakens",
             "weaker dollar", "dollar retreats"
         ]):
-            art_delta += 0.07
+            score += 0.07
         if any(k in text for k in [
             "dollar strengthens", "dollar rises", "dollar jumps", "dxy rises", "dxy strengthens",
             "stronger dollar", "dollar rallies"
         ]):
-            art_delta -= 0.07
+            score -= 0.07
 
         if any(k in text for k in [
             "rate cut", "rate cuts", "dovish fed", "fed dovish", "easing cycle",
             "lower rates", "cuts rates"
         ]):
-            art_delta += 0.055
+            score += 0.055
         if any(k in text for k in [
             "rate hike", "rate hikes", "hawkish fed", "fed hawkish",
             "higher for longer", "rates stay high"
         ]):
-            art_delta -= 0.055
+            score -= 0.055
 
         if any(k in text for k in [
             "geopolitical tensions", "geopolitical risk", "escalation", "missile", "attack",
             "military strike", "war ", "safe haven demand", "safe-haven demand", "crisis"
         ]):
-            art_delta += 0.055
+            score += 0.055
         if any(k in text for k in [
             "ceasefire", "de-escalation", "deescalation", "peace deal",
             "geopolitical tensions ease"
         ]):
-            art_delta -= 0.035
+            score -= 0.035
 
         if any(k in text for k in [
             "central bank buying", "central banks buy", "gold reserves increase",
             "gold etf inflow", "gold etf inflows", "etf inflows into gold"
         ]):
-            art_delta += 0.07
+            score += 0.07
         if any(k in text for k in [
             "central bank selling", "gold reserves decline", "gold etf outflow",
             "gold etf outflows", "etf outflows from gold"
         ]):
-            art_delta -= 0.07
-
-        score += art_delta * _news_credibility_multiplier(art)
+            score -= 0.07
 
     return float(np.clip(score, -0.50, 0.50))
 
@@ -6668,10 +6436,7 @@ def _asset_rule_news_score(articles: list, asset: str) -> float:
             if any(k in t for k in ["yields fall","yield falls","ai demand","chip rally","tech rally","strong earnings"]): local += 0.07
             if any(k in t for k in ["yields rise","yield spike","chip restrictions","tech selloff","inflation surprise"]): local -= 0.07
         elif asset in {"JPY","CHF"} and any(k in t for k in ["risk off","risk-off","war","attack","escalation"]): local += 0.04
-        # Source credibility now affects the score itself, not just ranking --
-        # a Telegram forward previously counted identically to a top-tier wire
-        # once past the relevance filter.
-        score += local * _news_credibility_multiplier(art)
+        score += local
     return float(np.clip(score,-0.50,0.50))
 
 @st.cache_data(ttl=30, show_spinner=False)
@@ -6775,19 +6540,6 @@ def compute_composite(currency: str, fred_key: str, channel_name: str = DEFAULT_
     tw = sum(r["weight"] for r in rows)
     macro_score = sum(weighted) / tw if tw else 0.0
 
-    # Data-quality metadata, kept separate rather than merged into any single
-    # confidence number: indicator_coverage is how many of this currency's
-    # CONFIGURED indicators actually returned data at all (source
-    # availability); avg_timeframe_completeness is, for the indicators that
-    # did return data, how much of calc_mtf's own timeframe history each had
-    # (propagated from calc_mtf's own completeness field). A score built from
-    # a minority of expected evidence should be able to visibly communicate
-    # that, rather than looking identical to a fully-evidenced one.
-    total_configured = max(1, len(cfg["indicators"]))
-    indicator_coverage = round(len(rows) / total_configured, 3)
-    completeness_vals = [r.get("completeness", 1.0) for r in rows if r.get("completeness") is not None]
-    avg_timeframe_completeness = round(sum(completeness_vals) / len(completeness_vals), 3) if completeness_vals else None
-
     all_news = fetch_all_instant_news(channel_name)
     sentiment_res = analyze_news_rule_based(all_news)
     news_points = sentiment_res["scores"].get(currency, 0.0)
@@ -6795,281 +6547,17 @@ def compute_composite(currency: str, fred_key: str, channel_name: str = DEFAULT_
     ai_summary = sentiment_res.get("ai_summary", "")
     ai_active = sentiment_res.get("ai_active", False)
 
-    oil_leg = None
-    if currency == "CAD":
-        # See _calc_currency_score_only for the full rationale: CAD is a
-        # petrocurrency that previously had zero oil linkage. Domestic macro
-        # stays dominant (45%, was 50%); Oil is a real but secondary,
-        # independently-sourced (pure price momentum, no news) evidence family.
-        oil_leg = _oil_price_momentum_score(fred_key)
-    if oil_leg is not None:
-        final_score = (0.45 * macro_score) + (0.15 * oil_leg) + (0.40 * (news_points / 0.50))
-    else:
-        final_score = (0.50 * macro_score) + (0.50 * (news_points / 0.50))
+    final_score = (0.50 * macro_score) + (0.50 * (news_points / 0.50))
 
     return {
         "score": final_score,
         "macro_score": macro_score,
         "news_points": news_points,
-        "oil_leg": oil_leg,
         "drivers": detected_drivers,
         "ai_summary": ai_summary,
         "ai_active": ai_active,
-        "indicator_coverage": indicator_coverage,
-        "avg_timeframe_completeness": avg_timeframe_completeness,
         "rows": rows
     }
-
-
-def compute_relative_value(currency: str, fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> dict | None:
-    """SHADOW-MODE relative-value diagnostic layer for the Forex engine.
-
-    FX is a relative asset class -- "is EUR improving" is a different question
-    from "is EUR improving relative to USD" -- but every currency's domestic
-    score was previously computed and displayed in isolation. This adds the
-    relative read using ONLY already-computed inputs (each side's own
-    compute_composite output, itself unchanged): no new data source, and no AI
-    involvement in the arithmetic anywhere in this function.
-
-    This is diagnostic-only and NOT wired into production decisions. It does
-    not alter compute_composite's or _calc_currency_score_only's return
-    values, and nothing that currently feeds Smart Shift, Telegram alerts, or
-    the Bullish/Neutral/Bearish badge reads from this function. A change of
-    this conceptual size is explicitly kept in shadow mode until it can be
-    historically validated -- this environment has no backtesting
-    infrastructure to do that validation, so promoting it into the live
-    decision path would not be defensible yet.
-    """
-    if currency not in CURRENCY_SERIES:
-        return None
-    own = compute_composite(currency, fred_key, channel_name)
-    if own is None:
-        return None
-
-    def _rate_leg(rows):
-        for r in (rows or []):
-            if r.get("cat") == "rate":
-                return float(r.get("score", 0.0))
-        return None
-
-    result = {
-        "currency": currency,
-        "domestic_score": own["score"],
-        "domestic_macro_score": own["macro_score"],
-        "domestic_rate_score": _rate_leg(own.get("rows")),
-        "comparisons": {},
-    }
-
-    if currency == "USD":
-        # USD is the base currency every other comparison is made against; it
-        # has no counter-currency of its own in this layer.
-        return result
-
-    if currency == "JPY":
-        # US 10Y Treasury yield MOMENTUM stands in for "US yield pressure" here
-        # -- not a same-tenor JPY differential, since JPY's own CURRENCY_SERIES
-        # entry is a short policy rate (IRSTCB01JPM156N), not a matching long
-        # bond, and no JPY long-bond series could be verified live in this
-        # environment. This is the economically correct side of the specific
-        # relationship under review: USD/JPY tracks US long yields largely
-        # independent of BOJ's own near-zero short rate, precisely because the
-        # differential widens from the US side. Reuses DGS10, already fetched
-        # elsewhere in this file for Gold/Nasdaq -- no new/unverified series.
-        us10y_df = fetch_fred(GOLD_SERIES["yield"], fred_key, limit=60)
-        us10y_mf = calc_mtf(us10y_df["value"].tolist(), "rate") if us10y_df is not None and not us10y_df.empty else None
-        jpy_rate = result["domestic_rate_score"]
-        if us10y_mf is not None and jpy_rate is not None:
-            diff = jpy_rate - us10y_mf["score"]
-            result["comparisons"]["vs_US_10Y_yield_pressure"] = {
-                "counter": "US 10Y Treasury yield momentum (DGS10)",
-                "own_rate_score": jpy_rate,
-                "counter_score": us10y_mf["score"],
-                "relative_score": max(-1.0, min(1.0, diff)),
-                "note": "Positive = Japan's own conditions outpacing US yield pressure; negative = US yields pressuring JPY beyond what Japan's own data reflects.",
-            }
-        else:
-            result["comparisons"]["vs_US_10Y_yield_pressure"] = {"unavailable": True, "reason": "US 10Y or JPY rate data unavailable"}
-        return result
-
-    if currency == "CHF":
-        # CHF's real-world driver is arguably closer to European conditions
-        # than a pure USD comparison -- expose both rather than picking one.
-        counters = ["USD", "EUR"]
-    elif currency in {"EUR", "GBP", "CAD", "AUD", "NZD"}:
-        counters = ["USD"]
-    else:
-        counters = []
-
-    for counter in counters:
-        counter_composite = compute_composite(counter, fred_key, channel_name)
-        if counter_composite is None:
-            result["comparisons"][f"vs_{counter}"] = {"unavailable": True, "reason": f"{counter} composite unavailable"}
-            continue
-        counter_rate = _rate_leg(counter_composite.get("rows"))
-        own_rate = result["domestic_rate_score"]
-        # AUD/NZD have no verified policy-rate series (see CURRENCY_SERIES) --
-        # relative_rate_score is explicitly marked unavailable for them rather
-        # than substituted with a weak proxy; relative_macro_score still works
-        # since it only needs each side's overall macro_score.
-        rate_diff = None
-        if own_rate is not None and counter_rate is not None:
-            rate_diff = max(-1.0, min(1.0, own_rate - counter_rate))
-        macro_diff = max(-1.0, min(1.0, own["macro_score"] - counter_composite["macro_score"]))
-        result["comparisons"][f"vs_{counter}"] = {
-            "counter": counter,
-            "own_rate_score": own_rate,
-            "counter_rate_score": counter_rate,
-            "relative_rate_score": rate_diff,
-            "relative_rate_available": rate_diff is not None,
-            "relative_macro_score": macro_diff,
-            "candidate_score": (0.5 * macro_diff + 0.5 * rate_diff) if rate_diff is not None else macro_diff,
-        }
-    return result
-
-
-def _classify_cross_asset(driver: float | None, affected: float | None, expect_same_sign: bool, threshold: float = 0.08) -> str:
-    """CONFIRMED / MIXED / CONTRADICTED / INSUFFICIENT_DATA for one cross-asset
-    relationship. A relationship is only classified when both readings clear a
-    small flatness threshold -- two genuinely near-zero readings are not
-    "confirmation" of anything, they're an absence of signal (MIXED).
-    """
-    if driver is None or affected is None:
-        return "insufficient_data"
-    if abs(driver) < threshold or abs(affected) < threshold:
-        return "mixed"
-    same_sign = (driver > 0) == (affected > 0)
-    aligned = same_sign if expect_same_sign else (not same_sign)
-    return "confirmed" if aligned else "contradicted"
-
-
-def compute_cross_asset_confirmation(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> dict:
-    """Small, explicit cross-asset evidence layer -- diagnostic only.
-
-    Only six relationships with a clear, named economic mechanism are
-    included (per Phase 11's own priority list) -- this is deliberately not a
-    general correlation engine. Each reports CONFIRMED / MIXED / CONTRADICTED
-    / INSUFFICIENT_DATA as transparent metadata alongside why the relationship
-    exists and when it's expected to break down. Nothing here changes any
-    deterministic score; this is only promoted into score weighting if
-    historical testing justifies it, which this environment has no
-    infrastructure to perform.
-    """
-    out = {}
-
-    ry_df = fetch_fred(GOLD_SERIES["real_yield"], fred_key, limit=60)
-    ry_mf = calc_mtf(ry_df["value"].tail(36).tolist(), "rate") if ry_df is not None and not ry_df.empty else None
-    ry_score = ry_mf["score"] if ry_mf else None
-    gold_score, _, _ = _calc_gold_score_only(fred_key, channel_name)
-    usd_composite = compute_composite("USD", fred_key, channel_name)
-    usd_macro = (usd_composite or {}).get("macro_score") if usd_composite else None
-    oil_score, _ = _calc_oil_score_only(fred_key, channel_name)
-    oil_price_mom = _oil_price_momentum_score(fred_key)
-    cad_score = _calc_currency_score_only("CAD", fred_key, channel_name)
-    ndx_score, _ = _calc_ndx_score_only(fred_key, channel_name)
-    jpy_relval = compute_relative_value("JPY", fred_key, channel_name)
-    yield_pressure = ((jpy_relval or {}).get("comparisons", {}) or {}).get("vs_US_10Y_yield_pressure", {})
-    yield_pressure_score = yield_pressure.get("relative_score") if isinstance(yield_pressure, dict) else None
-    jpy_domestic = (jpy_relval or {}).get("domestic_score") if jpy_relval else None
-
-    out["real_yields_vs_gold"] = {
-        "mechanism": "Rising real yields raise the opportunity cost of holding non-yielding gold.",
-        "expected": "inverse", "driver": ry_score, "affected": gold_score,
-        "status": _classify_cross_asset(ry_score, gold_score, expect_same_sign=False),
-        "unreliable_when": "Central-bank-buying-driven or acute geopolitical-crisis periods can decouple gold from real yields for extended stretches.",
-    }
-    out["usd_vs_gold"] = {
-        "mechanism": "Gold is USD-denominated; broad USD strength typically pressures USD-priced gold.",
-        "expected": "inverse", "driver": usd_macro, "affected": gold_score,
-        "status": _classify_cross_asset(usd_macro, gold_score, expect_same_sign=False),
-        "unreliable_when": "A USD-specific confidence shock can decouple this from the normal relationship.",
-    }
-    out["usd_vs_oil"] = {
-        "mechanism": "Oil is USD-denominated with a well-documented inverse relationship to broad USD strength.",
-        "expected": "inverse", "driver": usd_macro, "affected": oil_score,
-        "status": _classify_cross_asset(usd_macro, oil_score, expect_same_sign=False),
-        "unreliable_when": "Supply/demand shocks can temporarily overwhelm the USD relationship.",
-    }
-    out["oil_vs_cad"] = {
-        "mechanism": "Canada's terms of trade and export revenue are oil-sensitive.",
-        "expected": "same_direction", "driver": oil_price_mom, "affected": cad_score,
-        "status": _classify_cross_asset(oil_price_mom, cad_score, expect_same_sign=True),
-        "unreliable_when": "BoC-policy-divergence-dominated periods can overwhelm the oil linkage.",
-    }
-    out["us_japan_yields_vs_jpy"] = {
-        "mechanism": "USD/JPY tracks US long-yield pressure largely independent of BOJ's own near-zero short rate -- one of the most robust G10 FX relationships.",
-        "expected": "same_direction", "driver": yield_pressure_score, "affected": jpy_domestic,
-        "status": _classify_cross_asset(yield_pressure_score, jpy_domestic, expect_same_sign=True),
-        "unreliable_when": "A surprise BOJ policy/yield-curve-control shift can make Japan's own policy dominate instead.",
-    }
-    out["yields_vs_nasdaq"] = {
-        "mechanism": "Long-duration growth-equity valuations are rate-sensitive -- rising real yields raise the discount rate applied to future earnings.",
-        "expected": "inverse", "driver": ry_score, "affected": ndx_score,
-        "status": _classify_cross_asset(ry_score, ndx_score, expect_same_sign=False),
-        "unreliable_when": "Earnings-driven regimes where fundamentals dominate rate moves.",
-    }
-    return out
-
-
-def compute_macro_regime_context(fred_key: str, channel_name: str = DEFAULT_TELEGRAM_CHANNEL) -> dict:
-    """Lightweight, explicit, READ-ONLY macro regime context.
-
-    NOT a hidden dynamic-weight-switching engine -- no deterministic score
-    anywhere in this file reads from this function's output, and it must stay
-    that way until a regime-labeling and historical-testing framework exists
-    to justify wiring it into a real decision. States: risk_on / risk_off /
-    transition / insufficient_data. Built only from data already computed
-    elsewhere in this file (real-yield momentum, Nasdaq price momentum, Gold's
-    score as a safe-haven cross-check) -- no new data source.
-
-    Explainable by construction: the returned dict shows exactly which
-    evidence produced the classification, for use as context for users, for
-    AI evidence interpretation, and as cross-asset diagnostic context only.
-    """
-    ry_df = fetch_fred(GOLD_SERIES["real_yield"], fred_key, limit=60)
-    ry_mf = calc_mtf(ry_df["value"].tail(36).tolist(), "rate") if ry_df is not None and not ry_df.empty else None
-    ry_score = ry_mf["score"] if ry_mf else None
-
-    ndx_df = fetch_fred("NASDAQ100", fred_key, limit=90)
-    ndx_mf = calc_mtf(ndx_df["value"].tolist(), "growth") if ndx_df is not None and not ndx_df.empty else None
-    ndx_momentum = ndx_mf["score"] if ndx_mf else None
-
-    gold_score, _, _ = _calc_gold_score_only(fred_key, channel_name)
-    evidence = {"real_yield_momentum": ry_score, "equity_momentum": ndx_momentum, "gold_safehaven_score": gold_score}
-
-    available = [v for v in (ry_score, ndx_momentum) if v is not None]
-    if len(available) < 2:
-        return {"regime": "insufficient_data", "evidence": evidence,
-                "explanation": "Not enough live data to classify a regime right now."}
-
-    threshold = 0.10
-    risk_on_votes = 0
-    risk_off_votes = 0
-    if ndx_momentum > threshold: risk_on_votes += 1
-    elif ndx_momentum < -threshold: risk_off_votes += 1
-    if ry_score is not None:
-        if ry_score < -threshold: risk_on_votes += 1
-        elif ry_score > threshold: risk_off_votes += 1
-    if gold_score is not None and ndx_momentum is not None:
-        # Gold strength alongside equity weakness is a classic safe-haven-bid,
-        # risk-off tell; the reverse (gold weak, equities strong) leans risk-on.
-        if gold_score > threshold and ndx_momentum < -threshold:
-            risk_off_votes += 1
-        elif gold_score < -threshold and ndx_momentum > threshold:
-            risk_on_votes += 1
-
-    if risk_on_votes >= 2 and risk_on_votes > risk_off_votes:
-        regime = "risk_on"
-    elif risk_off_votes >= 2 and risk_off_votes > risk_on_votes:
-        regime = "risk_off"
-    else:
-        regime = "transition"
-
-    return {
-        "regime": regime, "evidence": evidence,
-        "risk_on_votes": risk_on_votes, "risk_off_votes": risk_off_votes,
-        "explanation": f"Classified from {len(available)} live evidence readings (equity momentum, real-yield momentum, gold safe-haven cross-check).",
-    }
-
 
 def bias_from_score(s: float) -> tuple[str, str, str]:
     if s >= 0.35:
@@ -7549,16 +7037,7 @@ def page_oil(fred_key: str, channel_name: str) -> None:
     sentiment_res = analyze_news_rule_based(all_news)
     oil_news_pts = sentiment_res["scores"].get("Oil", 0.0)
 
-    # 40% price momentum + 20% inverse USD (macro-only) + 40% news -- see
-    # _calc_oil_score_only for the full rationale; this page previously
-    # duplicated the old 50/50 momentum+news formula inline with no USD input.
-    usd_composite_oil = compute_composite("USD", fred_key, channel_name)
-    inv_usd_oil = -((usd_composite_oil or {}).get("macro_score", 0.0) or 0.0)
-    final_oil_score = (
-        (0.40 * (w_mf["score"] if w_mf else 0.0))
-        + (0.20 * inv_usd_oil)
-        + (0.40 * (oil_news_pts / 0.50))
-    )
+    final_oil_score = (0.50 * (w_mf["score"] if w_mf else 0.0)) + (0.50 * (oil_news_pts / 0.50))
 
     render_html('<div class="sec-title">Key Energy Indicators</div>')
     k1, k2, k3 = st.columns(3)
@@ -7603,7 +7082,6 @@ def page_oil(fred_key: str, channel_name: str) -> None:
             {"name": "WTI Crude Spot", "cat": "growth", "latest": w_vals[-1], "mom": w_mf['mom'], "qoq": w_mf.get('qoq'), "yoy": w_mf.get('yoy'), "vals": w_vals, "score": w_mf['score']},
             {"name": "Brent Crude Spot", "cat": "growth", "latest": b_vals[-1], "mom": w_mf['mom'] + 0.1, "qoq": w_mf.get('qoq'), "yoy": w_mf.get('yoy'), "vals": b_vals, "score": w_mf['score']},
             {"name": "Brent-WTI Spread", "cat": "inflation", "latest": spread, "mom": 0.05, "qoq": 0.20, "yoy": -0.15, "vals": w_vals, "score": 0.10},
-            {"name": "USD Currency Pressure", "cat": "growth", "latest": (usd_composite_oil or {}).get("macro_score", 0.0), "mom": None, "qoq": None, "yoy": None, "vals": w_vals, "score": inv_usd_oil},
         ]
         render_data_table(oil_rows)
 
@@ -7618,11 +7096,11 @@ def page_oil(fred_key: str, channel_name: str) -> None:
           <div style="font-size:11px;font-weight:800;color:#8fa3b4;text-transform:uppercase;margin-bottom:8px;">🛢️ CRUDE OIL OVERALL BIAS</div>
           <div style="margin-bottom:12px;">{badge(final_oil_score, lg=True)}</div>
           <div style="font-size:18px;font-weight:900;color:#fff;">Composite: <span style="color:#00ffa3;">{final_oil_score:+.3f}</span></div>
-          <div style="font-size:11.5px;color:#8fa3b4;margin-top:4px;">Price Momentum (40%): <b style="color:#fff;">{(w_mf['score'] if w_mf else 0.0):+.3f}</b> | USD Pressure (20%): <b style="color:#fff;">{inv_usd_oil:+.3f}</b> | News (40%): <b style="color:{on_color};">{oil_news_pts:+.2f} pts</b></div>
+          <div style="font-size:11.5px;color:#8fa3b4;margin-top:4px;">Physical Macro (50%): <b style="color:#fff;">{(w_mf['score'] if w_mf else 0.0):+.3f}</b> | News Sentiment (50%): <b style="color:{on_color};">{oil_news_pts:+.2f} pts</b></div>
           {ai_summary_html}
           <div style="margin-top:10px;font-size:11px;color:#8fa3b4;">
-            <div>• <b>In this model:</b> WTI/Brent price momentum, inverse USD macro strength, and Oil-relevant news sentiment.</div>
-            <div style="margin-top:3px;">• <b>Not yet in this model:</b> OPEC/EIA supply data, inventories, and global demand indicators are not currently reliable production data sources for this desk -- treat this composite as price/USD/news evidence only, not a supply-demand fundamental read.</div>
+            <div>• <b>OPEC+ Supply Dynamics:</b> Physical market tightness dictates baseline trend.</div>
+            <div style="margin-top:3px;">• <b>Petrocurrency Impact:</b> CAD, NOK, and USD sensitive to barrel velocity.</div>
           </div>
         </div>
         """)
@@ -7684,10 +7162,7 @@ def page_nasdaq(fred_key: str, channel_name: str) -> None:
         ry_mf = calc_mtf(ry_vals, "rate")
         inv_ry = -ry_mf["score"] if ry_mf else 0.0
 
-    # Macro-only USD leg -- see _calc_ndx_score_only for why: usd_r["score"] is
-    # USD's blended macro+news score, which would double-count USD's own news
-    # sentiment through this leg on top of NDX's separate direct news leg below.
-    inv_usd = -(usd_r.get("macro_score", 0.0) or 0.0) if usd_r else 0.0
+    inv_usd = -(usd_r["score"]) if usd_r else 0.0
     ndx_s = (0.40 * ndx_momentum) + (0.20 * inv_ry) + (0.15 * inv_usd) + (0.25 * (ndx_news_pts / 0.50))
 
     render_html('<div class="sec-title">Key Nasdaq-100 Indicators</div>')
@@ -9028,67 +8503,6 @@ def _record_forecaster_snapshot(event: dict, nowcast: dict, actual: str = "") ->
     _save_forecaster_history(data)
 
 
-def compute_recent_macro_surprise(currency: str, half_life_days: float = 5.0, max_events: int = 8) -> dict:
-    """SHADOW-MODE bridge from the Forecaster's resolved-release evidence
-    (consensus/actual/surprise, already computed and frozen there) into a
-    small, capped, time-decayed 'recent macro surprise' read for a currency.
-
-    This is not a second surprise engine: it reads directly from
-    forecaster_history.json's already-resolved records, using ONLY the
-    immutable first_print_actual (via the frozen standardized_surprise_z
-    already computed at resolution time). An event whose standardized surprise
-    was itself marked insufficient-history (z is None) is excluded entirely --
-    never treated as neutral evidence, per the existing insufficient-history
-    contract. Contributions decay with a configurable half-life and are hard-
-    capped at 30 days old and at max_events, so no single release can
-    permanently dominate a currency's read.
-
-    Diagnostic-only: NOT blended into compute_composite, _calc_currency_score_
-    only, or any production score/bias decision. This reads an entirely
-    separate data source (frozen Forecaster records) from the news-sentiment
-    pipeline (live scraped articles), so there is no overlap/double-counting
-    risk between this and news scoring to reconcile.
-    """
-    now = datetime.utcnow()
-    records = list(_load_forecaster_history().get("records", {}).values())
-    contributions = []
-    for r in records:
-        if str(r.get("currency", "")).upper() != str(currency or "").upper():
-            continue
-        if not r.get("resolved"):
-            continue
-        z = r.get("standardized_surprise_z")
-        if z is None:
-            continue
-        resolved_at = str(r.get("resolved_at_utc", "")).strip()
-        try:
-            resolved_dt = datetime.fromisoformat(resolved_at.replace("Z", "+00:00")).replace(tzinfo=None)
-        except Exception:
-            continue
-        age_days = max(0.0, (now - resolved_dt).total_seconds() / 86400.0)
-        if age_days > 30:
-            continue
-        decay = 0.5 ** (age_days / max(0.1, half_life_days))
-        contributions.append({
-            "title": r.get("title", ""), "resolved_at": resolved_at,
-            "z": float(z), "age_days": round(age_days, 1), "decay_weight": round(decay, 3),
-            "weighted_z": float(z) * decay,
-        })
-    contributions.sort(key=lambda c: c["resolved_at"], reverse=True)
-    contributions = contributions[:max(1, int(max_events))]
-    if not contributions:
-        return {"currency": currency, "surprise_score": 0.0, "sample_n": 0, "contributions": [], "status": "no_resolved_releases"}
-    total_weight = sum(c["decay_weight"] for c in contributions) or 1.0
-    raw = sum(c["weighted_z"] for c in contributions) / total_weight
-    # tanh compression keeps this on the app's familiar [-1,1] score scale
-    # rather than an unbounded raw Z-score average.
-    surprise_score = float(np.tanh(raw / 2.0))
-    return {
-        "currency": currency, "surprise_score": round(surprise_score, 3),
-        "sample_n": len(contributions), "contributions": contributions, "status": "ok",
-    }
-
-
 def _forecaster_performance() -> dict:
     """Comprehensive objective benchmark of ApexMacro Nowcasts vs Market Consensus."""
     rows = list(_load_forecaster_history().get("records", {}).values())
@@ -9182,13 +8596,12 @@ def compute_event_nowcast(event: dict, fred_key: str, all_news: list, actual_ove
     if str(event.get("impact", meta.get("impact", ""))).lower() == "high":
         archived_window = _archive_event_news(event, correlated_articles)
         archived_verified, archived_ambiguity = _verified_event_news(event, archived_window)
-        # Unified onto the same Jaccard-similarity dedup already used for live
-        # news (deduplicate_news_articles / is_duplicate_news) instead of exact
-        # normalized-title matching -- a reworded near-duplicate of the same
-        # archived story used to survive as independent evidence here, inflating
-        # this event's evidence_quality/conflict inputs even though the same
-        # underlying story wouldn't have survived dedup on the live-news path.
-        correlated_articles = deduplicate_news_articles(list(correlated_articles) + list(archived_verified))[:24]
+        merged, seen_news = [], set()
+        for a in list(correlated_articles) + list(archived_verified):
+            k = _normalize_catalyst_title(a.get("title", ""))
+            if k and k not in seen_news:
+                seen_news.add(k); merged.append(a)
+        correlated_articles = merged[:24]
         news_ambiguity = max(news_ambiguity, archived_ambiguity)
     history_signal, same_release_history = _history_release_signal(event)
     cur = meta.get("currency", event.get("currency", "USD"))
