@@ -1033,6 +1033,11 @@ class TestStageASafetyConstraints(unittest.TestCase):
             "datetime",
             "enum",
             "hashlib",
+            # json is a pure serialisation library. json.dumps/loads are string
+            # operations with no I/O of their own; only json.dump/load touch a
+            # file, and they require a file object this package never obtains.
+            # test_b2_writes_no_durable_state asserts those are never called.
+            "json",
             "types",
             "typing",
         }
@@ -1083,11 +1088,27 @@ class TestStageASafetyConstraints(unittest.TestCase):
         for forbidden in (
             "PROJECT_ROOT",
             "_save_persistent_state",
-            "json.dump",
             "open(",
             "os.replace",
         ):
             self.assertNotIn(forbidden, source, forbidden)
+
+        # File-writing json entry points, checked by CALL rather than substring:
+        # the old "json.dump" substring also matched json.dumps, which is a pure
+        # string operation the package legitimately uses for canonical hashing.
+        forbidden_calls = {"dump", "load"}
+        for module in ALL_B2_MODULES:
+            for node in ast.walk(ast.parse(inspect.getsource(module))):
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "json"
+                ):
+                    self.assertNotIn(
+                        node.func.attr, forbidden_calls,
+                        f"{module.__name__}: json.{node.func.attr} touches a file",
+                    )
 
     def test_circular_cross_asset_implementation_is_not_activated(self):
         source = _b2_executable_source()

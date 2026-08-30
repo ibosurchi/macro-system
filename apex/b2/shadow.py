@@ -23,6 +23,7 @@ guarantee that nothing under ``apex.b2`` performs I/O.
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Mapping, Protocol, runtime_checkable
@@ -143,13 +144,72 @@ class ShadowRecord:
 #: next to the record, so the mapping stays in one place; the client that talks
 #: to the database lives outside this pure package.
 SHADOW_ROW_COLUMNS = (
+    "storage_id",
     "record_id",
     "instrument",
     "horizon",
     "evaluated_at",
     "schema_version",
+    "content_hash",
     "record",
 )
+
+# ---------------------------------------------------------------------------
+# THREE DISTINCT IDENTITIES
+#
+# A live collision proved that one identifier cannot do all three jobs.
+#
+#   record_id   LOGICAL observation identity -- "is this the same intended
+#               observation bucket?" It is sha256 over instrument, horizon and
+#               the UTC HOUR BUCKET, so by construction every observation taken
+#               within one hour for one instrument shares it. That is correct
+#               for cadence control and WRONG as a physical row key: a legacy
+#               22:04 observation and a later 22:39 observation are two
+#               legitimate, different point-in-time records with one record_id.
+#
+#   storage_id  PHYSICAL point-in-time identity -- "is this the exact same
+#               immutable historical observation?" Deterministic, so a retry of
+#               the same observation reproduces it and cannot duplicate, while
+#               two observations at different instants stay distinct.
+#
+#   content_hash INTEGRITY identity -- "do two records claiming the same
+#               point-in-time identity actually carry the same payload?" Lets a
+#               genuine conflict be reported instead of silently resolved.
+# ---------------------------------------------------------------------------
+
+#: Separator for identity basis strings. Chosen because it cannot occur in an
+#: ISO timestamp, an instrument code or a horizon name.
+_IDENTITY_SEPARATOR = "|"
+
+
+def canonical_storage_id(
+    record_id: str, instrument: str, horizon: str, evaluated_at: str
+) -> str:
+    """Deterministic physical identity for one point-in-time observation.
+
+    ``evaluated_at`` MUST be the exact ISO string carried inside the record
+    payload, not a re-formatted datetime. Re-formatting is precisely how two
+    semantically identical timestamps would hash differently, and it is also
+    what lets the database reproduce this value from ``record->>'evaluated_at'``
+    without any timezone or precision ambiguity.
+    """
+    basis = _IDENTITY_SEPARATOR.join(
+        [str(record_id), str(instrument), str(horizon), str(evaluated_at)]
+    )
+    return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:32]
+
+
+def canonical_content_hash(record: Mapping[str, object]) -> str:
+    """Deterministic hash of a record payload.
+
+    Canonical JSON: keys sorted, no insignificant whitespace, non-serialisable
+    values coerced by ``str``. Two payloads hash identically if and only if
+    they are the same document, independent of key ordering.
+    """
+    canonical = json.dumps(
+        record, sort_keys=True, separators=(",", ":"), default=str, ensure_ascii=True
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
 
 
 def record_to_row(record: Mapping[str, object]) -> dict[str, object]:
@@ -176,13 +236,21 @@ def record_to_row(record: Mapping[str, object]) -> dict[str, object]:
         schema_version = int(record.get("schema_version") or 1)
     except (TypeError, ValueError):
         schema_version = 1
+    payload = dict(record)
     return {
+        # Physical point-in-time identity: the database primary key.
+        "storage_id": canonical_storage_id(
+            record_id, instrument, horizon, evaluated_at
+        ),
+        # Logical hour-bucket identity, retained unchanged: predictions, tests,
+        # diagnostics and the legacy ShadowLog all still reference it.
         "record_id": record_id,
         "instrument": instrument,
         "horizon": horizon,
         "evaluated_at": evaluated_at,
         "schema_version": schema_version,
-        "record": dict(record),
+        "content_hash": canonical_content_hash(payload),
+        "record": payload,
     }
 
 

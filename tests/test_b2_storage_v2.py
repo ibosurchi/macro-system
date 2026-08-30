@@ -101,11 +101,17 @@ class _PatchProduction:
 
 
 class FakeRow:
-    """A stand-in for the b2_shadow_records table with real PK semantics."""
+    """Stand-in for b2_shadow_records under the REPAIRED identity model.
+
+    Mirrors the post-migration schema exactly: ``storage_id`` is the primary
+    key, ``record_id`` is an indexed non-unique logical column. Modelling the
+    OLD schema here is what let the live collision through, so the double now
+    enforces the same constraint the database will.
+    """
 
     def __init__(self, fail_ids=None, raise_on_batch=False, raise_always=False):
-        self.rows: dict[str, dict] = {}
-        self.fail_ids = set(fail_ids or ())
+        self.rows: dict[str, dict] = {}          # storage_id -> row
+        self.fail_ids = set(fail_ids or ())      # storage_ids that reject
         self.raise_on_batch = raise_on_batch
         self.raise_always = raise_always
         self.insert_calls = 0
@@ -117,36 +123,64 @@ class FakeRow:
         if self.raise_always:
             raise RuntimeError("table unreachable")
         if self.raise_on_batch and len(rows) > 1:
-            # Mimic a batch rejection so per-record isolation must kick in.
-            inserted, duplicate, failed = [], [], []
+            inserted, duplicate, failed, conflicted = [], [], [], []
             for row in rows:
                 one = self.insert_rows([row])
                 inserted.extend(one.inserted)
                 duplicate.extend(one.duplicate)
                 failed.extend(one.failed)
+                conflicted.extend(one.conflicted)
             return b2_bridge.InsertOutcome(
                 backend="supabase", durable=not failed,
                 inserted=tuple(inserted), duplicate=tuple(duplicate),
-                failed=tuple(failed),
+                failed=tuple(failed), conflicted=tuple(conflicted),
             )
-        inserted, duplicate, failed = [], [], []
+        inserted, duplicate, failed, conflicted = [], [], [], []
         for row in rows:
-            rid = row["record_id"]
-            if rid in self.fail_ids:
-                failed.append(rid)
-            elif rid in self.rows:
-                duplicate.append(rid)          # ON CONFLICT DO NOTHING
+            sid = row["storage_id"]
+            if sid in self.fail_ids:
+                failed.append(sid)
+            elif sid in self.rows:
+                # ON CONFLICT DO NOTHING: the stored row is never modified.
+                stored = self.rows[sid].get("content_hash", "")
+                incoming = row.get("content_hash", "")
+                if stored and incoming and stored != incoming:
+                    conflicted.append(sid)
+                else:
+                    duplicate.append(sid)
             else:
-                self.rows[rid] = dict(row)
-                inserted.append(rid)
+                self.rows[sid] = dict(row)
+                inserted.append(sid)
         return b2_bridge.InsertOutcome(
             backend="supabase", durable=not failed,
             inserted=tuple(inserted), duplicate=tuple(duplicate),
-            failed=tuple(failed),
+            failed=tuple(failed), conflicted=tuple(conflicted),
         )
 
-    def record_exists(self, record_id):
-        return record_id in self.rows
+    def record_exists(self, storage_id):
+        return storage_id in self.rows
+
+    def stored_content_hash(self, storage_id):
+        row = self.rows.get(storage_id)
+        return row.get("content_hash") if row else None
+
+    def logical_record_exists(self, record_id):
+        return any(r.get("record_id") == record_id for r in self.rows.values())
+
+    def seed(self, storage_id, *, instrument="Gold", record_id=None, evaluated_at=None,
+             record=None):
+        """Insert a row directly, bypassing insert semantics (test fixture)."""
+        self.rows[storage_id] = {
+            "storage_id": storage_id,
+            "record_id": record_id or f"logical-{storage_id}",
+            "instrument": instrument,
+            "horizon": "tactical",
+            "evaluated_at": (evaluated_at or NOW).isoformat()
+            if not isinstance(evaluated_at, str) else evaluated_at,
+            "schema_version": 1,
+            "content_hash": "seeded",
+            "record": record if record is not None else {},
+        }
 
     def query_records(self, *, instrument=None, start=None, end=None, limit=1000, select=""):
         out = []
@@ -224,21 +258,38 @@ class TestRoundTripAndImmutability(unittest.TestCase):
     def test_existing_record_is_never_overwritten(self):
         table = FakeRow()
         table.rows["fixed"] = {
-            "record_id": "fixed", "instrument": "Gold", "horizon": "tactical",
+            "storage_id": "fixed", "record_id": "logical",
+            "instrument": "Gold", "horizon": "tactical",
             "evaluated_at": "2020-01-01T00:00:00+00:00", "schema_version": 1,
-            "record": {"original": True},
+            "content_hash": "original", "record": {"original": True},
         }
         result = table.insert_rows([{
-            "record_id": "fixed", "instrument": "Gold", "horizon": "tactical",
+            "storage_id": "fixed", "record_id": "logical",
+            "instrument": "Gold", "horizon": "tactical",
             "evaluated_at": "2099-01-01T00:00:00+00:00", "schema_version": 9,
-            "record": {"original": False, "tampered": True},
+            "content_hash": "tampered", "record": {"original": False},
         }])
-        self.assertEqual(result.duplicate, ("fixed",))
+        # Different payload at the same point-in-time identity is an integrity
+        # conflict, reported rather than silently resolved either way.
+        self.assertEqual(result.conflicted, ("fixed",))
         self.assertEqual(result.inserted, ())
         kept = table.rows["fixed"]
         self.assertEqual(kept["evaluated_at"], "2020-01-01T00:00:00+00:00")
         self.assertEqual(kept["schema_version"], 1)
         self.assertEqual(kept["record"], {"original": True})
+
+    def test_an_exact_retry_is_a_benign_duplicate_not_a_conflict(self):
+        table = FakeRow()
+        row = {
+            "storage_id": "sid", "record_id": "logical", "instrument": "Gold",
+            "horizon": "tactical", "evaluated_at": NOW.isoformat(),
+            "schema_version": 1, "content_hash": "same", "record": {"a": 1},
+        }
+        table.insert_rows([row])
+        again = table.insert_rows([dict(row)])
+        self.assertEqual(again.duplicate, ("sid",))
+        self.assertEqual(again.conflicted, ())
+        self.assertEqual(len(table.rows), 1)
 
     def test_insert_uses_ignore_duplicates_not_upsert(self):
         source = inspect.getsource(b2_bridge.SupabaseShadowRecordStore.insert_rows)
@@ -325,8 +376,9 @@ class TestDuplicatesAndMultiAsset(unittest.TestCase):
     def test_batch_rejection_falls_back_to_per_record_isolation(self):
         store = b2_bridge.SupabaseShadowRecordStore()
         rows = [
-            {"record_id": f"r{i}", "instrument": "Gold", "horizon": "tactical",
-             "evaluated_at": NOW.isoformat(), "schema_version": 1, "record": {}}
+            {"storage_id": f"s{i}", "record_id": f"r{i}", "instrument": "Gold",
+             "horizon": "tactical", "evaluated_at": NOW.isoformat(),
+             "schema_version": 1, "content_hash": f"h{i}", "record": {}}
             for i in range(3)
         ]
         calls = {"n": 0}
@@ -339,7 +391,7 @@ class TestDuplicatesAndMultiAsset(unittest.TestCase):
             class R:
                 status_code = 201
                 def raise_for_status(self): return None
-                def json(self): return [{"record_id": payload[0]["record_id"]}]
+                def json(self): return [{"storage_id": payload[0]["storage_id"]}]
             return R()
 
         with mock.patch.object(core, "_supabase_enabled", return_value=True), \
@@ -361,7 +413,7 @@ class TestFailureAndFallback(unittest.TestCase):
     def test_supabase_unavailable_is_fail_open_and_not_reported_durable(self):
         store = b2_bridge.SupabaseShadowRecordStore()
         with mock.patch.object(core, "_supabase_enabled", return_value=False):
-            result = store.insert_rows([{"record_id": "x"}])
+            result = store.insert_rows([{"storage_id": "x", "record_id": "x"}])
         self.assertEqual(result.backend, "unavailable")
         self.assertFalse(result.durable)
         self.assertEqual(result.inserted, ())
@@ -373,7 +425,7 @@ class TestFailureAndFallback(unittest.TestCase):
              mock.patch.object(
                  b2_bridge.requests, "post", side_effect=TimeoutError("timed out")
              ):
-            result = store.insert_rows([{"record_id": "x"}])
+            result = store.insert_rows([{"storage_id": "x", "record_id": "x"}])
         self.assertEqual(result.failed, ("x",))
         self.assertFalse(result.durable)
         self.assertIn("timed out", result.error)
@@ -387,24 +439,24 @@ class TestFailureAndFallback(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             local = b2_bridge.LocalShadowRecordStore(os.path.join(tmp, "rows.jsonl"))
             result = local.insert_rows([{
-                "record_id": "a", "instrument": "Gold", "horizon": "tactical",
+                "storage_id": "sa", "record_id": "a", "instrument": "Gold", "horizon": "tactical",
                 "evaluated_at": NOW.isoformat(), "schema_version": 1, "record": {},
             }])
             self.assertEqual(result.backend, "local")
             self.assertFalse(result.durable, "local must never claim durability")
-            self.assertEqual(result.inserted, ("a",))
+            self.assertEqual(result.inserted, ("sa",))
 
     def test_local_fallback_is_append_only_and_deduplicates(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "rows.jsonl")
             local = b2_bridge.LocalShadowRecordStore(path)
             row = {
-                "record_id": "a", "instrument": "Gold", "horizon": "tactical",
+                "storage_id": "sa", "record_id": "a", "instrument": "Gold", "horizon": "tactical",
                 "evaluated_at": NOW.isoformat(), "schema_version": 1, "record": {},
             }
             local.insert_rows([row])
             second = local.insert_rows([row])
-            self.assertEqual(second.duplicate, ("a",))
+            self.assertEqual(second.duplicate, ("sa",))
             with open(path, encoding="utf-8") as fh:
                 self.assertEqual(len([l for l in fh if l.strip()]), 1)
 
@@ -478,12 +530,13 @@ class TestConcurrencyAndScale(unittest.TestCase):
         table = FakeRow()
         for i in range(2100):
             table.insert_rows([{
-                "record_id": f"r{i}", "instrument": "Gold", "horizon": "tactical",
+                "storage_id": f"s{i}", "record_id": f"r{i}",
+                "instrument": "Gold", "horizon": "tactical",
                 "evaluated_at": (NOW + timedelta(hours=i)).isoformat(),
-                "schema_version": 1, "record": {"i": i},
+                "schema_version": 1, "content_hash": f"h{i}", "record": {"i": i},
             }])
         self.assertEqual(len(table.rows), 2100)
-        self.assertIn("r0", table.rows, "the oldest record must NOT be trimmed")
+        self.assertIn("s0", table.rows, "the oldest record must NOT be trimmed")
 
     def test_v2_has_no_max_records_cap(self):
         source = inspect.getsource(b2_bridge._run_v2_observation)
@@ -620,10 +673,18 @@ class TestLegacyFreezeAndBackfill(unittest.TestCase):
         self.assertEqual(result["status"], "complete")
         self.assertEqual(len(table.rows), 5)
         legacy = {r["record_id"]: r for r in _legacy_payload()["records"]}
-        for rid, row in table.rows.items():
+        for row in table.rows.values():
+            rid = row["record_id"]
             self.assertIn(rid, legacy)
             self.assertEqual(row["evaluated_at"], legacy[rid]["evaluated_at"])
             self.assertEqual(row["record"], legacy[rid])
+            # storage_id is derived, deterministic, and distinct per record.
+            self.assertEqual(
+                row["storage_id"],
+                shadow.canonical_storage_id(
+                    rid, row["instrument"], row["horizon"], row["evaluated_at"]
+                ),
+            )
 
     def test_backfill_never_fabricates_aggregation_config_for_legacy(self):
         b2_bridge.freeze_legacy_shadow_log(self.store, now=NOW)
@@ -659,7 +720,14 @@ class TestLegacyFreezeAndBackfill(unittest.TestCase):
 
     def test_an_interrupted_backfill_does_not_advance_past_unlanded_rows(self):
         b2_bridge.freeze_legacy_shadow_log(self.store, now=NOW)
-        table = FakeRow(fail_ids={"legacy2"})
+        doomed = next(
+            r for r in _legacy_payload()["records"] if r["record_id"] == "legacy2"
+        )
+        doomed_storage_id = shadow.canonical_storage_id(
+            doomed["record_id"], doomed["instrument"],
+            doomed["horizon"], doomed["evaluated_at"],
+        )
+        table = FakeRow(fail_ids={doomed_storage_id})
         result = b2_bridge.backfill_legacy_records(self.store, table)
         self.assertEqual(result["status"], "partial")
         self.assertEqual(b2_bridge._migration_state().get("cursor", 0), 0)
@@ -838,7 +906,10 @@ class TestProvenanceAndGuarantees(unittest.TestCase):
         self.assertEqual(b2_bridge.HOOK_STATS["v2_inserted"], 1)
         b2_bridge._HANDLED_BUCKETS.clear()
         _v2(table, instruments=["Gold"], now=NOW)
-        self.assertEqual(b2_bridge.HOOK_STATS["v2_duplicate"], 1)
+        # After a restart the durable cadence check catches it before any work,
+        # so it is counted as a LOGICAL duplicate rather than a physical one.
+        self.assertEqual(b2_bridge.HOOK_STATS["v2_logical_duplicate"], 1)
+        self.assertEqual(len(table.rows), 1)
 
     def test_production_core_is_untouched_by_storage_v2(self):
         tree = ast.parse(inspect.getsource(core))
@@ -862,6 +933,226 @@ class TestProvenanceAndGuarantees(unittest.TestCase):
         source = inspect.getsource(b2_bridge)
         self.assertNotIn("print(", source)
         self.assertNotIn("SUPABASE_SERVICE_ROLE_KEY", source)
+
+
+# ---------------------------------------------------------------------------
+# LIVE COLLISION REPRODUCTION AND RECOVERY
+#
+# Reproduces the exact production incident of 2026-08-30: a legacy observation
+# at 22:04:43.893828+00 and a newer V2 observation at 22:39:43.194179+00 share
+# one record_id, because record_id is a UTC-HOUR-BUCKET identity. Under the old
+# schema the second insert was refused and the legacy record could not be
+# represented. These tests fail against the old identity model.
+# ---------------------------------------------------------------------------
+COLLISION_INSTRUMENTS = (
+    "AUD", "CAD", "CHF", "EUR", "GBP", "Gold", "JPY", "NDX", "NZD", "Oil", "USD",
+)
+LEGACY_AT = datetime(2026, 8, 30, 22, 4, 43, 893828, tzinfo=timezone.utc)
+NEWER_AT = datetime(2026, 8, 30, 22, 39, 43, 194179, tzinfo=timezone.utc)
+
+
+def _observation(instrument, moment, *, with_provenance):
+    """A record shaped like the real ones, at a specific instant."""
+    record_id = b2_bridge.observation_record_id(
+        b2_bridge.observation_key(instrument, b2_bridge.Horizon.TACTICAL, moment)
+    )
+    record = {
+        "record_id": record_id,
+        "instrument": instrument,
+        "horizon": "tactical",
+        "evaluated_at": moment.isoformat(),
+        "schema_version": 1,
+        "mode": "SHADOW / NON-PRODUCTION / UNCALIBRATED",
+        "decision_state": "confirmed_thesis",
+    }
+    if with_provenance:
+        record["aggregation_config"] = DEFAULT_AGGREGATION.as_provenance()
+    return record
+
+
+class TestLiveCollisionRepair(unittest.TestCase):
+    def setUp(self):
+        _reset()
+
+    def test_the_two_observations_really_do_share_a_record_id(self):
+        """The premise of the incident, proven from the shipped functions."""
+        for instrument in COLLISION_INSTRUMENTS:
+            legacy = _observation(instrument, LEGACY_AT, with_provenance=False)
+            newer = _observation(instrument, NEWER_AT, with_provenance=True)
+            self.assertEqual(
+                legacy["record_id"], newer["record_id"],
+                f"{instrument}: the incident requires a shared record_id",
+            )
+            self.assertNotEqual(legacy["evaluated_at"], newer["evaluated_at"])
+
+    def test_both_observations_coexist_after_the_repair(self):
+        table = FakeRow()
+        for instrument in COLLISION_INSTRUMENTS:
+            newer = shadow.record_to_row(
+                _observation(instrument, NEWER_AT, with_provenance=True)
+            )
+            self.assertEqual(table.insert_rows([newer]).inserted, (newer["storage_id"],))
+
+        # Now the legacy backfill arrives second, exactly as it did live.
+        recovered = 0
+        for instrument in COLLISION_INSTRUMENTS:
+            legacy = shadow.record_to_row(
+                _observation(instrument, LEGACY_AT, with_provenance=False)
+            )
+            result = table.insert_rows([legacy])
+            self.assertEqual(
+                result.inserted, (legacy["storage_id"],),
+                f"{instrument}: the legacy observation must now be insertable",
+            )
+            self.assertEqual(result.conflicted, ())
+            recovered += 1
+
+        self.assertEqual(recovered, 11)
+        self.assertEqual(len(table.rows), 22, "11 legacy + 11 newer")
+
+    def test_each_instrument_keeps_exactly_two_distinct_timestamps(self):
+        table = FakeRow()
+        for instrument in COLLISION_INSTRUMENTS:
+            for moment, prov in ((NEWER_AT, True), (LEGACY_AT, False)):
+                table.insert_rows([
+                    shadow.record_to_row(
+                        _observation(instrument, moment, with_provenance=prov)
+                    )
+                ])
+        for instrument in COLLISION_INSTRUMENTS:
+            rows = [r for r in table.rows.values() if r["instrument"] == instrument]
+            self.assertEqual(len(rows), 2, instrument)
+            self.assertEqual(
+                {r["evaluated_at"] for r in rows},
+                {LEGACY_AT.isoformat(), NEWER_AT.isoformat()},
+                instrument,
+            )
+            # One logical bucket, two physical rows -- the whole point.
+            self.assertEqual(len({r["record_id"] for r in rows}), 1, instrument)
+            self.assertEqual(len({r["storage_id"] for r in rows}), 2, instrument)
+
+    def test_legacy_and_new_provenance_stay_correct_side_by_side(self):
+        table = FakeRow()
+        for instrument in COLLISION_INSTRUMENTS:
+            table.insert_rows([
+                shadow.record_to_row(_observation(instrument, NEWER_AT, with_provenance=True))
+            ])
+            table.insert_rows([
+                shadow.record_to_row(_observation(instrument, LEGACY_AT, with_provenance=False))
+            ])
+        for row in table.rows.values():
+            if row["evaluated_at"] == NEWER_AT.isoformat():
+                self.assertEqual(
+                    row["record"]["aggregation_config"]["version"], "b2-agg-v1"
+                )
+            else:
+                self.assertNotIn(
+                    "aggregation_config", row["record"],
+                    "legacy records must never receive fabricated provenance",
+                )
+
+    def test_recovery_backfill_is_idempotent_over_the_collision_set(self):
+        table = FakeRow()
+        for instrument in COLLISION_INSTRUMENTS:
+            table.insert_rows([
+                shadow.record_to_row(_observation(instrument, NEWER_AT, with_provenance=True))
+            ])
+        legacy_rows = [
+            shadow.record_to_row(_observation(i, LEGACY_AT, with_provenance=False))
+            for i in COLLISION_INSTRUMENTS
+        ]
+        first = table.insert_rows(legacy_rows)
+        snapshot = json.dumps(table.rows, sort_keys=True)
+        second = table.insert_rows(legacy_rows)
+        third = table.insert_rows(legacy_rows)
+
+        self.assertEqual(len(first.inserted), 11)
+        self.assertEqual(len(second.duplicate), 11)
+        self.assertEqual(len(third.duplicate), 11)
+        self.assertEqual(second.conflicted, ())
+        self.assertEqual(len(table.rows), 22)
+        self.assertEqual(
+            json.dumps(table.rows, sort_keys=True), snapshot,
+            "re-running recovery must not mutate a single stored row",
+        )
+
+    def test_full_migration_recovers_all_26_frozen_records(self):
+        """End-to-end shape of the live incident: 15 clean + 11 collided."""
+        records = []
+        for i in range(15):
+            records.append({
+                "record_id": f"clean{i}", "instrument": "Gold", "horizon": "tactical",
+                "evaluated_at": (LEGACY_AT - timedelta(hours=i + 1)).isoformat(),
+                "schema_version": 1,
+            })
+        for instrument in COLLISION_INSTRUMENTS:
+            records.append(_observation(instrument, LEGACY_AT, with_provenance=False))
+        self.assertEqual(len(records), 26)
+
+        store = shadow.InMemoryShadowStore()
+        store.save(b2_bridge.SHADOW_LOG_STATE_ID, {
+            "schema_version": 1, "mode": "SHADOW / NON-PRODUCTION / UNCALIBRATED",
+            "diagnostics": {}, "records": records,
+        })
+
+        table = FakeRow()
+        # The newer V2 rows already occupy the colliding logical ids.
+        for instrument in COLLISION_INSTRUMENTS:
+            table.insert_rows([
+                shadow.record_to_row(_observation(instrument, NEWER_AT, with_provenance=True))
+            ])
+        self.assertEqual(len(table.rows), 11)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(
+                b2_bridge, "MIGRATION_STATE_FILE", os.path.join(tmp, "m.json")
+            ), mock.patch.object(b2_bridge, "SHADOW_BACKUP_DIR", tmp):
+                b2_bridge.freeze_legacy_shadow_log(store, now=NEWER_AT)
+                result = b2_bridge.backfill_legacy_records(store, table)
+                # Idempotency over the real shape.
+                state = b2_bridge._migration_state()
+                state["backfill_complete"] = False
+                state["cursor"] = 0
+                b2_bridge._save_migration_state(state)
+                b2_bridge.backfill_legacy_records(store, table)
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(len(table.rows), 37, "26 legacy + 11 newer, none lost")
+
+        # Every frozen legacy observation is represented EXACTLY.
+        stored = {(r["record_id"], r["evaluated_at"]) for r in table.rows.values()}
+        missing = [
+            r for r in records
+            if (r["record_id"], r["evaluated_at"]) not in stored
+        ]
+        self.assertEqual(missing, [], "missing legacy = 0")
+
+        # And the newer observations are still there as additional rows.
+        newer_present = [
+            r for r in table.rows.values() if r["evaluated_at"] == NEWER_AT.isoformat()
+        ]
+        self.assertEqual(len(newer_present), 11)
+
+    def test_verification_does_not_rely_on_aggregation_config_being_null(self):
+        """Legacy identity is proven by storage identity, not by absence of a field.
+
+        The docstring is stripped first: the function's prose legitimately
+        explains that it never fabricates aggregation_config, and a raw text
+        search cannot tell that apart from actually branching on the field.
+        """
+        module = ast.parse(inspect.getsource(b2_bridge))
+        target = next(
+            n for n in ast.walk(module)
+            if isinstance(n, ast.FunctionDef) and n.name == "backfill_legacy_records"
+        )
+        if (
+            target.body
+            and isinstance(target.body[0], ast.Expr)
+            and isinstance(target.body[0].value, ast.Constant)
+            and isinstance(target.body[0].value.value, str)
+        ):
+            target.body = target.body[1:]
+        self.assertNotIn("aggregation_config", ast.unparse(target))
 
 
 if __name__ == "__main__":

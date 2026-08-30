@@ -238,6 +238,9 @@ HOOK_COUNTERS = (
     "v2_duplicate",
     "v2_failed",
     "v2_local_fallback",
+    "v2_identity_conflict",
+    "v2_logical_duplicate",
+    "v2_dedup_check_unavailable",
     "migration_pending",
     "migration_complete",
     "backfill_inserted",
@@ -321,11 +324,13 @@ class InsertOutcome:
     inserted: tuple[str, ...] = ()
     duplicate: tuple[str, ...] = ()
     failed: tuple[str, ...] = ()
+    #: Same physical identity, DIFFERENT payload. Never resolved silently.
+    conflicted: tuple[str, ...] = ()
     error: str = ""
 
     @property
     def settled(self) -> tuple[str, ...]:
-        """Record ids that need no retry: they are stored, or already were."""
+        """Storage ids that need no retry: they are stored, or already were."""
         return self.inserted + self.duplicate
 
     def as_record(self) -> dict[str, object]:
@@ -335,6 +340,7 @@ class InsertOutcome:
             "inserted": len(self.inserted),
             "duplicate": len(self.duplicate),
             "failed": len(self.failed),
+            "identity_conflict": len(self.conflicted),
             "error": self.error[:200],
         }
 
@@ -382,30 +388,34 @@ class SupabaseShadowRecordStore:
                 error="Supabase is not configured",
             )
 
-        sent = [str(r.get("record_id", "")) for r in rows]
+        sent = [str(r.get("storage_id", "")) for r in rows]
         try:
             response = requests.post(
                 self._url(),
                 headers=core._supabase_headers(
                     "resolution=ignore-duplicates,return=representation"
                 ),
-                params={"on_conflict": "record_id", "select": "record_id"},
+                # Conflict is now resolved on the PHYSICAL point-in-time key, so
+                # two observations sharing a logical record_id no longer collide.
+                params={"on_conflict": "storage_id", "select": "storage_id"},
                 json=rows,
                 timeout=self.timeout,
             )
             response.raise_for_status()
             body = response.json()
             inserted = tuple(
-                str(item.get("record_id", ""))
+                str(item.get("storage_id", ""))
                 for item in body
-                if isinstance(item, dict) and item.get("record_id")
+                if isinstance(item, dict) and item.get("storage_id")
             ) if isinstance(body, list) else ()
-            duplicate = tuple(r for r in sent if r not in set(inserted))
+            not_inserted = [r for r in sent if r not in set(inserted)]
+            duplicate, conflicted = self._classify_duplicates(rows, not_inserted)
             return InsertOutcome(
                 backend="supabase",
                 durable=True,
                 inserted=inserted,
-                duplicate=duplicate,
+                duplicate=tuple(duplicate),
+                conflicted=tuple(conflicted),
             )
         except Exception as exc:
             if len(rows) == 1:
@@ -436,8 +446,92 @@ class SupabaseShadowRecordStore:
                 error=last_error if failed else "",
             )
 
-    def record_exists(self, record_id: str) -> bool | None:
-        """True/False, or None when the answer could not be obtained."""
+    def _classify_duplicates(
+        self, rows: list[dict[str, Any]], not_inserted: list[str]
+    ) -> tuple[list[str], list[str]]:
+        """Split rows the database refused into benign duplicates vs conflicts.
+
+        A refused row is benign when the stored payload hashes identically: that
+        is an exact retry. When the hashes differ, two different payloads claim
+        one point-in-time identity, which is an integrity problem. Neither row
+        is overwritten; the conflict is reported so a human can look.
+
+        Only runs on the rare refused-row path, so it costs nothing in the
+        normal case. If the check cannot be made, the row is treated as a plain
+        duplicate rather than being asserted to be a conflict.
+        """
+        if not not_inserted:
+            return [], []
+        by_id = {str(r.get("storage_id", "")): r for r in rows}
+        duplicate: list[str] = []
+        conflicted: list[str] = []
+        for storage_id in not_inserted:
+            expected = str(by_id.get(storage_id, {}).get("content_hash", ""))
+            stored = self.stored_content_hash(storage_id)
+            if expected and stored and stored != expected:
+                conflicted.append(storage_id)
+            else:
+                duplicate.append(storage_id)
+        return duplicate, conflicted
+
+    def stored_content_hash(self, storage_id: str) -> str | None:
+        """Content hash of a stored row, or None when it cannot be read."""
+        if not self.available:
+            return None
+        try:
+            response = requests.get(
+                self._url(),
+                headers=core._supabase_headers(),
+                params={
+                    "storage_id": f"eq.{storage_id}",
+                    "select": "content_hash",
+                    "limit": 1,
+                },
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            body = response.json()
+            if isinstance(body, list) and body and isinstance(body[0], dict):
+                value = body[0].get("content_hash")
+                return str(value) if value else None
+            return None
+        except Exception:
+            return None
+
+    def record_exists(self, storage_id: str) -> bool | None:
+        """Physical point-in-time existence. None when it cannot be determined."""
+        if not self.available:
+            return None
+        try:
+            response = requests.get(
+                self._url(),
+                headers=core._supabase_headers(),
+                params={
+                    "storage_id": f"eq.{storage_id}",
+                    "select": "storage_id",
+                    "limit": 1,
+                },
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            body = response.json()
+            return bool(isinstance(body, list) and body)
+        except Exception:
+            return None
+
+    def logical_record_exists(self, record_id: str) -> bool | None:
+        """Has ANY observation already been stored for this hour bucket?
+
+        This is the durable, restart-safe half of the cadence policy. The
+        physical key can no longer enforce one-per-hour -- that is exactly the
+        conflation the collision exposed -- so the live path asks this question
+        explicitly. It is a single indexed lookup per due instrument, so the
+        write path stays O(new records) and never loads history.
+
+        Backfill deliberately does NOT consult this: restoring a distinct
+        historical observation must succeed even when a newer observation
+        already occupies the same hour bucket.
+        """
         if not self.available:
             return None
         try:
@@ -511,51 +605,63 @@ class LocalShadowRecordStore:
     def available(self) -> bool:
         return True
 
-    def _existing_ids(self) -> set[str]:
-        ids: set[str] = set()
+    def _existing(self) -> dict[str, str]:
+        """storage_id -> content_hash for everything already appended."""
+        known: dict[str, str] = {}
         try:
             if not os.path.exists(self.path):
-                return ids
+                return known
             with open(self.path, "r", encoding="utf-8") as handle:
                 for line in handle:
                     line = line.strip()
                     if not line:
                         continue
                     try:
-                        ids.add(str(json.loads(line).get("record_id", "")))
+                        row = json.loads(line)
                     except Exception:
                         continue
+                    storage_id = str(row.get("storage_id", ""))
+                    if storage_id:
+                        known[storage_id] = str(row.get("content_hash", ""))
         except Exception:
-            return ids
-        return ids
+            return known
+        return known
 
     def insert_rows(self, rows: list[dict[str, Any]]) -> InsertOutcome:
         if not rows:
             return InsertOutcome(backend="local", durable=False)
-        known = self._existing_ids()
+        known = self._existing()
         inserted: list[str] = []
         duplicate: list[str] = []
+        conflicted: list[str] = []
         failed: list[str] = []
         try:
             with open(self.path, "a", encoding="utf-8") as handle:
                 for row in rows:
-                    record_id = str(row.get("record_id", ""))
-                    if not record_id:
-                        failed.append(record_id)
+                    storage_id = str(row.get("storage_id", ""))
+                    if not storage_id:
+                        failed.append(storage_id)
                         continue
-                    if record_id in known:
-                        duplicate.append(record_id)
+                    if storage_id in known:
+                        expected = str(row.get("content_hash", ""))
+                        stored = known[storage_id]
+                        if expected and stored and stored != expected:
+                            conflicted.append(storage_id)
+                        else:
+                            duplicate.append(storage_id)
                         continue
                     handle.write(json.dumps(row, separators=(",", ":")) + "\n")
-                    known.add(record_id)
-                    inserted.append(record_id)
+                    known[storage_id] = str(row.get("content_hash", ""))
+                    inserted.append(storage_id)
         except Exception as exc:
+            settled = len(inserted) + len(duplicate) + len(conflicted)
             return InsertOutcome(
                 backend="local",
                 durable=False,
                 inserted=tuple(inserted),
                 duplicate=tuple(duplicate),
-                failed=tuple(str(r.get("record_id", "")) for r in rows)[len(inserted) + len(duplicate):],
+                conflicted=tuple(conflicted),
+                failed=tuple(str(r.get("storage_id", "")) for r in rows)[settled:],
                 error=str(exc)[:200],
             )
         return InsertOutcome(
@@ -563,11 +669,33 @@ class LocalShadowRecordStore:
             durable=False,
             inserted=tuple(inserted),
             duplicate=tuple(duplicate),
+            conflicted=tuple(conflicted),
             failed=tuple(failed),
         )
 
-    def record_exists(self, record_id: str) -> bool | None:
-        return record_id in self._existing_ids()
+    def record_exists(self, storage_id: str) -> bool | None:
+        return storage_id in self._existing()
+
+    def stored_content_hash(self, storage_id: str) -> str | None:
+        return self._existing().get(storage_id) or None
+
+    def logical_record_exists(self, record_id: str) -> bool | None:
+        try:
+            if not os.path.exists(self.path):
+                return False
+            with open(self.path, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        if str(json.loads(line).get("record_id", "")) == record_id:
+                            return True
+                    except Exception:
+                        continue
+        except Exception:
+            return None
+        return False
 
     def query_records(
         self,
@@ -783,16 +911,22 @@ def backfill_legacy_records(
         backend="supabase", durable=True
     )
 
-    if outcome.failed:
+    if outcome.failed or outcome.conflicted:
         _bump("backfill_failed")
-        # Do NOT advance the cursor past records that did not land.
-        state["last_error"] = outcome.error
+        # Do NOT advance the cursor past records that did not land. A conflict
+        # here means a row with this exact point-in-time identity already holds
+        # a DIFFERENT payload, which must be looked at rather than skipped.
+        state["last_error"] = outcome.error or (
+            f"identity conflict on {len(outcome.conflicted)} legacy record(s)"
+            if outcome.conflicted else ""
+        )
         _save_migration_state(state)
         return {
             "status": "partial",
             "cursor": cursor,
             "inserted": len(outcome.inserted),
             "failed": len(outcome.failed),
+            "identity_conflict": len(outcome.conflicted),
             "backend": outcome.backend,
         }
 
@@ -1309,10 +1443,29 @@ def _run_v2_observation(
     rows: list[dict[str, Any]] = []
     evaluations: dict[str, Any] = {}
     outcomes: dict[str, str] = {}
+    store_for_rows = record_store if record_store is not None else resolve_record_store()
 
     for instrument in due:
         try:
             key = observation_key(instrument, Horizon.TACTICAL, moment)
+
+            # Durable cadence check BEFORE any work. The physical key can no
+            # longer enforce one-observation-per-hour, so the live path asks
+            # explicitly. One indexed lookup, never a history load. Unknown is
+            # not treated as "already stored": losing evidence is worse than an
+            # extra legitimate observation, and the row would be distinct anyway.
+            already = store_for_rows.logical_record_exists(
+                observation_record_id(key)
+            )
+            if already is True:
+                _HANDLED_BUCKETS[instrument] = bucket
+                _bump("v2_logical_duplicate")
+                _bump("duplicate_skipped")
+                outcomes[instrument] = "duplicate_skipped"
+                continue
+            if already is None:
+                _bump("v2_dedup_check_unavailable")
+
             status, evaluation = _build_observation(
                 instrument,
                 fred_key,
@@ -1342,12 +1495,11 @@ def _run_v2_observation(
             outcomes[instrument] = "failed"
             continue
         rows.append(row)
-        evaluations[row["record_id"]] = (instrument, evaluation)
+        evaluations[row["storage_id"]] = (instrument, evaluation)
 
     if not rows:
         return outcomes
 
-    store_for_rows = record_store if record_store is not None else resolve_record_store()
     try:
         result = store_for_rows.insert_rows(rows)
     except Exception as exc:
@@ -1355,7 +1507,7 @@ def _run_v2_observation(
         result = InsertOutcome(
             backend="unavailable",
             durable=False,
-            failed=tuple(r["record_id"] for r in rows),
+            failed=tuple(r["storage_id"] for r in rows),
             error=str(exc)[:200],
         )
 
@@ -1363,17 +1515,22 @@ def _run_v2_observation(
         _bump("v2_local_fallback")
 
     settled = set(result.settled)
-    for record_id, (instrument, evaluation) in evaluations.items():
-        if record_id in result.inserted:
+    for storage_id, (instrument, evaluation) in evaluations.items():
+        if storage_id in result.inserted:
             _HANDLED_BUCKETS[instrument] = bucket
             _bump("v2_inserted")
             _bump("written")
             outcomes[instrument] = "written"
-        elif record_id in result.duplicate:
+        elif storage_id in result.duplicate:
             _HANDLED_BUCKETS[instrument] = bucket
             _bump("v2_duplicate")
             _bump("duplicate_skipped")
             outcomes[instrument] = "duplicate_skipped"
+        elif storage_id in result.conflicted:
+            # Two payloads claim one point-in-time identity. Nothing is
+            # overwritten and the bucket stays unmarked; this needs a human.
+            _bump("v2_identity_conflict")
+            outcomes[instrument] = "identity_conflict"
         else:
             # Not settled: leave the bucket unmarked so the next tick retries.
             _bump("v2_failed")
@@ -1381,8 +1538,8 @@ def _run_v2_observation(
 
     # Predictions only for observations that actually persisted, and only after
     # the record is safe. A prediction-log failure never costs the observation.
-    for record_id, (instrument, evaluation) in evaluations.items():
-        if record_id not in settled:
+    for storage_id, (instrument, evaluation) in evaluations.items():
+        if storage_id not in settled:
             continue
         try:
             register_transmission_prediction(
