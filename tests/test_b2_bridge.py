@@ -230,7 +230,22 @@ class TestBridge(unittest.TestCase):
         self.assertLess(with_scale["directional"]["medium_horizon_return"], 0.5)
 
     def test_bridge_makes_no_ai_calls_threads_or_telegram(self):
-        source = inspect.getsource(b2_bridge)
+        # Docstrings are stripped before searching: the module's prose
+        # legitimately discusses requests and threads in order to explain that
+        # it issues none, and a raw text search cannot tell the two apart.
+        tree = ast.parse(inspect.getsource(b2_bridge))
+        for node in ast.walk(tree):
+            if isinstance(
+                node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+            ):
+                if (
+                    node.body
+                    and isinstance(node.body[0], ast.Expr)
+                    and isinstance(node.body[0].value, ast.Constant)
+                    and isinstance(node.body[0].value.value, str)
+                ):
+                    node.body = node.body[1:]
+        source = ast.unparse(tree)
         for forbidden in (
             "_post_ai_chat", "send_telegram_alert", "threading", "Thread",
             "requests.", "start_", "get_openrouter",

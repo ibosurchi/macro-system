@@ -357,8 +357,19 @@ class TestFailureContainment(unittest.TestCase):
             outcomes = b2_bridge.run_shadow_observation(
                 "KEY", "chan", store=self.store, now=NOW
             )
+        # Every activated instrument fails independently and every failure is
+        # counted. Asserting the full set is stronger than the previous
+        # single-instrument assertion: it proves no instrument short-circuits
+        # the rest of the batch.
         self.assertEqual(outcomes["Gold"], "exception_swallowed")
-        self.assertEqual(b2_bridge.HOOK_STATS["exception_swallowed"], 1)
+        self.assertEqual(
+            set(outcomes.values()),
+            {"exception_swallowed"},
+            "one failing instrument must not change another's outcome",
+        )
+        self.assertEqual(
+            b2_bridge.HOOK_STATS["exception_swallowed"], len(outcomes)
+        )
 
     def test_a_store_failure_is_swallowed(self):
         class ExplodingStore:
@@ -500,9 +511,21 @@ class TestObservability(unittest.TestCase):
         self.assertEqual(b2_bridge.HOOK_STATS["disabled"], 1)
         self.assertEqual(self.store.load(b2_bridge.SHADOW_LOG_STATE_ID, None), None)
 
-    def test_default_configuration_observes_one_instrument(self):
-        self.assertEqual(b2_bridge.shadow_instruments(), ("Gold",))
+    def test_default_configuration_observes_every_registered_module(self):
+        # Multi-Asset Shadow Activation: the default is now derived from the
+        # Stage C module registry rather than pinned to Gold, so the activated
+        # set cannot drift away from the modules that exist.
+        from apex.b2.modules import registered_instruments
+
+        self.assertEqual(b2_bridge.shadow_instruments(), registered_instruments())
+        self.assertEqual(
+            b2_bridge.default_shadow_instruments(), registered_instruments()
+        )
         self.assertTrue(b2_bridge.shadow_enabled())
+
+    def test_an_operator_can_still_narrow_the_instrument_set(self):
+        with mock.patch.object(b2_bridge.core, "get_secret", return_value="Gold,Oil"):
+            self.assertEqual(b2_bridge.shadow_instruments(), ("Gold", "Oil"))
 
 
 # ---------------------------------------------------------------------------
