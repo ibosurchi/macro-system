@@ -167,6 +167,12 @@ class FakeRow:
     def logical_record_exists(self, record_id):
         return any(r.get("record_id") == record_id for r in self.rows.values())
 
+    def existing_storage_ids(self, storage_ids):
+        return {sid for sid in storage_ids if sid in self.rows}
+
+    def row_count(self):
+        return len(self.rows)
+
     def seed(self, storage_id, *, instrument="Gold", record_id=None, evaluated_at=None,
              record=None):
         """Insert a row directly, bypassing insert semantics (test fixture)."""
@@ -1153,6 +1159,283 @@ class TestLiveCollisionRepair(unittest.TestCase):
         ):
             target.body = target.body[1:]
         self.assertNotIn("aggregation_config", ast.unparse(target))
+
+
+# ---------------------------------------------------------------------------
+# PHASE D: recovery from the EXACT live post-SQL state
+#
+# Verified live after the schema migration:
+#   total_rows = 26, distinct_logical_ids = 26,
+#   storage_id PRIMARY KEY, record_id indexed non-unique, RLS enabled.
+#
+# That is 15 legacy rows that backfilled cleanly plus 11 newer rows whose
+# record_ids collided with the 11 legacy records that never landed. The earlier
+# backfill recorded backfill_complete = True, having counted those collisions as
+# duplicates, so without an identity-model re-run the 11 would stay lost.
+# ---------------------------------------------------------------------------
+def _live_frozen_records():
+    """The 26 frozen legacy records, matching the live shape."""
+    records = []
+    for i in range(15):
+        records.append({
+            "record_id": f"clean{i}",
+            "instrument": "Gold",
+            "horizon": "tactical",
+            "evaluated_at": (LEGACY_AT - timedelta(hours=i + 1)).isoformat(),
+            "schema_version": 1,
+            "mode": "SHADOW / NON-PRODUCTION / UNCALIBRATED",
+        })
+    for instrument in COLLISION_INSTRUMENTS:
+        records.append(_observation(instrument, LEGACY_AT, with_provenance=False))
+    return records
+
+
+def _live_table_after_sql():
+    """A FakeRow holding exactly what the live table holds right now: 26 rows."""
+    table = FakeRow()
+    frozen = _live_frozen_records()
+    # The 15 legacy records that landed cleanly.
+    for record in frozen[:15]:
+        table.insert_rows([shadow.record_to_row(record)])
+    # The 11 newer observations that occupied the colliding logical ids.
+    for instrument in COLLISION_INSTRUMENTS:
+        table.insert_rows([
+            shadow.record_to_row(_observation(instrument, NEWER_AT, with_provenance=True))
+        ])
+    return table, frozen
+
+
+class TestPhaseDLiveRecovery(unittest.TestCase):
+    def setUp(self):
+        _reset()
+        self.table, self.frozen = _live_table_after_sql()
+        self.store = shadow.InMemoryShadowStore()
+        self.store.save(b2_bridge.SHADOW_LOG_STATE_ID, {
+            "schema_version": 1, "mode": "SHADOW / NON-PRODUCTION / UNCALIBRATED",
+            "diagnostics": {}, "records": self.frozen,
+        })
+        self._tmp = tempfile.TemporaryDirectory()
+        self._p1 = mock.patch.object(
+            b2_bridge, "MIGRATION_STATE_FILE", os.path.join(self._tmp.name, "m.json")
+        )
+        self._p2 = mock.patch.object(b2_bridge, "SHADOW_BACKUP_DIR", self._tmp.name)
+        self._p1.start(); self._p2.start()
+        # Reproduce the migration state the live deployment is actually in:
+        # complete, but under the OLD identity model.
+        b2_bridge._save_migration_state({
+            "freeze_verified": True,
+            "frozen_state_id": "b2_shadow_log_v1_frozen_20260830",
+            "legacy_record_count": 26,
+            "legacy_hash": "whatever",
+            "cursor": 26,
+            "total": 26,
+            "backfill_complete": True,
+        })
+
+    def tearDown(self):
+        self._p2.stop(); self._p1.stop(); self._tmp.cleanup()
+
+    def test_the_live_starting_state_matches_the_reported_post_check(self):
+        self.assertEqual(len(self.table.rows), 26, "total_rows = 26")
+        self.assertEqual(
+            len({r["record_id"] for r in self.table.rows.values()}), 26,
+            "distinct_logical_ids = 26",
+        )
+        self.assertEqual(
+            len({r["storage_id"] for r in self.table.rows.values()}), 26,
+            "duplicate_storage_ids = 0",
+        )
+        # And 11 frozen legacy observations are NOT represented yet.
+        stored = {(r["record_id"], r["evaluated_at"]) for r in self.table.rows.values()}
+        missing = [
+            r for r in self.frozen if (r["record_id"], r["evaluated_at"]) not in stored
+        ]
+        self.assertEqual(len(missing), 11)
+
+    def test_without_the_identity_model_rerun_nothing_would_be_recovered(self):
+        """Proves the re-run is necessary, not incidental."""
+        result = b2_bridge.backfill_legacy_records(self.store, self.table)
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(len(self.table.rows), 26, "a stale 'complete' recovers nothing")
+
+    def test_advance_migration_reruns_and_recovers_exactly_eleven(self):
+        result = b2_bridge.advance_migration(self.store, self.table)
+        self.assertIn(result["status"], {"in_progress", "complete"})
+        self.assertEqual(len(self.table.rows), 37, "26 legacy + 11 newer")
+        self.assertEqual(result["inserted"], 11)
+        self.assertEqual(result["duplicate"], 15)
+
+    def test_all_26_frozen_records_are_represented_exactly(self):
+        b2_bridge.advance_migration(self.store, self.table)
+        stored = {(r["record_id"], r["evaluated_at"]) for r in self.table.rows.values()}
+        missing = [
+            r for r in self.frozen if (r["record_id"], r["evaluated_at"]) not in stored
+        ]
+        self.assertEqual(missing, [], "missing legacy = 0")
+
+        # Timestamps and payloads preserved exactly -- no mismatch.
+        by_key = {
+            (r["record_id"], r["evaluated_at"]): r for r in self.table.rows.values()
+        }
+        for record in self.frozen:
+            row = by_key[(record["record_id"], record["evaluated_at"])]
+            self.assertEqual(row["evaluated_at"], record["evaluated_at"])
+            self.assertEqual(row["record"], record)
+
+    def test_the_eleven_newer_rows_survive_untouched(self):
+        before = {
+            sid: json.dumps(row, sort_keys=True)
+            for sid, row in self.table.rows.items()
+            if row["evaluated_at"] == NEWER_AT.isoformat()
+        }
+        self.assertEqual(len(before), 11)
+        b2_bridge.advance_migration(self.store, self.table)
+        after = {
+            sid: json.dumps(row, sort_keys=True)
+            for sid, row in self.table.rows.items()
+            if row["evaluated_at"] == NEWER_AT.isoformat()
+        }
+        self.assertEqual(before, after, "no existing V2 row may be mutated")
+
+    def test_each_collided_instrument_ends_with_both_observations(self):
+        b2_bridge.advance_migration(self.store, self.table)
+        for instrument in COLLISION_INSTRUMENTS:
+            # Select by the COLLIDED logical id: the 15 clean legacy records are
+            # also instrument "Gold", so filtering by instrument alone would mix
+            # them in.
+            collided_id = _observation(
+                instrument, LEGACY_AT, with_provenance=False
+            )["record_id"]
+            rows = [
+                r for r in self.table.rows.values() if r["record_id"] == collided_id
+            ]
+            self.assertEqual(len(rows), 2, instrument)
+            self.assertEqual(
+                {r["evaluated_at"] for r in rows},
+                {LEGACY_AT.isoformat(), NEWER_AT.isoformat()},
+                instrument,
+            )
+            self.assertEqual(len({r["record_id"] for r in rows}), 1, instrument)
+
+    def test_provenance_stays_correct_after_recovery(self):
+        b2_bridge.advance_migration(self.store, self.table)
+        for row in self.table.rows.values():
+            if row["evaluated_at"] == NEWER_AT.isoformat():
+                self.assertEqual(
+                    row["record"]["aggregation_config"]["version"], "b2-agg-v1"
+                )
+            else:
+                self.assertNotIn("aggregation_config", row["record"])
+
+    def test_recovery_is_idempotent_across_repeated_ticks(self):
+        b2_bridge.advance_migration(self.store, self.table)
+        snapshot = json.dumps(self.table.rows, sort_keys=True)
+        for _ in range(5):
+            b2_bridge.advance_migration(self.store, self.table)
+        self.assertEqual(len(self.table.rows), 37)
+        self.assertEqual(json.dumps(self.table.rows, sort_keys=True), snapshot)
+
+    def test_migration_state_records_the_identity_model(self):
+        b2_bridge.advance_migration(self.store, self.table)
+        status = b2_bridge.migration_status()
+        self.assertTrue(status["identity_model_up_to_date"])
+        self.assertEqual(status["identity_model"], b2_bridge.IDENTITY_MODEL_VERSION)
+        self.assertTrue(status["backfill_complete"])
+        self.assertIsNotNone(status["reran_for_identity_model_at"])
+
+    def test_the_freeze_is_never_reset_by_the_rerun(self):
+        b2_bridge.advance_migration(self.store, self.table)
+        status = b2_bridge.migration_status()
+        self.assertTrue(status["freeze_verified"])
+        self.assertEqual(status["frozen_state_id"], "b2_shadow_log_v1_frozen_20260830")
+
+    def test_interrupted_rerun_resumes_without_duplicating(self):
+        result = b2_bridge.advance_migration(self.store, self.table, )
+        self.assertEqual(len(self.table.rows), 37)
+        # Simulate an interruption: cursor rewound, model still current.
+        state = b2_bridge._migration_state()
+        state.update({"cursor": 10, "backfill_complete": False})
+        b2_bridge._save_migration_state(state)
+        b2_bridge.advance_migration(self.store, self.table)
+        b2_bridge.advance_migration(self.store, self.table)
+        self.assertEqual(len(self.table.rows), 37, "resume must not duplicate")
+
+
+class TestStorageIdentityParityGate(unittest.TestCase):
+    """The SQL populated storage_id; the app recomputes it. They must agree."""
+
+    def setUp(self):
+        _reset()
+        self._tmp = tempfile.TemporaryDirectory()
+        self._p1 = mock.patch.object(
+            b2_bridge, "MIGRATION_STATE_FILE", os.path.join(self._tmp.name, "m.json")
+        )
+        self._p2 = mock.patch.object(b2_bridge, "SHADOW_BACKUP_DIR", self._tmp.name)
+        self._p1.start(); self._p2.start()
+
+    def tearDown(self):
+        self._p2.stop(); self._p1.stop(); self._tmp.cleanup()
+
+    def test_parity_holds_when_the_sql_used_the_same_algorithm(self):
+        table, frozen = _live_table_after_sql()
+        store = shadow.InMemoryShadowStore()
+        store.save(b2_bridge.SHADOW_LOG_STATE_ID, {"records": frozen})
+        parity = b2_bridge.verify_storage_identity_parity(store, table)
+        self.assertEqual(parity["status"], "ok")
+        self.assertEqual(parity["checked"], 26)
+        self.assertEqual(parity["found"], 15, "the 15 clean legacy rows are found")
+
+    def test_a_parity_mismatch_blocks_the_rerun_instead_of_duplicating(self):
+        """If SQL hashed differently, recovery must refuse rather than duplicate."""
+        _, frozen = _live_table_after_sql()
+        store = shadow.InMemoryShadowStore()
+        store.save(b2_bridge.SHADOW_LOG_STATE_ID, {"records": frozen})
+
+        # A table whose storage ids were computed by a DIFFERENT algorithm.
+        wrong = FakeRow()
+        for i, record in enumerate(frozen):
+            wrong.seed(f"sql-computed-differently-{i}",
+                       instrument=record["instrument"],
+                       record_id=record["record_id"],
+                       evaluated_at=record["evaluated_at"])
+
+        parity = b2_bridge.verify_storage_identity_parity(store, wrong)
+        self.assertEqual(parity["status"], "mismatch")
+
+        b2_bridge._save_migration_state({
+            "freeze_verified": True, "cursor": 26, "total": 26,
+            "backfill_complete": True,
+        })
+        before = len(wrong.rows)
+        result = b2_bridge.advance_migration(store, wrong)
+        self.assertEqual(result["status"], "blocked_parity_mismatch")
+        self.assertEqual(len(wrong.rows), before, "nothing inserted while blocked")
+        self.assertFalse(b2_bridge.migration_status()["backfill_complete"] is False
+                         and len(wrong.rows) != before)
+
+    def test_an_unavailable_lookup_defers_rather_than_guessing(self):
+        _, frozen = _live_table_after_sql()
+        store = shadow.InMemoryShadowStore()
+        store.save(b2_bridge.SHADOW_LOG_STATE_ID, {"records": frozen})
+
+        class Unknowable(FakeRow):
+            def existing_storage_ids(self, storage_ids):
+                return None
+
+        table = Unknowable()
+        b2_bridge._save_migration_state({
+            "freeze_verified": True, "cursor": 26, "total": 26,
+            "backfill_complete": True,
+        })
+        result = b2_bridge.advance_migration(store, table)
+        self.assertEqual(result["status"], "deferred")
+        self.assertEqual(len(table.rows), 0)
+
+    def test_parity_is_not_applicable_on_an_empty_legacy_log(self):
+        store = shadow.InMemoryShadowStore()
+        store.save(b2_bridge.SHADOW_LOG_STATE_ID, {"records": []})
+        parity = b2_bridge.verify_storage_identity_parity(store, FakeRow())
+        self.assertEqual(parity["status"], "not_applicable")
 
 
 if __name__ == "__main__":

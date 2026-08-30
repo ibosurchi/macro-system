@@ -498,6 +498,58 @@ class SupabaseShadowRecordStore:
         except Exception:
             return None
 
+    def existing_storage_ids(self, storage_ids: list[str]) -> set[str] | None:
+        """Which of these physical identities are already stored. One request.
+
+        Returns None when the answer could not be obtained, which callers must
+        treat as "unknown" rather than "none".
+        """
+        if not storage_ids:
+            return set()
+        if not self.available:
+            return None
+        try:
+            quoted = ",".join(f'"{sid}"' for sid in storage_ids)
+            response = requests.get(
+                self._url(),
+                headers=core._supabase_headers(),
+                params={
+                    "storage_id": f"in.({quoted})",
+                    "select": "storage_id",
+                    "limit": len(storage_ids),
+                },
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            body = response.json()
+            if not isinstance(body, list):
+                return None
+            return {
+                str(item.get("storage_id"))
+                for item in body
+                if isinstance(item, dict) and item.get("storage_id")
+            }
+        except Exception:
+            return None
+
+    def row_count(self) -> int | None:
+        """Total rows, or None when it cannot be determined."""
+        if not self.available:
+            return None
+        try:
+            response = requests.get(
+                self._url(),
+                headers=core._supabase_headers("count=exact"),
+                params={"select": "storage_id", "limit": 1},
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            content_range = response.headers.get("content-range", "")
+            total = content_range.rsplit("/", 1)[-1] if "/" in content_range else ""
+            return int(total) if total.isdigit() else None
+        except Exception:
+            return None
+
     def record_exists(self, storage_id: str) -> bool | None:
         """Physical point-in-time existence. None when it cannot be determined."""
         if not self.available:
@@ -679,6 +731,13 @@ class LocalShadowRecordStore:
     def stored_content_hash(self, storage_id: str) -> str | None:
         return self._existing().get(storage_id) or None
 
+    def existing_storage_ids(self, storage_ids: list[str]) -> set[str] | None:
+        known = set(self._existing())
+        return {sid for sid in storage_ids if sid in known}
+
+    def row_count(self) -> int | None:
+        return len(self._existing())
+
     def logical_record_exists(self, record_id: str) -> bool | None:
         try:
             if not os.path.exists(self.path):
@@ -766,6 +825,17 @@ def _frozen_backup_path(frozen_id: str) -> str:
 #: Legacy records backfilled per daemon tick. Bounded so migration can never
 #: turn one loop iteration into a long blocking operation.
 BACKFILL_BATCH_SIZE = 100
+
+#: Bumped when the STORAGE IDENTITY MODEL changes. A backfill completed under an
+#: older model must run again, because "complete" then meant something weaker.
+#:
+#: The first backfill ran while record_id was the primary key. Eleven legacy
+#: records collided with newer rows, ON CONFLICT DO NOTHING refused them, and the
+#: run recorded them as duplicates and declared itself complete -- so those
+#: observations were silently absent. Under storage-id-v1 they are distinct rows
+#: and must be re-attempted. Re-running is safe: the backfill is idempotent by
+#: storage_id, so records already present return as duplicates.
+IDENTITY_MODEL_VERSION = "storage-id-v1"
 
 
 def _migration_state() -> dict[str, Any]:
@@ -940,6 +1010,7 @@ def backfill_legacy_records(
         {
             "cursor": cursor,
             "total": len(records),
+            "identity_model": IDENTITY_MODEL_VERSION,
             "backfill_complete": cursor >= len(records),
             "skipped_malformed": int(state.get("skipped_malformed", 0)) + skipped,
             "last_error": "",
@@ -961,10 +1032,91 @@ def backfill_legacy_records(
     }
 
 
+def verify_storage_identity_parity(
+    store: Any, record_store: Any
+) -> dict[str, Any]:
+    """Prove the application computes the same storage_id the database holds.
+
+    The schema migration populated ``storage_id`` with a SQL expression. If that
+    expression and ``canonical_storage_id`` disagree by even one character, a
+    re-run backfill would not recognise the rows already present and would
+    insert a duplicate copy of every legacy observation.
+
+    So before any re-backfill, recompute the storage ids for the frozen legacy
+    records and ask the table which exist. If the table holds rows but NONE of
+    them match, that is a parity failure and the backfill is blocked rather than
+    allowed to duplicate history.
+    """
+    try:
+        payload = store.load(SHADOW_LOG_STATE_ID, {"records": []})
+    except Exception as exc:
+        return {"status": "unknown", "reason": f"legacy read failed: {str(exc)[:150]}"}
+
+    records = payload.get("records") if isinstance(payload, Mapping) else None
+    records = list(records) if isinstance(records, list) else []
+    rows = [row for row in (record_to_row(r) for r in records) if row]
+    if not rows:
+        return {"status": "not_applicable", "reason": "no legacy records to check"}
+
+    ids = [row["storage_id"] for row in rows]
+    found = record_store.existing_storage_ids(ids)
+    if found is None:
+        return {"status": "unknown", "reason": "existence lookup unavailable"}
+
+    total = record_store.row_count()
+    if not found and total:
+        return {
+            "status": "mismatch",
+            "reason": (
+                f"none of {len(ids)} recomputed legacy storage ids exist, but the "
+                f"table holds {total} rows. The SQL and application hashes "
+                "disagree; backfill is blocked to avoid duplicating history."
+            ),
+            "checked": len(ids),
+            "found": 0,
+            "table_rows": total,
+        }
+    return {
+        "status": "ok",
+        "checked": len(ids),
+        "found": len(found),
+        "table_rows": total,
+    }
+
+
 def advance_migration(store: Any, record_store: Any) -> dict[str, Any]:
     """One bounded migration step per daemon tick. Never raises."""
     try:
         state = _migration_state()
+
+        # A backfill completed under an older identity model is not complete
+        # under this one. Reset the cursor -- never the freeze -- and re-run.
+        if (
+            state.get("backfill_complete")
+            and state.get("identity_model") != IDENTITY_MODEL_VERSION
+        ):
+            parity = verify_storage_identity_parity(store, record_store)
+            if parity.get("status") == "mismatch":
+                state["last_error"] = parity.get("reason", "identity parity mismatch")
+                state["parity"] = parity
+                _save_migration_state(state)
+                _bump("migration_pending")
+                # Spread FIRST so the outer status is not overwritten by the
+                # parity result's own "status" key.
+                return {**parity, "status": "blocked_parity_mismatch"}
+            if parity.get("status") == "unknown":
+                _bump("migration_pending")
+                return {**parity, "status": "deferred"}
+            state.update({
+                "backfill_complete": False,
+                "cursor": 0,
+                "identity_model": IDENTITY_MODEL_VERSION,
+                "reran_for_identity_model_at": datetime.now(timezone.utc).isoformat(),
+                "parity": parity,
+                "last_error": "",
+            })
+            _save_migration_state(state)
+
         if state.get("backfill_complete"):
             return {"status": "complete"}
         if not state.get("freeze_verified"):
@@ -992,6 +1144,11 @@ def migration_status() -> dict[str, Any]:
         "skipped_malformed": state.get("skipped_malformed", 0),
         "last_error": state.get("last_error", ""),
         "storage_mode": shadow_store_mode(),
+        "identity_model": state.get("identity_model"),
+        "identity_model_current": IDENTITY_MODEL_VERSION,
+        "identity_model_up_to_date": state.get("identity_model") == IDENTITY_MODEL_VERSION,
+        "reran_for_identity_model_at": state.get("reran_for_identity_model_at"),
+        "parity": state.get("parity"),
     }
 
 
@@ -1747,7 +1904,9 @@ __all__ = [
     "load_prediction_log",
     "load_shadow_log",
     "BACKFILL_BATCH_SIZE",
+    "IDENTITY_MODEL_VERSION",
     "InsertOutcome",
+    "verify_storage_identity_parity",
     "LOCAL_RECORDS_FILE",
     "LocalShadowRecordStore",
     "MIGRATION_STATE_ID",
