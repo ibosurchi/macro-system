@@ -4073,6 +4073,22 @@ def start_background_alert_daemon(fred_key: str, channel_name: str) -> None:
                         _ff_backfill_high_impact_history(days=370, max_chunks=2)
                     except Exception:
                         pass
+
+                # SHADOW / NON-PRODUCTION / UNCALIBRATED.
+                # Architecture B2 observation. Deliberately the LAST statement in
+                # this loop body, and wrapped in its own handler, so it can neither
+                # delay nor skip any production responsibility above it. Purely
+                # observational: nothing in this file reads its result and no
+                # production score, alert, Forecaster result, Entry Zone result or
+                # Smart Shift decision depends on it. It takes at most one
+                # observation per instrument per hour and returns without doing any
+                # work on every other iteration. The import is deferred so this
+                # module carries no load-time dependency on B2 at all.
+                try:
+                    from .b2_bridge import run_shadow_observation
+                    run_shadow_observation(fred_key, channel_name)
+                except Exception:
+                    pass
             except Exception:
                 pass
             time.sleep(60)

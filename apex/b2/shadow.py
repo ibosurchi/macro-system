@@ -129,19 +129,28 @@ def build_shadow_record(
     thesis: ThesisRecord | None = None,
     size: SizeDirective | None = None,
     evaluated_at: datetime | None = None,
+    observation_key: str = "",
 ) -> ShadowRecord:
+    """Build one shadow record.
+
+    ``observation_key``, when supplied, becomes the sole basis of the record id.
+    That lets a caller impose a deterministic observation identity -- for
+    instance one observation per instrument per hour -- so a rerun or a restart
+    recomputes the same id and is rejected by the append-only log instead of
+    creating an uncontrolled duplicate. With no key the id falls back to the
+    full evaluation timestamp, which is unique per call.
+    """
     moment = evaluated_at or utcnow()
-    digest = hashlib.sha256(
-        "|".join(
-            [
-                moment.isoformat(),
-                instrument,
-                horizon.value,
-                decision.state.value,
-                decision.direction.value,
-            ]
-        ).encode("utf-8")
-    ).hexdigest()[:20]
+    basis = observation_key or "|".join(
+        [
+            moment.isoformat(),
+            instrument,
+            horizon.value,
+            decision.state.value,
+            decision.direction.value,
+        ]
+    )
+    digest = hashlib.sha256(basis.encode("utf-8")).hexdigest()[:20]
     return ShadowRecord(
         record_id=digest,
         evaluated_at=moment,
@@ -173,6 +182,16 @@ class ShadowLog:
     max_records: int = 2000
     _records: list[dict[str, object]] = field(default_factory=list)
     _ids: set[str] = field(default_factory=set)
+    #: Counters describing how the observation hook behaved. Kept inside this
+    #: log's own payload so no separate state id is needed and nothing
+    #: user-facing or alert-generating is involved.
+    diagnostics: dict[str, int] = field(default_factory=dict)
+
+    def contains(self, record_id: str) -> bool:
+        return record_id in self._ids
+
+    def bump(self, counter: str, amount: int = 1) -> None:
+        self.diagnostics[counter] = int(self.diagnostics.get(counter, 0)) + amount
 
     def append(self, record: ShadowRecord) -> dict[str, object]:
         if record.record_id in self._ids:
@@ -198,13 +217,21 @@ class ShadowLog:
         return len(self._records)
 
     def as_record(self) -> dict[str, object]:
-        return {"schema_version": 1, "records": list(self._records)}
+        return {
+            "schema_version": 1,
+            "mode": "SHADOW / NON-PRODUCTION / UNCALIBRATED",
+            "records": list(self._records),
+            "diagnostics": dict(self.diagnostics),
+        }
 
     @classmethod
     def from_record(cls, payload: dict[str, object] | None, max_records: int = 2000) -> "ShadowLog":
         log = cls(max_records=max_records)
         if not isinstance(payload, dict):
             return log
+        diagnostics = payload.get("diagnostics")
+        if isinstance(diagnostics, dict):
+            log.diagnostics = {str(k): int(v) for k, v in diagnostics.items() if isinstance(v, int)}
         for item in payload.get("records", []) or []:
             if not isinstance(item, dict):
                 continue

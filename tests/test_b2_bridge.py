@@ -237,12 +237,19 @@ class TestBridge(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, source, forbidden)
 
-    def test_nothing_in_production_imports_the_bridge(self):
-        """B2 stays in shadow mode: no production module reaches it."""
+    def test_production_core_is_the_only_module_importing_the_bridge(self):
+        """Shadow Activation added exactly ONE import site, nowhere else.
+
+        Before activation this asserted zero. It now pins the precise approved
+        surface: a single file, so any second entry point into B2 fails here.
+        """
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        offenders: list[str] = []
+        importers: list[str] = []
         for folder, _dirs, files in os.walk(root):
-            if any(part in folder for part in ("_backup_", "_baseline_", ".git", "__pycache__", "tests")):
+            if any(
+                part in folder
+                for part in ("_backup_", "_baseline_", ".git", "__pycache__", "tests")
+            ):
                 continue
             for filename in files:
                 if not filename.endswith(".py") or filename == "b2_bridge.py":
@@ -254,26 +261,50 @@ class TestBridge(unittest.TestCase):
                     except SyntaxError:
                         continue
                 # AST, not text: several modules legitimately NAME the bridge in
-                # prose to explain why they do not import it.
+                # prose to explain how they relate to it.
                 for node in ast.walk(tree):
-                    if isinstance(node, ast.ImportFrom) and "b2_bridge" in (node.module or ""):
-                        offenders.append(path)
+                    if isinstance(node, ast.ImportFrom):
+                        if "b2_bridge" in (node.module or "") or any(
+                            a.name == "b2_bridge" for a in node.names
+                        ):
+                            importers.append(os.path.basename(path))
                     if isinstance(node, ast.Import):
                         if any("b2_bridge" in a.name for a in node.names):
-                            offenders.append(path)
-                    if isinstance(node, ast.ImportFrom):
-                        if any("b2_bridge" == a.name for a in node.names):
-                            offenders.append(path)
-        self.assertEqual(sorted(set(offenders)), [])
+                            importers.append(os.path.basename(path))
+        self.assertEqual(sorted(set(importers)), ["production_core.py"])
 
-    def test_production_core_does_not_import_b2(self):
+    def test_production_core_has_no_module_level_b2_import(self):
+        """The single import must be deferred, so B2 is not a load-time dependency."""
         tree = ast.parse(inspect.getsource(core))
-        for node in ast.walk(tree):
+        for node in tree.body:  # module scope only
             if isinstance(node, ast.ImportFrom):
                 self.assertNotIn("b2", (node.module or ""))
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     self.assertNotIn("b2", alias.name)
+
+    def test_the_only_b2_import_is_inside_the_daemon_loop_and_imports_one_name(self):
+        tree = ast.parse(inspect.getsource(core))
+        b2_imports = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and "b2" in (node.module or "")
+        ]
+        self.assertEqual(len(b2_imports), 1, "there must be exactly one B2 import site")
+
+        node = b2_imports[0]
+        self.assertEqual(node.module, ".b2_bridge".lstrip("."))
+        self.assertEqual(tuple(a.name for a in node.names), ("run_shadow_observation",))
+
+        enclosing = {
+            func.name
+            for func in ast.walk(tree)
+            if isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and any(inner is node for inner in ast.walk(func))
+        }
+        # The single import sits inside the existing daemon loop, nested in the
+        # existing daemon starter -- not at module scope, and nowhere else.
+        self.assertEqual(enclosing, {"start_background_alert_daemon", "_daemon_loop"})
 
 
 if __name__ == "__main__":

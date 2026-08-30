@@ -36,6 +36,7 @@ SUITE_MODULES = (
     "tests.test_b2_stage_a",
     "tests.test_b2_stage_b",
     "tests.test_b2_bridge",
+    "tests.test_shadow_activation",
 )
 
 

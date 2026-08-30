@@ -94,8 +94,14 @@ def run_shadow_evaluation(
     risk_parameters: RiskParameters = DEFAULT_RISK_PARAMETERS,
     config: AggregationConfig = DEFAULT_AGGREGATION,
     evaluated_at: datetime | None = None,
+    observation_key: str = "",
 ) -> ShadowEvaluation:
-    """Run one complete shadow evaluation over a snapshot of inputs."""
+    """Run one complete shadow evaluation over a snapshot of inputs.
+
+    ``observation_key`` is passed straight through to the record so a caller can
+    impose a deterministic observation identity and make repeated evaluations of
+    the same instrument-hour idempotent.
+    """
     moment = evaluated_at or utcnow()
 
     readings = evaluate_families(VOTING_FAMILIES, signals_by_family)
@@ -213,6 +219,7 @@ def run_shadow_evaluation(
         thesis=thesis,
         size=size,
         evaluated_at=moment,
+        observation_key=observation_key,
     )
 
     return ShadowEvaluation(
