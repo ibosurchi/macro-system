@@ -1,0 +1,12 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Atomic-write temporaries produced by _write_local_json_atomic
+*.tmp
+
+# Process locks created at runtime (fcntl / file-lock based)
+.apexmacro_*.lock
+
+# Local secrets must never be committed
+.streamlit/secrets.toml
