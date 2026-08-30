@@ -241,6 +241,9 @@ def run_shadow_evaluation(
         size=size,
         asset_module=asset_module,
         event_timing=event_timing,
+        # Provenance of the aggregation shape this evaluation ran under. Stored
+        # on every new record so it stays interpretable if the constants change.
+        aggregation_config=config.as_provenance(),
         evaluated_at=moment,
         observation_key=observation_key,
     )

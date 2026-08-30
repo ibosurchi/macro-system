@@ -152,11 +152,23 @@ class _CountingStore(shadow.InMemoryShadowStore):
 
 
 def _run(store=None, now=NOW, **overrides):
+    """Drive one observation cycle in LEGACY storage mode.
+
+    Storage V2 made append-only rows the default, so these tests are pinned to
+    legacy explicitly. That is deliberate and adds coverage rather than
+    removing it: every guarantee below (tagging, per-instrument duplicate
+    suppression, fail-open isolation, batched read/write cost) is still
+    asserted, and it now also proves the ROLLBACK path keeps working. The same
+    guarantees are asserted against V2 in tests/test_b2_storage_v2.py.
+    """
     store = store or _CountingStore()
     with _PatchProduction(**overrides) as patched:
-        outcomes = b2_bridge.run_shadow_observation(
-            "FAKE_KEY", "chan", store=store, now=now
-        )
+        with mock.patch.object(
+            b2_bridge, "shadow_store_mode", return_value=b2_bridge.STORAGE_MODE_LEGACY
+        ):
+            outcomes = b2_bridge.run_shadow_observation(
+                "FAKE_KEY", "chan", store=store, now=now
+            )
     return outcomes, store, patched
 
 
@@ -449,9 +461,13 @@ class TestFailOpenIsolation(unittest.TestCase):
                 raise RuntimeError("backend down")
 
         with _PatchProduction():
-            outcomes = b2_bridge.run_shadow_observation(
-                "FAKE_KEY", "chan", store=ExplodingStore(), now=NOW
-            )
+            with mock.patch.object(
+                b2_bridge, "shadow_store_mode",
+                return_value=b2_bridge.STORAGE_MODE_LEGACY,
+            ):
+                outcomes = b2_bridge.run_shadow_observation(
+                    "FAKE_KEY", "chan", store=ExplodingStore(), now=NOW
+                )
         self.assertEqual(set(outcomes.values()), {"exception_swallowed"})
 
     def test_a_save_failure_does_not_raise(self):

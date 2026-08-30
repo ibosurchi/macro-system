@@ -249,9 +249,15 @@ class TestObservationIsPersisted(unittest.TestCase):
     def test_run_shadow_observation_drives_the_configured_instruments(self):
         with _PatchAll():
             with mock.patch.object(b2_bridge, "shadow_instruments", return_value=("Gold",)):
-                outcomes = b2_bridge.run_shadow_observation(
-                    "KEY", "chan", store=self.store, now=NOW
-                )
+                # Legacy mode: this asserts the blob write path, which remains
+                # the rollback target. V2 coverage is in test_b2_storage_v2.py.
+                with mock.patch.object(
+                    b2_bridge, "shadow_store_mode",
+                    return_value=b2_bridge.STORAGE_MODE_LEGACY,
+                ):
+                    outcomes = b2_bridge.run_shadow_observation(
+                        "KEY", "chan", store=self.store, now=NOW
+                    )
         self.assertEqual(outcomes, {"Gold": "written"})
         self.assertEqual(b2_bridge.HOOK_STATS["attempted"], 1)
         self.assertEqual(b2_bridge.HOOK_STATS["written"], 1)
@@ -379,9 +385,14 @@ class TestFailureContainment(unittest.TestCase):
             def save(self, state_id, payload):
                 raise RuntimeError("backend down")
 
-        outcomes = b2_bridge.run_shadow_observation(
-            "KEY", "chan", store=ExplodingStore(), now=NOW
-        )
+        # Legacy mode: this test is about the blob store failing, which is the
+        # rollback path. The V2 equivalent lives in tests/test_b2_storage_v2.py.
+        with mock.patch.object(
+            b2_bridge, "shadow_store_mode", return_value=b2_bridge.STORAGE_MODE_LEGACY
+        ):
+            outcomes = b2_bridge.run_shadow_observation(
+                "KEY", "chan", store=ExplodingStore(), now=NOW
+            )
         self.assertEqual(outcomes["Gold"], "exception_swallowed")
 
     def test_run_shadow_observation_never_raises(self):

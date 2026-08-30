@@ -17,8 +17,13 @@ so adding ids requires no schema change and no migration of existing rows.
 from __future__ import annotations
 
 import hashlib
+import json
+import os
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
+
+import requests
 
 from . import production_core as core
 from .b2 import adapters
@@ -34,7 +39,7 @@ from .b2.predictions import (
     TransmissionStep,
     build_prediction,
 )
-from .b2.shadow import ShadowLog, ShadowLogError
+from .b2.shadow import ShadowLog, ShadowLogError, record_to_row
 
 #: New state ids. Existing ids and payload shapes are untouched.
 SHADOW_LOG_STATE_ID = "b2_shadow_log_v1"
@@ -228,6 +233,16 @@ HOOK_COUNTERS = (
     "unknown_instrument",
     "prediction_registered",
     "prediction_duplicate",
+    # Storage V2
+    "v2_inserted",
+    "v2_duplicate",
+    "v2_failed",
+    "v2_local_fallback",
+    "migration_pending",
+    "migration_complete",
+    "backfill_inserted",
+    "backfill_duplicate",
+    "backfill_failed",
 )
 
 #: In-process counters for the running daemon. Mirrored into the shadow log's
@@ -242,6 +257,608 @@ _HANDLED_BUCKETS: dict[str, int] = {}
 
 def _bump(counter: str) -> None:
     HOOK_STATS[counter] = HOOK_STATS.get(counter, 0) + 1
+
+
+# ===========================================================================
+# STORAGE V2 -- APPEND-ONLY SHADOW RECORDS
+#
+# Each observation becomes ONE immutable row in the dedicated
+# ``b2_shadow_records`` table, instead of being appended into a single JSON blob
+# that is rewritten in full every cycle.
+#
+# Three properties matter and are enforced here rather than assumed:
+#
+#   Append-only.   Inserts use ON CONFLICT DO NOTHING against the record_id
+#                  primary key. An existing row is never updated, never
+#                  re-timestamped, never overwritten.
+#   O(new).        Writing one observation costs one row, not the whole
+#                  history. Nothing loads past records to append a new one.
+#   Lock-free.     This path talks to PostgREST directly and NEVER calls
+#                  _save_persistent_state, so it cannot hold the global
+#                  production _PERSISTENCE_LOCK that VIP login, payment
+#                  verification, Smart Shift state and the Forecaster share.
+#
+# The database primary key is the final durable duplicate authority, so
+# suppression survives a process restart without loading any history.
+# ===========================================================================
+
+#: The pre-created append-only table. Overridable only for testing against a
+#: scratch table; the application never creates or alters it.
+SHADOW_RECORDS_TABLE = (
+    core.get_secret("B2_SHADOW_RECORDS_TABLE", "b2_shadow_records") or "b2_shadow_records"
+)
+
+#: Own timeout, deliberately not production's REQUEST_TIMEOUT: a batch of 11
+#: records is ~145 KB, and this path must never be the thing that stalls.
+SHADOW_V2_TIMEOUT = 15
+
+#: Local append-only mirror used when Supabase is not configured (local dev and
+#: tests). One JSON object per line, appended, never rewritten.
+LOCAL_RECORDS_FILE = str(core.PROJECT_ROOT / "b2_shadow_records_local.jsonl")
+
+#: Storage modes. "v2" writes append-only rows; "legacy" keeps the old blob.
+STORAGE_MODE_V2 = "v2"
+STORAGE_MODE_LEGACY = "legacy"
+
+
+def shadow_store_mode() -> str:
+    """Which storage path new observations use.
+
+    Defaults to V2. ``B2_SHADOW_STORE=legacy`` restores the previous behaviour
+    exactly, which is the rollback switch: no code change, no data change.
+    """
+    raw = str(core.get_secret("B2_SHADOW_STORE", STORAGE_MODE_V2) or STORAGE_MODE_V2)
+    mode = raw.strip().lower()
+    return STORAGE_MODE_LEGACY if mode == STORAGE_MODE_LEGACY else STORAGE_MODE_V2
+
+
+@dataclass(frozen=True)
+class InsertOutcome:
+    """Result of persisting a batch of rows. Never claims more than happened."""
+
+    backend: str                      # "supabase" | "local" | "unavailable"
+    durable: bool                     # True only for a real cloud write
+    inserted: tuple[str, ...] = ()
+    duplicate: tuple[str, ...] = ()
+    failed: tuple[str, ...] = ()
+    error: str = ""
+
+    @property
+    def settled(self) -> tuple[str, ...]:
+        """Record ids that need no retry: they are stored, or already were."""
+        return self.inserted + self.duplicate
+
+    def as_record(self) -> dict[str, object]:
+        return {
+            "backend": self.backend,
+            "durable": self.durable,
+            "inserted": len(self.inserted),
+            "duplicate": len(self.duplicate),
+            "failed": len(self.failed),
+            "error": self.error[:200],
+        }
+
+
+class SupabaseShadowRecordStore:
+    """Append-only row store over the pre-created ``b2_shadow_records`` table.
+
+    Uses the backend service-role credential already configured for production
+    persistence, read-only: no production persistence function is called and no
+    credential is copied, logged or widened. RLS stays enabled -- the
+    service-role key is precisely the credential intended to operate under it,
+    and it is only ever used server-side.
+    """
+
+    def __init__(self, table: str | None = None, timeout: int | None = None) -> None:
+        self.table = table or SHADOW_RECORDS_TABLE
+        self.timeout = timeout or SHADOW_V2_TIMEOUT
+
+    @property
+    def available(self) -> bool:
+        return core._supabase_enabled()
+
+    def _url(self) -> str:
+        return f"{core.SUPABASE_URL}/rest/v1/{self.table}"
+
+    def insert_rows(self, rows: list[dict[str, Any]]) -> InsertOutcome:
+        """Insert rows, ignoring any whose record_id already exists.
+
+        ``resolution=ignore-duplicates`` makes this an ON CONFLICT DO NOTHING:
+        an existing row is left exactly as it was. ``return=representation``
+        with ``select=record_id`` returns only the ids actually inserted, so
+        inserted and duplicate can be told apart without a second query and
+        without transferring the payload back.
+
+        On a batch failure it retries each row individually, so one malformed or
+        rejected record cannot cost the other ten their persistence.
+        """
+        if not rows:
+            return InsertOutcome(backend="supabase", durable=True)
+        if not self.available:
+            return InsertOutcome(
+                backend="unavailable",
+                durable=False,
+                failed=tuple(str(r.get("record_id", "")) for r in rows),
+                error="Supabase is not configured",
+            )
+
+        sent = [str(r.get("record_id", "")) for r in rows]
+        try:
+            response = requests.post(
+                self._url(),
+                headers=core._supabase_headers(
+                    "resolution=ignore-duplicates,return=representation"
+                ),
+                params={"on_conflict": "record_id", "select": "record_id"},
+                json=rows,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            body = response.json()
+            inserted = tuple(
+                str(item.get("record_id", ""))
+                for item in body
+                if isinstance(item, dict) and item.get("record_id")
+            ) if isinstance(body, list) else ()
+            duplicate = tuple(r for r in sent if r not in set(inserted))
+            return InsertOutcome(
+                backend="supabase",
+                durable=True,
+                inserted=inserted,
+                duplicate=duplicate,
+            )
+        except Exception as exc:
+            if len(rows) == 1:
+                return InsertOutcome(
+                    backend="supabase",
+                    durable=False,
+                    failed=tuple(sent),
+                    error=str(exc)[:200],
+                )
+            # Per-record fault isolation: correctness before request count.
+            inserted: list[str] = []
+            duplicate: list[str] = []
+            failed: list[str] = []
+            last_error = str(exc)[:200]
+            for row in rows:
+                one = self.insert_rows([row])
+                inserted.extend(one.inserted)
+                duplicate.extend(one.duplicate)
+                failed.extend(one.failed)
+                if one.error:
+                    last_error = one.error
+            return InsertOutcome(
+                backend="supabase",
+                durable=not failed,
+                inserted=tuple(inserted),
+                duplicate=tuple(duplicate),
+                failed=tuple(failed),
+                error=last_error if failed else "",
+            )
+
+    def record_exists(self, record_id: str) -> bool | None:
+        """True/False, or None when the answer could not be obtained."""
+        if not self.available:
+            return None
+        try:
+            response = requests.get(
+                self._url(),
+                headers=core._supabase_headers(),
+                params={
+                    "record_id": f"eq.{record_id}",
+                    "select": "record_id",
+                    "limit": 1,
+                },
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            body = response.json()
+            return bool(isinstance(body, list) and body)
+        except Exception:
+            return None
+
+    def query_records(
+        self,
+        *,
+        instrument: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        limit: int = 1000,
+        select: str = "record_id,instrument,horizon,evaluated_at,schema_version,record",
+    ) -> list[dict[str, Any]]:
+        """Point-in-time retrieval. Indexed on (instrument, evaluated_at)."""
+        if not self.available:
+            return []
+        params: dict[str, Any] = {
+            "select": select,
+            "order": "evaluated_at.desc",
+            "limit": int(limit),
+        }
+        if instrument:
+            params["instrument"] = f"eq.{instrument}"
+        if start is not None:
+            params["evaluated_at"] = f"gte.{start.isoformat()}"
+        if end is not None:
+            # PostgREST takes repeated filters on one column via a list value.
+            params["and"] = f"(evaluated_at.lte.{end.isoformat()})"
+        try:
+            response = requests.get(
+                self._url(),
+                headers=core._supabase_headers(),
+                params=params,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            body = response.json()
+            return list(body) if isinstance(body, list) else []
+        except Exception:
+            return []
+
+
+class LocalShadowRecordStore:
+    """Append-only JSONL mirror for local development and tests.
+
+    Deliberately a SEPARATE backend identity. A local write is never reported as
+    durable: a Streamlit redeploy discards the container filesystem, so treating
+    it as equivalent to a cloud write would silently misrepresent what was
+    preserved.
+    """
+
+    def __init__(self, path: str | None = None) -> None:
+        self.path = path or LOCAL_RECORDS_FILE
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    def _existing_ids(self) -> set[str]:
+        ids: set[str] = set()
+        try:
+            if not os.path.exists(self.path):
+                return ids
+            with open(self.path, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        ids.add(str(json.loads(line).get("record_id", "")))
+                    except Exception:
+                        continue
+        except Exception:
+            return ids
+        return ids
+
+    def insert_rows(self, rows: list[dict[str, Any]]) -> InsertOutcome:
+        if not rows:
+            return InsertOutcome(backend="local", durable=False)
+        known = self._existing_ids()
+        inserted: list[str] = []
+        duplicate: list[str] = []
+        failed: list[str] = []
+        try:
+            with open(self.path, "a", encoding="utf-8") as handle:
+                for row in rows:
+                    record_id = str(row.get("record_id", ""))
+                    if not record_id:
+                        failed.append(record_id)
+                        continue
+                    if record_id in known:
+                        duplicate.append(record_id)
+                        continue
+                    handle.write(json.dumps(row, separators=(",", ":")) + "\n")
+                    known.add(record_id)
+                    inserted.append(record_id)
+        except Exception as exc:
+            return InsertOutcome(
+                backend="local",
+                durable=False,
+                inserted=tuple(inserted),
+                duplicate=tuple(duplicate),
+                failed=tuple(str(r.get("record_id", "")) for r in rows)[len(inserted) + len(duplicate):],
+                error=str(exc)[:200],
+            )
+        return InsertOutcome(
+            backend="local",
+            durable=False,
+            inserted=tuple(inserted),
+            duplicate=tuple(duplicate),
+            failed=tuple(failed),
+        )
+
+    def record_exists(self, record_id: str) -> bool | None:
+        return record_id in self._existing_ids()
+
+    def query_records(
+        self,
+        *,
+        instrument: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        limit: int = 1000,
+        select: str = "",
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        try:
+            if not os.path.exists(self.path):
+                return rows
+            with open(self.path, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except Exception:
+                        continue
+                    if instrument and row.get("instrument") != instrument:
+                        continue
+                    stamp = str(row.get("evaluated_at", ""))
+                    if start is not None and stamp < start.isoformat():
+                        continue
+                    if end is not None and stamp > end.isoformat():
+                        continue
+                    rows.append(row)
+        except Exception:
+            return rows
+        rows.sort(key=lambda r: str(r.get("evaluated_at", "")), reverse=True)
+        return rows[: int(limit)]
+
+
+def resolve_record_store() -> Any:
+    """The append-only store to use: Supabase when configured, else local."""
+    supabase = SupabaseShadowRecordStore()
+    return supabase if supabase.available else LocalShadowRecordStore()
+
+
+# ===========================================================================
+# LEGACY FREEZE + BACKFILL
+#
+# b2_shadow_log_v1 holds real point-in-time history. It is never deleted,
+# truncated, transformed in place, regenerated or re-timestamped. The migration
+# only READS it, and after cutover nothing writes to it again.
+#
+# Both steps run in bounded units inside the EXISTING daemon cadence: no new
+# thread, scheduler or daemon. Every step is fail-open and retryable, and a
+# failure can never stop production.
+# ===========================================================================
+
+MIGRATION_STATE_ID = "b2_storage_migration_v1"
+MIGRATION_STATE_FILE = str(core.PROJECT_ROOT / "b2_storage_migration_v1.json")
+
+#: Directory for the one-time legacy backup's local mirror. A module-level
+#: constant rather than an inline PROJECT_ROOT expression so the test-isolation
+#: helper can redirect it and a test run can never write a backup into the repo.
+SHADOW_BACKUP_DIR = str(core.PROJECT_ROOT)
+
+
+def _frozen_backup_path(frozen_id: str) -> str:
+    return os.path.join(SHADOW_BACKUP_DIR, f"{frozen_id}.json")
+
+#: Legacy records backfilled per daemon tick. Bounded so migration can never
+#: turn one loop iteration into a long blocking operation.
+BACKFILL_BATCH_SIZE = 100
+
+
+def _migration_state() -> dict[str, Any]:
+    state = core._load_persistent_state(MIGRATION_STATE_ID, MIGRATION_STATE_FILE, {})
+    return dict(state) if isinstance(state, dict) else {}
+
+
+def _save_migration_state(state: Mapping[str, Any]) -> None:
+    # Small, infrequent, and written only while migration is in progress -- the
+    # one place the KV path is still appropriate. Recurring row persistence
+    # never comes through here.
+    core._save_persistent_state(MIGRATION_STATE_ID, MIGRATION_STATE_FILE, dict(state))
+
+
+def canonical_payload_hash(payload: object) -> str:
+    """Deterministic hash of a payload, independent of key ordering."""
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
+
+
+def legacy_frozen_state_id(moment: datetime | None = None) -> str:
+    stamp = (moment or datetime.now(timezone.utc)).strftime("%Y%m%d")
+    return f"b2_shadow_log_v1_frozen_{stamp}"
+
+
+def freeze_legacy_shadow_log(
+    store: Any, *, now: datetime | None = None
+) -> dict[str, Any]:
+    """One-time byte-semantic backup of the legacy blob, verified before use.
+
+    Refuses to overwrite an existing valid backup. Returns a status dict; never
+    raises.
+    """
+    state = _migration_state()
+    if state.get("freeze_verified"):
+        return {"status": "already_frozen", **{k: state.get(k) for k in
+                ("frozen_state_id", "legacy_record_count", "legacy_hash")}}
+
+    try:
+        payload = store.load(SHADOW_LOG_STATE_ID, {"records": []})
+    except Exception as exc:
+        return {"status": "failed", "reason": f"legacy read failed: {str(exc)[:150]}"}
+
+    if not isinstance(payload, Mapping):
+        return {"status": "failed", "reason": "legacy payload is not a mapping"}
+
+    records = payload.get("records")
+    records = list(records) if isinstance(records, list) else []
+    source_hash = canonical_payload_hash(payload)
+    frozen_id = state.get("frozen_state_id") or legacy_frozen_state_id(now)
+
+    existing = core._load_persistent_state(
+        frozen_id, _frozen_backup_path(frozen_id), None
+    )
+    if isinstance(existing, Mapping) and canonical_payload_hash(existing) == source_hash:
+        verified = True
+    else:
+        if isinstance(existing, Mapping) and existing:
+            # A different backup already occupies this id. Never overwrite it.
+            return {
+                "status": "failed",
+                "reason": f"a different backup already exists at {frozen_id}",
+            }
+        try:
+            core._save_persistent_state(
+                frozen_id, _frozen_backup_path(frozen_id), dict(payload)
+            )
+        except Exception as exc:
+            return {"status": "failed", "reason": f"backup write failed: {str(exc)[:150]}"}
+        readback = core._load_persistent_state(
+            frozen_id, _frozen_backup_path(frozen_id), None
+        )
+        verified = (
+            isinstance(readback, Mapping)
+            and canonical_payload_hash(readback) == source_hash
+            and len(list(readback.get("records") or [])) == len(records)
+        )
+
+    if not verified:
+        return {"status": "failed", "reason": "backup verification failed"}
+
+    state.update(
+        {
+            "freeze_verified": True,
+            "frozen_state_id": frozen_id,
+            "frozen_at": (now or datetime.now(timezone.utc)).isoformat(),
+            "legacy_record_count": len(records),
+            "legacy_hash": source_hash,
+        }
+    )
+    _save_migration_state(state)
+    return {
+        "status": "frozen",
+        "frozen_state_id": frozen_id,
+        "legacy_record_count": len(records),
+        "legacy_hash": source_hash,
+    }
+
+
+def backfill_legacy_records(
+    store: Any,
+    record_store: Any,
+    *,
+    batch_size: int = BACKFILL_BATCH_SIZE,
+) -> dict[str, Any]:
+    """Copy legacy records into the append-only store, in one bounded batch.
+
+    Idempotent by construction: rows carry their ORIGINAL record_id, and the
+    store inserts only if absent. Records are copied verbatim -- never
+    re-evaluated, never re-timestamped, and never given a fabricated
+    aggregation_config, so legacy history stays historically truthful.
+
+    Progress is a cursor into the legacy list, so an interrupted run resumes
+    from where it stopped rather than restarting.
+    """
+    state = _migration_state()
+    if state.get("backfill_complete"):
+        return {"status": "complete", "cursor": state.get("cursor", 0)}
+    if not state.get("freeze_verified"):
+        return {"status": "blocked", "reason": "legacy freeze not verified yet"}
+
+    try:
+        payload = store.load(SHADOW_LOG_STATE_ID, {"records": []})
+    except Exception as exc:
+        return {"status": "failed", "reason": f"legacy read failed: {str(exc)[:150]}"}
+
+    records = payload.get("records") if isinstance(payload, Mapping) else None
+    records = list(records) if isinstance(records, list) else []
+    cursor = int(state.get("cursor", 0) or 0)
+
+    if cursor >= len(records):
+        state.update({"backfill_complete": True, "cursor": len(records)})
+        _save_migration_state(state)
+        _bump("migration_complete")
+        return {"status": "complete", "cursor": len(records), "total": len(records)}
+
+    chunk = records[cursor : cursor + max(1, int(batch_size))]
+    rows = [row for row in (record_to_row(r) for r in chunk) if row]
+    skipped = len(chunk) - len(rows)
+
+    outcome = record_store.insert_rows(rows) if rows else InsertOutcome(
+        backend="supabase", durable=True
+    )
+
+    if outcome.failed:
+        _bump("backfill_failed")
+        # Do NOT advance the cursor past records that did not land.
+        state["last_error"] = outcome.error
+        _save_migration_state(state)
+        return {
+            "status": "partial",
+            "cursor": cursor,
+            "inserted": len(outcome.inserted),
+            "failed": len(outcome.failed),
+            "backend": outcome.backend,
+        }
+
+    for _ in outcome.inserted:
+        _bump("backfill_inserted")
+    for _ in outcome.duplicate:
+        _bump("backfill_duplicate")
+
+    cursor += len(chunk)
+    state.update(
+        {
+            "cursor": cursor,
+            "total": len(records),
+            "backfill_complete": cursor >= len(records),
+            "skipped_malformed": int(state.get("skipped_malformed", 0)) + skipped,
+            "last_error": "",
+        }
+    )
+    _save_migration_state(state)
+    if state["backfill_complete"]:
+        _bump("migration_complete")
+    else:
+        _bump("migration_pending")
+    return {
+        "status": "complete" if state["backfill_complete"] else "in_progress",
+        "cursor": cursor,
+        "total": len(records),
+        "inserted": len(outcome.inserted),
+        "duplicate": len(outcome.duplicate),
+        "skipped_malformed": skipped,
+        "backend": outcome.backend,
+    }
+
+
+def advance_migration(store: Any, record_store: Any) -> dict[str, Any]:
+    """One bounded migration step per daemon tick. Never raises."""
+    try:
+        state = _migration_state()
+        if state.get("backfill_complete"):
+            return {"status": "complete"}
+        if not state.get("freeze_verified"):
+            frozen = freeze_legacy_shadow_log(store)
+            if frozen.get("status") not in {"frozen", "already_frozen"}:
+                _bump("migration_pending")
+                return {"status": "freeze_failed", **frozen}
+        return backfill_legacy_records(store, record_store)
+    except Exception as exc:
+        _bump("migration_pending")
+        return {"status": "failed", "reason": str(exc)[:200]}
+
+
+def migration_status() -> dict[str, Any]:
+    """Explicit, auditable migration state for an operator to inspect."""
+    state = _migration_state()
+    return {
+        "freeze_verified": bool(state.get("freeze_verified")),
+        "frozen_state_id": state.get("frozen_state_id"),
+        "legacy_record_count": state.get("legacy_record_count"),
+        "legacy_hash": state.get("legacy_hash"),
+        "cursor": state.get("cursor", 0),
+        "total": state.get("total"),
+        "backfill_complete": bool(state.get("backfill_complete")),
+        "skipped_malformed": state.get("skipped_malformed", 0),
+        "last_error": state.get("last_error", ""),
+        "storage_mode": shadow_store_mode(),
+    }
 
 
 def shadow_enabled() -> bool:
@@ -524,6 +1141,55 @@ def _asset_module_inputs(instrument: str, inputs: Mapping[str, Any]) -> dict[str
     return None
 
 
+def _build_observation(
+    instrument: str,
+    fred_key: str,
+    channel_name: str,
+    *,
+    moment: datetime,
+    horizon: Horizon,
+    observation_identity: str,
+) -> tuple[str, ShadowEvaluation | None]:
+    """Gather production inputs and evaluate one observation.
+
+    Shared by BOTH storage paths so the legacy blob and the append-only row
+    store can never drift apart in what they record. Returns
+    ``(status, evaluation)`` where status is ``ok`` / ``unknown_instrument`` /
+    ``insufficient_data_skipped``.
+    """
+    inputs = _gather_production_inputs(instrument, fred_key, channel_name)
+    if inputs is None:
+        return "unknown_instrument", None
+
+    if inputs["composite"] is None and inputs["tactical"] is None:
+        # No production evidence of any kind arrived. There is nothing to
+        # observe, which is different from observing that evidence is missing.
+        return "insufficient_data_skipped", None
+
+    # True minutes-to-event from the production calendar's own timestamps.
+    timing = _event_timing_for(instrument, moment)
+
+    evaluation = evaluate_from_production(
+        instrument=instrument,
+        decision_horizon=horizon,
+        composite=inputs["composite"],
+        tactical=inputs["tactical"],
+        real_yield_mtf=inputs["real_yield_mtf"],
+        nominal_yield_mtf=inputs["nominal_yield_mtf"],
+        inflation_expectations_mtf=inputs["inflation_expectations_mtf"],
+        rule_points=inputs["rule_points"],
+        ai_points=inputs["ai_points"],
+        minutes_to_event=timing.minutes,
+        is_top_tier_event=event_timing_mod.is_top_tier(timing),
+        event_label=timing.title or "scheduled event",
+        asset_module_inputs=_asset_module_inputs(instrument, inputs),
+        event_timing=timing.as_record(),
+        evaluated_at=moment,
+        observation_key=observation_identity,
+    )
+    return "ok", evaluation
+
+
 def observe_instrument(
     instrument: str,
     fred_key: str,
@@ -569,41 +1235,23 @@ def observe_instrument(
         _bump("duplicate_skipped")
         return "duplicate_skipped"
 
-    inputs = _gather_production_inputs(instrument, fred_key, channel_name)
-    if inputs is None:
+    status, evaluation = _build_observation(
+        instrument,
+        fred_key,
+        channel_name,
+        moment=moment,
+        horizon=horizon,
+        observation_identity=key,
+    )
+    if status == "unknown_instrument":
         _bump("unknown_instrument")
         return "unknown_instrument"
-
-    if inputs["composite"] is None and inputs["tactical"] is None:
-        # No production evidence of any kind arrived. There is nothing to
-        # observe, which is different from observing that evidence is missing.
+    if status != "ok" or evaluation is None:
         _HANDLED_BUCKETS[instrument] = bucket
         log.bump("insufficient_data_skipped")
         _persist(log)
         _bump("insufficient_data_skipped")
         return "insufficient_data_skipped"
-
-    # True minutes-to-event from the production calendar's own timestamps.
-    timing = _event_timing_for(instrument, moment)
-
-    evaluation = evaluate_from_production(
-        instrument=instrument,
-        decision_horizon=horizon,
-        composite=inputs["composite"],
-        tactical=inputs["tactical"],
-        real_yield_mtf=inputs["real_yield_mtf"],
-        nominal_yield_mtf=inputs["nominal_yield_mtf"],
-        inflation_expectations_mtf=inputs["inflation_expectations_mtf"],
-        rule_points=inputs["rule_points"],
-        ai_points=inputs["ai_points"],
-        minutes_to_event=timing.minutes,
-        is_top_tier_event=event_timing_mod.is_top_tier(timing),
-        event_label=timing.title or "scheduled event",
-        asset_module_inputs=_asset_module_inputs(instrument, inputs),
-        event_timing=timing.as_record(),
-        evaluated_at=moment,
-        observation_key=key,
-    )
 
     try:
         log.append(evaluation.record)
@@ -635,6 +1283,125 @@ def observe_instrument(
     except Exception:
         _bump("exception_swallowed")
     return "written"
+
+
+def _run_v2_observation(
+    fred_key: str,
+    channel_name: str,
+    *,
+    backend: Any,
+    moment: datetime,
+    bucket: int,
+    due: list[str],
+    record_store: Any | None = None,
+) -> dict[str, str]:
+    """Storage V2 path: one immutable row per observation.
+
+    No history is loaded to append. Nothing rewrites a growing blob. The
+    database primary key is the durable duplicate authority, so suppression
+    survives a restart without reading any past record.
+
+    ``_HANDLED_BUCKETS`` is only marked for instruments whose row actually
+    settled (inserted, or already present). A record that FAILED to persist is
+    deliberately left unmarked so the next tick retries it, rather than being
+    silently lost for the hour.
+    """
+    rows: list[dict[str, Any]] = []
+    evaluations: dict[str, Any] = {}
+    outcomes: dict[str, str] = {}
+
+    for instrument in due:
+        try:
+            key = observation_key(instrument, Horizon.TACTICAL, moment)
+            status, evaluation = _build_observation(
+                instrument,
+                fred_key,
+                channel_name,
+                moment=moment,
+                horizon=Horizon.TACTICAL,
+                observation_identity=key,
+            )
+        except Exception:
+            _bump("exception_swallowed")
+            outcomes[instrument] = "exception_swallowed"
+            continue
+
+        if status == "unknown_instrument":
+            _bump("unknown_instrument")
+            outcomes[instrument] = "unknown_instrument"
+            continue
+        if status != "ok" or evaluation is None:
+            _HANDLED_BUCKETS[instrument] = bucket
+            _bump("insufficient_data_skipped")
+            outcomes[instrument] = "insufficient_data_skipped"
+            continue
+
+        row = record_to_row(evaluation.record.as_record())
+        if not row:
+            _bump("v2_failed")
+            outcomes[instrument] = "failed"
+            continue
+        rows.append(row)
+        evaluations[row["record_id"]] = (instrument, evaluation)
+
+    if not rows:
+        return outcomes
+
+    store_for_rows = record_store if record_store is not None else resolve_record_store()
+    try:
+        result = store_for_rows.insert_rows(rows)
+    except Exception as exc:
+        _bump("exception_swallowed")
+        result = InsertOutcome(
+            backend="unavailable",
+            durable=False,
+            failed=tuple(r["record_id"] for r in rows),
+            error=str(exc)[:200],
+        )
+
+    if result.backend == "local":
+        _bump("v2_local_fallback")
+
+    settled = set(result.settled)
+    for record_id, (instrument, evaluation) in evaluations.items():
+        if record_id in result.inserted:
+            _HANDLED_BUCKETS[instrument] = bucket
+            _bump("v2_inserted")
+            _bump("written")
+            outcomes[instrument] = "written"
+        elif record_id in result.duplicate:
+            _HANDLED_BUCKETS[instrument] = bucket
+            _bump("v2_duplicate")
+            _bump("duplicate_skipped")
+            outcomes[instrument] = "duplicate_skipped"
+        else:
+            # Not settled: leave the bucket unmarked so the next tick retries.
+            _bump("v2_failed")
+            outcomes[instrument] = "failed"
+
+    # Predictions only for observations that actually persisted, and only after
+    # the record is safe. A prediction-log failure never costs the observation.
+    for record_id, (instrument, evaluation) in evaluations.items():
+        if record_id not in settled:
+            continue
+        try:
+            register_transmission_prediction(
+                backend,
+                instrument=instrument,
+                direction=evaluation.direction,
+                horizon=Horizon.TACTICAL,
+                now=moment,
+            )
+        except Exception:
+            _bump("exception_swallowed")
+
+    # One bounded migration step per tick, after the live observation is safe.
+    try:
+        advance_migration(backend, store_for_rows)
+    except Exception:
+        _bump("exception_swallowed")
+
+    return outcomes
 
 
 def run_shadow_observation(
@@ -678,6 +1445,12 @@ def run_shadow_observation(
         _bump("duplicate_skipped")
     if not due:
         return outcomes
+
+    if shadow_store_mode() == STORAGE_MODE_V2:
+        return {**outcomes, **_run_v2_observation(
+            fred_key, channel_name, backend=backend, moment=moment,
+            bucket=bucket, due=due,
+        )}
 
     try:
         batch = load_shadow_log(backend)
@@ -816,7 +1589,24 @@ __all__ = [
     "get_shadow_hook_stats",
     "load_prediction_log",
     "load_shadow_log",
+    "BACKFILL_BATCH_SIZE",
+    "InsertOutcome",
+    "LOCAL_RECORDS_FILE",
+    "LocalShadowRecordStore",
+    "MIGRATION_STATE_ID",
     "PREDICTION_BUCKET_SECONDS",
+    "SHADOW_RECORDS_TABLE",
+    "STORAGE_MODE_LEGACY",
+    "STORAGE_MODE_V2",
+    "SupabaseShadowRecordStore",
+    "advance_migration",
+    "backfill_legacy_records",
+    "canonical_payload_hash",
+    "freeze_legacy_shadow_log",
+    "legacy_frozen_state_id",
+    "migration_status",
+    "resolve_record_store",
+    "shadow_store_mode",
     "observation_key",
     "observation_record_id",
     "observe_instrument",

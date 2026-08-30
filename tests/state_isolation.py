@@ -33,6 +33,12 @@ _ACTIVE: dict[str, object] = {}
 def _is_project_root_file(value: object, root: str) -> bool:
     if not isinstance(value, str) or not value:
         return False
+    # Must be an ABSOLUTE path. Without this, a bare state-id string such as
+    # "b2_shadow_log_v1" resolves against the current working directory -- which
+    # IS the project root when tests run from there -- and would be rebound to a
+    # temp path, silently corrupting the id used to key persistence.
+    if not os.path.isabs(value):
+        return False
     if os.path.isdir(value):
         return False
     try:
@@ -56,27 +62,62 @@ def isolate_durable_state() -> str:
     root = os.path.abspath(str(core.PROJECT_ROOT))
     tmp = tempfile.mkdtemp(prefix="apexmacro_test_state_")
 
-    redirected: dict[str, str] = {}
-    for name in dir(core):
-        if name.startswith("__"):
-            continue
-        try:
-            value = getattr(core, name)
-        except Exception:
-            continue
-        if not _is_project_root_file(value, root):
-            continue
+    # Storage V2 introduced durable paths on the B2 bridge as well as on the
+    # production core, so both modules are swept. Importing the bridge here is
+    # safe: it is already imported by every test module that touches shadow
+    # persistence, and it performs no I/O at import time.
+    modules = [core]
+    try:
+        from apex import b2_bridge
 
-        basename = os.path.basename(value)
-        target = os.path.join(tmp, basename)
-        # Preserve readable fixture content so existing assertions are unaffected.
-        if os.path.exists(value):
+        modules.append(b2_bridge)
+    except Exception:
+        pass
+
+    redirected: dict[str, str] = {}
+    for module in modules:
+        for name in dir(module):
+            if name.startswith("__"):
+                continue
             try:
-                shutil.copy2(value, target)
-            except OSError:
-                pass
-        setattr(core, name, target)
-        redirected[name] = target
+                value = getattr(module, name)
+            except Exception:
+                continue
+            if not _is_project_root_file(value, root):
+                continue
+
+            basename = os.path.basename(value)
+            target = os.path.join(tmp, basename)
+            # Preserve readable fixture content so existing assertions are
+            # unaffected.
+            if os.path.exists(value):
+                try:
+                    shutil.copy2(value, target)
+                except OSError:
+                    pass
+            setattr(module, name, target)
+            redirected[f"{module.__name__.split('.')[-1]}.{name}"] = target
+
+    # Directory-valued durable paths need an explicit override: the sweep above
+    # only matches file paths. Without this, a legacy-freeze backup written
+    # during a test would land in the repository root.
+    original_backup_dir = None
+    try:
+        from apex import b2_bridge
+
+        original_backup_dir = b2_bridge.SHADOW_BACKUP_DIR
+        b2_bridge.SHADOW_BACKUP_DIR = tmp
+        redirected["b2_bridge.SHADOW_BACKUP_DIR"] = tmp
+        # ProductionShadowStore caches its paths at class-definition time, so
+        # rebind them too or the class would still point at the real root.
+        b2_bridge.ProductionShadowStore._PATHS = {
+            b2_bridge.SHADOW_LOG_STATE_ID: os.path.join(tmp, "b2_shadow_log_v1.json"),
+            b2_bridge.PREDICTION_LOG_STATE_ID: os.path.join(
+                tmp, "b2_prediction_log_v1.json"
+            ),
+        }
+    except Exception:
+        pass
 
     # Belt and braces: no test run should reach a remote persistence backend
     # even if credentials happen to be present in the environment.

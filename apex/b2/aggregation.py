@@ -20,6 +20,7 @@ because disagreement is itself information.
 """
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 
 from .enums import Direction, FamilyState, FamilyStrength
@@ -99,6 +100,61 @@ class AggregationConfig:
             FamilyStrength.NONE: 0.0,
         }[strength]
 
+    def as_provenance(self) -> dict[str, object]:
+        """Everything needed to reconstruct this aggregation exactly, later.
+
+        Recorded on every shadow record because these constants are the shape of
+        the evidence calculation. If they are ever changed, a historical record
+        without them becomes uninterpretable: an analyst could not tell whether
+        an evidence value came from the old shape or the new one, and the
+        derived aggregate fields would stop being reconstructable from the
+        family states.
+
+        Deliberately explicit rather than a bare version string. The chosen
+        inputs, the derived caps and the calibration flag are all stored, so the
+        calculation can be rebuilt from the record alone without consulting
+        repository history. ``config_hash`` is an additional integrity check over
+        the chosen inputs, not a substitute for them.
+        """
+        chosen = {
+            "strong_weight": float(self.strong_weight),
+            "moderate_weight": float(self.moderate_weight),
+            "weak_weight": float(self.weak_weight),
+            "diminishing_factor": float(self.diminishing_factor),
+            "block_cap_override": (
+                None if self.block_cap_override is None else float(self.block_cap_override)
+            ),
+            "global_cap_override": (
+                None if self.global_cap_override is None else float(self.global_cap_override)
+            ),
+            "calibrated": bool(self.calibrated),
+        }
+        canonical = "|".join(f"{k}={chosen[k]!r}" for k in sorted(chosen))
+        return {
+            "version": AGGREGATION_CONFIG_VERSION,
+            "chosen": chosen,
+            # Derived from `chosen` by the documented formulas; stored so a
+            # reader never has to re-derive them to interpret the record.
+            "derived": {
+                "block_cap": float(self.block_cap),
+                "macro_group_cap": float(self.macro_group_cap),
+                "technical_group_cap": float(self.technical_group_cap),
+                "global_cap": float(self.global_cap),
+            },
+            "strength_weights": {
+                "STRONG": float(self.strong_weight),
+                "MODERATE": float(self.moderate_weight),
+                "WEAK": float(self.weak_weight),
+                "NONE": 0.0,
+            },
+            "config_hash": hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16],
+        }
+
+
+#: Bumped whenever the MEANING of the aggregation changes -- a new field, a new
+#: derivation rule, a different concave form. Changing only the numeric values
+#: is already captured by ``config_hash``.
+AGGREGATION_CONFIG_VERSION = "b2-agg-v1"
 
 DEFAULT_AGGREGATION = AggregationConfig()
 

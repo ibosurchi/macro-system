@@ -81,6 +81,11 @@ class ShadowRecord:
     #: Stage C: true minutes-to-event provenance, so a record never implies a
     #: precision the calendar did not supply.
     event_timing: Mapping[str, object] | None = None
+    #: Storage V2: the exact aggregation shape this record was produced under.
+    #: Without it a historical record becomes uninterpretable if the constants
+    #: are ever changed. Absent (None) on legacy records, which are left
+    #: historically truthful rather than backfilled with a fabricated value.
+    aggregation_config: Mapping[str, object] | None = None
     mode: str = SHADOW_MODE_LABEL
     schema_version: int = 1
 
@@ -101,6 +106,9 @@ class ShadowRecord:
                 self.asset_module.as_record() if self.asset_module else None
             ),
             "event_timing": dict(self.event_timing) if self.event_timing else None,
+            "aggregation_config": (
+                dict(self.aggregation_config) if self.aggregation_config else None
+            ),
             "horizon": self.horizon.value,
             "claim": self.claim.as_record() if self.claim else None,
             "decision_state": self.decision.state.value,
@@ -131,6 +139,53 @@ class ShadowRecord:
         }
 
 
+#: Column names of the append-only ``b2_shadow_records`` table. Declared here,
+#: next to the record, so the mapping stays in one place; the client that talks
+#: to the database lives outside this pure package.
+SHADOW_ROW_COLUMNS = (
+    "record_id",
+    "instrument",
+    "horizon",
+    "evaluated_at",
+    "schema_version",
+    "record",
+)
+
+
+def record_to_row(record: Mapping[str, object]) -> dict[str, object]:
+    """Map an already-serialised shadow record onto one database row.
+
+    Pure. Takes the ``as_record()`` dict rather than the object so it can also
+    map a LEGACY record read back out of the v1 blob during backfill, where no
+    ``ShadowRecord`` instance exists any more. The full record is preserved
+    verbatim in the ``record`` column; the promoted columns are copies for
+    indexing, never a replacement for the payload.
+
+    Returns ``{}`` for anything lacking the identity a row requires, so a
+    malformed legacy entry is skipped rather than inserted half-formed.
+    """
+    if not isinstance(record, Mapping):
+        return {}
+    record_id = str(record.get("record_id") or "").strip()
+    instrument = str(record.get("instrument") or "").strip()
+    horizon = str(record.get("horizon") or "").strip()
+    evaluated_at = str(record.get("evaluated_at") or "").strip()
+    if not (record_id and instrument and horizon and evaluated_at):
+        return {}
+    try:
+        schema_version = int(record.get("schema_version") or 1)
+    except (TypeError, ValueError):
+        schema_version = 1
+    return {
+        "record_id": record_id,
+        "instrument": instrument,
+        "horizon": horizon,
+        "evaluated_at": evaluated_at,
+        "schema_version": schema_version,
+        "record": dict(record),
+    }
+
+
 def build_shadow_record(
     *,
     instrument: str,
@@ -149,6 +204,7 @@ def build_shadow_record(
     size: SizeDirective | None = None,
     asset_module: AssetModuleReading | None = None,
     event_timing: Mapping[str, object] | None = None,
+    aggregation_config: Mapping[str, object] | None = None,
     evaluated_at: datetime | None = None,
     observation_key: str = "",
 ) -> ShadowRecord:
@@ -191,6 +247,7 @@ def build_shadow_record(
         size=size,
         asset_module=asset_module,
         event_timing=event_timing,
+        aggregation_config=aggregation_config,
     )
 
 
