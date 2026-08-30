@@ -17,9 +17,48 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from apex import b2
-from apex.b2 import adapters, aggregation, decision, enums, execution, families, gates, registry, risk
+from apex.b2 import (
+    adapters,
+    aggregation,
+    confidence,
+    decision,
+    enums,
+    evaluate,
+    execution,
+    families,
+    gates,
+    horizons,
+    predictions,
+    regime,
+    registry,
+    risk,
+    scenarios,
+    shadow,
+    thesis,
+)
 
-ALL_B2_MODULES = (adapters, aggregation, decision, enums, execution, families, gates, registry, risk)
+# Every module in the package. The purity constraints below apply to all of
+# them, so a module added in a later stage is covered automatically once it is
+# listed here.
+ALL_B2_MODULES = (
+    adapters,
+    aggregation,
+    confidence,
+    decision,
+    enums,
+    evaluate,
+    execution,
+    families,
+    gates,
+    horizons,
+    predictions,
+    regime,
+    registry,
+    risk,
+    scenarios,
+    shadow,
+    thesis,
+)
 
 
 def _b2_source() -> str:
@@ -972,7 +1011,16 @@ class TestStageASafetyConstraints(unittest.TestCase):
             self.assertNotIn("production_core", name)
 
     def test_b2_imports_only_stdlib_typing_and_its_own_package(self):
-        allowed_absolute = {"__future__", "dataclasses", "enum", "typing"}
+        # Every entry is pure stdlib with no I/O surface: no file, socket,
+        # subprocess or thread primitive can be reached through any of them.
+        allowed_absolute = {
+            "__future__",
+            "dataclasses",
+            "datetime",
+            "enum",
+            "hashlib",
+            "typing",
+        }
         for name in _b2_imported_modules():
             if name.startswith("."):
                 continue

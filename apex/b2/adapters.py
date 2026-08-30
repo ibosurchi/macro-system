@@ -291,6 +291,7 @@ def execution_inputs(
             "entry_zone": None,
             "current_price": None,
             "atr": None,
+            "atr_ratio": None,
             "room_to_opposing_atr": None,
             "asymmetry_ratio": None,
             "volatility_regime": "unavailable",
@@ -315,6 +316,10 @@ def execution_inputs(
         "entry_zone": zone,
         "current_price": _numeric(entry_plan.get("current_analysis_price")),
         "atr": _numeric(entry_plan.get("atr")),
+        # Current ATR over its own longer-window average, exported by the entry
+        # plan. None when it could not be measured -- never defaulted to 1.0,
+        # which would read as "volatility is normal" instead of "unknown".
+        "atr_ratio": _numeric(entry_plan.get("atr_ratio")),
         "room_to_opposing_atr": room,
         "asymmetry_ratio": asymmetry,
         "volatility_regime": regime,

@@ -3228,6 +3228,13 @@ def _build_macro_entry_plan(df: pd.DataFrame, macro_regime: str, macro_score: fl
         "confirmation": "Macro direction is neutral; no entry is allowed.",
         "opportunity_quality": None, "volatility_regime": "unavailable",
         "invalidation_structure_warning": None,
+        # Read-only export of the already-computed ATR ratio (current 14-period
+        # ATR over its own 50-period average) that volatility_regime is derived
+        # from. The label alone discards the magnitude, which downstream
+        # volatility-scaled sizing needs. Nothing in this file reads this key;
+        # it exists so the ratio does not have to be recomputed elsewhere from a
+        # second, possibly different, definition.
+        "atr_ratio": None,
     }
     if macro_regime not in {"Bullish", "Bearish"} or len(df) < 45:
         return neutral
@@ -3297,6 +3304,7 @@ def _build_macro_entry_plan(df: pd.DataFrame, macro_regime: str, macro_score: fl
         vol_ratio = atr / long_atr
         volatility_regime = "compression" if vol_ratio < 0.70 else ("expansion" if vol_ratio > 1.40 else "normal")
     else:
+        vol_ratio = None
         volatility_regime = "unavailable"
 
     # Cluster nearby evidence and select the strongest/nearest cluster.
@@ -3408,6 +3416,10 @@ def _build_macro_entry_plan(df: pd.DataFrame, macro_regime: str, macro_score: fl
         "atr": atr, "current_analysis_price": current,
         "opportunity_quality": opportunity_quality, "volatility_regime": volatility_regime,
         "invalidation_structure_warning": invalidation_structure_warning,
+        # See the neutral-return comment above: same already-computed value, exported
+        # rather than recomputed. None when the long-window ATR was unavailable --
+        # never defaulted to 1.0, since "not measurable" is not "normal".
+        "atr_ratio": vol_ratio,
     }
 
 def _tactical_label(score: float) -> str:
@@ -3565,6 +3577,13 @@ def compute_tactical_move(asset_key: str, macro_score: float | None = None) -> d
         "analysis_price": float(closes[-1]),
         "entry_plan": entry_plan,
         "market_ts": last_ts,
+        # Read-only export of vol5, the per-bar realized return volatility this
+        # function already computed above and already uses inside
+        # normalized_move(). Exported unchanged so a consumer can normalise the
+        # ret_* fields on the same volatility scale this function used, instead
+        # of inventing a second definition of volatility. Nothing in this file
+        # reads this key and no score depends on it.
+        "volatility_scale": vol5,
     }
 
 
