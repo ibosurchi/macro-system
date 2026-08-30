@@ -25,7 +25,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Protocol, runtime_checkable
+from typing import Mapping, Protocol, runtime_checkable
 
 from .confidence import ConfidenceSet
 from .decision import DecisionOutcome
@@ -34,6 +34,7 @@ from .execution import ExecutionAssessment
 from .families import FamilyReading
 from .gates import GateOutcome
 from .horizons import HorizonClaim, SeriesObservation, utcnow
+from .modules.base import AssetModuleReading
 from .predictions import PredictionRecord
 from .regime import RegimeReading
 from .risk import SizeDirective
@@ -42,6 +43,9 @@ from .thesis import ThesisRecord
 
 #: Recorded verbatim in every shadow record so a later reader is never left to
 #: infer why the cross-asset section is empty.
+#: Stamped on every record and on the log payload. B2 is not production.
+SHADOW_MODE_LABEL = "SHADOW / NON-PRODUCTION / UNCALIBRATED"
+
 CROSS_ASSET_STATUS = "withheld"
 CROSS_ASSET_REASON = (
     "The cross-asset bridge is withheld: the existing implementation confirms a "
@@ -71,6 +75,13 @@ class ShadowRecord:
     observations: tuple[SeriesObservation, ...]
     thesis: ThesisRecord | None
     size: SizeDirective | None = None
+    #: Stage C: the asset-specific transmission diagnostic, when one is
+    #: registered for this instrument. Adds no evidence to the voting core.
+    asset_module: AssetModuleReading | None = None
+    #: Stage C: true minutes-to-event provenance, so a record never implies a
+    #: precision the calendar did not supply.
+    event_timing: Mapping[str, object] | None = None
+    mode: str = SHADOW_MODE_LABEL
     schema_version: int = 1
 
     def as_record(self) -> dict[str, object]:
@@ -79,9 +90,17 @@ class ShadowRecord:
         )
         return {
             "schema_version": self.schema_version,
+            "mode": self.mode,
             "record_id": self.record_id,
             "evaluated_at": self.evaluated_at.isoformat(),
             "instrument": self.instrument,
+            "asset_module": (
+                self.asset_module.module if self.asset_module else None
+            ),
+            "asset_module_reading": (
+                self.asset_module.as_record() if self.asset_module else None
+            ),
+            "event_timing": dict(self.event_timing) if self.event_timing else None,
             "horizon": self.horizon.value,
             "claim": self.claim.as_record() if self.claim else None,
             "decision_state": self.decision.state.value,
@@ -128,6 +147,8 @@ def build_shadow_record(
     observations: tuple[SeriesObservation, ...] = (),
     thesis: ThesisRecord | None = None,
     size: SizeDirective | None = None,
+    asset_module: AssetModuleReading | None = None,
+    event_timing: Mapping[str, object] | None = None,
     evaluated_at: datetime | None = None,
     observation_key: str = "",
 ) -> ShadowRecord:
@@ -168,6 +189,8 @@ def build_shadow_record(
         observations=observations,
         thesis=thesis,
         size=size,
+        asset_module=asset_module,
+        event_timing=event_timing,
     )
 
 
@@ -219,7 +242,7 @@ class ShadowLog:
     def as_record(self) -> dict[str, object]:
         return {
             "schema_version": 1,
-            "mode": "SHADOW / NON-PRODUCTION / UNCALIBRATED",
+            "mode": SHADOW_MODE_LABEL,
             "records": list(self._records),
             "diagnostics": dict(self.diagnostics),
         }

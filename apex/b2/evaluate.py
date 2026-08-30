@@ -41,6 +41,8 @@ from .registry import (
 )
 from .risk import DEFAULT_RISK_PARAMETERS, RiskParameters, SizeDirective, size_directive
 from .scenarios import ScenarioSet, build_scenario_set
+from .modules import module_for
+from .modules.base import AssetModuleReading
 from .shadow import ShadowRecord, build_shadow_record
 from .thesis import ThesisRecord
 
@@ -61,6 +63,7 @@ class ShadowEvaluation:
     claim: HorizonClaim
     size: SizeDirective
     record: ShadowRecord
+    asset_module: AssetModuleReading | None = None
 
     def as_record(self) -> dict[str, object]:
         return self.record.as_record()
@@ -92,6 +95,8 @@ def run_shadow_evaluation(
     observations: tuple[SeriesObservation, ...] = (),
     conflicting_sources: bool = False,
     risk_parameters: RiskParameters = DEFAULT_RISK_PARAMETERS,
+    asset_module_inputs: Mapping[str, object] | None = None,
+    event_timing: Mapping[str, object] | None = None,
     config: AggregationConfig = DEFAULT_AGGREGATION,
     evaluated_at: datetime | None = None,
     observation_key: str = "",
@@ -185,6 +190,22 @@ def run_shadow_evaluation(
         data_confidence=confidence.data,
     )
 
+    # Asset-specific transmission diagnostic. Computed AFTER the direction is
+    # resolved, because it asks whether each channel is carrying that thesis --
+    # and it deliberately does not participate in resolving it. A module failure
+    # degrades the record to no asset-module section rather than blocking it.
+    asset_module: AssetModuleReading | None = None
+    module = module_for(instrument)
+    if module is not None and asset_module_inputs is not None:
+        try:
+            asset_module = module.evaluate(
+                thesis_direction=direction,
+                horizon=decision_horizon,
+                **dict(asset_module_inputs),
+            )
+        except Exception:
+            asset_module = None
+
     scenarios = build_scenario_set(
         direction=direction,
         readings=readings,
@@ -218,6 +239,8 @@ def run_shadow_evaluation(
         observations=observations,
         thesis=thesis,
         size=size,
+        asset_module=asset_module,
+        event_timing=event_timing,
         evaluated_at=moment,
         observation_key=observation_key,
     )
@@ -235,6 +258,7 @@ def run_shadow_evaluation(
         claim=claim,
         size=size,
         record=record,
+        asset_module=asset_module,
     )
 
 
