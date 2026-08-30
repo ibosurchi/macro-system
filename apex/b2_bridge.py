@@ -26,7 +26,7 @@ from .b2 import event_timing as event_timing_mod
 from .b2.enums import Direction, Horizon
 from .b2.horizons import HORIZON_EVALUATION_WINDOW
 from .b2.modules import fx as fx_module
-from .b2.modules import module_for
+from .b2.modules import module_for, registered_instruments
 from .b2.evaluate import ShadowEvaluation, run_shadow_evaluation, thesis_input_keys
 from .b2.predictions import (
     PredictionLog,
@@ -254,13 +254,31 @@ def shadow_enabled() -> bool:
     }
 
 
-def shadow_instruments() -> tuple[str, ...]:
-    """Instruments to observe. Deliberately one by default.
+def default_shadow_instruments() -> tuple[str, ...]:
+    """Every instrument with a registered Stage C asset module.
 
-    Widening this multiplies the per-hour cost, so it is an explicit operator
-    decision rather than a default.
+    Derived from the module registry rather than listed here, so the activated
+    set cannot drift away from the modules that actually exist.
     """
-    raw = str(core.get_secret("B2_SHADOW_INSTRUMENTS", "Gold"))
+    return registered_instruments()
+
+
+def shadow_instruments() -> tuple[str, ...]:
+    """Instruments to observe. Defaults to every registered asset module.
+
+    Multi-asset observation is close to free in this system: the production
+    daemon already computes tactical moves for every alertable asset and macro
+    scores for every configured currency in the SAME loop iteration, moments
+    before the hook runs, so B2 reads warm caches rather than issuing fresh
+    requests. Persistence is batched into a single write per tick (see
+    ``run_shadow_observation``), so the number of instruments does not multiply
+    the upload volume either.
+
+    ``B2_SHADOW_INSTRUMENTS`` still overrides, so an operator can narrow the set.
+    """
+    raw = str(core.get_secret("B2_SHADOW_INSTRUMENTS", "")).strip()
+    if not raw:
+        return default_shadow_instruments()
     return tuple(part.strip() for part in raw.split(",") if part.strip())
 
 
@@ -514,27 +532,40 @@ def observe_instrument(
     store: Any,
     now: datetime | None = None,
     horizon: Horizon = Horizon.TACTICAL,
+    shadow_log: ShadowLog | None = None,
 ) -> str:
     """Take at most one observation for this instrument in the current hour.
 
     Returns the outcome: written / duplicate_skipped / insufficient_data_skipped
     / unknown_instrument.
+
+    ``shadow_log`` lets a caller batch several instruments into one load and one
+    save. This matters a great deal: the whole log payload is rewritten on every
+    save, so saving per instrument would multiply the upload volume by the number
+    of instruments observed. When a log is supplied this function mutates it and
+    leaves persistence to the caller; when it is not, the original
+    load-append-save behaviour is preserved exactly.
     """
     moment = now or datetime.now(timezone.utc)
     key = observation_key(instrument, horizon, moment)
     bucket = int(moment.timestamp()) // OBSERVATION_BUCKET_SECONDS
     record_id = observation_record_id(key)
+    batched = shadow_log is not None
+
+    def _persist(log_to_save: ShadowLog) -> None:
+        if not batched:
+            save_shadow_log(store, log_to_save)
 
     # Cheapest possible duplicate check first: this process already did it.
     if _HANDLED_BUCKETS.get(instrument) == bucket:
         _bump("duplicate_skipped")
         return "duplicate_skipped"
 
-    log = load_shadow_log(store)
+    log = shadow_log if shadow_log is not None else load_shadow_log(store)
     if log.contains(record_id):
         _HANDLED_BUCKETS[instrument] = bucket
         log.bump("duplicate_skipped")
-        save_shadow_log(store, log)
+        _persist(log)
         _bump("duplicate_skipped")
         return "duplicate_skipped"
 
@@ -548,7 +579,7 @@ def observe_instrument(
         # observe, which is different from observing that evidence is missing.
         _HANDLED_BUCKETS[instrument] = bucket
         log.bump("insufficient_data_skipped")
-        save_shadow_log(store, log)
+        _persist(log)
         _bump("insufficient_data_skipped")
         return "insufficient_data_skipped"
 
@@ -579,13 +610,13 @@ def observe_instrument(
     except ShadowLogError:
         _HANDLED_BUCKETS[instrument] = bucket
         log.bump("duplicate_skipped")
-        save_shadow_log(store, log)
+        _persist(log)
         _bump("duplicate_skipped")
         return "duplicate_skipped"
 
     _HANDLED_BUCKETS[instrument] = bucket
     log.bump("written")
-    save_shadow_log(store, log)
+    _persist(log)
     _bump("written")
 
     # Pre-register the asset module's transmission chain so the claim can be
@@ -618,6 +649,13 @@ def run_shadow_observation(
     Never raises: every per-instrument failure is caught and counted, so one
     broken instrument cannot stop the others and nothing can propagate back into
     the production loop.
+
+    Persistence is batched. The shadow log is loaded once, every instrument
+    appends into that one in-memory log, and it is saved once at the end. This
+    is what keeps multi-asset observation write-neutral: the whole payload is
+    rewritten on each save, so saving per instrument would multiply upload
+    volume by the instrument count. A load or save failure is contained here and
+    costs at most one tick of observations, never the production loop.
     """
     _bump("attempted")
     if not shadow_enabled():
@@ -625,15 +663,53 @@ def run_shadow_observation(
         return {}
 
     backend = store if store is not None else ProductionShadowStore()
-    outcomes: dict[str, str] = {}
-    for instrument in shadow_instruments():
+    moment = now or datetime.now(timezone.utc)
+    bucket = int(moment.timestamp()) // OBSERVATION_BUCKET_SECONDS
+    instruments = shadow_instruments()
+
+    # Fast path first, before touching the store at all. On 59 of every 60 ticks
+    # nothing is due, and loading the log to discover that would mean reading the
+    # entire payload once a minute.
+    due = [i for i in instruments if _HANDLED_BUCKETS.get(i) != bucket]
+    outcomes: dict[str, str] = {
+        i: "duplicate_skipped" for i in instruments if i not in due
+    }
+    for _ in outcomes:
+        _bump("duplicate_skipped")
+    if not due:
+        return outcomes
+
+    try:
+        batch = load_shadow_log(backend)
+    except Exception:
+        _bump("exception_swallowed")
+        return {**outcomes, **{i: "exception_swallowed" for i in due}}
+
+    before = len(batch)
+
+    for instrument in due:
         try:
-            outcomes[instrument] = observe_instrument(
-                instrument, fred_key, channel_name, store=backend, now=now
+            outcome = observe_instrument(
+                instrument,
+                fred_key,
+                channel_name,
+                store=backend,
+                now=moment,
+                shadow_log=batch,
             )
         except Exception:
+            # One instrument failing must never stop the rest, and must never
+            # discard the observations already collected in this batch.
             _bump("exception_swallowed")
-            outcomes[instrument] = "exception_swallowed"
+            outcome = "exception_swallowed"
+        outcomes[instrument] = outcome
+
+    if len(batch) != before:
+        try:
+            save_shadow_log(backend, batch)
+        except Exception:
+            _bump("exception_swallowed")
+
     return outcomes
 
 
@@ -730,6 +806,7 @@ __all__ = [
     "HOOK_COUNTERS",
     "HOOK_STATS",
     "OBSERVATION_BUCKET_SECONDS",
+    "default_shadow_instruments",
     "PREDICTION_LOG_FILE",
     "PREDICTION_LOG_STATE_ID",
     "ProductionShadowStore",
