@@ -12,10 +12,17 @@ import unittest
 from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
 import pandas as pd
 from apex import production_core as core
+from state_isolation import isolate_durable_state
+
+# Redirect every durable state path into a temporary directory before any test
+# runs. Production persistence behaviour is unchanged; only this process writes
+# elsewhere, so a test run can never rewrite a real state file at the repo root.
+isolate_durable_state()
 
 
 # ---------------------------------------------------------------------------
