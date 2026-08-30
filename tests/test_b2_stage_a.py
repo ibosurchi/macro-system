@@ -24,10 +24,12 @@ from apex.b2 import (
     decision,
     enums,
     evaluate,
+    event_timing,
     execution,
     families,
     gates,
     horizons,
+    modules,
     predictions,
     regime,
     registry,
@@ -36,6 +38,11 @@ from apex.b2 import (
     shadow,
     thesis,
 )
+from apex.b2.modules import base as modules_base
+from apex.b2.modules import fx as modules_fx
+from apex.b2.modules import gold as modules_gold
+from apex.b2.modules import nasdaq as modules_nasdaq
+from apex.b2.modules import oil as modules_oil
 
 # Every module in the package. The purity constraints below apply to all of
 # them, so a module added in a later stage is covered automatically once it is
@@ -47,10 +54,17 @@ ALL_B2_MODULES = (
     decision,
     enums,
     evaluate,
+    event_timing,
     execution,
     families,
     gates,
     horizons,
+    modules,
+    modules_base,
+    modules_fx,
+    modules_gold,
+    modules_nasdaq,
+    modules_oil,
     predictions,
     regime,
     registry,
@@ -1019,6 +1033,7 @@ class TestStageASafetyConstraints(unittest.TestCase):
             "datetime",
             "enum",
             "hashlib",
+            "types",
             "typing",
         }
         for name in _b2_imported_modules():

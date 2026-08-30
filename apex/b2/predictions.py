@@ -130,8 +130,17 @@ def build_prediction(
     instrument: str,
     steps: tuple[TransmissionStep, ...],
     created_at: datetime | None = None,
+    identity_key: str = "",
 ) -> PredictionRecord:
-    """Create a prediction whose id is a content hash including its timestamp."""
+    """Create a prediction whose id is a content hash including its timestamp.
+
+    ``identity_key``, when supplied, becomes the sole basis of the id so a
+    caller can impose a deterministic registration identity -- for instance one
+    prediction per instrument per day. This does not weaken the anti-hindsight
+    guarantees: the record is still frozen, ``created_at`` still records the
+    true registration moment, outcomes still live in a separate collection, and
+    an outcome still cannot predate the prediction it resolves.
+    """
     if not steps:
         raise ValueError("A transmission prediction must contain at least one step.")
     indices = [s.index for s in steps]
@@ -139,7 +148,7 @@ def build_prediction(
         raise ValueError("Transmission steps must have unique indices.")
 
     stamped = _normalise(created_at or utcnow())
-    payload = "|".join(
+    payload = identity_key or "|".join(
         [
             stamped.isoformat(),
             horizon.value,

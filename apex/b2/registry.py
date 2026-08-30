@@ -68,6 +68,30 @@ class InactiveComponent:
     blocking_requirement: str = ""
 
 
+@dataclass(frozen=True)
+class AssetModuleComponent:
+    """An asset-specific transmission module.
+
+    Registered so its role is explicit and enforceable. An asset module is
+    ACTIVE NON-VOTING: it computes and conditions interpretation but never
+    contributes independent directional evidence, and it does not receive
+    voting power until incremental value over the universal core alone has been
+    demonstrated -- which no validation has yet done.
+    """
+
+    key: str
+    label: str
+    instrument: str
+    role: Role
+    rationale: str
+
+    def __post_init__(self) -> None:
+        if self.role is not Role.ASSET_SPECIFIC_MODULE:
+            raise ValueError(
+                f"{self.key}: an asset module must have role ASSET_SPECIFIC_MODULE"
+            )
+
+
 # ---------------------------------------------------------------------------
 # THE VOTING CORE -- 5 families, within the budget of ~6.
 #
@@ -342,6 +366,69 @@ DORMANT_COMPONENTS: tuple[InactiveComponent, ...] = (
         blocking_requirement="A production/quota dataset.",
     ),
     InactiveComponent(
+        key="crude_term_structure",
+        label="Crude Term Structure",
+        role=Role.DORMANT,
+        reason=(
+            "The project holds spot crude series only (DCOILWTICO/DCOILBRENTEU). "
+            "There is no futures curve, so backwardation and contango -- the "
+            "market's own read on physical tightness -- cannot be observed."
+        ),
+        blocking_requirement="A futures curve or at least a front/second-month spread.",
+    ),
+    InactiveComponent(
+        key="refinery_and_shipping",
+        label="Refinery Runs / Shipping Flows",
+        role=Role.DORMANT,
+        reason="No refinery utilisation, crack spread or freight data exists.",
+        blocking_requirement="A refinery/freight dataset.",
+    ),
+    InactiveComponent(
+        key="nasdaq_earnings_revisions",
+        label="Nasdaq Earnings / Estimate Revisions",
+        role=Role.DORMANT,
+        reason=(
+            "No earnings, estimate or revision data exists. News coverage of "
+            "results is sentiment about earnings, not an earnings dataset, and "
+            "is not promoted into this role."
+        ),
+        blocking_requirement="An estimates/revisions dataset.",
+    ),
+    InactiveComponent(
+        key="equity_liquidity_flows",
+        label="Equity Liquidity / Fund Flows",
+        role=Role.DORMANT,
+        reason="No fund-flow or equity-liquidity series exists in this project.",
+        blocking_requirement="A flows dataset.",
+    ),
+    InactiveComponent(
+        key="index_breadth_concentration",
+        label="Index Breadth / Concentration",
+        role=Role.DORMANT,
+        reason=(
+            "Only the index level (NASDAQ100) is available. Breadth and megacap "
+            "concentration need constituent data, which this project has none of."
+        ),
+        blocking_requirement="Constituent-level index data.",
+    ),
+    InactiveComponent(
+        key="central_bank_intervention",
+        label="FX Intervention",
+        role=Role.DORMANT,
+        reason="No intervention or reserve-operation data exists.",
+        blocking_requirement="An official intervention/reserves dataset.",
+    ),
+    InactiveComponent(
+        key="cross_currency_basis",
+        label="Cross-Currency Basis",
+        role=Role.DORMANT,
+        reason=(
+            "No basis-swap data exists. This is funding-market plumbing, which "
+            "remains unsupported across the whole architecture."
+        ),
+        blocking_requirement="A cross-currency basis series.",
+    ),
+    InactiveComponent(
         key="vintage_macro_data",
         label="Vintage / Revision-Aware Macro Data",
         role=Role.DORMANT,
@@ -459,6 +546,75 @@ WITHHELD_COMPONENTS: tuple[InactiveComponent, ...] = (
 )
 
 
+# ---------------------------------------------------------------------------
+# ASSET-SPECIFIC MODULES -- active, non-voting transmission diagnostics.
+#
+# Every driver in every one of these modules is a TRANSFORMATION of evidence
+# that already votes in the universal core, or is dormant for want of data. The
+# modules therefore add zero votes and the voting budget is untouched. That is
+# the intended outcome: the evidence that would be genuinely independent for
+# these instruments (official-sector demand, inventories, positioning,
+# earnings) is exactly the data this project does not have.
+# ---------------------------------------------------------------------------
+
+ASSET_MODULES: tuple[AssetModuleComponent, ...] = (
+    AssetModuleComponent(
+        key="gold_module_v1",
+        label="Gold transmission module",
+        instrument="Gold",
+        role=Role.ASSET_SPECIFIC_MODULE,
+        rationale=(
+            "Three channels -- real-rate, USD and safe-haven/news -- each a "
+            "restatement of evidence already voting in Policy / Real Rates, "
+            "Macro Activity and News / Geopolitical respectively. Diagnostic "
+            "only: it reports whether each channel is transmitting the thesis, "
+            "and never adds a vote."
+        ),
+    ),
+    AssetModuleComponent(
+        key="oil_module_v1",
+        label="Oil transmission module",
+        instrument="Oil",
+        role=Role.ASSET_SPECIFIC_MODULE,
+        rationale=(
+            "Three channels -- price/trend, USD and supply narrative -- "
+            "restating Directional, Macro Activity and News / Geopolitical "
+            "respectively. The supply channel is explicitly a narrative read: "
+            "physical inventories, OPEC output, refinery/shipping and term "
+            "structure have no data here and stay dormant rather than proxied."
+        ),
+    ),
+    AssetModuleComponent(
+        key="fx_module_v1",
+        label="FX transmission module",
+        instrument="USD,EUR,GBP,CAD,JPY,CHF,AUD,NZD",
+        role=Role.ASSET_SPECIFIC_MODULE,
+        rationale=(
+            "Supplies the relative read the universal core lacks, since "
+            "production scores each currency in isolation. Relative macro and "
+            "relative policy are differences of quantities that already vote, "
+            "and news is the domestic leg only. Exactly one counter currency "
+            "per instrument, so one body of evidence cannot surface repeatedly "
+            "across several comparisons."
+        ),
+    ),
+    AssetModuleComponent(
+        key="nasdaq_module_v1",
+        label="Nasdaq transmission module",
+        instrument="NDX",
+        role=Role.ASSET_SPECIFIC_MODULE,
+        rationale=(
+            "Three channels -- real-yield duration sensitivity, USD financial "
+            "conditions and growth-risk news -- restating Policy / Real Rates, "
+            "Macro Activity and News / Geopolitical. Price trend is "
+            "deliberately excluded because it already votes through the "
+            "Directional family; earnings revisions, liquidity flows and index "
+            "breadth are dormant."
+        ),
+    ),
+)
+
+
 def _validate_registry() -> None:
     """Enforce the budget and the anti-double-counting invariants at import time."""
     if len(VOTING_FAMILIES) > VOTING_BUDGET:
@@ -498,6 +654,15 @@ def _validate_registry() -> None:
     if not CRITICAL_FAMILY_KEYS <= set(keys):
         raise ValueError("CRITICAL_FAMILY_KEYS references an undeclared family")
 
+    module_keys = [m.key for m in ASSET_MODULES]
+    if len(set(module_keys)) != len(module_keys):
+        raise ValueError("Duplicate asset module keys")
+    # An asset module must never share an identity with a voting family or with
+    # an inactive component: they are different roles with different rules.
+    clash = set(module_keys) & (set(keys) | set(inactive_keys))
+    if clash:
+        raise ValueError(f"Asset modules clash with existing components: {sorted(clash)}")
+
 
 _validate_registry()
 
@@ -508,6 +673,10 @@ def voting_family_keys() -> tuple[str, ...]:
 
 def dormant_keys() -> tuple[str, ...]:
     return tuple(c.key for c in DORMANT_COMPONENTS)
+
+
+def asset_module_keys() -> tuple[str, ...]:
+    return tuple(m.key for m in ASSET_MODULES)
 
 
 def withheld_keys() -> tuple[str, ...]:
@@ -526,4 +695,7 @@ def describe_budget() -> dict[str, object]:
         "critical": sorted(CRITICAL_FAMILY_KEYS),
         "dormant": list(dormant_keys()),
         "withheld": list(withheld_keys()),
+        # Asset modules are listed separately from the voting core precisely
+        # because they add no votes to it.
+        "asset_modules": list(asset_module_keys()),
     }

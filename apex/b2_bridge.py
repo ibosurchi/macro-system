@@ -22,9 +22,18 @@ from typing import Any, Mapping, Sequence
 
 from . import production_core as core
 from .b2 import adapters
-from .b2.enums import Horizon
+from .b2 import event_timing as event_timing_mod
+from .b2.enums import Direction, Horizon
+from .b2.horizons import HORIZON_EVALUATION_WINDOW
+from .b2.modules import fx as fx_module
+from .b2.modules import module_for
 from .b2.evaluate import ShadowEvaluation, run_shadow_evaluation, thesis_input_keys
-from .b2.predictions import PredictionLog
+from .b2.predictions import (
+    PredictionLog,
+    PredictionLogError,
+    TransmissionStep,
+    build_prediction,
+)
 from .b2.shadow import ShadowLog, ShadowLogError
 
 #: New state ids. Existing ids and payload shapes are untouched.
@@ -217,6 +226,8 @@ HOOK_COUNTERS = (
     "exception_swallowed",
     "disabled",
     "unknown_instrument",
+    "prediction_registered",
+    "prediction_duplicate",
 )
 
 #: In-process counters for the running daemon. Mirrored into the shadow log's
@@ -264,18 +275,108 @@ def observation_record_id(key: str) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:20]
 
 
-#: Representative window positions for the event-risk gate, derived from the
-#: entry plan's OWN already-computed event tier (10 = clear, 6 = same session,
-#: 3 = close proximity, 0 = release window). These are the tier midpoints, not
-#: measured times: production exposes the tier, not the minutes, and inventing a
-#: precise countdown here would be fabricating precision the system does not
-#: have. Recorded in the shadow record so the coarseness is visible.
-_EVENT_POINTS_TO_MINUTES: dict[int, float | None] = {
-    10: None,
-    6: 240.0,
-    3: 60.0,
-    0: 0.0,
-}
+def _event_timing_for(instrument: str, now: datetime) -> event_timing_mod.EventTiming:
+    """True minutes to the nearest relevant high-impact event.
+
+    Reads the SAME cached rolling calendar production already fetches every
+    daemon iteration, with the same arguments, so no extra request is made and
+    no production calendar logic is touched. Relevance uses production's own
+    ``_get_asset_relevant_currencies``.
+
+    Any failure -- no calendar, an unparseable timestamp -- yields an explicit
+    unavailable result. Timing is never invented.
+    """
+    try:
+        events = core.fetch_forex_factory_calendar_rolling(3, 0)
+    except Exception:
+        return event_timing_mod.UNAVAILABLE_NO_CALENDAR
+    try:
+        currencies = core._get_asset_relevant_currencies(instrument)
+    except Exception:
+        currencies = set()
+    return event_timing_mod.minutes_to_nearest_event(events, currencies, now)
+
+
+def _rate_leg(composite: Mapping[str, Any] | None) -> float | None:
+    """The rate-category reading from a composite, or None.
+
+    Reads ``compute_composite``'s own rows; it does not recompute anything.
+    """
+    if not isinstance(composite, Mapping):
+        return None
+    rows = composite.get("rows")
+    if not isinstance(rows, Sequence):
+        return None
+    total = 0.0
+    weight_sum = 0.0
+    for row in rows:
+        if not isinstance(row, Mapping) or str(row.get("cat", "")) != "rate":
+            continue
+        try:
+            score = float(row.get("score"))
+            weight = float(row.get("weight") or 1.0)
+        except (TypeError, ValueError):
+            continue
+        if score != score or weight <= 0:
+            continue
+        total += score * weight
+        weight_sum += weight
+    return total / weight_sum if weight_sum > 0 else None
+
+
+def _fx_relative_inputs(
+    currency: str,
+    composite: Mapping[str, Any] | None,
+    fred_key: str,
+    channel_name: str,
+) -> dict[str, Any]:
+    """Counter-currency legs for the FX module.
+
+    Exactly one counter per currency, so the same domestic evidence cannot
+    appear across several comparisons. Every leg that fails to arrive is left
+    as None -- Unavailable -- rather than substituted.
+    """
+    counter = fx_module.counter_currency_for(currency)
+    result: dict[str, Any] = {
+        "fx_currency": currency,
+        "fx_counter_currency": counter,
+        "domestic_macro_score": (
+            composite.get("macro_score") if isinstance(composite, Mapping) else None
+        ),
+        "domestic_rate_score": _rate_leg(composite),
+        "counter_macro_score": None,
+        "counter_rate_score": None,
+        "counter_rate_substitution": "",
+    }
+    if counter is None:
+        return result
+
+    counter_composite = core.compute_composite(counter, fred_key, channel_name)
+    result["counter_macro_score"] = (
+        counter_composite.get("macro_score")
+        if isinstance(counter_composite, Mapping)
+        else None
+    )
+
+    if currency == "JPY":
+        # JPY's configured rate is a short policy rate and no JPY long bond is
+        # available here, so the US 10-year stands in on the counter side. This
+        # is the relationship the data actually supports, and it is recorded on
+        # the reading rather than presented as a matched-tenor differential.
+        us10y = core.fetch_fred(core.GOLD_SERIES["yield"], fred_key, limit=60)
+        if us10y is not None and not us10y.empty:
+            mtf = core.calc_mtf(us10y["value"].tail(36).tolist(), "rate")
+            if mtf:
+                result["counter_rate_score"] = mtf.get("score")
+                result["counter_rate_substitution"] = (
+                    "Counter rate leg uses US 10Y yield momentum (DGS10), not a "
+                    "matched-tenor JPY bond: no JPY long-bond series exists in "
+                    "this project."
+                )
+    else:
+        result["counter_rate_score"] = _rate_leg(counter_composite)
+
+    return result
 
 
 def _gather_production_inputs(
@@ -295,11 +396,17 @@ def _gather_production_inputs(
 
     rule_points: float | None = None
     ai_points: float | None = None
+    #: Instrument-specific extras the asset modules need, gathered only for the
+    #: instrument being observed so no unrelated work is done.
+    extra: dict[str, Any] = {}
 
     if instrument in core.CURRENCY_SERIES:
         macro_score = core._calc_currency_score_only(instrument, fred_key, channel_name)
         composite = core.compute_composite(instrument, fred_key, channel_name)
         rule_points = scores.get(instrument)
+        extra.update(
+            _fx_relative_inputs(instrument, composite, fred_key, channel_name)
+        )
     elif instrument == "Gold":
         macro_score, _, _ = core._calc_gold_score_only(fred_key, channel_name)
         composite = core.compute_composite("USD", fred_key, channel_name)
@@ -312,6 +419,9 @@ def _gather_production_inputs(
         macro_score, _ = core._calc_oil_score_only(fred_key, channel_name)
         composite = core.compute_composite("USD", fred_key, channel_name)
         rule_points = scores.get("Oil")
+        # The pure price-momentum leg, read from production's own cached
+        # function rather than recomputed from a second definition.
+        extra["oil_price_momentum"] = core._oil_price_momentum_score(fred_key)
     elif instrument == "NDX":
         macro_score, _ = core._calc_ndx_score_only(fred_key, channel_name)
         composite = core.compute_composite("USD", fred_key, channel_name)
@@ -327,16 +437,73 @@ def _gather_production_inputs(
         return core.calc_mtf((values.tail(tail) if tail else values).tolist(), category)
 
     tactical = core.compute_tactical_move(instrument, macro_score)
+    real_yield_mtf = _mtf(core.GOLD_SERIES["real_yield"], "rate", 36)
+    usd_macro_score = None
+    if instrument not in core.CURRENCY_SERIES and isinstance(composite, Mapping):
+        # For Gold/Oil/NDX the composite IS the USD composite, so its macro_score
+        # is the USD transmission input the asset modules need.
+        usd_macro_score = composite.get("macro_score")
 
     return {
         "composite": composite,
         "tactical": tactical,
         "rule_points": rule_points,
         "ai_points": ai_points,
-        "real_yield_mtf": _mtf(core.GOLD_SERIES["real_yield"], "rate", 36),
+        "real_yield_mtf": real_yield_mtf,
         "nominal_yield_mtf": _mtf(core.GOLD_SERIES["yield"], "rate", 36),
         "inflation_expectations_mtf": _mtf(core.GOLD_SERIES["inflation_exp"], "inflation", 36),
+        "usd_macro_score": usd_macro_score,
+        "news": news,
+        **extra,
     }
+
+
+def _asset_module_inputs(instrument: str, inputs: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Per-instrument keyword inputs for the registered asset module.
+
+    Returns None when no module is registered for this instrument, in which case
+    the record simply carries no asset-module section rather than a fabricated one.
+    """
+    module = module_for(instrument)
+    if module is None:
+        return None
+
+    news = inputs.get("news")
+    news = news if isinstance(news, Mapping) else {}
+
+    scores = news.get("scores")
+    scores = scores if isinstance(scores, Mapping) else {}
+
+    if instrument == "Gold":
+        return {
+            "real_yield_mtf": inputs.get("real_yield_mtf"),
+            "usd_macro_score": inputs.get("usd_macro_score"),
+            "gold_rule_points": news.get("gold_rule_points"),
+            "gold_ai_points": news.get("gold_ai_points"),
+        }
+    if instrument == "Oil":
+        return {
+            "oil_price_momentum": inputs.get("oil_price_momentum"),
+            "usd_macro_score": inputs.get("usd_macro_score"),
+            "oil_news_points": scores.get("Oil"),
+        }
+    if instrument == "NDX":
+        return {
+            "real_yield_mtf": inputs.get("real_yield_mtf"),
+            "usd_macro_score": inputs.get("usd_macro_score"),
+            "nasdaq_news_points": scores.get("Nasdaq"),
+        }
+    if instrument in fx_module.INSTRUMENTS:
+        return {
+            "currency": instrument,
+            "domestic_macro_score": inputs.get("domestic_macro_score"),
+            "counter_macro_score": inputs.get("counter_macro_score"),
+            "domestic_rate_score": inputs.get("domestic_rate_score"),
+            "counter_rate_score": inputs.get("counter_rate_score"),
+            "domestic_news_points": scores.get(instrument),
+            "counter_rate_substitution": inputs.get("counter_rate_substitution", ""),
+        }
+    return None
 
 
 def observe_instrument(
@@ -385,19 +552,8 @@ def observe_instrument(
         _bump("insufficient_data_skipped")
         return "insufficient_data_skipped"
 
-    entry_plan = None
-    if isinstance(inputs["tactical"], Mapping):
-        candidate = inputs["tactical"].get("entry_plan")
-        if isinstance(candidate, Mapping):
-            entry_plan = candidate
-
-    event_points = None
-    if isinstance(entry_plan, Mapping):
-        try:
-            event_points = int(entry_plan.get("event_points"))
-        except (TypeError, ValueError):
-            event_points = None
-    minutes_to_event = _EVENT_POINTS_TO_MINUTES.get(event_points) if event_points is not None else None
+    # True minutes-to-event from the production calendar's own timestamps.
+    timing = _event_timing_for(instrument, moment)
 
     evaluation = evaluate_from_production(
         instrument=instrument,
@@ -409,8 +565,11 @@ def observe_instrument(
         inflation_expectations_mtf=inputs["inflation_expectations_mtf"],
         rule_points=inputs["rule_points"],
         ai_points=inputs["ai_points"],
-        minutes_to_event=minutes_to_event,
-        is_top_tier_event=(event_points == 0),
+        minutes_to_event=timing.minutes,
+        is_top_tier_event=event_timing_mod.is_top_tier(timing),
+        event_label=timing.title or "scheduled event",
+        asset_module_inputs=_asset_module_inputs(instrument, inputs),
+        event_timing=timing.as_record(),
         evaluated_at=moment,
         observation_key=key,
     )
@@ -428,6 +587,22 @@ def observe_instrument(
     log.bump("written")
     save_shadow_log(store, log)
     _bump("written")
+
+    # Pre-register the asset module's transmission chain so the claim can be
+    # tested later. Deliberately AFTER the shadow record is safely persisted and
+    # separately guarded: a prediction-log failure must never cost us the
+    # observation we already have. Validation infrastructure only -- outcomes
+    # never feed back into production, and resolving them stays manual.
+    try:
+        register_transmission_prediction(
+            store,
+            instrument=instrument,
+            direction=evaluation.direction,
+            horizon=horizon,
+            now=moment,
+        )
+    except Exception:
+        _bump("exception_swallowed")
     return "written"
 
 
@@ -467,6 +642,90 @@ def get_shadow_hook_stats() -> dict[str, int]:
     return dict(HOOK_STATS)
 
 
+# ===========================================================================
+# TRANSMISSION PREDICTION REGISTRATION
+#
+# Asset modules declare the chain they claim their thesis should travel along.
+# Registering it in advance is what makes the claim testable later. This is
+# validation infrastructure only: prediction outcomes never feed back into any
+# production behaviour, and outcome attachment stays manual -- no scheduler is
+# created to resolve them.
+# ===========================================================================
+
+#: One prediction per instrument per UTC day. A transmission claim is a
+#: statement about a thesis, not about a particular hour, so re-registering it
+#: hourly would bloat the log without adding a testable claim.
+PREDICTION_BUCKET_SECONDS = 24 * 3600
+
+#: Expected windows per horizon, taken from the horizon's own evaluation window
+#: rather than invented: a step should show up well inside the horizon it
+#: belongs to, so each step is given a fraction of that window.
+_STEP_WINDOW_FRACTION = (0.25, 0.5)
+
+
+def prediction_identity(instrument: str, horizon: Horizon, moment: datetime) -> str:
+    bucket = int(moment.timestamp()) // PREDICTION_BUCKET_SECONDS
+    return f"b2pred|{instrument}|{horizon.value}|{bucket}"
+
+
+def register_transmission_prediction(
+    store: Any,
+    *,
+    instrument: str,
+    direction: Direction,
+    horizon: Horizon = Horizon.TACTICAL,
+    now: datetime | None = None,
+) -> str:
+    """Pre-register the asset module's transmission chain for this thesis.
+
+    Returns registered / duplicate_skipped / no_module / no_direction.
+    """
+    module = module_for(instrument)
+    chain = getattr(module, "TRANSMISSION_CHAIN", ()) if module else ()
+    if not chain:
+        return "no_module"
+    if not direction.is_directional:
+        # There is no claim to test without a directional thesis.
+        return "no_direction"
+
+    moment = now or datetime.now(timezone.utc)
+    identity = prediction_identity(instrument, horizon, moment)
+    window = HORIZON_EVALUATION_WINDOW[horizon]
+
+    steps = tuple(
+        TransmissionStep(
+            index=index,
+            source=source,
+            target=target,
+            expected_direction=direction,
+            expects_within=window
+            * _STEP_WINDOW_FRACTION[min(index, len(_STEP_WINDOW_FRACTION) - 1)],
+            rationale=rationale,
+        )
+        for index, (source, target, rationale) in enumerate(chain)
+    )
+
+    record = build_prediction(
+        horizon=horizon,
+        thesis_direction=direction,
+        instrument=instrument,
+        steps=steps,
+        created_at=moment,
+        identity_key=identity,
+    )
+
+    log = load_prediction_log(store)
+    try:
+        log.append(record)
+    except PredictionLogError:
+        _bump("prediction_duplicate")
+        return "duplicate_skipped"
+
+    save_prediction_log(store, log)
+    _bump("prediction_registered")
+    return "registered"
+
+
 __all__ = [
     "HOOK_COUNTERS",
     "HOOK_STATS",
@@ -480,10 +739,13 @@ __all__ = [
     "get_shadow_hook_stats",
     "load_prediction_log",
     "load_shadow_log",
+    "PREDICTION_BUCKET_SECONDS",
     "observation_key",
     "observation_record_id",
     "observe_instrument",
+    "prediction_identity",
     "record_evaluation",
+    "register_transmission_prediction",
     "run_shadow_observation",
     "save_prediction_log",
     "save_shadow_log",
