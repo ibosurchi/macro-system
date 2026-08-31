@@ -907,12 +907,13 @@ class TestScopeBoundary(unittest.TestCase):
             self.assertIn(axis, declared, axis)
 
     def test_no_metrics_module_exists(self):
+        """Metrics/aggregation stays forbidden; D-2C3 added exactly ``invalidation.py``."""
         present = {f for f in os.listdir(os.path.join(ROOT, "apex", "b2", "validation"))
                    if f.endswith(".py")}
         self.assertNotIn("metrics.py", present)
         self.assertEqual(present, {"__init__.py", "anchor.py", "bars.py",
                                    "config.py", "maturity.py", "outcome.py",
-                                   "resolve.py", "series.py"})
+                                   "resolve.py", "series.py", "invalidation.py"})
 
 
 class TestProductionSafety(unittest.TestCase):

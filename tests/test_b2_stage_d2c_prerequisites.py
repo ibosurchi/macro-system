@@ -737,14 +737,16 @@ class TestProductionSafety(unittest.TestCase):
 
         D-2C0/C1 predate the resolver, and this guard originally asserted its
         absence. D-2C2 authorized ``resolve.py``, so the expected set advanced;
-        the check itself is unchanged and still fails on any UNapproved module.
-        ``metrics.py`` stays forbidden -- aggregation belongs to a later stage.
+        D-2C3 authorized exactly one further module, ``invalidation.py``, for
+        setup invalidation and execution quality. The check itself is
+        unchanged and still fails on any UNapproved module. ``metrics.py``
+        stays forbidden -- aggregation belongs to a later stage.
         """
         present = {f for f in os.listdir(os.path.join(ROOT, "apex", "b2", "validation"))
                    if f.endswith(".py")}
         self.assertEqual(present, {"__init__.py", "anchor.py", "bars.py",
                                    "config.py", "maturity.py", "outcome.py",
-                                   "resolve.py", "series.py"})
+                                   "resolve.py", "series.py", "invalidation.py"})
         self.assertNotIn("metrics.py", present)
 
     def test_the_modified_modules_perform_no_io(self):
