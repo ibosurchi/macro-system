@@ -907,13 +907,15 @@ class TestScopeBoundary(unittest.TestCase):
             self.assertIn(axis, declared, axis)
 
     def test_no_metrics_module_exists(self):
-        """Metrics/aggregation stays forbidden; D-2C3 added exactly ``invalidation.py``."""
+        """Metrics/aggregation stays forbidden; D-2C3 added ``invalidation.py``,
+        D-2C4 added ``envelope.py``."""
         present = {f for f in os.listdir(os.path.join(ROOT, "apex", "b2", "validation"))
                    if f.endswith(".py")}
         self.assertNotIn("metrics.py", present)
         self.assertEqual(present, {"__init__.py", "anchor.py", "bars.py",
                                    "config.py", "maturity.py", "outcome.py",
-                                   "resolve.py", "series.py", "invalidation.py"})
+                                   "resolve.py", "series.py", "invalidation.py",
+                                   "envelope.py"})
 
 
 class TestProductionSafety(unittest.TestCase):
@@ -982,6 +984,11 @@ class TestProductionSafety(unittest.TestCase):
             self.assertNotIn(forbidden, names, forbidden)
 
     def test_no_production_module_imports_resolve(self):
+        """Nothing except resolve.py itself may import validation.resolve --
+        D-2C4's ``envelope.py`` is the ONE approved exception (Decision 4:
+        nominal imports of resolve.py/invalidation.py are how D-2C4 binds
+        their concrete result shapes into one envelope). Any OTHER importer
+        still fails this guard."""
         importers = []
         for folder, _dirs, files in os.walk(ROOT):
             if any(p in folder for p in ("_backup_", "_baseline_", ".git",
@@ -1003,7 +1010,7 @@ class TestProductionSafety(unittest.TestCase):
                     if isinstance(node, ast.Import) and any(
                             "validation.resolve" in a.name for a in node.names):
                         importers.append(filename)
-        self.assertEqual(sorted(set(importers)), [])
+        self.assertEqual(sorted(set(importers)), ["envelope.py"])
 
     def test_cross_asset_remains_withheld(self):
         with open(os.path.join(ROOT, "apex", "b2", "shadow.py"), encoding="utf-8") as h:
