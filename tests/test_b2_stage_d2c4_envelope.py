@@ -1011,6 +1011,10 @@ class TestPurity(unittest.TestCase):
         self.assertEqual(len(outcomes), 1)
 
     def test_no_module_outside_tests_imports_envelope(self):
+        """D-2C5's ``readiness.py`` is the ONE approved exception: it calls
+        the existing ``build_validation_envelope`` unchanged rather than
+        reimplementing D-2C4 hashing. Any OTHER importer still fails this
+        guard."""
         importers = []
         for folder, _dirs, files in os.walk(ROOT):
             if any(p in folder for p in ("_backup_", "_baseline_", ".git", "__pycache__", "tests")):
@@ -1030,7 +1034,7 @@ class TestPurity(unittest.TestCase):
                     if isinstance(node, ast.Import) and any(
                             "validation.envelope" in a.name for a in node.names):
                         importers.append(filename)
-        self.assertEqual(sorted(set(importers)), [])
+        self.assertEqual(sorted(set(importers)), ["readiness.py"])
 
 
 # ===========================================================================
@@ -1043,12 +1047,14 @@ class TestScope(unittest.TestCase):
         self.assertEqual(result.returncode, 0, f"{path} changed:\n{result.stdout[:800]}")
 
     def test_metrics_module_remains_absent(self):
+        """D-2C5 authorized exactly one further module, ``readiness.py``, for
+        lineage verification and per-observation readiness."""
         present = {f for f in os.listdir(os.path.join(ROOT, "apex", "b2", "validation"))
                    if f.endswith(".py")}
         self.assertNotIn("metrics.py", present)
         self.assertEqual(present, {"__init__.py", "anchor.py", "bars.py", "config.py",
                                    "maturity.py", "outcome.py", "resolve.py", "series.py",
-                                   "invalidation.py", "envelope.py"})
+                                   "invalidation.py", "envelope.py", "readiness.py"})
 
     def test_cross_asset_remains_withheld(self):
         with open(os.path.join(ROOT, "apex", "b2", "shadow.py"), encoding="utf-8") as h:

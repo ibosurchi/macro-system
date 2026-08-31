@@ -898,11 +898,12 @@ class TestPurityAndSafety(unittest.TestCase):
         """The validation surface may only grow by approved stage.
 
         ``resolve.py`` was authorized and added by D-2C2, ``invalidation.py``
-        by D-2C3, and ``envelope.py`` by D-2C4, so their presence is no longer
-        an accident. The guard's job is unchanged -- it still fails the moment
-        an UNapproved module appears -- so the boundary advanced rather than
-        the check weakening. ``metrics.py`` remains forbidden: aggregation is
-        a later stage and must not arrive early.
+        by D-2C3, ``envelope.py`` by D-2C4, and ``readiness.py`` by D-2C5, so
+        their presence is no longer an accident. The guard's job is unchanged
+        -- it still fails the moment an UNapproved module appears -- so the
+        boundary advanced rather than the check weakening. ``metrics.py``
+        remains forbidden: aggregation is a later stage and must not arrive
+        early.
         """
         validation_dir = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -913,7 +914,7 @@ class TestPurityAndSafety(unittest.TestCase):
             present,
             {"__init__.py", "anchor.py", "bars.py", "config.py",
              "maturity.py", "outcome.py", "resolve.py", "series.py", "invalidation.py",
-             "envelope.py"},
+             "envelope.py", "readiness.py"},
         )
         self.assertNotIn("metrics.py", present)
 
