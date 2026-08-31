@@ -376,14 +376,185 @@ def forward_bars(
 
     The cost is real and accepted: a 14-day window yields roughly nine or ten
     usable daily bars rather than fourteen.
+
+    D-2C0 note: the SELECTION rule above is unchanged, and deliberately so --
+    this function's open-time contract is relied on by the D-1 read path. Only
+    the tie-break was made total (``canonical_sort_key``), because two bars
+    sharing a timestamp previously came back in whatever order the caller
+    supplied. No bar is added or removed by that change; it removes an
+    arbitrary ordering, nothing else. Unlike ``path_bars`` this function does
+    NOT deduplicate or withhold conflicts, because its job is "which bars came
+    after the prediction", not "which bars are usable evidence".
     """
     start = _utc(evaluated_at)
     end = start + window
     selected = [
         bar for bar in bars if start < _utc(bar.bar_time) <= end
     ]
-    selected.sort(key=lambda bar: _utc(bar.bar_time))
+    selected.sort(key=canonical_sort_key)
     return tuple(selected)
+
+
+def canonical_sort_key(bar: MarketBar) -> tuple[datetime, str]:
+    """The TOTAL ordering key for market bars: ``(bar_time, observation_id)``.
+
+    ``bar_time`` alone is not a total order. Python's sort is stable, so two
+    bars sharing a timestamp keep whatever order the caller happened to supply
+    -- which made ``terminal_bar`` depend on input ordering rather than on the
+    market. Appending ``observation_id`` makes the order total and independent
+    of the caller.
+
+    ``captured_at`` is deliberately NOT a tiebreaker. When we happened to fetch
+    a bar says nothing about market time, and using it would make the answer
+    depend on our capture schedule.
+    """
+    return (_utc(bar.bar_time), bar.observation_id)
+
+
+@dataclass(frozen=True)
+class BarConflict:
+    """Two bars claiming one physical identity with DIFFERENT values.
+
+    An append-only store cannot arbitrate this: both rows assert they are the
+    same bar, and they disagree about what the market did. Neither may be
+    chosen, so the conflict is carried out to the caller intact.
+    """
+
+    observation_id: str
+    symbol: str
+    granularity: str
+    bar_time: datetime
+    content_hashes: tuple[str, ...]
+
+    def as_record(self) -> dict[str, Any]:
+        return {
+            "observation_id": self.observation_id,
+            "symbol": self.symbol,
+            "granularity": self.granularity,
+            "bar_time": canonical_bar_time_iso(self.bar_time),
+            "content_hashes": list(self.content_hashes),
+        }
+
+
+@dataclass(frozen=True)
+class BarCanonicalization:
+    """One deterministic view of a bar set, with everything it had to resolve."""
+
+    #: Deduplicated, totally ordered, conflict-free bars.
+    bars: tuple[MarketBar, ...]
+    #: Identical re-captures collapsed. Not an error: the store is append-only
+    #: and a repeated capture of a closed bar is expected.
+    duplicates_collapsed: int
+    #: Physical identities carrying contradictory values. Surfaced, never
+    #: arbitrated. Their bars are absent from ``bars``.
+    conflicts: tuple[BarConflict, ...]
+
+    @property
+    def has_conflict(self) -> bool:
+        return bool(self.conflicts)
+
+    @property
+    def conflicting_observation_ids(self) -> tuple[str, ...]:
+        return tuple(c.observation_id for c in self.conflicts)
+
+    def as_record(self) -> dict[str, Any]:
+        return {
+            "bars": len(self.bars),
+            "duplicates_collapsed": self.duplicates_collapsed,
+            "conflicts": [c.as_record() for c in self.conflicts],
+            "has_conflict": self.has_conflict,
+        }
+
+
+def canonicalize_bars(bars: Iterable[MarketBar]) -> BarCanonicalization:
+    """Reduce a bar set to one deterministic, conflict-free sequence.
+
+    Three distinct situations, kept distinct:
+
+    *   **Identical duplicate** -- same ``observation_id`` AND same
+        ``content_hash``. Idempotent re-capture of one immutable bar. Collapsed
+        to a single bar and counted. It must not inflate a path-bar count, move
+        a terminal selection, or shift a later excursion index.
+
+    *   **Conflicting duplicate** -- same ``observation_id``, DIFFERENT
+        ``content_hash``. Two payloads assert they are the same bar and
+        disagree. There is no honest way to choose: last-write-wins, newest
+        ``captured_at`` and averaging are all fabrication. The identity is
+        reported as a conflict and ALL of its bars are withheld, so no caller
+        can accidentally use one.
+
+    *   **Everything else** -- ordered by ``canonical_sort_key``.
+
+    Never raises, never mutates the input, and reads no clock.
+    """
+    grouped: dict[str, list[MarketBar]] = {}
+    for bar in bars:
+        grouped.setdefault(bar.observation_id, []).append(bar)
+
+    kept: list[MarketBar] = []
+    conflicts: list[BarConflict] = []
+    duplicates = 0
+
+    for observation_id, group in grouped.items():
+        hashes = {bar.content_hash for bar in group}
+        if len(hashes) > 1:
+            first = group[0]
+            conflicts.append(
+                BarConflict(
+                    observation_id=observation_id,
+                    symbol=first.symbol,
+                    granularity=first.granularity,
+                    bar_time=_utc(first.bar_time),
+                    # Sorted so the conflict record itself is order-independent.
+                    content_hashes=tuple(sorted(hashes)),
+                )
+            )
+            continue
+        duplicates += len(group) - 1
+        kept.append(group[0])
+
+    kept.sort(key=canonical_sort_key)
+    conflicts.sort(key=lambda c: (c.bar_time, c.observation_id))
+    return BarCanonicalization(
+        bars=tuple(kept),
+        duplicates_collapsed=duplicates,
+        conflicts=tuple(conflicts),
+    )
+
+
+@dataclass(frozen=True)
+class RowConversion:
+    """Rows read back from storage, split into usable bars and skipped rows.
+
+    ``row_to_bar`` already returns ``None`` for anything malformed, which is the
+    correct behaviour -- a half-formed bar in an outcome calculation is worse
+    than a reported gap. What was missing is the COUNT: a silently skipped row
+    is indistinguishable from a row that never existed, and a validation run has
+    to be able to say how much it discarded.
+    """
+
+    bars: tuple[MarketBar, ...]
+    malformed: int
+
+    def as_record(self) -> dict[str, Any]:
+        return {"bars": len(self.bars), "malformed_skipped": self.malformed}
+
+
+def bars_from_rows(rows: Iterable[Mapping[str, Any]]) -> RowConversion:
+    """Convert stored rows to bars, counting the ones that could not be read.
+
+    A malformed row is skipped and counted. It is never repaired, never given
+    substituted values, and never turned into a directional failure.
+    """
+    converted: list[MarketBar] = []
+    malformed = 0
+    for row in rows:
+        bar = row_to_bar(row)
+        if bar is None:
+            malformed += 1
+            continue
+        converted.append(bar)
+    return RowConversion(bars=tuple(converted), malformed=malformed)
 
 
 def path_bars(
@@ -410,16 +581,22 @@ def path_bars(
 
     Bars of unknown granularity are excluded: their close cannot be located, so
     whether they belong is unknowable rather than assumed.
+
+    The result is CANONICAL: identical re-captures are collapsed so they cannot
+    inflate the count, conflicting identities are withheld because no honest
+    choice exists between them, and ordering is total via
+    ``canonical_sort_key``. Supplying the same logical bars in any order yields
+    the same sequence. Use ``canonicalize_bars`` directly when the conflict and
+    duplicate accounting itself is needed.
     """
     start = _utc(evaluated_at)
     end = start + window
-    selected = [
+    eligible = [
         bar
         for bar in bars
         if start < _utc(bar.bar_time) and bar.closes_within(end)
     ]
-    selected.sort(key=lambda bar: _utc(bar.bar_time))
-    return tuple(selected)
+    return canonicalize_bars(eligible).bars
 
 
 def terminal_bar(

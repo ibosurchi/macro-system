@@ -25,8 +25,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass, field
 from datetime import timedelta
+from enum import Enum
 from typing import Any, Mapping
 
 from ..enums import Horizon
@@ -35,6 +37,7 @@ from .bars import (
     DEFAULT_MAX_GAP_MULTIPLE,
     DEFAULT_MIN_BARS_FOR_CADENCE,
     GRANULARITY_1D,
+    GRANULARITY_SECONDS,
 )
 
 #: Bumped when the MEANING of validation changes -- a new axis, a new
@@ -97,11 +100,24 @@ class ValidationConfig:
     min_bars_for_cadence: int = DEFAULT_MIN_BARS_FOR_CADENCE
 
     #: How "no meaningful move" is separated from a directional one.
-    #: RESEARCH DEFAULT. The multiple is deliberately NOT tuned: 0.5 ATR is half
-    #: a typical day's range, which is a structural statement about noise, not a
-    #: fitted threshold. D-2B does not apply it; D-2C will.
+    #: RESEARCH DEFAULT, unchanged at 0.5. It is a multiple of ONE HORIZON
+    #: SIGMA, not of a raw intraday range -- see ``neutral_band`` for why the
+    #: distinction is load-bearing.
     neutral_band_mode: str = NEUTRAL_BAND_ATR
     neutral_band_atr_multiple: float = 0.5
+
+    #: The period count behind production's stored ATR. Declared here so the
+    #: reference DURATION of the anchor's ATR is structural and versioned
+    #: rather than a magic "70 minutes" buried in a formula:
+    #:
+    #:     atr_reference_seconds = atr_period_bars x anchor_granularity_seconds
+    #:
+    #: 14 mirrors ``_build_macro_entry_plan``'s ``rolling(14)``. This is a
+    #: VALIDATION-SIDE RESEARCH DEFAULT recording what production computes; it
+    #: does not configure production and cannot change how production's ATR is
+    #: calculated. If production's ATR period ever changes, this must be
+    #: updated deliberately and the config version bumped.
+    atr_period_bars: int = 14
 
     #: Whether a substituted market series may resolve an observation at all.
     #: When True the observation resolves and is STAMPED, landing in the
@@ -130,6 +146,8 @@ class ValidationConfig:
             )
         if float(self.neutral_band_atr_multiple) < 0:
             raise ValueError("neutral_band_atr_multiple cannot be negative.")
+        if int(self.atr_period_bars) < 1:
+            raise ValueError("atr_period_bars must be at least 1.")
         if not self.horizon_windows:
             raise ValueError("A validation config must declare horizon windows.")
 
@@ -156,6 +174,7 @@ class ValidationConfig:
             "min_bars_for_cadence": int(self.min_bars_for_cadence),
             "neutral_band_mode": str(self.neutral_band_mode),
             "neutral_band_atr_multiple": float(self.neutral_band_atr_multiple),
+            "atr_period_bars": int(self.atr_period_bars),
             "allow_series_substitution": bool(self.allow_series_substitution),
             "allow_reconstructed_anchor": bool(self.allow_reconstructed_anchor),
         }
@@ -194,6 +213,252 @@ class ValidationConfig:
 DEFAULT_VALIDATION_CONFIG = ValidationConfig()
 
 
+# ===========================================================================
+# NEUTRAL BAND -- horizon-scaled, configuration-derived
+#
+# The band separates "no material move" from a directional one. It lives here
+# rather than in a resolver because it is entirely determined by the versioned
+# configuration plus point-in-time scalars already captured on the anchor: no
+# market path, no clock, no outcome. Computing it is not resolving anything.
+#
+# WHY SCALING IS REQUIRED
+# -----------------------
+# The stored ``atr`` is production's 14-period ATR of FIVE-MINUTE bars -- about
+# seventy minutes of range. Comparing it directly against a FOURTEEN-DAY move
+# understates the band by a factor of ~17: it produced roughly 0.18% for the
+# audited sample, so essentially every observation would resolve directional on
+# noise and NEUTRAL_WITHIN_BAND would never fire.
+#
+# The correction reuses production's OWN sqrt-time rule rather than inventing
+# one. ``compute_tactical_move`` normalises by ``vol5 * sqrt(bars)``; the same
+# principle scales a short-window range to a longer horizon. Applied to the
+# audited sample the ATR mode gives ~3.06% and the volatility mode ~3.81% --
+# two independent routes agreeing within 1.25x, which is the evidence that the
+# scaling is principled rather than a fudge.
+#
+# The multiple k is unchanged at 0.5 and remains a VERSIONED RESEARCH DEFAULT.
+# It is not a production trading threshold and configures nothing in production.
+# ===========================================================================
+
+
+class BandMode(Enum):
+    """Which volatility source produced the band actually used."""
+
+    ATR = NEUTRAL_BAND_ATR
+    VOLATILITY_SCALE = NEUTRAL_BAND_VOLATILITY_SCALE
+    UNAVAILABLE = "unavailable"
+
+
+class BandUnavailableReason(Enum):
+    """Why no band could be produced. Never a silent default."""
+
+    NO_USABLE_VOLATILITY = "no_usable_volatility"
+    UNKNOWN_ANCHOR_GRANULARITY = "unknown_anchor_granularity"
+    UNKNOWN_HORIZON = "unknown_horizon"
+    NON_POSITIVE_HORIZON = "non_positive_horizon"
+
+
+def _finite_positive(value: Any) -> float | None:
+    """A usable positive magnitude, or None. NaN/inf/<=0 are all unusable."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number or number in (float("inf"), float("-inf")):
+        return None
+    return number if number > 0.0 else None
+
+
+@dataclass(frozen=True)
+class NeutralBand:
+    """The horizon-scaled neutral band, with everything needed to audit it.
+
+    Both candidate values are carried even when only one is selected, so a
+    later reader can see what the alternative mode would have said without
+    recomputing anything. All band values are FRACTIONAL RETURNS, directly
+    comparable to a terminal return.
+    """
+
+    mode: BandMode
+    band: float | None
+    band_atr: float | None
+    band_volatility: float | None
+    k: float
+    atr: float | None
+    volatility_scale: float | None
+    analysis_price: float | None
+    anchor_granularity: str
+    anchor_granularity_seconds: int | None
+    atr_period_bars: int
+    atr_reference_seconds: float | None
+    horizon: str
+    horizon_seconds: float | None
+    config_version: str
+    config_hash: str
+    reason: BandUnavailableReason | None = None
+
+    @property
+    def is_available(self) -> bool:
+        return self.mode is not BandMode.UNAVAILABLE and self.band is not None
+
+    def as_record(self) -> dict[str, Any]:
+        return {
+            "band_mode": self.mode.value,
+            "band": self.band,
+            "band_atr": self.band_atr,
+            "band_volatility": self.band_volatility,
+            "k": self.k,
+            "atr": self.atr,
+            "volatility_scale": self.volatility_scale,
+            "analysis_price": self.analysis_price,
+            "anchor_granularity": self.anchor_granularity,
+            "anchor_granularity_seconds": self.anchor_granularity_seconds,
+            "atr_period_bars": self.atr_period_bars,
+            "atr_reference_seconds": self.atr_reference_seconds,
+            "horizon": self.horizon,
+            "horizon_seconds": self.horizon_seconds,
+            "band_available": self.is_available,
+            "band_unavailable_reason": self.reason.value if self.reason else None,
+            "validation_config_version": self.config_version,
+            "validation_config_hash": self.config_hash,
+            "status": "VERSIONED RESEARCH DEFAULT -- NOT CALIBRATED",
+        }
+
+
+def neutral_band(
+    *,
+    horizon: str | Horizon,
+    anchor_granularity: str,
+    atr: Any = None,
+    volatility_scale: Any = None,
+    analysis_price: Any = None,
+    config: "ValidationConfig | None" = None,
+) -> NeutralBand:
+    """The horizon-scaled neutral band for one observation.
+
+    Pure: no clock, no market path, no I/O, no randomness. Every input is a
+    point-in-time scalar already captured on the anchor at evaluation time --
+    nothing here can reach a future volatility, and no reconstructed value is
+    admissible.
+
+    ATR mode::
+
+        atr_reference_seconds = atr_period_bars x anchor_granularity_seconds
+        band_atr = k x atr x sqrt(horizon_seconds / atr_reference_seconds)
+                     / analysis_price          -> fractional return
+
+    Volatility mode::
+
+        band_volatility = k x volatility_scale
+                            x sqrt(horizon_seconds / anchor_granularity_seconds)
+
+    ``volatility_scale`` is production's ``vol5``, a per-bar RETURN standard
+    deviation, so it is already fractional and needs no price to normalise it.
+    That asymmetry matters: a missing ``analysis_price`` blocks the ATR mode
+    only, and the volatility mode can still serve.
+
+    Selection follows ``config.neutral_band_mode``, falling back to the other
+    mode when the configured one has no usable input. When neither does, the
+    result is explicitly UNAVAILABLE with a reason -- never a fabricated default
+    and never a division by zero.
+    """
+    settings = config or DEFAULT_VALIDATION_CONFIG
+    horizon_key = horizon.value if isinstance(horizon, Horizon) else str(horizon)
+    granularity_key = str(anchor_granularity or "")
+    granularity_seconds = GRANULARITY_SECONDS.get(granularity_key)
+
+    k = float(settings.neutral_band_atr_multiple)
+    period_bars = int(settings.atr_period_bars)
+    usable_atr = _finite_positive(atr)
+    usable_vol = _finite_positive(volatility_scale)
+    usable_price = _finite_positive(analysis_price)
+
+    window = settings.window_for(horizon_key)
+    horizon_seconds = window.total_seconds() if window is not None else None
+
+    def unavailable(reason: BandUnavailableReason) -> NeutralBand:
+        return NeutralBand(
+            mode=BandMode.UNAVAILABLE,
+            band=None,
+            band_atr=None,
+            band_volatility=None,
+            k=k,
+            atr=usable_atr,
+            volatility_scale=usable_vol,
+            analysis_price=usable_price,
+            anchor_granularity=granularity_key,
+            anchor_granularity_seconds=granularity_seconds,
+            atr_period_bars=period_bars,
+            atr_reference_seconds=(
+                float(period_bars * granularity_seconds)
+                if granularity_seconds
+                else None
+            ),
+            horizon=horizon_key,
+            horizon_seconds=horizon_seconds,
+            config_version=settings.version,
+            config_hash=settings.config_hash,
+            reason=reason,
+        )
+
+    if window is None:
+        return unavailable(BandUnavailableReason.UNKNOWN_HORIZON)
+    if horizon_seconds is None or horizon_seconds <= 0:
+        return unavailable(BandUnavailableReason.NON_POSITIVE_HORIZON)
+    if not granularity_seconds:
+        return unavailable(BandUnavailableReason.UNKNOWN_ANCHOR_GRANULARITY)
+
+    atr_reference_seconds = float(period_bars * granularity_seconds)
+
+    band_atr: float | None = None
+    if usable_atr is not None and usable_price is not None:
+        scale = math.sqrt(horizon_seconds / atr_reference_seconds)
+        band_atr = (k * usable_atr * scale) / usable_price
+
+    band_volatility: float | None = None
+    if usable_vol is not None:
+        scale = math.sqrt(horizon_seconds / float(granularity_seconds))
+        band_volatility = k * usable_vol * scale
+
+    preferred = (
+        BandMode.ATR
+        if settings.neutral_band_mode == NEUTRAL_BAND_ATR
+        else BandMode.VOLATILITY_SCALE
+    )
+    by_mode = {BandMode.ATR: band_atr, BandMode.VOLATILITY_SCALE: band_volatility}
+    fallback = (
+        BandMode.VOLATILITY_SCALE if preferred is BandMode.ATR else BandMode.ATR
+    )
+
+    if by_mode[preferred] is not None:
+        selected = preferred
+    elif by_mode[fallback] is not None:
+        selected = fallback
+    else:
+        return unavailable(BandUnavailableReason.NO_USABLE_VOLATILITY)
+
+    return NeutralBand(
+        mode=selected,
+        band=by_mode[selected],
+        band_atr=band_atr,
+        band_volatility=band_volatility,
+        k=k,
+        atr=usable_atr,
+        volatility_scale=usable_vol,
+        analysis_price=usable_price,
+        anchor_granularity=granularity_key,
+        anchor_granularity_seconds=granularity_seconds,
+        atr_period_bars=period_bars,
+        atr_reference_seconds=atr_reference_seconds,
+        horizon=horizon_key,
+        horizon_seconds=horizon_seconds,
+        config_version=settings.version,
+        config_hash=settings.config_hash,
+    )
+
+
 __all__ = [
     "CADENCE_DEFAULTS_SOURCE",
     "DEFAULT_VALIDATION_CONFIG",
@@ -202,5 +467,9 @@ __all__ = [
     "NEUTRAL_BAND_MODES",
     "NEUTRAL_BAND_VOLATILITY_SCALE",
     "VALIDATION_CONFIG_VERSION",
+    "BandMode",
+    "BandUnavailableReason",
+    "NeutralBand",
     "ValidationConfig",
+    "neutral_band",
 ]

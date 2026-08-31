@@ -152,6 +152,20 @@ class ExclusionReason(Enum):
     SERIES_SUBSTITUTION_DISALLOWED = "series_substitution_disallowed"
     RECONSTRUCTED_ANCHOR_DISALLOWED = "reconstructed_anchor_disallowed"
 
+    # -- D-2C0/C1 additions ------------------------------------------------
+    #: Two stored bars claim one physical identity and carry different values.
+    #: There is no honest way to choose between contradictory immutable
+    #: evidence, so the whole observation is excluded rather than resolved from
+    #: an arbitrarily selected one.
+    BAR_CONTENT_CONFLICT = "bar_content_conflict"
+    #: One or more stored rows could not be read back as a bar. Counted so a
+    #: silently discarded row is distinguishable from a row that never existed.
+    #: Never a directional failure and never repaired.
+    MALFORMED_BAR_SKIPPED = "malformed_bar_skipped"
+    #: ``evaluated_at`` lies in the future relative to the reference moment.
+    #: The window has not started, which is not the same as being over-mature.
+    CLOCK_SKEW = "clock_skew"
+
 
 @dataclass(frozen=True)
 class ExcursionMeasures:
