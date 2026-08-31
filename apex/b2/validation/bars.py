@@ -34,6 +34,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from typing import Any, Iterable, Mapping, Sequence
 
 #: The only price source Stage D-1 uses, and the endpoint production already
@@ -58,6 +59,28 @@ _IDENTITY_SEPARATOR = "|"
 
 #: Guard matching production's ``np.maximum(x, 1e-12)`` in _tactical_analysis_ohlc.
 _RECIPROCAL_FLOOR = 1e-12
+
+# ---------------------------------------------------------------------------
+# CADENCE DEFAULTS -- VERSIONED RESEARCH DEFAULTS, not architectural truth.
+#
+# These are the single definition of the two cadence numbers. ``config.py``
+# READS them and records them alongside its version rather than restating them,
+# for the same reason the horizon windows are read from ``horizons.py``: a
+# second copy is a second definition, and the two would eventually disagree
+# without anything failing.
+# ---------------------------------------------------------------------------
+
+#: How many multiples of a series' own cadence may separate the last usable bar
+#: from the window end before the window is called incomplete. At 2.5 a daily
+#: series tolerates a normal weekend (a Friday close is 1.5-2 days from a
+#: Sunday window end) while still catching a genuine multi-day outage.
+#: RESEARCH DEFAULT -- chosen to span a weekend, not fitted to any result.
+DEFAULT_MAX_GAP_MULTIPLE = 2.5
+
+#: Bars required before a cadence may be ESTIMATED from observation. Below this
+#: the estimate is refused outright rather than computed from one or two gaps.
+#: RESEARCH DEFAULT.
+DEFAULT_MIN_BARS_FOR_CADENCE = 5
 
 
 class MarketObservationError(ValueError):
@@ -115,6 +138,27 @@ def canonical_bar_content_hash(
         separators=(",", ":"),
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
+
+
+def bar_close_time(bar_time: datetime, granularity: str) -> datetime | None:
+    """When this bar's period ENDS.
+
+    ``bar_time`` is the bar's OPEN. The distinction is load-bearing and is the
+    reason this function exists rather than being inlined: a daily bar opening
+    inside a validation window can still be CLOSING up to a full session after
+    that window ends, and using its close as a terminal value would read a price
+    from beyond the horizon that was actually claimed.
+
+    Live data makes this concrete: the stored bars do not open at midnight. FX,
+    CME futures and ICE futures each open at their own UTC offset, so "the bar
+    for day D" is not a calendar day and cannot be treated as one.
+
+    Returns None for an unknown granularity -- never a guessed duration.
+    """
+    period = GRANULARITY_SECONDS.get(str(granularity))
+    if not period:
+        return None
+    return _utc(bar_time) + timedelta(seconds=period)
 
 
 def bar_is_final(
@@ -203,6 +247,26 @@ class MarketBar:
     @property
     def bar_time_iso(self) -> str:
         return canonical_bar_time_iso(self.bar_time)
+
+    @property
+    def bar_close_time(self) -> datetime | None:
+        """When this bar's period ends. See ``bar_close_time`` above."""
+        return bar_close_time(self.bar_time, self.granularity)
+
+    @property
+    def bar_close_time_iso(self) -> str | None:
+        closes = self.bar_close_time
+        return canonical_bar_time_iso(closes) if closes is not None else None
+
+    def closes_within(self, window_end: datetime) -> bool:
+        """Whether this bar's period ends at or before ``window_end``.
+
+        A bar whose close falls outside the window is not evidence about that
+        window. Unknown granularity is treated as NOT within: an unmeasurable
+        bar is excluded rather than admitted on an assumption.
+        """
+        closes = self.bar_close_time
+        return closes is not None and closes <= _utc(window_end)
 
     @property
     def observation_id(self) -> str:
@@ -322,36 +386,212 @@ def forward_bars(
     return tuple(selected)
 
 
+def path_bars(
+    bars: Iterable[MarketBar],
+    *,
+    evaluated_at: datetime,
+    window: timedelta,
+) -> tuple[MarketBar, ...]:
+    """The bars that may be used as OUTCOME EVIDENCE for one observation.
+
+    Stricter than ``forward_bars`` at BOTH ends, and deliberately a separate
+    function rather than a change to it. ``forward_bars`` bounds by bar OPEN
+    time, which is the correct rule for asking "which bars came after the
+    prediction". This asks a different question -- "which bars are wholly
+    contained in the claimed horizon" -- and needs both:
+
+        bar_time       >  evaluated_at     (nothing straddling the prediction)
+        bar_close_time <= window_end       (nothing closing beyond the horizon)
+
+    The second condition is the one ``forward_bars`` lacks. Without it a daily
+    bar opening one minute before the window end contributes a close taken up
+    to a full session later, which quietly extends every horizon the system
+    claims to be testing.
+
+    Bars of unknown granularity are excluded: their close cannot be located, so
+    whether they belong is unknowable rather than assumed.
+    """
+    start = _utc(evaluated_at)
+    end = start + window
+    selected = [
+        bar
+        for bar in bars
+        if start < _utc(bar.bar_time) and bar.closes_within(end)
+    ]
+    selected.sort(key=lambda bar: _utc(bar.bar_time))
+    return tuple(selected)
+
+
+def terminal_bar(
+    bars: Iterable[MarketBar],
+    *,
+    evaluated_at: datetime,
+    window: timedelta,
+) -> MarketBar | None:
+    """The last bar wholly inside the horizon -- the terminal value's source.
+
+    None when the window contains no usable bar. None means unresolved; it is
+    never a zero return and never a failed prediction.
+    """
+    selected = path_bars(bars, evaluated_at=evaluated_at, window=window)
+    return selected[-1] if selected else None
+
+
+class CadenceBasis(Enum):
+    """How a series' cadence was arrived at. Never left implicit."""
+
+    #: Measured from the series' own inter-bar gaps.
+    OBSERVED_MEDIAN = "observed_median"
+    #: Too few bars to measure. The estimate is REFUSED, not approximated.
+    INSUFFICIENT_HISTORY = "insufficient_history"
+    #: The granularity itself is unknown, so no period can be established.
+    UNKNOWN_GRANULARITY = "unknown_granularity"
+
+
+@dataclass(frozen=True)
+class CadenceEstimate:
+    """A series' observed publication cadence, or an explicit refusal."""
+
+    seconds: float | None
+    basis: CadenceBasis
+    samples: int
+
+    @property
+    def is_known(self) -> bool:
+        return self.seconds is not None and self.seconds > 0.0
+
+    def as_record(self) -> dict[str, Any]:
+        return {
+            "cadence_seconds": self.seconds,
+            "cadence_basis": self.basis.value,
+            "cadence_samples": self.samples,
+        }
+
+
+def _median(values: Sequence[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2 == 1:
+        return float(ordered[middle])
+    return (float(ordered[middle - 1]) + float(ordered[middle])) / 2.0
+
+
+def estimate_cadence(
+    bars: Sequence[MarketBar],
+    *,
+    min_bars: int = DEFAULT_MIN_BARS_FOR_CADENCE,
+) -> CadenceEstimate:
+    """Estimate one series' publication cadence from its own bars.
+
+    The MEDIAN inter-bar gap, not the mean: a weekend triples the Friday gap
+    and a holiday can quadruple it, and a mean would let those outliers inflate
+    the cadence until a genuine outage looked normal. The median answers the
+    question that actually matters -- "how often does this series usually
+    print" -- and is unmoved by a handful of long gaps.
+
+    Below ``min_bars`` the estimate is REFUSED rather than computed. Two bars
+    would produce a single gap that is as likely to be a weekend as a cadence,
+    and a wrong cadence is worse than an absent one: it would silently pass or
+    silently fail every coverage check that followed.
+
+    Callers must pass ONE series (one symbol at one granularity). Mixing series
+    would measure the interleaving, not any real cadence.
+    """
+    usable = [b for b in bars if b.granularity in GRANULARITY_SECONDS]
+    if not usable:
+        return CadenceEstimate(None, CadenceBasis.UNKNOWN_GRANULARITY, 0)
+
+    ordered = sorted({_utc(b.bar_time) for b in usable})
+    gaps = [
+        (later - earlier).total_seconds()
+        for earlier, later in zip(ordered, ordered[1:])
+        if (later - earlier).total_seconds() > 0
+    ]
+
+    if len(ordered) < max(2, int(min_bars)) or not gaps:
+        return CadenceEstimate(
+            None, CadenceBasis.INSUFFICIENT_HISTORY, len(gaps)
+        )
+
+    return CadenceEstimate(_median(gaps), CadenceBasis.OBSERVED_MEDIAN, len(gaps))
+
+
 def coverage(
     bars: Sequence[MarketBar],
     *,
     evaluated_at: datetime,
     window: timedelta,
     now: datetime,
+    max_gap_multiple: float = DEFAULT_MAX_GAP_MULTIPLE,
+    min_bars_for_cadence: int = DEFAULT_MIN_BARS_FOR_CADENCE,
 ) -> dict[str, Any]:
     """Whether the forward window is covered, and how it is not.
 
-    Distinguishes the two reasons a window can be incomplete, because they mean
+    Distinguishes the reasons a window can be incomplete, because they mean
     opposite things: forward time that has not yet elapsed is the system working
     as designed, while an elapsed window with missing bars is a capture failure.
     Neither may ever become an incorrect prediction.
+
+    **Coverage is judged against the series' OWN cadence, never against the
+    calendar.** The previous rule allowed the last bar to sit up to one wall
+    clock day short of the window end. That silently failed every window ending
+    on a Sunday: the last bar is Friday's, which is more than a day from a
+    Sunday close, so a complete FX history was reported as a gap. Because the
+    shadow daemon observes hourly, that removed roughly one day in seven of all
+    evidence -- and removed it on a CALENDAR-CORRELATED basis, which is a
+    sampling bias rather than a random loss.
+
+    Measuring the trailing gap in multiples of the series' own median inter-bar
+    gap absorbs weekends and holidays without a holiday calendar, and without
+    this project inventing one it does not have.
+
+    When cadence cannot be measured the estimate is refused (see
+    ``estimate_cadence``) and the granularity's own period is used as a
+    STRUCTURAL LOWER BOUND -- a ``1d`` series cannot print more often than daily
+    by definition. That is a property of the granularity, not an inference about
+    the market, and ``cadence_basis`` records which of the two was used so a
+    reader is never left to assume.
     """
     start = _utc(evaluated_at)
     end = start + window
     reference = _utc(now)
-    selected = forward_bars(bars, evaluated_at=start, window=window)
+    # Outcome evidence, so the close-bounded rule applies: a bar closing beyond
+    # the horizon is not evidence about that horizon.
+    selected = path_bars(bars, evaluated_at=start, window=window)
     elapsed = reference >= end
+
+    cadence = estimate_cadence(list(bars), min_bars=min_bars_for_cadence)
+    tolerance_seconds: float | None = None
+    trailing_gap_seconds: float | None = None
 
     if not selected:
         status = "unresolved_no_bars" if elapsed else "unresolved_window_open"
     elif not elapsed:
         status = "unresolved_window_open"
-    elif _utc(selected[-1].bar_time) + timedelta(
-        seconds=GRANULARITY_SECONDS.get(selected[-1].granularity, 0)
-    ) < end - timedelta(days=1):
-        status = "unresolved_coverage_gap"
     else:
-        status = "resolvable"
+        last_close = selected[-1].bar_close_time
+        if last_close is None:
+            status = "unresolved_coverage_gap"
+        else:
+            if cadence.is_known:
+                cadence_seconds = float(cadence.seconds)
+            else:
+                # Structural lower bound from the granularity itself.
+                cadence_seconds = float(
+                    GRANULARITY_SECONDS.get(selected[-1].granularity, 0)
+                )
+            if cadence_seconds <= 0:
+                status = "unresolved_coverage_gap"
+            else:
+                tolerance_seconds = float(max_gap_multiple) * cadence_seconds
+                trailing_gap_seconds = (end - last_close).total_seconds()
+                status = (
+                    "resolvable"
+                    if trailing_gap_seconds <= tolerance_seconds
+                    else "unresolved_coverage_gap"
+                )
 
     return {
         "status": status,
@@ -361,4 +601,11 @@ def coverage(
         "bars": len(selected),
         "first_bar": selected[0].bar_time_iso if selected else None,
         "last_bar": selected[-1].bar_time_iso if selected else None,
+        "last_bar_close": (
+            selected[-1].bar_close_time_iso if selected else None
+        ),
+        "trailing_gap_seconds": trailing_gap_seconds,
+        "tolerance_seconds": tolerance_seconds,
+        "max_gap_multiple": float(max_gap_multiple),
+        **cadence.as_record(),
     }
