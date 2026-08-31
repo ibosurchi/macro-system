@@ -41,6 +41,7 @@ SUITE_MODULES = (
     "tests.test_b2_stage_c_integration",
     "tests.test_multi_asset_activation",
     "tests.test_b2_storage_v2",
+    "tests.test_b2_stage_d_storage",
 )
 
 

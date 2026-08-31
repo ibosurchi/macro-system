@@ -33,6 +33,7 @@ from .b2.horizons import HORIZON_EVALUATION_WINDOW
 from .b2.modules import fx as fx_module
 from .b2.modules import module_for, registered_instruments
 from .b2.evaluate import ShadowEvaluation, run_shadow_evaluation, thesis_input_keys
+from .b2.validation.anchor import SymbolConvention, build_market_anchor
 from .b2.predictions import (
     PredictionLog,
     PredictionLogError,
@@ -610,9 +611,19 @@ class SupabaseShadowRecordStore:
         start: datetime | None = None,
         end: datetime | None = None,
         limit: int = 1000,
-        select: str = "record_id,instrument,horizon,evaluated_at,schema_version,record",
+        select: str = (
+            "storage_id,record_id,instrument,horizon,evaluated_at,"
+            "schema_version,content_hash,record"
+        ),
     ) -> list[dict[str, Any]]:
-        """Point-in-time retrieval. Indexed on (instrument, evaluated_at)."""
+        """Point-in-time retrieval. Indexed on (instrument, evaluated_at).
+
+        ``storage_id`` and ``content_hash`` are selected because Stage D
+        validation is keyed on the PHYSICAL point-in-time identity: two
+        legitimate observations in one hour share a ``record_id``, so a reader
+        that only had the logical id could not tell them apart -- which is the
+        exact conflation the collision repair separated.
+        """
         if not self.available:
             return []
         params: dict[str, Any] = {
@@ -1432,6 +1443,33 @@ def _asset_module_inputs(instrument: str, inputs: Mapping[str, Any]) -> dict[str
     return None
 
 
+def symbol_convention(instrument: str) -> SymbolConvention | None:
+    """Production's symbol mapping for one instrument, as a pure value object.
+
+    Read from ``_tactical_symbol_config`` rather than restated here, so B2 can
+    never end up validating against a different definition of "this instrument"
+    than the one production actually prices. Returns None for an instrument
+    production cannot price.
+    """
+    try:
+        config = core._tactical_symbol_config(instrument)
+    except Exception:
+        return None
+    if not isinstance(config, Mapping):
+        return None
+    symbol = str(config.get("symbol") or "").strip()
+    if not symbol:
+        return None
+    return SymbolConvention(
+        instrument=instrument,
+        symbol=symbol,
+        invert=bool(config.get("invert")),
+        fallback_symbols=tuple(
+            str(s) for s in (config.get("fallback_symbols") or []) if str(s)
+        ),
+    )
+
+
 def _build_observation(
     instrument: str,
     fred_key: str,
@@ -1460,6 +1498,32 @@ def _build_observation(
     # True minutes-to-event from the production calendar's own timestamps.
     timing = _event_timing_for(instrument, moment)
 
+    # Stage D: the point-in-time market anchor. Every value is read out of the
+    # tactical result and entry plan this function ALREADY holds, so capturing
+    # it costs no request, no cache miss and no additional work. It is recorded
+    # rather than derived later because the only price source in this project
+    # keeps five days of intraday history: an unanchored observation does not
+    # wait to be resolved, it expires. A failure here degrades the record to no
+    # anchor rather than costing the observation.
+    anchor = None
+    convention = symbol_convention(instrument)
+    if convention is not None:
+        try:
+            entry_plan = None
+            tactical = inputs.get("tactical")
+            if isinstance(tactical, Mapping):
+                candidate = tactical.get("entry_plan")
+                if isinstance(candidate, Mapping):
+                    entry_plan = candidate
+            built = build_market_anchor(
+                convention=convention,
+                tactical=tactical,
+                execution_inputs=adapters.execution_inputs(entry_plan=entry_plan),
+            )
+            anchor = built.as_record() if built is not None else None
+        except Exception:
+            anchor = None
+
     evaluation = evaluate_from_production(
         instrument=instrument,
         decision_horizon=horizon,
@@ -1475,6 +1539,7 @@ def _build_observation(
         event_label=timing.title or "scheduled event",
         asset_module_inputs=_asset_module_inputs(instrument, inputs),
         event_timing=timing.as_record(),
+        market_anchor=anchor,
         evaluated_at=moment,
         observation_key=observation_identity,
     )

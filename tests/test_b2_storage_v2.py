@@ -240,7 +240,10 @@ class TestRoundTripAndImmutability(unittest.TestCase):
         row = next(iter(table.rows.values()))
         self.assertEqual(row["instrument"], "Gold")
         self.assertEqual(row["horizon"], "tactical")
-        self.assertEqual(row["schema_version"], 1)
+        # Stage D: new payloads are v2, which is what adds market_anchor.
+        # Legacy rows already in the table stay at v1 and are never rewritten.
+        self.assertEqual(row["schema_version"], shadow.CURRENT_SCHEMA_VERSION)
+        self.assertEqual(row["schema_version"], 2)
         rec = row["record"]
         for key in (
             "record_id", "instrument", "evaluated_at", "horizon", "schema_version",
@@ -248,6 +251,7 @@ class TestRoundTripAndImmutability(unittest.TestCase):
             "available_families", "unavailable_families", "regime", "event_risk_state",
             "event_timing", "execution", "size_directive", "conflicts_detected",
             "scenarios", "cross_asset", "asset_module_reading", "aggregation_config",
+            "market_anchor",
         ):
             self.assertIn(key, rec, key)
         json.dumps(row)

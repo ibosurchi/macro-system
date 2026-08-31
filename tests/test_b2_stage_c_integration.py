@@ -304,7 +304,14 @@ class TestModuleCannotAffectTheCore(unittest.TestCase):
                         node.module or ""
                     ):
                         importers.append(os.path.basename(path))
-        self.assertEqual(sorted(set(importers)), ["b2_bridge.py"])
+        # Stage D's validation bridge reads the module registry to know which
+        # instruments to capture bars for. That is a READ of the registered
+        # instrument list, not a route for Stage C output into production: the
+        # validation bridge has no importer of its own (asserted in
+        # test_b2_bridge) and nothing schedules it.
+        self.assertEqual(
+            sorted(set(importers)), ["b2_bridge.py", "b2_validation_bridge.py"]
+        )
 
 
 # ---------------------------------------------------------------------------

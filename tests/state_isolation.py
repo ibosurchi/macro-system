@@ -73,6 +73,15 @@ def isolate_durable_state() -> str:
         modules.append(b2_bridge)
     except Exception:
         pass
+    # Stage D added a durable local mirror on the validation bridge as well, so
+    # it is swept too or a test run would append market observations into the
+    # repository root.
+    try:
+        from apex import b2_validation_bridge
+
+        modules.append(b2_validation_bridge)
+    except Exception:
+        pass
 
     redirected: dict[str, str] = {}
     for module in modules:

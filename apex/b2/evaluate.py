@@ -97,6 +97,7 @@ def run_shadow_evaluation(
     risk_parameters: RiskParameters = DEFAULT_RISK_PARAMETERS,
     asset_module_inputs: Mapping[str, object] | None = None,
     event_timing: Mapping[str, object] | None = None,
+    market_anchor: Mapping[str, object] | None = None,
     config: AggregationConfig = DEFAULT_AGGREGATION,
     evaluated_at: datetime | None = None,
     observation_key: str = "",
@@ -244,6 +245,11 @@ def run_shadow_evaluation(
         # Provenance of the aggregation shape this evaluation ran under. Stored
         # on every new record so it stays interpretable if the constants change.
         aggregation_config=config.as_provenance(),
+        # Stage D: the point-in-time market state this evaluation was taken
+        # against. Passed straight through -- nothing here computes it and no
+        # scoring path reads it, so it cannot influence the evaluation it
+        # describes.
+        market_anchor=market_anchor,
         evaluated_at=moment,
         observation_key=observation_key,
     )

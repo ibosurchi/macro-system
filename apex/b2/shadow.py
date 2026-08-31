@@ -47,6 +47,18 @@ from .thesis import ThesisRecord
 #: Stamped on every record and on the log payload. B2 is not production.
 SHADOW_MODE_LABEL = "SHADOW / NON-PRODUCTION / UNCALIBRATED"
 
+#: Schema version stamped on every NEW shadow record.
+#:
+#: v1 -> v2 adds ``market_anchor``: the point-in-time market state the
+#: evaluation was taken against. Without it an observation cannot be resolved
+#: against later price action without RECONSTRUCTING a price, and the only
+#: price source in this project keeps five days of intraday history -- so an
+#: unanchored observation becomes permanently unresolvable rather than merely
+#: waiting. Existing v1 rows are left exactly as they are: they are historically
+#: truthful, and backfilling an anchor into them would fabricate a
+#: point-in-time capture that never happened.
+CURRENT_SCHEMA_VERSION = 2
+
 CROSS_ASSET_STATUS = "withheld"
 CROSS_ASSET_REASON = (
     "The cross-asset bridge is withheld: the existing implementation confirms a "
@@ -87,8 +99,14 @@ class ShadowRecord:
     #: are ever changed. Absent (None) on legacy records, which are left
     #: historically truthful rather than backfilled with a fabricated value.
     aggregation_config: Mapping[str, object] | None = None
+    #: Stage D: the point-in-time market state this evaluation was taken
+    #: against -- the price, the symbol that price came from, the direction
+    #: convention in force, and the market timestamp. This is what makes an
+    #: observation resolvable later without reconstructing anything. Absent
+    #: (None) on legacy v1 records, which stay historically truthful.
+    market_anchor: Mapping[str, object] | None = None
     mode: str = SHADOW_MODE_LABEL
-    schema_version: int = 1
+    schema_version: int = CURRENT_SCHEMA_VERSION
 
     def as_record(self) -> dict[str, object]:
         event_gate = next(
@@ -109,6 +127,9 @@ class ShadowRecord:
             "event_timing": dict(self.event_timing) if self.event_timing else None,
             "aggregation_config": (
                 dict(self.aggregation_config) if self.aggregation_config else None
+            ),
+            "market_anchor": (
+                dict(self.market_anchor) if self.market_anchor else None
             ),
             "horizon": self.horizon.value,
             "claim": self.claim.as_record() if self.claim else None,
@@ -273,6 +294,7 @@ def build_shadow_record(
     asset_module: AssetModuleReading | None = None,
     event_timing: Mapping[str, object] | None = None,
     aggregation_config: Mapping[str, object] | None = None,
+    market_anchor: Mapping[str, object] | None = None,
     evaluated_at: datetime | None = None,
     observation_key: str = "",
 ) -> ShadowRecord:
@@ -316,6 +338,7 @@ def build_shadow_record(
         asset_module=asset_module,
         event_timing=event_timing,
         aggregation_config=aggregation_config,
+        market_anchor=market_anchor,
     )
 
 

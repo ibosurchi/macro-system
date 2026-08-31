@@ -321,10 +321,17 @@ class TestBridge(unittest.TestCase):
             self.assertNotIn(forbidden, source, forbidden)
 
     def test_production_core_is_the_only_module_importing_the_bridge(self):
-        """Shadow Activation added exactly ONE import site, nowhere else.
+        """The bridge has exactly TWO approved importers, and no others.
 
-        Before activation this asserted zero. It now pins the precise approved
-        surface: a single file, so any second entry point into B2 fails here.
+        Before activation this asserted zero, then one. Stage D adds the second
+        and last: ``b2_validation_bridge``, which is the offline I/O half of
+        validation and reuses the bridge's insert-outcome vocabulary and symbol
+        convention rather than restating either. It is not a production module,
+        nothing schedules it, and the production surface is still the single
+        ``production_core`` import site.
+
+        The guarantee this pins is unchanged: any THIRD entry point into B2 --
+        a page, a strategy, an alert path -- fails here.
         """
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         importers: list[str] = []
@@ -354,7 +361,47 @@ class TestBridge(unittest.TestCase):
                     if isinstance(node, ast.Import):
                         if any("b2_bridge" in a.name for a in node.names):
                             importers.append(os.path.basename(path))
-        self.assertEqual(sorted(set(importers)), ["production_core.py"])
+        self.assertEqual(
+            sorted(set(importers)),
+            ["b2_validation_bridge.py", "production_core.py"],
+        )
+
+    def test_the_validation_bridge_is_not_reachable_from_production(self):
+        """Stage D's I/O half has NO importer at all.
+
+        The validation bridge is operator-invoked and offline. Nothing may
+        import it: not production_core, not a page, not a strategy, not the
+        daemon. The moment something does, capture stops being offline and the
+        'no new expensive runtime work' guarantee is gone -- so it is asserted
+        here rather than trusted.
+        """
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        importers: list[str] = []
+        for folder, _dirs, files in os.walk(root):
+            if any(
+                part in folder
+                for part in ("_backup_", "_baseline_", ".git", "__pycache__", "tests")
+            ):
+                continue
+            for filename in files:
+                if not filename.endswith(".py") or filename == "b2_validation_bridge.py":
+                    continue
+                path = os.path.join(folder, filename)
+                with open(path, "r", encoding="utf-8") as handle:
+                    try:
+                        tree = ast.parse(handle.read())
+                    except SyntaxError:
+                        continue
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.ImportFrom) and "b2_validation_bridge" in (
+                        node.module or ""
+                    ):
+                        importers.append(os.path.basename(path))
+                    if isinstance(node, ast.Import) and any(
+                        "b2_validation_bridge" in a.name for a in node.names
+                    ):
+                        importers.append(os.path.basename(path))
+        self.assertEqual(sorted(set(importers)), [])
 
     def test_production_core_has_no_module_level_b2_import(self):
         """The single import must be deferred, so B2 is not a load-time dependency."""
