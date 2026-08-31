@@ -632,20 +632,31 @@ def capture_daily_bars(
         if convention is None:
             per_instrument[instrument] = "unknown_instrument"
             continue
-        try:
-            bars = fetch_daily_bars(
-                convention.symbol,
-                instrument=instrument,
-                invert=convention.invert,
-                now=reference,
-            )
-        except Exception:
-            per_instrument[instrument] = "fetch_failed"
-            continue
+        bars = []
+        symbol_used = ""
+
+        candidates = (convention.symbol, *convention.fallback_symbols)
+
+        for candidate_symbol in candidates:
+            try:
+                bars = fetch_daily_bars(
+                    candidate_symbol,
+                    instrument=instrument,
+                    invert=convention.invert,
+                    now=reference,
+                )
+            except Exception:
+                bars = []
+
+            if bars:
+                symbol_used = candidate_symbol
+                break
+
         if not bars:
             per_instrument[instrument] = "no_bars"
             continue
-        symbols_seen[instrument] = convention.symbol
+
+        symbols_seen[instrument] = symbol_used
         rows.extend(bar.to_row() for bar in bars)
         per_instrument[instrument] = "fetched"
 

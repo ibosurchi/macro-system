@@ -900,6 +900,33 @@ class TestFetchAndFailOpen(unittest.TestCase):
         self.assertFalse(report["durable"])
         self.assertEqual(report["backend"], "unavailable")
 
+    def test_gold_daily_capture_uses_fallback_symbol_when_primary_has_no_bars(self):
+        primary_payload = _yahoo_payload(_epochs(1, 3), [3400.0] * 3)
+        fallback_payload = _yahoo_payload(_epochs(1, 20), [3400.0] * 20)
+
+        def fake_get(url, **kwargs):
+            if "XAUUSD" in url:
+                return _FakeResponse(primary_payload)
+            if "GC%3DF" in url or "GC=F" in url:
+                return _FakeResponse(fallback_payload)
+            raise AssertionError(f"unexpected symbol request: {url}")
+
+        table = FakeMarketTable()
+
+        with mock.patch.object(vb.requests, "get", side_effect=fake_get):
+            report = vb.capture_daily_bars(
+                ["Gold"],
+                store=table,
+                now=NOW,
+            )
+
+        self.assertEqual(report["instruments"]["Gold"], "fetched")
+        self.assertEqual(report["symbols"]["Gold"], "GC=F")
+        self.assertGreater(report["inserted"], 0)
+        self.assertTrue(
+            all(row["symbol"] == "GC=F" for row in table.rows.values())
+        )
+
     def test_one_failing_instrument_does_not_stop_the_others(self):
         def fake_get(url, **kwargs):
             if "GC" in url or "CL" in url:
