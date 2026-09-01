@@ -1045,8 +1045,15 @@ class TestPurity(unittest.TestCase):
                     if isinstance(node, ast.Import) and any(
                             "validation.envelope" in a.name for a in node.names):
                         importers.append(filename)
+        # Stage D-2D1 authorized the third entry, ``cohort.py``. It imports
+        # ONLY ``canonical_json``/``sha256_hex``/``VALIDATION_SCHEMA_VERSION``
+        # -- the canonical serialisation used for cohort_id and
+        # membership_hash -- so cohort identities normalise floats and enums
+        # byte-identically to the envelope hashes instead of a fourth private
+        # copy drifting from them. It builds no envelope and defines no
+        # validation hash of its own, which the D-2D1 suite asserts directly.
         self.assertEqual(sorted(set(importers)),
-                         ["observation.py", "readiness.py"])
+                         ["cohort.py", "observation.py", "readiness.py"])
 
 
 # ===========================================================================

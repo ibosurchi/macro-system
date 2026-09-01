@@ -1007,7 +1007,15 @@ class TestPurity(unittest.TestCase):
                     if isinstance(node, ast.Import) and any(
                             "validation.readiness" in a.name for a in node.names):
                         importers.append(filename)
-        self.assertEqual(sorted(set(importers)), ["observation.py"])
+        # Stage D-2D1 authorized the second entry, ``cohort.py``. It imports
+        # ONLY the ``ReadinessTier`` enum, and only so that a readiness count
+        # iterates the real vocabulary rather than a hardcoded key list that
+        # a future tier could silently slip past. D-2D1 deliberately does NOT
+        # use readiness to build any metric denominator -- that stays keyed on
+        # maturity and eligibility pool, because readiness already folds
+        # direction.is_verdict into itself.
+        self.assertEqual(sorted(set(importers)),
+                         ["cohort.py", "observation.py"])
 
 
 # ===========================================================================

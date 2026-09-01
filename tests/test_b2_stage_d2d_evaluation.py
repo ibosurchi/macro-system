@@ -885,14 +885,19 @@ class TestScope(unittest.TestCase):
                           "deduplicate", "sample_floor"):
             self.assertFalse(any(forbidden in n for n in names), forbidden)
 
-    def test_only_the_two_authorized_d2d0_modules_exist(self):
-        """D-2D0 authorized exactly one module beside the package init.
-        ``cohort.py`` and ``metrics.py`` belong to D-2D1 and must not arrive
-        early."""
+    def test_only_the_authorized_evaluation_modules_exist(self):
+        """The evaluation surface may only grow by approved stage.
+
+        D-2D0 authorized exactly one module beside the package init.
+        Stage D-2D1 authorized exactly one more, ``cohort.py``, for
+        deterministic cohort construction and its three narrow ratios. The
+        check itself is unchanged and still fails on any UNapproved module.
+        ``metrics.py`` stays forbidden: D-2D1 is deliberately one module, and
+        a second one would have to publish the cohort's internal member
+        sequence across a file boundary purely to hand it over."""
         present = {f for f in os.listdir(
             os.path.join(ROOT, "apex", "b2", "evaluation")) if f.endswith(".py")}
-        self.assertEqual(present, {"__init__.py", "observation.py"})
-        self.assertNotIn("cohort.py", present)
+        self.assertEqual(present, {"__init__.py", "observation.py", "cohort.py"})
         self.assertNotIn("metrics.py", present)
 
     def test_the_validation_surface_is_untouched(self):

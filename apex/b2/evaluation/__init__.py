@@ -44,11 +44,41 @@ from .observation import (
     evaluate_observation,
 )
 
+# Stage D-2D1: the cohort layer. Additive -- nothing above changed, and
+# ``cohort`` imports ``observation`` and never the reverse, so the one-way
+# dependency validation -> observation -> cohort is preserved.
+from .cohort import (
+    DEFAULT_COHORT_CONFIG,
+    AdmissionFailure,
+    AdmissionFailureReason,
+    Cohort,
+    CohortConfig,
+    CohortState,
+    Ratio,
+    RatioNote,
+    RatioState,
+    Stratum,
+    StratumKey,
+    build_cohort,
+)
+
 __all__ = [
+    "DEFAULT_COHORT_CONFIG",
+    "AdmissionFailure",
+    "AdmissionFailureReason",
+    "Cohort",
+    "CohortConfig",
+    "CohortState",
     "DefectReason",
     "EvaluatedObservation",
     "LineageDefect",
     "ProvenanceGrade",
+    "Ratio",
+    "RatioNote",
+    "RatioState",
+    "Stratum",
+    "StratumKey",
+    "build_cohort",
     "classify_provenance",
     "evaluate_observation",
 ]
