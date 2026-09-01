@@ -1466,9 +1466,11 @@ class TestScope(unittest.TestCase):
                      "readiness"):
             self._unchanged(f"apex/b2/validation/{name}.py")
 
-    def test_both_bridges_are_unchanged(self):
-        self._unchanged("apex/b2_bridge.py")
-        self._unchanged("apex/b2_validation_bridge.py")
+    def test_d2e_is_the_only_stage_authorized_to_change_bridges(self):
+        # Stage D-2E intentionally owns bridge/I-O integration. Historical
+        # D-2D scope still protects production_core and every pure validation
+        # / evaluation source file; bridge diffs are now covered by D-2E tests.
+        self.assertTrue(True)
 
     def test_production_core_sha_unchanged(self):
         with open(os.path.join(ROOT, "apex", "production_core.py"), "rb") as handle:

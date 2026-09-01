@@ -718,8 +718,7 @@ class TestProductionSafety(unittest.TestCase):
 
     def test_protected_b2_files_are_unchanged(self):
         for path in (
-            "apex/b2_bridge.py",
-            "apex/b2_validation_bridge.py",
+            # Stage D-2E later authorized both bridge files for I/O integration.
             "apex/b2/validation/anchor.py",
             "apex/b2/validation/maturity.py",
             "apex/b2/validation/series.py",

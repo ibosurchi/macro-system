@@ -45,7 +45,7 @@ from urllib.parse import quote
 import requests
 
 from . import production_core as core
-from .b2_bridge import InsertOutcome, symbol_convention
+from .b2_bridge import InsertOutcome, QueryOutcome, symbol_convention
 from .b2.horizons import HORIZON_EVALUATION_WINDOW
 from .b2.enums import Horizon
 from .b2.modules import registered_instruments
@@ -59,7 +59,15 @@ from .b2.validation.bars import (
     canonical_bar_time_iso,
     coverage,
     forward_bars,
+    bars_from_rows,
     row_to_bar,
+)
+from .b2.validation.config import DEFAULT_VALIDATION_CONFIG, ValidationConfig
+from .b2.evaluation import (
+    DEFAULT_COHORT_CONFIG,
+    CohortConfig,
+    build_cohort,
+    evaluate_observation,
 )
 
 #: The pre-created append-only table. Overridable only for testing against a
@@ -274,6 +282,66 @@ class SupabaseMarketObservationStore:
         except Exception:
             return None
 
+    def query_bars_result(
+        self,
+        *,
+        symbols: Sequence[str],
+        start: datetime,
+        end: datetime,
+        granularity: str = GRANULARITY_1D,
+        page_size: int = 1000,
+        max_rows: int | None = None,
+    ) -> QueryOutcome:
+        """Paginated bar retrieval with failure distinct from empty success."""
+        if not symbols:
+            return QueryOutcome(backend="supabase", ok=True, rows=(), pages=0)
+        if not self.available:
+            return QueryOutcome(backend="supabase", ok=False, error="backend unavailable")
+        size = max(1, int(page_size))
+        rows: list[dict[str, Any]] = []
+        pages = 0
+        offset = 0
+        try:
+            quoted = ",".join(f'"{symbol}"' for symbol in symbols)
+            has_more = True
+            while has_more:
+                request_limit = size
+                if max_rows is not None:
+                    remaining = int(max_rows) - len(rows)
+                    if remaining <= 0:
+                        break
+                    request_limit = min(request_limit, remaining)
+                response = requests.get(
+                    self._url(),
+                    headers=core._supabase_headers(),
+                    params={
+                        "symbol": f"in.({quoted})",
+                        "granularity": f"eq.{granularity}",
+                        "bar_time": f"gt.{canonical_bar_time_iso(start)}",
+                        "and": f"(bar_time.lte.{canonical_bar_time_iso(end)})",
+                        "select": (
+                            "observation_id,symbol,instrument,granularity,price_source,"
+                            "bar_time,open,high,low,close,volume,invert,content_hash"
+                        ),
+                        "order": "symbol.asc,bar_time.asc,observation_id.asc",
+                        "limit": request_limit,
+                        "offset": offset,
+                    },
+                    timeout=self.timeout,
+                )
+                response.raise_for_status()
+                body = response.json()
+                if not isinstance(body, list):
+                    return QueryOutcome(backend="supabase", ok=False, pages=pages, error="non-list response")
+                pages += 1
+                rows.extend(row for row in body if isinstance(row, dict))
+                has_more = len(body) >= request_limit
+                if has_more:
+                    offset += len(body)
+            return QueryOutcome(backend="supabase", ok=True, rows=tuple(rows), pages=pages)
+        except Exception as exc:
+            return QueryOutcome(backend="supabase", ok=False, pages=pages, error=str(exc)[:200])
+
     def query_bars(
         self,
         *,
@@ -283,39 +351,11 @@ class SupabaseMarketObservationStore:
         granularity: str = GRANULARITY_1D,
         limit: int = 10000,
     ) -> list[dict[str, Any]]:
-        """Every stored bar for these symbols in one request.
-
-        Deliberately takes a LIST of symbols and one time span so a whole
-        validation run costs a single query, never one per observation. Rides
-        the natural-key unique index via its (symbol, granularity, bar_time)
-        prefix.
-        """
-        if not symbols or not self.available:
-            return []
-        try:
-            quoted = ",".join(f'"{s}"' for s in symbols)
-            response = requests.get(
-                self._url(),
-                headers=core._supabase_headers(),
-                params={
-                    "symbol": f"in.({quoted})",
-                    "granularity": f"eq.{granularity}",
-                    "bar_time": f"gt.{canonical_bar_time_iso(start)}",
-                    "and": f"(bar_time.lte.{canonical_bar_time_iso(end)})",
-                    "select": (
-                        "observation_id,symbol,instrument,granularity,price_source,"
-                        "bar_time,open,high,low,close,volume,invert,content_hash"
-                    ),
-                    "order": "symbol.asc,bar_time.asc",
-                    "limit": int(limit),
-                },
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-            body = response.json()
-            return list(body) if isinstance(body, list) else []
-        except Exception:
-            return []
+        """Backward-compatible bounded read; use query_bars_result for status."""
+        result = self.query_bars_result(
+            symbols=symbols, start=start, end=end, granularity=granularity, max_rows=int(limit)
+        )
+        return list(result.rows) if result.ok else []
 
 
 class LocalMarketObservationStore:
@@ -409,22 +449,23 @@ class LocalMarketObservationStore:
     def row_count(self) -> int | None:
         return len(self._existing())
 
-    def query_bars(
+    def query_bars_result(
         self,
         *,
         symbols: Sequence[str],
         start: datetime,
         end: datetime,
         granularity: str = GRANULARITY_1D,
-        limit: int = 10000,
-    ) -> list[dict[str, Any]]:
+        page_size: int = 1000,
+        max_rows: int | None = None,
+    ) -> QueryOutcome:
         wanted = set(symbols)
         low = canonical_bar_time_iso(start)
         high = canonical_bar_time_iso(end)
         rows: list[dict[str, Any]] = []
         try:
             if not os.path.exists(self.path):
-                return rows
+                return QueryOutcome(backend="local", ok=True, rows=(), pages=0)
             with open(self.path, "r", encoding="utf-8") as handle:
                 for line in handle:
                     line = line.strip()
@@ -439,13 +480,29 @@ class LocalMarketObservationStore:
                     if str(row.get("granularity")) != granularity:
                         continue
                     stamp = str(row.get("bar_time", ""))
-                    if not (low < stamp <= high):
-                        continue
-                    rows.append(row)
-        except Exception:
-            return rows
-        rows.sort(key=lambda r: (str(r.get("symbol")), str(r.get("bar_time"))))
-        return rows[: int(limit)]
+                    if low < stamp <= high:
+                        rows.append(row)
+            rows.sort(key=lambda row: (str(row.get("symbol")), str(row.get("bar_time")), str(row.get("observation_id"))))
+            if max_rows is not None:
+                rows = rows[: int(max_rows)]
+            pages = (len(rows) + max(1, int(page_size)) - 1) // max(1, int(page_size)) if rows else 0
+            return QueryOutcome(backend="local", ok=True, rows=tuple(rows), pages=pages)
+        except Exception as exc:
+            return QueryOutcome(backend="local", ok=False, error=str(exc)[:200])
+
+    def query_bars(
+        self,
+        *,
+        symbols: Sequence[str],
+        start: datetime,
+        end: datetime,
+        granularity: str = GRANULARITY_1D,
+        limit: int = 10000,
+    ) -> list[dict[str, Any]]:
+        result = self.query_bars_result(
+            symbols=symbols, start=start, end=end, granularity=granularity, max_rows=int(limit)
+        )
+        return list(result.rows) if result.ok else []
 
 
 def resolve_market_store() -> Any:
@@ -883,6 +940,105 @@ def resolve_range(
     }
 
 
+def validate_range(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    store: Any | None = None,
+    as_of: datetime,
+    validation_config: ValidationConfig = DEFAULT_VALIDATION_CONFIG,
+    cohort_config: CohortConfig = DEFAULT_COHORT_CONFIG,
+) -> dict[str, Any]:
+    """D-2E bridge: I/O once, then D-2D0 -> D-2D1 pure evaluation.
+
+    Unlike ``resolve_range`` this function never reads a wall clock and never
+    treats a failed storage query as an empty market path. It is additive: the
+    D-1 resolver remains available for its existing operator diagnostics.
+    """
+    reference = as_of.astimezone(timezone.utc) if as_of.tzinfo else as_of.replace(tzinfo=timezone.utc)
+    settings = validation_config
+    backend = store if store is not None else resolve_market_store()
+
+    if not records:
+        cohort = build_cohort(
+            observations=(), as_of=reference, validation_config=settings, cohort_config=cohort_config
+        )
+        return {
+            "status": "ok", "evaluated": (), "cohort": cohort,
+            "bar_query": QueryOutcome(backend="none", ok=True),
+            "bar_rows": 0, "malformed_rows": 0, "symbols": (),
+        }
+
+    symbols: set[str] = set()
+    stamps: list[datetime] = []
+    widest = timedelta(0)
+    for record in records:
+        payload = record.get("record") if isinstance(record, Mapping) else None
+        payload = payload if isinstance(payload, Mapping) else record
+        instrument = str(payload.get("instrument") or "")
+        anchor = classify_anchor(payload, symbol_convention(instrument))
+        if anchor.symbol:
+            symbols.add(anchor.symbol)
+        try:
+            stamp = datetime.fromisoformat(str(payload.get("evaluated_at") or "").replace("Z", "+00:00"))
+            stamp = stamp.astimezone(timezone.utc) if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
+            stamps.append(stamp)
+        except (TypeError, ValueError):
+            pass
+        window = settings.window_for(str(payload.get("horizon") or ""))
+        if window is not None:
+            widest = max(widest, window)
+
+    if symbols and stamps:
+        if hasattr(backend, "query_bars_result"):
+            query = backend.query_bars_result(
+                symbols=sorted(symbols), start=min(stamps), end=max(stamps) + widest,
+                granularity=settings.resolution_granularity, max_rows=None,
+            )
+        else:
+            # Compatibility for injected legacy/test stores. The status is known
+            # only insofar as the method returned normally. Production stores
+            # implement query_bars_result and therefore preserve failure detail.
+            try:
+                rows = backend.query_bars(
+                    symbols=sorted(symbols), start=min(stamps), end=max(stamps) + widest,
+                    granularity=settings.resolution_granularity,
+                )
+                query = QueryOutcome(backend="legacy", ok=True, rows=tuple(rows), pages=1)
+            except Exception as exc:
+                query = QueryOutcome(backend="legacy", ok=False, error=str(exc)[:200])
+    else:
+        query = QueryOutcome(backend="none", ok=True, rows=(), pages=0)
+
+    if not query.ok:
+        return {
+            "status": "query_failed", "evaluated": (), "cohort": None,
+            "bar_query": query, "bar_rows": 0, "malformed_rows": 0,
+            "symbols": tuple(sorted(symbols)),
+        }
+
+    converted = bars_from_rows(query.rows)
+    evaluated = []
+    for record in records:
+        payload = record.get("record") if isinstance(record, Mapping) else None
+        payload = payload if isinstance(payload, Mapping) else record
+        instrument = str(payload.get("instrument") or "")
+        evaluated.append(
+            evaluate_observation(
+                record=record, bars=converted.bars, as_of=reference,
+                convention=symbol_convention(instrument), config=settings,
+                malformed_row_count=converted.malformed,
+            )
+        )
+    cohort = build_cohort(
+        observations=evaluated, as_of=reference, validation_config=settings, cohort_config=cohort_config
+    )
+    return {
+        "status": "ok", "evaluated": tuple(evaluated), "cohort": cohort,
+        "bar_query": query, "bar_rows": len(converted.bars),
+        "malformed_rows": converted.malformed, "symbols": tuple(sorted(symbols)),
+    }
+
+
 __all__ = [
     "DAILY_INTERVAL",
     "DAILY_RANGE",
@@ -900,4 +1056,5 @@ __all__ = [
     "resolve_market_store",
     "resolve_observation",
     "resolve_range",
+    "validate_range",
 ]

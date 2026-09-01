@@ -317,6 +317,31 @@ def shadow_store_mode() -> str:
 
 
 @dataclass(frozen=True)
+class QueryOutcome:
+    """Result of a storage read that never conflates failure with emptiness.
+
+    ``ok=True, rows=()`` means the query succeeded and matched nothing.
+    ``ok=False`` means the backend could not answer; callers must not treat it
+    as an empty dataset. ``pages`` makes pagination observable.
+    """
+
+    backend: str
+    ok: bool
+    rows: tuple[dict[str, Any], ...] = ()
+    pages: int = 0
+    error: str = ""
+
+    def as_record(self) -> dict[str, object]:
+        return {
+            "backend": self.backend,
+            "ok": self.ok,
+            "rows": len(self.rows),
+            "pages": self.pages,
+            "error": self.error[:200],
+        }
+
+
+@dataclass(frozen=True)
 class InsertOutcome:
     """Result of persisting a batch of rows. Never claims more than happened."""
 
@@ -604,6 +629,63 @@ class SupabaseShadowRecordStore:
         except Exception:
             return None
 
+    def query_records_result(
+        self,
+        *,
+        instrument: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        page_size: int = 1000,
+        max_rows: int | None = None,
+        select: str = (
+            "storage_id,record_id,instrument,horizon,evaluated_at,"
+            "schema_version,content_hash,record"
+        ),
+    ) -> QueryOutcome:
+        """Paginated point-in-time retrieval with explicit read status."""
+        if not self.available:
+            return QueryOutcome(backend="supabase", ok=False, error="backend unavailable")
+        size = max(1, int(page_size))
+        rows: list[dict[str, Any]] = []
+        pages = 0
+        offset = 0
+        try:
+            while True:
+                request_limit = size
+                if max_rows is not None:
+                    remaining = int(max_rows) - len(rows)
+                    if remaining <= 0:
+                        break
+                    request_limit = min(request_limit, remaining)
+                params: dict[str, Any] = {
+                    "select": select,
+                    "order": "evaluated_at.desc,storage_id.desc",
+                    "limit": request_limit,
+                    "offset": offset,
+                }
+                if instrument:
+                    params["instrument"] = f"eq.{instrument}"
+                if start is not None:
+                    params["evaluated_at"] = f"gte.{start.isoformat()}"
+                if end is not None:
+                    params["and"] = f"(evaluated_at.lte.{end.isoformat()})"
+                response = requests.get(
+                    self._url(), headers=core._supabase_headers(),
+                    params=params, timeout=self.timeout,
+                )
+                response.raise_for_status()
+                body = response.json()
+                if not isinstance(body, list):
+                    return QueryOutcome(backend="supabase", ok=False, pages=pages, error="non-list response")
+                pages += 1
+                rows.extend(r for r in body if isinstance(r, dict))
+                if len(body) < request_limit:
+                    break
+                offset += len(body)
+            return QueryOutcome(backend="supabase", ok=True, rows=tuple(rows), pages=pages)
+        except Exception as exc:
+            return QueryOutcome(backend="supabase", ok=False, pages=pages, error=str(exc)[:200])
+
     def query_records(
         self,
         *,
@@ -616,40 +698,11 @@ class SupabaseShadowRecordStore:
             "schema_version,content_hash,record"
         ),
     ) -> list[dict[str, Any]]:
-        """Point-in-time retrieval. Indexed on (instrument, evaluated_at).
-
-        ``storage_id`` and ``content_hash`` are selected because Stage D
-        validation is keyed on the PHYSICAL point-in-time identity: two
-        legitimate observations in one hour share a ``record_id``, so a reader
-        that only had the logical id could not tell them apart -- which is the
-        exact conflation the collision repair separated.
-        """
-        if not self.available:
-            return []
-        params: dict[str, Any] = {
-            "select": select,
-            "order": "evaluated_at.desc",
-            "limit": int(limit),
-        }
-        if instrument:
-            params["instrument"] = f"eq.{instrument}"
-        if start is not None:
-            params["evaluated_at"] = f"gte.{start.isoformat()}"
-        if end is not None:
-            # PostgREST takes repeated filters on one column via a list value.
-            params["and"] = f"(evaluated_at.lte.{end.isoformat()})"
-        try:
-            response = requests.get(
-                self._url(),
-                headers=core._supabase_headers(),
-                params=params,
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-            body = response.json()
-            return list(body) if isinstance(body, list) else []
-        except Exception:
-            return []
+        """Backward-compatible bounded read; use query_records_result for status."""
+        result = self.query_records_result(
+            instrument=instrument, start=start, end=end, max_rows=int(limit), select=select
+        )
+        return list(result.rows) if result.ok else []
 
 
 class LocalShadowRecordStore:
@@ -767,19 +820,20 @@ class LocalShadowRecordStore:
             return None
         return False
 
-    def query_records(
+    def query_records_result(
         self,
         *,
         instrument: str | None = None,
         start: datetime | None = None,
         end: datetime | None = None,
-        limit: int = 1000,
+        page_size: int = 1000,
+        max_rows: int | None = None,
         select: str = "",
-    ) -> list[dict[str, Any]]:
+    ) -> QueryOutcome:
         rows: list[dict[str, Any]] = []
         try:
             if not os.path.exists(self.path):
-                return rows
+                return QueryOutcome(backend="local", ok=True, rows=(), pages=0)
             with open(self.path, "r", encoding="utf-8") as handle:
                 for line in handle:
                     line = line.strip()
@@ -797,10 +851,27 @@ class LocalShadowRecordStore:
                     if end is not None and stamp > end.isoformat():
                         continue
                     rows.append(row)
-        except Exception:
-            return rows
-        rows.sort(key=lambda r: str(r.get("evaluated_at", "")), reverse=True)
-        return rows[: int(limit)]
+            rows.sort(key=lambda r: (str(r.get("evaluated_at", "")), str(r.get("storage_id", ""))), reverse=True)
+            if max_rows is not None:
+                rows = rows[: int(max_rows)]
+            pages = (len(rows) + max(1, int(page_size)) - 1) // max(1, int(page_size)) if rows else 0
+            return QueryOutcome(backend="local", ok=True, rows=tuple(rows), pages=pages)
+        except Exception as exc:
+            return QueryOutcome(backend="local", ok=False, error=str(exc)[:200])
+
+    def query_records(
+        self,
+        *,
+        instrument: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        limit: int = 1000,
+        select: str = "",
+    ) -> list[dict[str, Any]]:
+        result = self.query_records_result(
+            instrument=instrument, start=start, end=end, max_rows=int(limit), select=select
+        )
+        return list(result.rows) if result.ok else []
 
 
 def resolve_record_store() -> Any:
