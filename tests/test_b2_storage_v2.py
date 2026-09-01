@@ -209,10 +209,23 @@ def _reset():
 
 
 def _v2(record_store, store=None, now=NOW, instruments=None, **overrides):
-    """One V2 observation cycle against a fake row store."""
+    """One V2 observation cycle against a fake row store.
+
+    Pinned to the Tactical horizon on purpose. This suite proves the storage
+    contract itself -- round-trip, immutability, dedup, migration, cutover,
+    rollback -- which is horizon-orthogonal, so one horizon keeps the row
+    arithmetic deterministic and the original intent readable. Live
+    dual-horizon orchestration is covered by the Stage D-3 suite, and the
+    concurrency test below deliberately runs the unpinned live path.
+    """
     store = store or shadow.InMemoryShadowStore()
     with _PatchProduction(**overrides):
-        with mock.patch.object(b2_bridge, "resolve_record_store", return_value=record_store):
+        with mock.patch.object(
+            b2_bridge, "resolve_record_store", return_value=record_store
+        ), mock.patch.object(
+            b2_bridge, "live_shadow_horizons",
+            return_value=(b2_bridge.Horizon.TACTICAL,),
+        ):
             if instruments is not None:
                 with mock.patch.object(
                     b2_bridge, "shadow_instruments", return_value=tuple(instruments)
@@ -531,9 +544,16 @@ class TestConcurrencyAndScale(unittest.TestCase):
                     t.join()
 
         self.assertEqual(errors, [])
-        self.assertEqual(len(table.rows), 3, "one row per instrument-hour")
+        # Deliberately NOT pinned to one horizon: this is the only test in this
+        # suite that exercises the real live dual-horizon path under contention.
+        self.assertEqual(len(table.rows), 6, "one row per instrument-horizon-hour")
         self.assertEqual(
-            {r["instrument"] for r in table.rows.values()}, {"Gold", "Oil", "NDX"}
+            {(r["instrument"], r["horizon"]) for r in table.rows.values()},
+            {
+                (i, h)
+                for i in ("Gold", "Oil", "NDX")
+                for h in ("tactical", "execution")
+            },
         )
 
     def test_more_than_2000_records_are_all_retained(self):

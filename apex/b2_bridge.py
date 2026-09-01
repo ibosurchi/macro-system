@@ -259,6 +259,16 @@ HOOK_STATS: dict[str, int] = {name: 0 for name in HOOK_COUNTERS}
 _HANDLED_BUCKETS: dict[str, int] = {}
 
 
+def _handled_bucket_key(instrument: str, horizon: Horizon) -> str:
+    """In-process cadence identity. Tactical keeps its historical key shape."""
+    return instrument if horizon is Horizon.TACTICAL else f"{instrument}|{horizon.value}"
+
+
+def live_shadow_horizons() -> tuple[Horizon, ...]:
+    """Horizons activated by the live V2 shadow hook. Structural stays withheld."""
+    return (Horizon.TACTICAL, Horizon.EXECUTION)
+
+
 def _bump(counter: str) -> None:
     HOOK_STATS[counter] = HOOK_STATS.get(counter, 0) + 1
 
@@ -1541,23 +1551,15 @@ def symbol_convention(instrument: str) -> SymbolConvention | None:
     )
 
 
-def _build_observation(
+def _evaluate_gathered_observation(
     instrument: str,
-    fred_key: str,
-    channel_name: str,
+    inputs: Mapping[str, Any] | None,
     *,
     moment: datetime,
     horizon: Horizon,
     observation_identity: str,
 ) -> tuple[str, ShadowEvaluation | None]:
-    """Gather production inputs and evaluate one observation.
-
-    Shared by BOTH storage paths so the legacy blob and the append-only row
-    store can never drift apart in what they record. Returns
-    ``(status, evaluation)`` where status is ``ok`` / ``unknown_instrument`` /
-    ``insufficient_data_skipped``.
-    """
-    inputs = _gather_production_inputs(instrument, fred_key, channel_name)
+    """Evaluate one horizon from one already-gathered point-in-time snapshot."""
     if inputs is None:
         return "unknown_instrument", None
 
@@ -1617,6 +1619,23 @@ def _build_observation(
     return "ok", evaluation
 
 
+def _build_observation(
+    instrument: str,
+    fred_key: str,
+    channel_name: str,
+    *,
+    moment: datetime,
+    horizon: Horizon,
+    observation_identity: str,
+) -> tuple[str, ShadowEvaluation | None]:
+    """Gather once, then evaluate one observation (legacy-compatible wrapper)."""
+    inputs = _gather_production_inputs(instrument, fred_key, channel_name)
+    return _evaluate_gathered_observation(
+        instrument, inputs, moment=moment, horizon=horizon,
+        observation_identity=observation_identity,
+    )
+
+
 def observe_instrument(
     instrument: str,
     fred_key: str,
@@ -1643,6 +1662,7 @@ def observe_instrument(
     key = observation_key(instrument, horizon, moment)
     bucket = int(moment.timestamp()) // OBSERVATION_BUCKET_SECONDS
     record_id = observation_record_id(key)
+    handled_key = _handled_bucket_key(instrument, horizon)
     batched = shadow_log is not None
 
     def _persist(log_to_save: ShadowLog) -> None:
@@ -1650,13 +1670,13 @@ def observe_instrument(
             save_shadow_log(store, log_to_save)
 
     # Cheapest possible duplicate check first: this process already did it.
-    if _HANDLED_BUCKETS.get(instrument) == bucket:
+    if _HANDLED_BUCKETS.get(handled_key) == bucket:
         _bump("duplicate_skipped")
         return "duplicate_skipped"
 
     log = shadow_log if shadow_log is not None else load_shadow_log(store)
     if log.contains(record_id):
-        _HANDLED_BUCKETS[instrument] = bucket
+        _HANDLED_BUCKETS[handled_key] = bucket
         log.bump("duplicate_skipped")
         _persist(log)
         _bump("duplicate_skipped")
@@ -1674,7 +1694,7 @@ def observe_instrument(
         _bump("unknown_instrument")
         return "unknown_instrument"
     if status != "ok" or evaluation is None:
-        _HANDLED_BUCKETS[instrument] = bucket
+        _HANDLED_BUCKETS[handled_key] = bucket
         log.bump("insufficient_data_skipped")
         _persist(log)
         _bump("insufficient_data_skipped")
@@ -1683,13 +1703,13 @@ def observe_instrument(
     try:
         log.append(evaluation.record)
     except ShadowLogError:
-        _HANDLED_BUCKETS[instrument] = bucket
+        _HANDLED_BUCKETS[handled_key] = bucket
         log.bump("duplicate_skipped")
         _persist(log)
         _bump("duplicate_skipped")
         return "duplicate_skipped"
 
-    _HANDLED_BUCKETS[instrument] = bucket
+    _HANDLED_BUCKETS[handled_key] = bucket
     log.bump("written")
     _persist(log)
     _bump("written")
@@ -1721,17 +1741,30 @@ def _run_v2_observation(
     bucket: int,
     due: list[str],
     record_store: Any | None = None,
+    horizons: tuple[Horizon, ...] = (Horizon.TACTICAL,),
 ) -> dict[str, str]:
-    """Storage V2 path: one immutable row per observation.
+    """Storage V2 path: one immutable row per observation and horizon.
 
     No history is loaded to append. Nothing rewrites a growing blob. The
     database primary key is the durable duplicate authority, so suppression
     survives a restart without reading any past record.
 
-    ``_HANDLED_BUCKETS`` is only marked for instruments whose row actually
-    settled (inserted, or already present). A record that FAILED to persist is
-    deliberately left unmarked so the next tick retries it, rather than being
-    silently lost for the hour.
+    Every requested horizon is dedup-checked FIRST, then production inputs are
+    gathered exactly once per instrument and each horizon evaluates that same
+    point-in-time snapshot. One instrument therefore costs one gathering pass
+    regardless of how many horizons are live, and Tactical and Execution can
+    never disagree about the state of the world they observed.
+
+    ``_HANDLED_BUCKETS`` is keyed per instrument AND horizon, and is only
+    marked for rows that actually settled (inserted, or already present). A
+    record that FAILED to persist is deliberately left unmarked so the next
+    tick retries it, rather than being silently lost for the hour. One horizon
+    failing never costs another horizon its observation.
+
+    ``outcomes`` stays a per-INSTRUMENT map for callers: Tactical, the
+    historical contract, always wins the slot, and a non-Tactical horizon only
+    fills it when Tactical never reported. Tactical-only callers therefore
+    retain the exact historical behaviour and outcome shape.
     """
     rows: list[dict[str, Any]] = []
     evaluations: dict[str, Any] = {}
@@ -1739,56 +1772,81 @@ def _run_v2_observation(
     store_for_rows = record_store if record_store is not None else resolve_record_store()
 
     for instrument in due:
-        try:
-            key = observation_key(instrument, Horizon.TACTICAL, moment)
+        pending: list[tuple[Horizon, str, str]] = []
+        for horizon in horizons:
+            handled_key = _handled_bucket_key(instrument, horizon)
+            if _HANDLED_BUCKETS.get(handled_key) == bucket:
+                _bump("duplicate_skipped")
+                if horizon is Horizon.TACTICAL:
+                    outcomes[instrument] = "duplicate_skipped"
+                continue
+            key = observation_key(instrument, horizon, moment)
 
             # Durable cadence check BEFORE any work. The physical key can no
             # longer enforce one-observation-per-hour, so the live path asks
             # explicitly. One indexed lookup, never a history load. Unknown is
             # not treated as "already stored": losing evidence is worse than an
             # extra legitimate observation, and the row would be distinct anyway.
-            already = store_for_rows.logical_record_exists(
-                observation_record_id(key)
-            )
+            try:
+                already = store_for_rows.logical_record_exists(
+                    observation_record_id(key)
+                )
+            except Exception:
+                already = None
             if already is True:
-                _HANDLED_BUCKETS[instrument] = bucket
+                _HANDLED_BUCKETS[handled_key] = bucket
                 _bump("v2_logical_duplicate")
                 _bump("duplicate_skipped")
-                outcomes[instrument] = "duplicate_skipped"
+                if horizon is Horizon.TACTICAL:
+                    outcomes[instrument] = "duplicate_skipped"
                 continue
             if already is None:
                 _bump("v2_dedup_check_unavailable")
+            pending.append((horizon, key, handled_key))
 
-            status, evaluation = _build_observation(
-                instrument,
-                fred_key,
-                channel_name,
-                moment=moment,
-                horizon=Horizon.TACTICAL,
-                observation_identity=key,
-            )
+        if not pending:
+            outcomes.setdefault(instrument, "duplicate_skipped")
+            continue
+
+        try:
+            inputs = _gather_production_inputs(instrument, fred_key, channel_name)
         except Exception:
             _bump("exception_swallowed")
-            outcomes[instrument] = "exception_swallowed"
+            outcomes.setdefault(instrument, "exception_swallowed")
             continue
 
-        if status == "unknown_instrument":
-            _bump("unknown_instrument")
-            outcomes[instrument] = "unknown_instrument"
-            continue
-        if status != "ok" or evaluation is None:
-            _HANDLED_BUCKETS[instrument] = bucket
-            _bump("insufficient_data_skipped")
-            outcomes[instrument] = "insufficient_data_skipped"
-            continue
+        for horizon, key, handled_key in pending:
+            try:
+                status, evaluation = _evaluate_gathered_observation(
+                    instrument, inputs, moment=moment, horizon=horizon,
+                    observation_identity=key,
+                )
+            except Exception:
+                _bump("exception_swallowed")
+                if horizon is Horizon.TACTICAL:
+                    outcomes[instrument] = "exception_swallowed"
+                continue
 
-        row = record_to_row(evaluation.record.as_record())
-        if not row:
-            _bump("v2_failed")
-            outcomes[instrument] = "failed"
-            continue
-        rows.append(row)
-        evaluations[row["storage_id"]] = (instrument, evaluation)
+            if status == "unknown_instrument":
+                _bump("unknown_instrument")
+                if horizon is Horizon.TACTICAL:
+                    outcomes[instrument] = "unknown_instrument"
+                continue
+            if status != "ok" or evaluation is None:
+                _HANDLED_BUCKETS[handled_key] = bucket
+                _bump("insufficient_data_skipped")
+                if horizon is Horizon.TACTICAL:
+                    outcomes[instrument] = "insufficient_data_skipped"
+                continue
+
+            row = record_to_row(evaluation.record.as_record())
+            if not row:
+                _bump("v2_failed")
+                if horizon is Horizon.TACTICAL:
+                    outcomes[instrument] = "failed"
+                continue
+            rows.append(row)
+            evaluations[row["storage_id"]] = (instrument, horizon, handled_key, evaluation)
 
     if not rows:
         return outcomes
@@ -1808,30 +1866,43 @@ def _run_v2_observation(
         _bump("v2_local_fallback")
 
     settled = set(result.settled)
-    for storage_id, (instrument, evaluation) in evaluations.items():
+    for storage_id, (instrument, horizon, handled_key, evaluation) in evaluations.items():
         if storage_id in result.inserted:
-            _HANDLED_BUCKETS[instrument] = bucket
+            _HANDLED_BUCKETS[handled_key] = bucket
             _bump("v2_inserted")
             _bump("written")
-            outcomes[instrument] = "written"
+            if horizon is Horizon.TACTICAL:
+                outcomes[instrument] = "written"
+            else:
+                outcomes.setdefault(instrument, "written")
         elif storage_id in result.duplicate:
-            _HANDLED_BUCKETS[instrument] = bucket
+            _HANDLED_BUCKETS[handled_key] = bucket
             _bump("v2_duplicate")
             _bump("duplicate_skipped")
-            outcomes[instrument] = "duplicate_skipped"
+            if horizon is Horizon.TACTICAL:
+                outcomes[instrument] = "duplicate_skipped"
+            else:
+                outcomes.setdefault(instrument, "duplicate_skipped")
         elif storage_id in result.conflicted:
             # Two payloads claim one point-in-time identity. Nothing is
             # overwritten and the bucket stays unmarked; this needs a human.
             _bump("v2_identity_conflict")
-            outcomes[instrument] = "identity_conflict"
+            if horizon is Horizon.TACTICAL:
+                outcomes[instrument] = "identity_conflict"
+            else:
+                outcomes.setdefault(instrument, "identity_conflict")
         else:
             # Not settled: leave the bucket unmarked so the next tick retries.
             _bump("v2_failed")
-            outcomes[instrument] = "failed"
+            if horizon is Horizon.TACTICAL:
+                outcomes[instrument] = "failed"
+            else:
+                outcomes.setdefault(instrument, "failed")
 
     # Predictions only for observations that actually persisted, and only after
     # the record is safe. A prediction-log failure never costs the observation.
-    for storage_id, (instrument, evaluation) in evaluations.items():
+    # The horizon registered is the one the observation was actually built for.
+    for storage_id, (instrument, horizon, _handled_key, evaluation) in evaluations.items():
         if storage_id not in settled:
             continue
         try:
@@ -1839,7 +1910,7 @@ def _run_v2_observation(
                 backend,
                 instrument=instrument,
                 direction=evaluation.direction,
-                horizon=Horizon.TACTICAL,
+                horizon=horizon,
                 now=moment,
             )
         except Exception:
@@ -1887,7 +1958,12 @@ def run_shadow_observation(
     # Fast path first, before touching the store at all. On 59 of every 60 ticks
     # nothing is due, and loading the log to discover that would mean reading the
     # entire payload once a minute.
-    due = [i for i in instruments if _HANDLED_BUCKETS.get(i) != bucket]
+    v2_mode = shadow_store_mode() == STORAGE_MODE_V2
+    live_horizons = live_shadow_horizons() if v2_mode else (Horizon.TACTICAL,)
+    due = [
+        i for i in instruments
+        if any(_HANDLED_BUCKETS.get(_handled_bucket_key(i, h)) != bucket for h in live_horizons)
+    ]
     outcomes: dict[str, str] = {
         i: "duplicate_skipped" for i in instruments if i not in due
     }
@@ -1896,10 +1972,10 @@ def run_shadow_observation(
     if not due:
         return outcomes
 
-    if shadow_store_mode() == STORAGE_MODE_V2:
+    if v2_mode:
         return {**outcomes, **_run_v2_observation(
             fred_key, channel_name, backend=backend, moment=moment,
-            bucket=bucket, due=due,
+            bucket=bucket, due=due, horizons=live_horizons,
         )}
 
     try:
