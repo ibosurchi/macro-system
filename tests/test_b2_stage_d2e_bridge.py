@@ -10,7 +10,10 @@ from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
 from apex.b2_bridge import QueryOutcome, SupabaseShadowRecordStore
-from apex.b2_validation_bridge import SupabaseMarketObservationStore
+from apex.b2_validation_bridge import (
+    SupabaseMarketObservationStore,
+    validate_stored_range,
+)
 
 
 class _Response:
@@ -90,6 +93,86 @@ class D2EMarketPaginationTests(unittest.TestCase):
         )
         self.assertFalse(result.ok)
         self.assertIn("timeout", result.error)
+
+
+class _ShadowStore:
+    def __init__(self, outcome):
+        self.outcome = outcome
+        self.calls = []
+
+    def query_records_result(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.outcome
+
+
+class D2EEndToEndWiringTests(unittest.TestCase):
+    def test_stored_range_uses_unbounded_shadow_read_then_validation(self):
+        row = {
+            "storage_id": "s1",
+            "record_id": "r1",
+            "instrument": "Gold",
+            "horizon": "tactical",
+            "evaluated_at": "2026-01-02T00:00:00+00:00",
+            "record": {
+                "storage_id": "s1",
+                "record_id": "r1",
+                "instrument": "Gold",
+                "horizon": "tactical",
+                "evaluated_at": "2026-01-02T00:00:00+00:00",
+            },
+        }
+        shadow = _ShadowStore(QueryOutcome(backend="test", ok=True, rows=(row,), pages=2))
+        sentinel = {"status": "ok", "evaluated": ("evaluated",), "cohort": "cohort"}
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        as_of = datetime(2026, 2, 1, tzinfo=timezone.utc)
+        with patch("apex.b2_validation_bridge.validate_range", return_value=sentinel) as validate:
+            result = validate_stored_range(
+                start=start, as_of=as_of, record_store=shadow, market_store="market"
+            )
+        self.assertEqual(result["shadow_rows"], 1)
+        self.assertIs(result["shadow_query"], shadow.outcome)
+        self.assertEqual(shadow.calls[0]["max_rows"], None)
+        self.assertEqual(shadow.calls[0]["start"], start)
+        self.assertEqual(shadow.calls[0]["end"], as_of)
+        validate.assert_called_once()
+        self.assertEqual(validate.call_args.args[0], shadow.outcome.rows)
+        self.assertEqual(validate.call_args.kwargs["as_of"], as_of)
+        self.assertEqual(validate.call_args.kwargs["store"], "market")
+
+    def test_shadow_failure_stops_before_market_validation(self):
+        shadow = _ShadowStore(QueryOutcome(backend="test", ok=False, error="shadow down"))
+        with patch("apex.b2_validation_bridge.validate_range") as validate:
+            result = validate_stored_range(
+                start=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                as_of=datetime(2026, 2, 1, tzinfo=timezone.utc),
+                record_store=shadow,
+            )
+        self.assertEqual(result["status"], "shadow_query_failed")
+        self.assertIsNone(result["cohort"])
+        self.assertEqual(result["evaluated"], ())
+        validate.assert_not_called()
+
+    def test_end_is_clamped_to_as_of(self):
+        shadow = _ShadowStore(QueryOutcome(backend="test", ok=True, rows=()))
+        as_of = datetime(2026, 2, 1, tzinfo=timezone.utc)
+        with patch("apex.b2_validation_bridge.validate_range", return_value={"status": "ok"}):
+            validate_stored_range(
+                start=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                end=datetime(2026, 3, 1, tzinfo=timezone.utc),
+                as_of=as_of,
+                record_store=shadow,
+            )
+        self.assertEqual(shadow.calls[0]["end"], as_of)
+
+    def test_invalid_range_is_rejected_before_io(self):
+        shadow = _ShadowStore(QueryOutcome(backend="test", ok=True, rows=()))
+        with self.assertRaises(ValueError):
+            validate_stored_range(
+                start=datetime(2026, 3, 1, tzinfo=timezone.utc),
+                as_of=datetime(2026, 2, 1, tzinfo=timezone.utc),
+                record_store=shadow,
+            )
+        self.assertEqual(shadow.calls, [])
 
 
 if __name__ == "__main__":

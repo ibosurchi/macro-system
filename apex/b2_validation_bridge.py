@@ -45,7 +45,12 @@ from urllib.parse import quote
 import requests
 
 from . import production_core as core
-from .b2_bridge import InsertOutcome, QueryOutcome, symbol_convention
+from .b2_bridge import (
+    InsertOutcome,
+    QueryOutcome,
+    resolve_record_store,
+    symbol_convention,
+)
 from .b2.horizons import HORIZON_EVALUATION_WINDOW
 from .b2.enums import Horizon
 from .b2.modules import registered_instruments
@@ -1039,6 +1044,98 @@ def validate_range(
     }
 
 
+def validate_stored_range(
+    *,
+    start: datetime,
+    as_of: datetime,
+    end: datetime | None = None,
+    instrument: str | None = None,
+    record_store: Any | None = None,
+    market_store: Any | None = None,
+    validation_config: ValidationConfig = DEFAULT_VALIDATION_CONFIG,
+    cohort_config: CohortConfig = DEFAULT_COHORT_CONFIG,
+) -> dict[str, Any]:
+    """D-2E end-to-end offline entry point: shadow store -> cohort result.
+
+    The caller supplies ``as_of`` explicitly, so the run is reproducible and
+    never depends on wall-clock time. Shadow retrieval is deliberately
+    unbounded by the legacy 1000-row compatibility limit and preserves explicit
+    failure-vs-empty semantics before any market query or evaluation occurs.
+    ``end`` defaults to ``as_of`` so a historical run cannot read future shadow
+    observations accidentally.
+    """
+    reference = (
+        as_of.astimezone(timezone.utc)
+        if as_of.tzinfo
+        else as_of.replace(tzinfo=timezone.utc)
+    )
+    range_start = (
+        start.astimezone(timezone.utc)
+        if start.tzinfo
+        else start.replace(tzinfo=timezone.utc)
+    )
+    requested_end = end if end is not None else reference
+    range_end = (
+        requested_end.astimezone(timezone.utc)
+        if requested_end.tzinfo
+        else requested_end.replace(tzinfo=timezone.utc)
+    )
+    if range_end > reference:
+        range_end = reference
+    if range_start > range_end:
+        raise ValueError("start must be on or before the effective end/as_of")
+
+    shadow_backend = record_store if record_store is not None else resolve_record_store()
+    if hasattr(shadow_backend, "query_records_result"):
+        shadow_query = shadow_backend.query_records_result(
+            instrument=instrument,
+            start=range_start,
+            end=range_end,
+            max_rows=None,
+        )
+    else:
+        try:
+            rows = shadow_backend.query_records(
+                instrument=instrument,
+                start=range_start,
+                end=range_end,
+                limit=1000,
+            )
+            shadow_query = QueryOutcome(
+                backend="legacy", ok=True, rows=tuple(rows), pages=1
+            )
+        except Exception as exc:
+            shadow_query = QueryOutcome(
+                backend="legacy", ok=False, error=str(exc)[:200]
+            )
+
+    if not shadow_query.ok:
+        return {
+            "status": "shadow_query_failed",
+            "shadow_query": shadow_query,
+            "shadow_rows": 0,
+            "evaluated": (),
+            "cohort": None,
+            "bar_query": None,
+            "bar_rows": 0,
+            "malformed_rows": 0,
+            "symbols": (),
+        }
+
+    result = validate_range(
+        shadow_query.rows,
+        store=market_store,
+        as_of=reference,
+        validation_config=validation_config,
+        cohort_config=cohort_config,
+    )
+    return {
+        **result,
+        "shadow_query": shadow_query,
+        "shadow_rows": len(shadow_query.rows),
+    }
+
+
 __all__ = [
     "DAILY_INTERVAL",
     "DAILY_RANGE",
@@ -1057,4 +1154,5 @@ __all__ = [
     "resolve_observation",
     "resolve_range",
     "validate_range",
+    "validate_stored_range",
 ]
