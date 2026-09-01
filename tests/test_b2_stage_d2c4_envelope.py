@@ -1011,10 +1011,21 @@ class TestPurity(unittest.TestCase):
         self.assertEqual(len(outcomes), 1)
 
     def test_no_module_outside_tests_imports_envelope(self):
-        """D-2C5's ``readiness.py`` is the ONE approved exception: it calls
-        the existing ``build_validation_envelope`` unchanged rather than
-        reimplementing D-2C4 hashing. Any OTHER importer still fails this
-        guard."""
+        """D-2C5's ``readiness.py`` and D-2D0's ``observation.py`` are the
+        ONLY approved exceptions. ``readiness.py`` calls the existing
+        ``build_validation_envelope`` unchanged rather than reimplementing
+        D-2C4 hashing.
+
+        The second entry is authorized by Stage D-2D0: ``observation.py``
+        imports the ``ValidationEnvelope`` TYPE alone, to annotate the field
+        that carries it. It deliberately does NOT import
+        ``build_validation_envelope`` -- it reaches D-2C4 only through
+        D-2C5's ``build_verified_envelope``, so lineage verification can
+        never be bypassed -- and it defines no hash of its own, which
+        ``test_no_new_validation_or_envelope_hash_is_defined`` in the D-2D0
+        suite asserts directly. The guard is extended by exactly one
+        approved name and is otherwise unchanged: any OTHER importer still
+        fails it."""
         importers = []
         for folder, _dirs, files in os.walk(ROOT):
             if any(p in folder for p in ("_backup_", "_baseline_", ".git", "__pycache__", "tests")):
@@ -1034,7 +1045,8 @@ class TestPurity(unittest.TestCase):
                     if isinstance(node, ast.Import) and any(
                             "validation.envelope" in a.name for a in node.names):
                         importers.append(filename)
-        self.assertEqual(sorted(set(importers)), ["readiness.py"])
+        self.assertEqual(sorted(set(importers)),
+                         ["observation.py", "readiness.py"])
 
 
 # ===========================================================================

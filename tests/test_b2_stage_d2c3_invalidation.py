@@ -791,12 +791,20 @@ class TestProductionSafety(unittest.TestCase):
 
     def test_no_module_outside_tests_imports_invalidation(self):
         """D-2C3 remains inert: nothing under production or B2 capture wires it
-        in. D-2C4's ``envelope.py`` and D-2C5's ``readiness.py`` are the ONLY
-        approved exceptions (D-2C4 Decision 4: nominal imports of
-        resolve.py/invalidation.py are how the envelope binds their concrete
-        result shapes together; D-2C5 needs invalidation.py's ``D2C3Resolution``
-        type for its lineage/readiness checks). Any OTHER importer still
-        fails this guard."""
+        in. D-2C4's ``envelope.py``, D-2C5's ``readiness.py`` and D-2D0's
+        ``observation.py`` are the ONLY approved exceptions (D-2C4 Decision 4:
+        nominal imports of resolve.py/invalidation.py are how the envelope
+        binds their concrete result shapes together; D-2C5 needs
+        invalidation.py's ``D2C3Resolution`` type for its lineage/readiness
+        checks).
+
+        The third entry is authorized by Stage D-2D0: ``observation.py`` is
+        the per-observation ORCHESTRATOR and calls
+        ``resolve_setup_and_execution`` as its second step. That is still not
+        production wiring -- the orchestrator is pure, has no non-test caller
+        of its own, and neither bridge imports it. The guard is extended by
+        exactly one approved name and is otherwise unchanged: any OTHER
+        importer still fails it."""
         importers = []
         for folder, _dirs, files in os.walk(ROOT):
             if any(p in folder for p in ("_backup_", "_baseline_", ".git", "__pycache__", "tests")):
@@ -816,7 +824,8 @@ class TestProductionSafety(unittest.TestCase):
                     if isinstance(node, ast.Import) and any(
                             "validation.invalidation" in a.name for a in node.names):
                         importers.append(filename)
-        self.assertEqual(sorted(set(importers)), ["envelope.py", "readiness.py"])
+        self.assertEqual(sorted(set(importers)),
+                         ["envelope.py", "observation.py", "readiness.py"])
 
     def test_production_signal_thresholds_are_unchanged(self):
         self.assertEqual(core.bias_from_score(0.40)[0], "\U0001f680 Strong Bullish")

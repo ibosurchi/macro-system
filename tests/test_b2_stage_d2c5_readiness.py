@@ -976,6 +976,18 @@ class TestPurity(unittest.TestCase):
         self.assertEqual(len(tiers), 1)
 
     def test_no_module_outside_tests_imports_readiness(self):
+        """D-2D0's ``observation.py`` is the ONE approved exception,
+        authorized by Stage D-2D0.
+
+        Until D-2D0 this list was empty and D-2C5 was unreachable from
+        anywhere: nothing composed it. ``observation.py`` is the
+        per-observation orchestrator, and it uses D-2C5 the way D-2C5 was
+        designed to be used -- ``build_verified_envelope`` for lineage-then-
+        envelope, and ``classify_readiness`` for the tier. It remains pure,
+        has no non-test caller of its own, and neither bridge imports it, so
+        readiness is still not reachable from production. The guard is
+        extended by exactly one approved name and is otherwise unchanged:
+        any OTHER importer still fails it."""
         importers = []
         for folder, _dirs, files in os.walk(ROOT):
             if any(p in folder for p in ("_backup_", "_baseline_", ".git", "__pycache__", "tests")):
@@ -995,7 +1007,7 @@ class TestPurity(unittest.TestCase):
                     if isinstance(node, ast.Import) and any(
                             "validation.readiness" in a.name for a in node.names):
                         importers.append(filename)
-        self.assertEqual(sorted(set(importers)), [])
+        self.assertEqual(sorted(set(importers)), ["observation.py"])
 
 
 # ===========================================================================

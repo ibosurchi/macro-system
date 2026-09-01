@@ -985,12 +985,18 @@ class TestProductionSafety(unittest.TestCase):
 
     def test_no_production_module_imports_resolve(self):
         """Nothing except resolve.py itself may import validation.resolve --
-        D-2C4's ``envelope.py`` and D-2C5's ``readiness.py`` are the ONLY
-        approved exceptions (D-2C4 Decision 4: nominal imports of
-        resolve.py/invalidation.py are how the envelope binds their
-        concrete result shapes together; D-2C5 needs resolve.py's public
-        ``claim_direction`` for its lineage check). Any OTHER importer
-        still fails this guard."""
+        D-2C4's ``envelope.py``, D-2C5's ``readiness.py`` and D-2D0's
+        ``observation.py`` are the ONLY approved exceptions (D-2C4 Decision
+        4: nominal imports of resolve.py/invalidation.py are how the
+        envelope binds their concrete result shapes together; D-2C5 needs
+        resolve.py's public ``claim_direction`` for its lineage check).
+
+        The third entry is authorized by Stage D-2D0: ``observation.py`` is
+        the per-observation ORCHESTRATOR, and calling
+        ``resolve_direction_and_path`` is its entire first step -- there was
+        previously no non-test caller of D-2C2 at all. The guard is
+        extended by exactly one approved name and is otherwise unchanged:
+        any OTHER importer still fails it."""
         importers = []
         for folder, _dirs, files in os.walk(ROOT):
             if any(p in folder for p in ("_backup_", "_baseline_", ".git",
@@ -1012,7 +1018,8 @@ class TestProductionSafety(unittest.TestCase):
                     if isinstance(node, ast.Import) and any(
                             "validation.resolve" in a.name for a in node.names):
                         importers.append(filename)
-        self.assertEqual(sorted(set(importers)), ["envelope.py", "readiness.py"])
+        self.assertEqual(sorted(set(importers)),
+                         ["envelope.py", "observation.py", "readiness.py"])
 
     def test_cross_asset_remains_withheld(self):
         with open(os.path.join(ROOT, "apex", "b2", "shadow.py"), encoding="utf-8") as h:
