@@ -13,9 +13,14 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from datetime import timedelta
+
 from apex import b2_bridge
 from apex.b2.enums import Horizon
 from apex.b2 import shadow
+from apex.b2.validation.bars import GRANULARITY_1D, MarketBar
+from apex.b2_bridge import QueryOutcome
+from apex.b2_validation_bridge import validate_range
 from test_b2_storage_v2 import NOW, FakeRow, _PatchProduction, _reset
 
 
@@ -108,6 +113,102 @@ class TestExecutionHorizonActivation(unittest.TestCase):
     def test_structural_horizon_remains_withheld(self):
         self.assertEqual(b2_bridge.live_shadow_horizons(), (Horizon.TACTICAL, Horizon.EXECUTION))
         self.assertNotIn(Horizon.STRUCTURAL, b2_bridge.live_shadow_horizons())
+
+
+class TestExecutionRowsSurviveValidation(unittest.TestCase):
+    """The rows D-3 activates must be VALIDATABLE, not merely writable.
+
+    Activating a horizon on the write side is only half the change: the offline
+    validation pipeline has to accept what that side now produces. Before this
+    was covered, every live Execution observation whose forward window was
+    still open came back from D-2D0 as a lineage DEFECT -- a
+    programmer/composition error signal -- rather than as an honest unresolved
+    observation. Defects are counted but are never cohort members and never
+    denominators, so the entire Execution horizon would have been silently
+    absent from research while inflating the defect metric.
+    """
+
+    def setUp(self):
+        _reset()
+
+    def _live_rows(self):
+        table = FakeRow()
+        backend = shadow.InMemoryShadowStore()
+        with _PatchProduction():
+            with mock.patch.object(b2_bridge, "resolve_record_store", return_value=table),                  mock.patch.object(b2_bridge, "shadow_instruments", return_value=("Gold",)):
+                b2_bridge.run_shadow_observation(
+                    "FAKE_KEY", "chan", store=backend, now=NOW
+                )
+        return list(table.rows.values())
+
+    @staticmethod
+    def _market_store(rows):
+        class _Store:
+            def query_bars_result(self, **kwargs):
+                return QueryOutcome(backend="fake", ok=True, rows=tuple(rows), pages=1)
+        return _Store()
+
+    def _daily_bars(self, days=25):
+        convention = b2_bridge.symbol_convention("Gold")
+        symbol = convention.symbol if convention else "XAUUSD=X"
+        start = NOW.replace(hour=0, minute=0, second=0, microsecond=0)
+        rows, price = [], 3330.0
+        for offset in range(days):
+            bar_time = start + timedelta(days=offset)
+            if bar_time.weekday() >= 5:      # a real series prints no weekend bar
+                continue
+            price *= 1.004
+            rows.append(MarketBar(
+                symbol=symbol, instrument="Gold", granularity=GRANULARITY_1D,
+                bar_time=bar_time, open=price * 0.999, high=price * 1.006,
+                low=price * 0.997, close=price, volume=1000.0, invert=False,
+            ).to_row())
+        return rows
+
+    def _validate(self, *, as_of):
+        rows = self._live_rows()
+        self.assertEqual(len(rows), 2)
+        return validate_range(
+            rows, store=self._market_store(self._daily_bars()), as_of=as_of,
+        )
+
+    def _defects(self, result):
+        return [
+            item.as_record() for item in result["evaluated"]
+            if getattr(item, "is_defect", False)
+        ]
+
+    def test_open_execution_window_is_not_a_lineage_defect(self):
+        # One hour in: BOTH windows are open, which is the ordinary state for
+        # most of any observation's life and must never look like a defect.
+        result = self._validate(as_of=NOW + timedelta(hours=1))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(self._defects(result), [])
+
+    def test_matured_execution_window_is_not_a_lineage_defect(self):
+        # Past the 3-day execution window but inside the 14-day tactical one,
+        # so the two horizons are deliberately in DIFFERENT maturity states.
+        result = self._validate(as_of=NOW + timedelta(days=4))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(self._defects(result), [])
+
+    def test_both_horizons_reach_evaluation_not_defect(self):
+        result = self._validate(as_of=NOW + timedelta(days=20))
+        self.assertEqual(self._defects(result), [])
+        self.assertEqual(len(result["evaluated"]), 2)
+        for item in result["evaluated"]:
+            self.assertFalse(item.is_defect)
+
+    def test_execution_rows_are_never_reinterpreted_as_tactical(self):
+        """No verdict is invented for Execution -- it stays out of D-2C3 scope."""
+        result = self._validate(as_of=NOW + timedelta(days=20))
+        for item in result["evaluated"]:
+            record = item.as_record()
+            axes = record["envelope"]["outcome_hash_basis"]
+            if record["envelope"]["context"].get("horizon") == Horizon.EXECUTION.value:
+                self.assertIn(
+                    axes["setup_invalidation"], ("unknown", "not_applicable")
+                )
 
 
 if __name__ == "__main__":

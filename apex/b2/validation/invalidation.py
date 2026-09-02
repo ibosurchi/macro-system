@@ -75,6 +75,12 @@ from .outcome import (
     ThesisInvalidation,
 )
 
+#: Recorded on both axes when a record's horizon is outside D-2C3's approved
+#: Tactical scope. A note rather than an ``ExclusionReason``: the D-2C2 reason
+#: vocabulary describes the MARKET's evidence, and this is a statement about
+#: this module's coverage instead.
+OUT_OF_SCOPE_NOTE = "non_tactical_horizon_out_of_scope_for_d2c3"
+
 
 def _payload(record: Mapping[str, Any]) -> Mapping[str, Any]:
     """The shadow record payload, whether wrapped in a storage row or not.
@@ -262,17 +268,21 @@ def _not_applicable(
 
 
 def _unresolved_from_data(
-    reasons: tuple[ExclusionReason, ...], *, was_blocked: bool = False, block_reason: str | None = None
+    reasons: tuple[ExclusionReason, ...], *, was_blocked: bool = False,
+    block_reason: str | None = None, note: str | None = None,
 ) -> D2C3Resolution:
+    notes = (note,) if note else ()
     setup = SetupInvalidationResolution(
         state=SetupInvalidation.UNKNOWN,
         measures=InvalidationMeasures(),
         reasons=reasons,
+        notes=notes,
     )
     execution = ExecutionQualityResolution(
         state=ExecutionOutcome.UNRESOLVED,
         was_blocked=was_blocked,
         block_reason=block_reason,
+        notes=notes,
     )
     return D2C3Resolution(setup=setup, execution=execution, thesis=ThesisInvalidation.NOT_ASSESSABLE)
 
@@ -365,10 +375,26 @@ def resolve_setup_and_execution(
     # -- 0. Horizon scope guard. D-2C3 is approved for Tactical observations
     # only; a Structural/Execution record is rejected deterministically rather
     # than silently reinterpreted as Tactical. --------------------------------
+    #
+    # Out-of-scope is a statement about THIS module's coverage, and it can
+    # never overrule what D-2C2 already established about the DATA. When D-2C2
+    # reached no verdict the setup axis is UNKNOWN -- "we cannot say" -- exactly
+    # as it would be for a Tactical record in the same data state. Answering
+    # NOT_APPLICABLE there would assert that no setup applies, which is a
+    # judgement missing data cannot support, and which D-2C5's lineage
+    # verification correctly rejects as inconsistent with an UNRESOLVED
+    # direction. Either way no verdict is computed and no reinterpretation
+    # happens; the note records the scope fact on both axes.
     horizon = str(payload.get("horizon") or "").strip().lower() if isinstance(payload, Mapping) else ""
     if horizon != Horizon.TACTICAL.value:
+        if path_resolution.direction is DirectionOutcome.UNRESOLVED:
+            return _unresolved_from_data(
+                path_resolution.reasons,
+                was_blocked=was_blocked, block_reason=block_reason,
+                note=OUT_OF_SCOPE_NOTE,
+            )
         return _not_applicable(
-            "non_tactical_horizon_out_of_scope_for_d2c3",
+            OUT_OF_SCOPE_NOTE,
             was_blocked=was_blocked, block_reason=block_reason,
         )
 

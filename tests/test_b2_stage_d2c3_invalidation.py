@@ -34,6 +34,7 @@ from apex import b2_bridge
 from apex.b2.validation import invalidation as invalidation_mod
 from apex.b2.validation.bars import GRANULARITY_1D, MarketBar
 from apex.b2.validation.invalidation import (
+    OUT_OF_SCOPE_NOTE,
     D2C3Resolution,
     ExecutionQualityResolution,
     InvalidationMeasures,
@@ -673,13 +674,59 @@ class TestMissingDataNeverNegative(unittest.TestCase):
 # N. HORIZON SAFETY   (extra)
 # ===========================================================================
 class TestHorizonSafety(unittest.TestCase):
-    def test_non_tactical_horizon_is_rejected_not_reinterpreted(self):
-        record = _record("bullish", horizon="structural", execution=_execution(
+    """A non-Tactical record is never reinterpreted as Tactical.
+
+    D-2C3 computes no setup-invalidation verdict for a non-Tactical horizon on
+    either branch below, and records the scope note on both axes either way.
+    What differs is only WHICH non-verdict is honest, and that is decided by
+    D-2C2's verdict on the data -- never by this module's scope alone.
+    """
+
+    def test_out_of_scope_horizon_reaching_a_verdict_is_not_applicable(self):
+        # D-2C2 resolved the data (a 3-day execution window the bars cover), so
+        # the only reason there is no setup answer is the horizon scope itself.
+        record = _record("bullish", horizon="execution", execution=_execution(
             invalidation_level=BULLISH_INVALIDATION, current_price=ANCHOR_PRICE))
-        _, result = _run(record)
+        path, result = _run(record)
+        self.assertIsNot(path.direction, DirectionOutcome.UNRESOLVED)
         self.assertIs(result.setup.state, SetupInvalidation.NOT_APPLICABLE)
         self.assertIs(result.execution.state, ExecutionOutcome.NOT_APPLICABLE)
-        self.assertIn("non_tactical_horizon_out_of_scope_for_d2c3", result.setup.notes)
+        self.assertIn(OUT_OF_SCOPE_NOTE, result.setup.notes)
+        self.assertIn(OUT_OF_SCOPE_NOTE, result.execution.notes)
+
+    def test_out_of_scope_horizon_without_a_verdict_is_unknown_not_not_applicable(self):
+        """Regression: out-of-scope must not overrule D-2C2 on the DATA.
+
+        A structural record's 90-day window is still open here, so D-2C2 reached
+        no verdict. Answering NOT_APPLICABLE would assert that no setup applies
+        -- a judgement missing data cannot support -- and D-2C5's lineage
+        verification rejects it, turning an ordinary open window into a
+        composition DEFECT. That is what made every live Execution observation
+        defective for the whole time its window was open.
+        """
+        record = _record("bullish", horizon="structural", execution=_execution(
+            invalidation_level=BULLISH_INVALIDATION, current_price=ANCHOR_PRICE))
+        path, result = _run(record)
+        self.assertIs(path.direction, DirectionOutcome.UNRESOLVED)
+        self.assertIs(result.setup.state, SetupInvalidation.UNKNOWN)
+        self.assertIs(result.execution.state, ExecutionOutcome.UNRESOLVED)
+        self.assertIn(OUT_OF_SCOPE_NOTE, result.setup.notes)
+        self.assertIn(OUT_OF_SCOPE_NOTE, result.execution.notes)
+        # Still not reinterpreted: D-2C3 echoes D-2C2's reasons, inventing none.
+        self.assertEqual(tuple(result.setup.reasons), tuple(path.reasons))
+
+    def test_no_horizon_ever_produces_a_setup_verdict_outside_tactical(self):
+        for horizon in ("execution", "structural", "", "nonsense"):
+            for bars in (None, []):
+                record = _record("bullish", horizon=horizon, execution=_execution(
+                    invalidation_level=BULLISH_INVALIDATION, current_price=ANCHOR_PRICE))
+                _, result = _run(record, bars=bars, tail=bars is None)
+                self.assertNotIn(
+                    result.setup.state,
+                    (SetupInvalidation.INVALIDATED, SetupInvalidation.NOT_INVALIDATED),
+                    f"{horizon!r}/{bars!r} produced a setup verdict",
+                )
+                self.assertIn(OUT_OF_SCOPE_NOTE, result.setup.notes)
 
 
 # ===========================================================================
