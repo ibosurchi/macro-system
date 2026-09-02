@@ -116,6 +116,71 @@ class TestExecutionHorizonActivation(unittest.TestCase):
         self.assertNotIn(Horizon.STRUCTURAL, b2_bridge.live_shadow_horizons())
 
 
+class TestPerHorizonFailureIndependence(unittest.TestCase):
+    """A failure on one horizon must cost that horizon only.
+
+    The write is batched, so the tempting-but-wrong behaviours are to lose both
+    rows when one is rejected, or to mark both handled and never retry the lost
+    one. Neither may happen: the bucket is marked per horizon and only for rows
+    that actually settled.
+    """
+
+    def setUp(self):
+        _reset()
+
+    def _cycle(self, table, backend):
+        with _PatchProduction():
+            with mock.patch.object(b2_bridge, "resolve_record_store", return_value=table),                  mock.patch.object(b2_bridge, "shadow_instruments", return_value=("Gold",)):
+                return b2_bridge.run_shadow_observation(
+                    "FAKE_KEY", "chan", store=backend, now=NOW
+                )
+
+    def _tactical_storage_id(self):
+        probe = FakeRow()
+        self._cycle(probe, shadow.InMemoryShadowStore())
+        storage_id = next(
+            sid for sid, row in probe.rows.items()
+            if row["horizon"] == Horizon.TACTICAL.value
+        )
+        _reset()
+        return storage_id
+
+    def test_a_rejected_tactical_row_does_not_cost_the_execution_row(self):
+        table = FakeRow(fail_ids={self._tactical_storage_id()})
+        backend = shadow.InMemoryShadowStore()
+        outcomes = self._cycle(table, backend)
+
+        self.assertEqual(outcomes["Gold"], "failed")
+        self.assertEqual(
+            [r["horizon"] for r in table.rows.values()], [Horizon.EXECUTION.value]
+        )
+        # Only the settled horizon is marked; Tactical stays unmarked to retry.
+        self.assertIn("Gold|execution", b2_bridge._HANDLED_BUCKETS)
+        self.assertNotIn("Gold", b2_bridge._HANDLED_BUCKETS)
+        # A prediction is registered only for the observation that persisted.
+        log = backend.load(b2_bridge.PREDICTION_LOG_STATE_ID, None)
+        self.assertEqual(
+            [p["horizon"] for p in log["predictions"]], [Horizon.EXECUTION.value]
+        )
+
+    def test_only_the_failed_horizon_is_retried_on_the_next_tick(self):
+        table = FakeRow(fail_ids={self._tactical_storage_id()})
+        backend = shadow.InMemoryShadowStore()
+        self._cycle(table, backend)
+
+        table.fail_ids.clear()
+        outcomes = self._cycle(table, backend)
+
+        self.assertEqual(outcomes["Gold"], "written")
+        self.assertEqual(
+            sorted(r["horizon"] for r in table.rows.values()),
+            [Horizon.EXECUTION.value, Horizon.TACTICAL.value],
+        )
+        # The retry carries ONE row: Execution was stopped by the durable
+        # duplicate check before any work, so it is never rebuilt or re-sent.
+        self.assertEqual(table.batch_sizes, [2, 1])
+
+
 class TestLiveCycleAtFullScale(unittest.TestCase):
     """The whole live cycle, at the size it actually runs at.
 
