@@ -35,6 +35,7 @@ from apex.b2 import shadow
 from apex.b2.validation import anchor as anchor_mod
 from apex.b2.validation import bars as bars_mod
 from apex.b2.validation import revisions as revisions_mod
+from apex.b2.validation import outcomes as outcomes_mod
 from apex.b2.validation import series_pins as series_pins_mod
 from apex.b2.validation.anchor import (
     AnchorStatus,
@@ -1216,7 +1217,7 @@ class TestProductionSafety(unittest.TestCase):
             self.assertNotIn(forbidden, source, forbidden)
 
     def test_no_ai_or_telegram_call_in_the_validation_layer(self):
-        for module in (vb, bars_mod, anchor_mod, revisions_mod, series_pins_mod):
+        for module in (vb, bars_mod, anchor_mod, revisions_mod, series_pins_mod, outcomes_mod):
             names = {n.lower() for n in _referenced_names(module)}
             for forbidden in ("telegram", "sendmessage", "openai", "anthropic",
                               "generativelanguage", "completions", "gemini",
@@ -1227,7 +1228,7 @@ class TestProductionSafety(unittest.TestCase):
                 )
 
     def test_the_pure_layer_performs_no_io(self):
-        for module in (bars_mod, anchor_mod, revisions_mod, series_pins_mod):
+        for module in (bars_mod, anchor_mod, revisions_mod, series_pins_mod, outcomes_mod):
             tree = ast.parse(inspect.getsource(module))
             for node in ast.walk(tree):
                 if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -1261,7 +1262,7 @@ class TestProductionSafety(unittest.TestCase):
         self.assertNotIn("SUPABASE_SERVICE_ROLE_KEY", source)
 
     def test_no_ddl_verb_appears_anywhere(self):
-        for module in (vb, bars_mod, anchor_mod, revisions_mod, series_pins_mod):
+        for module in (vb, bars_mod, anchor_mod, revisions_mod, series_pins_mod, outcomes_mod):
             source = inspect.getsource(module).upper()
             for verb in ("CREATE TABLE", "ALTER TABLE", "DROP TABLE",
                          "TRUNCATE", "CREATE INDEX"):

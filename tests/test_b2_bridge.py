@@ -367,10 +367,22 @@ class TestBridge(unittest.TestCase):
             ["b2_validation_bridge.py", "production_core.py"],
         )
 
-    #: The single approved operator/research entry point for Stage D-1 capture.
-    #: See scripts/capture_daily_bars.py -- it is explicit, independently
-    #: invoked by a human, not imported by anything, and performs no fetch or
-    #: storage logic of its own beyond calling capture_daily_bars().
+    #: The approved operator/research entry points for Stage D. BOTH are
+    #: explicit, independently invoked by a human, imported by nothing, and
+    #: perform no fetch, evaluation or storage logic of their own beyond
+    #: calling one bridge function each:
+    #:
+    #:   capture_daily_bars.py            -- D-1 capture -> capture_daily_bars()
+    #:   validate_matured_observations.py -- D-5 validation -> validate_stored_range()
+    #:
+    #: Stage D-5 extends this list by exactly ONE name. The guarantee is
+    #: unchanged: any OTHER importer -- a page, a strategy, the daemon, the
+    #: Telegram loop, production_core -- still fails the tests below.
+    APPROVED_VALIDATION_BRIDGE_IMPORTERS = (
+        "capture_daily_bars.py",
+        "validate_matured_observations.py",
+    )
+    #: Retained for the existence check below, which needs one concrete name.
     APPROVED_VALIDATION_BRIDGE_IMPORTER = "capture_daily_bars.py"
 
     def _find_validation_bridge_importers(self, root: str, *, skip_dirs=None, skip_filename=None) -> list[str]:
@@ -424,7 +436,10 @@ class TestBridge(unittest.TestCase):
         """
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         importers = self._find_validation_bridge_importers(root)
-        self.assertEqual(sorted(set(importers)), [self.APPROVED_VALIDATION_BRIDGE_IMPORTER])
+        self.assertEqual(
+            sorted(set(importers)),
+            sorted(self.APPROVED_VALIDATION_BRIDGE_IMPORTERS),
+        )
 
     def test_the_approved_runner_file_actually_exists_and_is_not_production_code(self):
         """The allowlisted name must name a real, non-production file.
@@ -433,26 +448,27 @@ class TestBridge(unittest.TestCase):
         approved name was simply never matched by anything on disk.
         """
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        runner_path = os.path.join(root, "scripts", self.APPROVED_VALIDATION_BRIDGE_IMPORTER)
-        self.assertTrue(os.path.isfile(runner_path), runner_path)
-        with open(runner_path, "r", encoding="utf-8") as handle:
-            source = handle.read()
-        tree = ast.parse(source)
-        imported: set[str] = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom):
-                imported.add((node.module or "").split(".")[0])
-            if isinstance(node, ast.Import):
-                imported.update(a.name.split(".")[0] for a in node.names)
-        # The runner may depend on the b2 research surface and stdlib/argparse
-        # plumbing, but never on any production entry-point or scheduling
-        # module -- proving requirement (2) structurally, not by convention.
-        for forbidden in (
-            "telegram_service", "background_services", "dashboard", "views",
-            "forecaster", "app", "bootstrap", "auth", "payments", "news",
-            "strategies", "threading",
-        ):
-            self.assertNotIn(forbidden, imported, forbidden)
+        for name in self.APPROVED_VALIDATION_BRIDGE_IMPORTERS:
+            runner_path = os.path.join(root, "scripts", name)
+            self.assertTrue(os.path.isfile(runner_path), runner_path)
+            with open(runner_path, "r", encoding="utf-8") as handle:
+                source = handle.read()
+            tree = ast.parse(source)
+            imported: set[str] = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom):
+                    imported.add((node.module or "").split(".")[0])
+                if isinstance(node, ast.Import):
+                    imported.update(a.name.split(".")[0] for a in node.names)
+            # A runner may depend on the b2 research surface and stdlib/argparse
+            # plumbing, but never on any production entry-point or scheduling
+            # module -- proving requirement (2) structurally, not by convention.
+            for forbidden in (
+                "telegram_service", "background_services", "dashboard", "views",
+                "forecaster", "app", "bootstrap", "auth", "payments", "news",
+                "strategies", "threading",
+            ):
+                self.assertNotIn(forbidden, imported, f"{name}: {forbidden}")
 
     def test_zero_importer_guard_actually_detects_an_unauthorized_importer(self):
         """Proves the detection mechanism, not just today's repo state.

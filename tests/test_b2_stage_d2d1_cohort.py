@@ -1459,7 +1459,11 @@ class TestScope(unittest.TestCase):
                                    # Stage D-4 (approved) added exactly two further pure
                                    # modules: the safe revision store and the pinned
                                    # capture series. metrics.py stays forbidden.
-                                   "revisions.py", "series_pins.py"})
+                                   "revisions.py", "series_pins.py",
+                                   # Stage D-5 (approved) added exactly one further pure
+                                   # module: the forward outcome persistence gate and row
+                                   # builder. metrics.py stays forbidden.
+                                   "outcomes.py"})
 
     def test_observation_py_is_unchanged(self):
         self._unchanged("apex/b2/evaluation/observation.py")

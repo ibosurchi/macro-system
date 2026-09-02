@@ -4,3 +4,4 @@
 # B2 Stage D local append-only mirrors (never durable; see b2_validation_bridge)
 b2_market_observations_local.jsonl
 b2_market_observation_revisions_local.jsonl
+b2_validation_outcomes_local.jsonl

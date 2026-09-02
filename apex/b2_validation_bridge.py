@@ -76,6 +76,13 @@ from .b2.validation.series_pins import (
     SERIES_PIN_VERSION,
     pinned_capture_symbol,
 )
+from .b2.validation.outcomes import (
+    OUTCOME_SCHEMA_VERSION,
+    GateDecision,
+    OutcomeFinality,
+    ValidationOutcomeRow,
+    build_outcome_rows,
+)
 from .b2.validation.config import DEFAULT_VALIDATION_CONFIG, ValidationConfig
 from .b2.evaluation import (
     DEFAULT_COHORT_CONFIG,
@@ -101,6 +108,15 @@ MARKET_OBSERVATION_REVISIONS_TABLE = (
     or "b2_market_observation_revisions"
 )
 
+#: Stage D-5's append-only evaluation-fact log, likewise pre-created by an
+#: operator -- see ``sql/002_b2_validation_outcomes.sql``. A prediction fact, a
+#: market fact and an evaluation fact are three different things; this is the
+#: third, and it is why it does not live in either of the other two tables.
+VALIDATION_OUTCOMES_TABLE = (
+    core.get_secret("B2_VALIDATION_OUTCOMES_TABLE", "b2_validation_outcomes")
+    or "b2_validation_outcomes"
+)
+
 #: Own timeout, deliberately not production's REQUEST_TIMEOUT: this is an
 #: offline research path and must never share a budget tuned for the live loop.
 MARKET_OBS_TIMEOUT = 20
@@ -115,6 +131,16 @@ LOCAL_MARKET_OBSERVATIONS_FILE = str(
 #: never-durable posture.
 LOCAL_MARKET_OBSERVATION_REVISIONS_FILE = str(
     core.PROJECT_ROOT / "b2_market_observation_revisions_local.jsonl"
+)
+
+#: The outcome log's local mirror. Same append-only shape and same
+#: never-durable posture -- and one further limitation it must never hide:
+#: rows written here carry no ``captured_at``, because that column is a
+#: database default the client never sends. A local mirror therefore CANNOT
+#: enforce the as-of capture admission rule (R4); see
+#: ``LocalMarketObservationStore.query_bars_result``.
+LOCAL_VALIDATION_OUTCOMES_FILE = str(
+    core.PROJECT_ROOT / "b2_validation_outcomes_local.jsonl"
 )
 
 #: The approved fetch shape. Same endpoint and same symbols production already
@@ -361,8 +387,32 @@ class SupabaseMarketObservationStore:
         granularity: str = GRANULARITY_1D,
         page_size: int = 1000,
         max_rows: int | None = None,
+        captured_at_max: datetime | None = None,
     ) -> QueryOutcome:
-        """Paginated bar retrieval with failure distinct from empty success."""
+        """Paginated bar retrieval with failure distinct from empty success.
+
+        ``captured_at_max`` is Stage D-5's as-of capture admission (rule R4):
+        no bar CAPTURED after the instant a run claims to speak for may enter
+        that run. It is applied HERE, at the storage boundary, because
+        ``captured_at`` is a property of the row rather than of the bar --
+        ``MarketBar`` neither has the field nor should gain one.
+
+        R4 is NOT an anti-look-ahead rule and must not be confused with one.
+        Forward evidence is captured AFTER the prediction by definition: a bar
+        printing inside the forward window cannot have been stored before that
+        window opened, so ``captured_at > evaluated_at`` is required, not
+        suspect. Anti-look-ahead is enforced entirely by ``path_bars``
+        (``bar_time > evaluated_at`` and ``bar_close_time <= window_end``) and
+        is untouched by this parameter.
+
+        What R4 buys is REPRODUCIBILITY. Without it, re-running a historical
+        ``as_of`` today would silently include bars captured since, and the
+        ``input_hash`` would change for reasons that have nothing to do with
+        the market.
+
+        ``None`` -- the default -- applies no capture bound and preserves the
+        pre-D-5 behaviour of this method exactly.
+        """
         if not symbols:
             return QueryOutcome(backend="supabase", ok=True, rows=(), pages=0)
         if not self.available:
@@ -389,13 +439,27 @@ class SupabaseMarketObservationStore:
                         "granularity": f"eq.{granularity}",
                         "bar_time": f"gt.{canonical_bar_time_iso(start)}",
                         "and": f"(bar_time.lte.{canonical_bar_time_iso(end)})",
+                        # captured_at is SELECTED so a caller can audit which
+                        # capture answered, and FILTERED only when a bound was
+                        # asked for. Both are additive: with no bound the query
+                        # is the pre-D-5 query plus one more column.
                         "select": (
                             "observation_id,symbol,instrument,granularity,price_source,"
-                            "bar_time,open,high,low,close,volume,invert,content_hash"
+                            "bar_time,open,high,low,close,volume,invert,content_hash,"
+                            "captured_at"
                         ),
                         "order": "symbol.asc,bar_time.asc,observation_id.asc",
                         "limit": request_limit,
                         "offset": offset,
+                        **(
+                            {}
+                            if captured_at_max is None
+                            else {
+                                "captured_at": (
+                                    f"lte.{canonical_bar_time_iso(captured_at_max)}"
+                                )
+                            }
+                        ),
                     },
                     timeout=self.timeout,
                 )
@@ -420,10 +484,12 @@ class SupabaseMarketObservationStore:
         end: datetime,
         granularity: str = GRANULARITY_1D,
         limit: int = 10000,
+        captured_at_max: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """Backward-compatible bounded read; use query_bars_result for status."""
         result = self.query_bars_result(
-            symbols=symbols, start=start, end=end, granularity=granularity, max_rows=int(limit)
+            symbols=symbols, start=start, end=end, granularity=granularity,
+            max_rows=int(limit), captured_at_max=captured_at_max,
         )
         return list(result.rows) if result.ok else []
 
@@ -555,10 +621,30 @@ class LocalMarketObservationStore:
         granularity: str = GRANULARITY_1D,
         page_size: int = 1000,
         max_rows: int | None = None,
+        captured_at_max: datetime | None = None,
     ) -> QueryOutcome:
+        """Local mirror of the same read, INCLUDING one honest limitation.
+
+        Rows in this mirror carry no ``captured_at``: the column is a database
+        default that ``MarketBar.to_row`` never sends, so a locally-mirrored
+        bar has no capture timestamp to bound. A row with no ``captured_at``
+        is therefore ADMITTED even under an R4 bound -- it cannot be shown to
+        violate the rule, and silently dropping every local bar would be a
+        worse lie than admitting one whose capture time is unknown.
+
+        The consequence is stated rather than hidden: **the local mirror
+        cannot enforce as-of capture admission.** That is one more reason a
+        local write is never reported as durable, and one more reason an
+        as-of-reproducible run belongs on the cloud backend.
+        """
         wanted = set(symbols)
         low = canonical_bar_time_iso(start)
         high = canonical_bar_time_iso(end)
+        capture_bound = (
+            canonical_bar_time_iso(captured_at_max)
+            if captured_at_max is not None
+            else None
+        )
         rows: list[dict[str, Any]] = []
         try:
             if not os.path.exists(self.path):
@@ -577,8 +663,14 @@ class LocalMarketObservationStore:
                     if str(row.get("granularity")) != granularity:
                         continue
                     stamp = str(row.get("bar_time", ""))
-                    if low < stamp <= high:
-                        rows.append(row)
+                    if not (low < stamp <= high):
+                        continue
+                    if capture_bound is not None:
+                        captured = row.get("captured_at")
+                        # Unknown capture time is admitted; see the docstring.
+                        if captured is not None and str(captured) > capture_bound:
+                            continue
+                    rows.append(row)
             rows.sort(key=lambda row: (str(row.get("symbol")), str(row.get("bar_time")), str(row.get("observation_id"))))
             if max_rows is not None:
                 rows = rows[: int(max_rows)]
@@ -595,9 +687,11 @@ class LocalMarketObservationStore:
         end: datetime,
         granularity: str = GRANULARITY_1D,
         limit: int = 10000,
+        captured_at_max: datetime | None = None,
     ) -> list[dict[str, Any]]:
         result = self.query_bars_result(
-            symbols=symbols, start=start, end=end, granularity=granularity, max_rows=int(limit)
+            symbols=symbols, start=start, end=end, granularity=granularity,
+            max_rows=int(limit), captured_at_max=captured_at_max,
         )
         return list(result.rows) if result.ok else []
 
@@ -787,6 +881,285 @@ def resolve_revision_store() -> Any:
     """The revision log to use: Supabase when configured, else local."""
     supabase = SupabaseMarketObservationRevisionStore()
     return supabase if supabase.available else LocalMarketObservationRevisionStore()
+
+
+class SupabaseValidationOutcomeStore:
+    """Append-only row store over the pre-created ``b2_validation_outcomes``.
+
+    Same write shape as the two stores above -- POST with
+    ``resolution=ignore-duplicates``, which is ON CONFLICT DO NOTHING -- so an
+    outcome already recorded is left exactly as it was, ``first_seen_at``
+    included.
+
+    Unlike the revision log, this store DOES have a conflict bucket, and it
+    means something specific. A row's identity is
+    ``sha256("val"|validation_id|input_hash)``: the evidence, not the verdict.
+    So a refused row whose stored ``outcome_hash`` differs from the one just
+    computed says the SAME job over the SAME evidence resolved two different
+    ways. That is not a market event and not a vendor revision -- it is a
+    determinism defect in this codebase. Neither row is overwritten and the
+    conflict is reported so a human can look, exactly as a bar-content
+    conflict is.
+    """
+
+    def __init__(self, table: str | None = None, timeout: int | None = None) -> None:
+        self.table = table or VALIDATION_OUTCOMES_TABLE
+        self.timeout = timeout or MARKET_OBS_TIMEOUT
+
+    @property
+    def available(self) -> bool:
+        return core._supabase_enabled()
+
+    def _url(self) -> str:
+        return f"{core.SUPABASE_URL}/rest/v1/{self.table}"
+
+    def insert_rows(self, rows: list[dict[str, Any]]) -> InsertOutcome:
+        """Record outcomes, ignoring any already known.
+
+        On a batch failure each row is retried alone, so one rejected outcome
+        cannot cost the others their record.
+        """
+        if not rows:
+            return InsertOutcome(backend="supabase", durable=True)
+        if not self.available:
+            return InsertOutcome(
+                backend="unavailable",
+                durable=False,
+                failed=tuple(str(r.get("outcome_row_id", "")) for r in rows),
+                error="Supabase is not configured",
+            )
+
+        sent = [str(r.get("outcome_row_id", "")) for r in rows]
+        try:
+            response = requests.post(
+                self._url(),
+                headers=core._supabase_headers(
+                    "resolution=ignore-duplicates,return=representation"
+                ),
+                params={"on_conflict": "outcome_row_id", "select": "outcome_row_id"},
+                json=rows,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            body = response.json()
+            inserted = (
+                tuple(
+                    str(item.get("outcome_row_id", ""))
+                    for item in body
+                    if isinstance(item, dict) and item.get("outcome_row_id")
+                )
+                if isinstance(body, list)
+                else ()
+            )
+            not_inserted = [r for r in sent if r not in set(inserted)]
+            duplicate, conflicted = self._classify_outcome_duplicates(rows, not_inserted)
+            return InsertOutcome(
+                backend="supabase",
+                durable=True,
+                inserted=inserted,
+                duplicate=tuple(duplicate),
+                conflicted=tuple(conflicted),
+            )
+        except Exception as exc:
+            if len(rows) == 1:
+                return InsertOutcome(
+                    backend="supabase",
+                    durable=False,
+                    failed=tuple(sent),
+                    error=str(exc)[:200],
+                )
+            inserted_ids: list[str] = []
+            duplicate_ids: list[str] = []
+            conflicted_ids: list[str] = []
+            failed_ids: list[str] = []
+            last_error = str(exc)[:200]
+            for row in rows:
+                one = self.insert_rows([row])
+                inserted_ids.extend(one.inserted)
+                duplicate_ids.extend(one.duplicate)
+                conflicted_ids.extend(one.conflicted)
+                failed_ids.extend(one.failed)
+                if one.error:
+                    last_error = one.error
+            return InsertOutcome(
+                backend="supabase",
+                durable=not failed_ids,
+                inserted=tuple(inserted_ids),
+                duplicate=tuple(duplicate_ids),
+                conflicted=tuple(conflicted_ids),
+                failed=tuple(failed_ids),
+                error=last_error if failed_ids else "",
+            )
+
+    def _classify_outcome_duplicates(
+        self, rows: list[dict[str, Any]], not_inserted: list[str]
+    ) -> tuple[list[str], list[str]]:
+        """Split refused outcomes into benign re-runs and determinism defects.
+
+        A refused outcome is benign when the stored ``outcome_hash`` matches --
+        that is the normal case, because every run re-evaluates the same
+        matured observations against the same evidence. When they differ, one
+        job over one set of evidence produced two verdicts. Neither row is
+        overwritten and the conflict is reported.
+        """
+        if not not_inserted:
+            return [], []
+        by_id = {str(r.get("outcome_row_id", "")): r for r in rows}
+        duplicate: list[str] = []
+        conflicted: list[str] = []
+        for outcome_row_id in not_inserted:
+            expected = str(by_id.get(outcome_row_id, {}).get("outcome_hash", ""))
+            stored = self.stored_outcome_hash(outcome_row_id)
+            if expected and stored and stored != expected:
+                conflicted.append(outcome_row_id)
+            else:
+                duplicate.append(outcome_row_id)
+        return duplicate, conflicted
+
+    def stored_outcome_hash(self, outcome_row_id: str) -> str | None:
+        """Outcome hash of a stored row, or None when it cannot be read.
+
+        Reads the ``outcome_hash`` COLUMN and recomputes nothing -- the same
+        discipline the market-observation store keeps for ``content_hash``.
+        """
+        if not self.available:
+            return None
+        try:
+            response = requests.get(
+                self._url(),
+                headers=core._supabase_headers(),
+                params={
+                    "outcome_row_id": f"eq.{outcome_row_id}",
+                    "select": "outcome_hash",
+                    "limit": 1,
+                },
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            body = response.json()
+            if isinstance(body, list) and body and isinstance(body[0], dict):
+                value = body[0].get("outcome_hash")
+                return str(value) if value else None
+            return None
+        except Exception:
+            return None
+
+    def row_count(self) -> int | None:
+        """Total rows, or None when it cannot be determined."""
+        if not self.available:
+            return None
+        try:
+            response = requests.get(
+                self._url(),
+                headers=core._supabase_headers("count=exact"),
+                params={"select": "outcome_row_id", "limit": 1},
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            content_range = response.headers.get("content-range", "")
+            total = content_range.rsplit("/", 1)[-1] if "/" in content_range else ""
+            return int(total) if total.isdigit() else None
+        except Exception:
+            return None
+
+
+class LocalValidationOutcomeStore:
+    """Append-only JSONL mirror of the outcome log, for local dev and tests.
+
+    Never durable, for the same reason its two siblings are not: a redeploy
+    discards the container filesystem.
+    """
+
+    def __init__(self, path: str | None = None) -> None:
+        self.path = path or LOCAL_VALIDATION_OUTCOMES_FILE
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    def _existing(self) -> dict[str, str]:
+        """outcome_row_id -> outcome_hash for everything already appended."""
+        known: dict[str, str] = {}
+        try:
+            if not os.path.exists(self.path):
+                return known
+            with open(self.path, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except Exception:
+                        continue
+                    outcome_row_id = str(row.get("outcome_row_id", ""))
+                    if outcome_row_id:
+                        known[outcome_row_id] = str(row.get("outcome_hash", ""))
+        except Exception:
+            return known
+        return known
+
+    def insert_rows(self, rows: list[dict[str, Any]]) -> InsertOutcome:
+        if not rows:
+            return InsertOutcome(backend="local", durable=False)
+        known = self._existing()
+        inserted: list[str] = []
+        duplicate: list[str] = []
+        conflicted: list[str] = []
+        failed: list[str] = []
+        try:
+            with open(self.path, "a", encoding="utf-8") as handle:
+                for row in rows:
+                    outcome_row_id = str(row.get("outcome_row_id", ""))
+                    if not outcome_row_id:
+                        failed.append(outcome_row_id)
+                        continue
+                    if outcome_row_id in known:
+                        expected = str(row.get("outcome_hash", ""))
+                        stored = known[outcome_row_id]
+                        if expected and stored and stored != expected:
+                            conflicted.append(outcome_row_id)
+                        else:
+                            duplicate.append(outcome_row_id)
+                        continue
+                    handle.write(
+                        json.dumps(row, separators=(",", ":"), default=str) + "\n"
+                    )
+                    known[outcome_row_id] = str(row.get("outcome_hash", ""))
+                    inserted.append(outcome_row_id)
+        except Exception as exc:
+            settled = len(inserted) + len(duplicate) + len(conflicted)
+            return InsertOutcome(
+                backend="local",
+                durable=False,
+                inserted=tuple(inserted),
+                duplicate=tuple(duplicate),
+                conflicted=tuple(conflicted),
+                failed=tuple(
+                    str(r.get("outcome_row_id", "")) for r in rows
+                )[settled:],
+                error=str(exc)[:200],
+            )
+        return InsertOutcome(
+            backend="local",
+            durable=False,
+            inserted=tuple(inserted),
+            duplicate=tuple(duplicate),
+            conflicted=tuple(conflicted),
+            failed=tuple(failed),
+        )
+
+    def stored_outcome_hash(self, outcome_row_id: str) -> str | None:
+        return self._existing().get(outcome_row_id) or None
+
+    def row_count(self) -> int | None:
+        return len(self._existing())
+
+
+def resolve_outcome_store() -> Any:
+    """The outcome log to use: Supabase when configured, else local."""
+    supabase = SupabaseValidationOutcomeStore()
+    return supabase if supabase.available else LocalValidationOutcomeStore()
 
 
 # ===========================================================================
@@ -1411,6 +1784,110 @@ def resolve_range(
     }
 
 
+#: The shape of the persistence half of a validation result when nothing was
+#: written. Every key is always present, so an operator never has to tell "no
+#: outcomes" apart from "this build does not persist outcomes".
+_EMPTY_PERSISTENCE_REPORT: Mapping[str, Any] = {
+    "persist_attempted": False,
+    "outcome_backend": "none",
+    "outcomes_written": 0,
+    "outcomes_duplicate": 0,
+    "outcomes_conflicted": [],
+    "outcomes_failed": 0,
+    "outcomes_eligible": 0,
+    "outcomes_final": 0,
+    "outcomes_provisional": 0,
+    "gate_census": {},
+    "persistence_error": "",
+}
+
+
+def persist_validation_outcomes(
+    evaluated: Sequence[Any],
+    *,
+    as_of: datetime,
+    outcome_store: Any | None,
+    persist: bool = False,
+) -> dict[str, Any]:
+    """Gate a batch of D-2D0 results and record the ones worth keeping.
+
+    STRICTLY DOWNSTREAM, and structurally so. This runs after
+    ``evaluate_observation`` has produced every result and after the cohort has
+    been built. It reads those results, writes to a SEPARATE table, and returns
+    a separate report fragment. It cannot change a single evaluated observation,
+    cannot change the cohort, and touches neither ``b2_shadow_records`` nor
+    ``b2_market_observations`` -- it does not even hold a client for either.
+
+    FAILS OPEN. Every path here is contained: an absent table, an unreachable
+    endpoint, a row the database refuses, a defect in the gate itself. None of
+    them raises, and none of them alters the evaluation or the cohort. A
+    validation run that computed its answers correctly must not be reported as
+    having failed because the note about those answers did not land.
+
+    ``persist=False`` -- the default -- is a DRY RUN: the gate still runs and
+    the census is still reported, so an operator can see exactly what would be
+    written, and not one request is issued.
+    """
+    report = dict(_EMPTY_PERSISTENCE_REPORT)
+    report["outcomes_conflicted"] = []
+    report["gate_census"] = {}
+
+    try:
+        rows, census = build_outcome_rows(
+            evaluated=list(evaluated), as_of=canonical_bar_time_iso(as_of)
+        )
+    except Exception as exc:
+        report["persistence_error"] = str(exc)[:200]
+        return report
+
+    report["gate_census"] = dict(census)
+    report["outcomes_eligible"] = len(rows)
+    report["outcomes_final"] = sum(
+        1 for row in rows if row.finality is OutcomeFinality.FINAL
+    )
+    report["outcomes_provisional"] = len(rows) - report["outcomes_final"]
+
+    if not persist:
+        # Dry run. The gate has spoken and the census is reported; nothing is
+        # sent anywhere. This is the default for a reason.
+        return report
+
+    report["persist_attempted"] = True
+
+    if outcome_store is None:
+        # An injected market store with no injected outcome store. Reaching for
+        # the real cloud log here would be a hidden write against a backend the
+        # caller did not ask for.
+        report["persistence_error"] = (
+            "no outcome store was provided alongside the injected stores; "
+            "outcomes were not persisted"
+        )
+        return report
+
+    if not rows:
+        # Zero eligible outcomes is a NORMAL, successful result -- most of the
+        # time it just means nothing has matured yet. No request is issued.
+        report["outcome_backend"] = "none"
+        return report
+
+    try:
+        outcome = outcome_store.insert_rows([row.to_row() for row in rows])
+    except Exception as exc:
+        report["outcome_backend"] = "unavailable"
+        report["outcomes_failed"] = len(rows)
+        report["persistence_error"] = str(exc)[:200]
+        return report
+
+    report["outcome_backend"] = outcome.backend
+    report["outcomes_written"] = len(outcome.inserted)
+    report["outcomes_duplicate"] = len(outcome.duplicate)
+    # Same job, same evidence, DIFFERENT verdict. Surfaced, never resolved.
+    report["outcomes_conflicted"] = list(outcome.conflicted)
+    report["outcomes_failed"] = len(outcome.failed)
+    report["persistence_error"] = outcome.error
+    return report
+
+
 def validate_range(
     records: Sequence[Mapping[str, Any]],
     *,
@@ -1418,12 +1895,20 @@ def validate_range(
     as_of: datetime,
     validation_config: ValidationConfig = DEFAULT_VALIDATION_CONFIG,
     cohort_config: CohortConfig = DEFAULT_COHORT_CONFIG,
+    captured_at_max: datetime | None = None,
 ) -> dict[str, Any]:
     """D-2E bridge: I/O once, then D-2D0 -> D-2D1 pure evaluation.
 
     Unlike ``resolve_range`` this function never reads a wall clock and never
     treats a failed storage query as an empty market path. It is additive: the
     D-1 resolver remains available for its existing operator diagnostics.
+
+    ``captured_at_max`` is D-5's as-of capture admission (rule R4), defaulting
+    to ``None`` so this function behaves exactly as it did before D-5.
+    ``validate_stored_range`` passes its own ``as_of``. A store that cannot
+    honour the bound is treated as a QUERY FAILURE rather than being called
+    without it: a run that claims to speak as of an instant must not silently
+    produce a result assembled from evidence captured after it.
     """
     reference = as_of.astimezone(timezone.utc) if as_of.tzinfo else as_of.replace(tzinfo=timezone.utc)
     settings = validation_config
@@ -1461,10 +1946,28 @@ def validate_range(
 
     if symbols and stamps:
         if hasattr(backend, "query_bars_result"):
-            query = backend.query_bars_result(
-                symbols=sorted(symbols), start=min(stamps), end=max(stamps) + widest,
-                granularity=settings.resolution_granularity, max_rows=None,
+            bounded: dict[str, Any] = (
+                {} if captured_at_max is None else {"captured_at_max": captured_at_max}
             )
+            try:
+                query = backend.query_bars_result(
+                    symbols=sorted(symbols), start=min(stamps), end=max(stamps) + widest,
+                    granularity=settings.resolution_granularity, max_rows=None,
+                    **bounded,
+                )
+            except TypeError as exc:
+                # The store predates R4. Refuse rather than quietly dropping the
+                # bound -- an as-of run that cannot bound capture time is not an
+                # as-of run, and reporting it as one would be the dishonest half
+                # of this trade.
+                query = QueryOutcome(
+                    backend="unsupported",
+                    ok=False,
+                    error=(
+                        "store does not support as-of capture admission "
+                        f"(captured_at_max): {str(exc)[:120]}"
+                    ),
+                )
         else:
             # Compatibility for injected legacy/test stores. The status is known
             # only insofar as the method returned normally. Production stores
@@ -1518,10 +2021,12 @@ def validate_stored_range(
     instrument: str | None = None,
     record_store: Any | None = None,
     market_store: Any | None = None,
+    outcome_store: Any | None = None,
+    persist: bool = False,
     validation_config: ValidationConfig = DEFAULT_VALIDATION_CONFIG,
     cohort_config: CohortConfig = DEFAULT_COHORT_CONFIG,
 ) -> dict[str, Any]:
-    """D-2E end-to-end offline entry point: shadow store -> cohort result.
+    """D-2E end-to-end offline entry point: shadow store -> cohort -> outcomes.
 
     The caller supplies ``as_of`` explicitly, so the run is reproducible and
     never depends on wall-clock time. Shadow retrieval is deliberately
@@ -1529,6 +2034,17 @@ def validate_stored_range(
     failure-vs-empty semantics before any market query or evaluation occurs.
     ``end`` defaults to ``as_of`` so a historical run cannot read future shadow
     observations accidentally.
+
+    Stage D-5 adds two things and changes nothing else:
+
+    *   ``as_of`` is passed to the market query as ``captured_at_max`` (rule
+        R4), so the bar evidence is bounded by the same instant the run already
+        claims to speak for. Every existing rule is untouched.
+    *   ``persist`` (default False) decides whether gate-approved TACTICAL
+        outcomes are recorded. The DEFAULT IS A DRY RUN: the gate runs, the
+        census is reported, and nothing is written. Persistence is fail-open --
+        the evaluation and the cohort are returned intact whatever the outcome
+        store does.
     """
     reference = (
         as_of.astimezone(timezone.utc)
@@ -1594,11 +2110,42 @@ def validate_stored_range(
         as_of=reference,
         validation_config=validation_config,
         cohort_config=cohort_config,
+        # R4: the bar evidence is bounded by the instant this run speaks for.
+        captured_at_max=reference,
     )
+
+    # An injected market store never silently pairs with the real cloud outcome
+    # log; the same rule D-4 applies to the revision log, for the same reason.
+    outcomes_backend = (
+        outcome_store
+        if outcome_store is not None
+        else (resolve_outcome_store() if (persist and market_store is None) else None)
+    )
+
+    # STRICTLY DOWNSTREAM of everything above, and unable to change any of it.
+    # Wrapped a second time here so that even a defect inside
+    # persist_validation_outcomes' own error handling cannot cost a completed
+    # validation run its result.
+    try:
+        persistence = persist_validation_outcomes(
+            result.get("evaluated", ()),
+            as_of=reference,
+            outcome_store=outcomes_backend,
+            persist=bool(persist),
+        )
+    except Exception as exc:
+        persistence = dict(_EMPTY_PERSISTENCE_REPORT)
+        persistence["outcomes_conflicted"] = []
+        persistence["gate_census"] = {}
+        persistence["persistence_error"] = str(exc)[:200]
+
     return {
         **result,
         "shadow_query": shadow_query,
         "shadow_rows": len(shadow_query.rows),
+        # Reported separately and never folded into the evaluation above: a
+        # failure to record a conclusion is not a failure to reach one.
+        "persistence": persistence,
     }
 
 
@@ -1610,14 +2157,20 @@ __all__ = [
     "MARKET_OBS_TIMEOUT",
     "MIN_DAILY_BARS",
     "RESOLVER_VERSION",
+    "LOCAL_VALIDATION_OUTCOMES_FILE",
+    "VALIDATION_OUTCOMES_TABLE",
     "LocalMarketObservationStore",
+    "LocalValidationOutcomeStore",
     "SupabaseMarketObservationStore",
+    "SupabaseValidationOutcomeStore",
     "anchor_census",
     "capture_daily_bars",
     "fetch_daily_bars",
     "forward_window_for",
     "registered_instruments",
+    "persist_validation_outcomes",
     "resolve_market_store",
+    "resolve_outcome_store",
     "resolve_observation",
     "resolve_range",
     "symbol_convention",
