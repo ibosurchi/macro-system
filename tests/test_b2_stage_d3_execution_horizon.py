@@ -13,6 +13,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from collections import Counter
 from datetime import timedelta
 
 from apex import b2_bridge
@@ -113,6 +114,85 @@ class TestExecutionHorizonActivation(unittest.TestCase):
     def test_structural_horizon_remains_withheld(self):
         self.assertEqual(b2_bridge.live_shadow_horizons(), (Horizon.TACTICAL, Horizon.EXECUTION))
         self.assertNotIn(Horizon.STRUCTURAL, b2_bridge.live_shadow_horizons())
+
+
+class TestLiveCycleAtFullScale(unittest.TestCase):
+    """The whole live cycle, at the size it actually runs at.
+
+    Every other test here narrows to Gold so the assertions stay readable. This
+    one runs the real instrument set once and pins the numbers D-3 is specified
+    in: 11 instruments, 22 rows, ONE write.
+    """
+
+    def setUp(self):
+        _reset()
+
+    def _cycle(self):
+        table = FakeRow()
+        backend = shadow.InMemoryShadowStore()
+        tactical = dict(
+            _TACTICAL, symbol="XAUUSD=X", analysis_price=3330.0,
+            last_price=3330.0, market_ts=int(NOW.timestamp()),
+        )
+        with _PatchProduction(tactical=tactical):
+            with mock.patch.object(b2_bridge, "resolve_record_store", return_value=table):
+                outcomes = b2_bridge.run_shadow_observation(
+                    "FAKE_KEY", "chan", store=backend, now=NOW
+                )
+        return outcomes, table, backend
+
+    def test_eleven_instruments_produce_twenty_two_rows_in_one_write(self):
+        outcomes, table, _ = self._cycle()
+        self.assertEqual(len(outcomes), 11)
+        self.assertEqual(set(outcomes.values()), {"written"})
+        self.assertEqual(len(table.rows), 22)
+        # The batch is the point: 22 observations must not cost 22 round trips.
+        self.assertEqual(table.insert_calls, 1)
+        self.assertEqual(table.batch_sizes, [22])
+
+    def test_every_instrument_horizon_pair_is_written_exactly_once(self):
+        _, table, _ = self._cycle()
+        pairs = [(r["instrument"], r["horizon"]) for r in table.rows.values()]
+        self.assertEqual(len(set(pairs)), 22, "an instrument-horizon pair repeated")
+        self.assertEqual(
+            Counter(h for _, h in pairs),
+            {Horizon.TACTICAL.value: 11, Horizon.EXECUTION.value: 11},
+        )
+
+    def test_identities_and_anchors_hold_across_the_whole_set(self):
+        _, table, _ = self._cycle()
+        rows = list(table.rows.values())
+        self.assertEqual(len({r["record_id"] for r in rows}), 22)
+        self.assertEqual(len({r["storage_id"] for r in rows}), 22)
+        self.assertEqual(
+            {r["record"]["market_anchor"]["anchor_status"] for r in rows},
+            {"anchor_captured"},
+        )
+
+    def test_predictions_are_registered_per_instrument_and_horizon(self):
+        _, _, backend = self._cycle()
+        log = backend.load(b2_bridge.PREDICTION_LOG_STATE_ID, None)
+        self.assertIsNotNone(log)
+        self.assertEqual(len(log["predictions"]), 22)
+        self.assertEqual(
+            Counter(p["horizon"] for p in log["predictions"]),
+            {Horizon.TACTICAL.value: 11, Horizon.EXECUTION.value: 11},
+        )
+
+    def test_structural_is_absent_from_everything_the_cycle_produced(self):
+        _, table, backend = self._cycle()
+        log = backend.load(b2_bridge.PREDICTION_LOG_STATE_ID, None)
+        self.assertNotIn(
+            Horizon.STRUCTURAL.value, {r["horizon"] for r in table.rows.values()}
+        )
+        self.assertNotIn(
+            Horizon.STRUCTURAL.value, {p["horizon"] for p in log["predictions"]}
+        )
+
+    def test_cross_asset_stays_withheld_on_every_row(self):
+        _, table, _ = self._cycle()
+        for row in table.rows.values():
+            self.assertEqual(row["record"]["cross_asset"]["status"], "withheld")
 
 
 class TestExecutionRowsSurviveValidation(unittest.TestCase):
