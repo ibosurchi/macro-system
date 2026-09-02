@@ -34,6 +34,8 @@ from apex import b2_bridge, b2_validation_bridge as vb
 from apex.b2 import shadow
 from apex.b2.validation import anchor as anchor_mod
 from apex.b2.validation import bars as bars_mod
+from apex.b2.validation import revisions as revisions_mod
+from apex.b2.validation import series_pins as series_pins_mod
 from apex.b2.validation.anchor import (
     AnchorStatus,
     MarketAnchor,
@@ -328,6 +330,50 @@ class TestAppendOnly(unittest.TestCase):
             )
         self.assertEqual(len(duplicate), 1)
         self.assertEqual(conflicted, [])
+
+    def test_a_postgrest_float_read_back_is_never_mistaken_for_a_conflict(self):
+        """Stage D-4 regression.
+
+        PostgREST serialises ``double precision`` at 15 significant digits, so a
+        stored ``4033.699951171875`` reads back as ``4033.69995117188`` and
+        rehashes differently. Measured across all eleven captured symbols, that
+        would produce a false conflict on roughly 95% of FX rows.
+
+        It does not, because ``_classify_duplicates`` compares against the
+        stored ``content_hash`` COLUMN and never recomputes a hash from the
+        numerics beside it. This test fails the moment that stops being true.
+        """
+        lossy = 4033.699951171875
+        self.assertNotEqual(float(f"{lossy:.15g}"), lossy)   # the premise
+
+        bar = _bar(o=4000.0, h=4100.0, l=3990.0, c=lossy)
+        store = vb.SupabaseMarketObservationStore()
+        with mock.patch.object(
+            store, "stored_content_hash", return_value=bar.content_hash
+        ):
+            duplicate, conflicted = store._classify_duplicates(
+                [bar.to_row()], [bar.observation_id]
+            )
+        self.assertEqual(duplicate, [bar.observation_id])
+        self.assertEqual(conflicted, [])
+
+    def test_conflict_detection_reads_the_hash_column_and_recomputes_nothing(self):
+        """Source guard for the invariant above.
+
+        The stored ``content_hash`` column is the sole integrity authority for a
+        stored bar. Recomputing it from returned floats is the defect; this
+        catches it at the point a refactor would introduce it.
+        """
+        classify = inspect.getsource(
+            vb.SupabaseMarketObservationStore._classify_duplicates
+        )
+        self.assertNotIn("canonical_bar_content_hash", classify)
+        self.assertIn("stored_content_hash", classify)
+
+        reader = inspect.getsource(
+            vb.SupabaseMarketObservationStore.stored_content_hash
+        )
+        self.assertIn('"select": "content_hash"', reader)
 
 
 # ---------------------------------------------------------------------------
@@ -1170,7 +1216,7 @@ class TestProductionSafety(unittest.TestCase):
             self.assertNotIn(forbidden, source, forbidden)
 
     def test_no_ai_or_telegram_call_in_the_validation_layer(self):
-        for module in (vb, bars_mod, anchor_mod):
+        for module in (vb, bars_mod, anchor_mod, revisions_mod, series_pins_mod):
             names = {n.lower() for n in _referenced_names(module)}
             for forbidden in ("telegram", "sendmessage", "openai", "anthropic",
                               "generativelanguage", "completions", "gemini",
@@ -1181,7 +1227,7 @@ class TestProductionSafety(unittest.TestCase):
                 )
 
     def test_the_pure_layer_performs_no_io(self):
-        for module in (bars_mod, anchor_mod):
+        for module in (bars_mod, anchor_mod, revisions_mod, series_pins_mod):
             tree = ast.parse(inspect.getsource(module))
             for node in ast.walk(tree):
                 if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -1215,7 +1261,7 @@ class TestProductionSafety(unittest.TestCase):
         self.assertNotIn("SUPABASE_SERVICE_ROLE_KEY", source)
 
     def test_no_ddl_verb_appears_anywhere(self):
-        for module in (vb, bars_mod, anchor_mod):
+        for module in (vb, bars_mod, anchor_mod, revisions_mod, series_pins_mod):
             source = inspect.getsource(module).upper()
             for verb in ("CREATE TABLE", "ALTER TABLE", "DROP TABLE",
                          "TRUNCATE", "CREATE INDEX"):

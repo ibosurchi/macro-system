@@ -67,6 +67,15 @@ from .b2.validation.bars import (
     bars_from_rows,
     row_to_bar,
 )
+from .b2.validation.revisions import (
+    MarketBarRevision,
+    RevisionKind,
+    build_revision,
+)
+from .b2.validation.series_pins import (
+    SERIES_PIN_VERSION,
+    pinned_capture_symbol,
+)
 from .b2.validation.config import DEFAULT_VALIDATION_CONFIG, ValidationConfig
 from .b2.evaluation import (
     DEFAULT_COHORT_CONFIG,
@@ -82,6 +91,16 @@ MARKET_OBSERVATIONS_TABLE = (
     or "b2_market_observations"
 )
 
+#: Stage D-4's append-only revision log, likewise pre-created by an operator --
+#: see ``sql/001_b2_market_observation_revisions.sql``. Nothing here creates,
+#: alters or drops it either.
+MARKET_OBSERVATION_REVISIONS_TABLE = (
+    core.get_secret(
+        "B2_MARKET_OBSERVATION_REVISIONS_TABLE", "b2_market_observation_revisions"
+    )
+    or "b2_market_observation_revisions"
+)
+
 #: Own timeout, deliberately not production's REQUEST_TIMEOUT: this is an
 #: offline research path and must never share a budget tuned for the live loop.
 MARKET_OBS_TIMEOUT = 20
@@ -90,6 +109,12 @@ MARKET_OBS_TIMEOUT = 20
 #: tests). One JSON object per line, appended, never rewritten.
 LOCAL_MARKET_OBSERVATIONS_FILE = str(
     core.PROJECT_ROOT / "b2_market_observations_local.jsonl"
+)
+
+#: The revision log's local mirror, same append-only shape and same
+#: never-durable posture.
+LOCAL_MARKET_OBSERVATION_REVISIONS_FILE = str(
+    core.PROJECT_ROOT / "b2_market_observation_revisions_local.jsonl"
 )
 
 #: The approved fetch shape. Same endpoint and same symbols production already
@@ -265,6 +290,46 @@ class SupabaseMarketObservationStore:
             if isinstance(body, list) and body and isinstance(body[0], dict):
                 value = body[0].get("content_hash")
                 return str(value) if value else None
+            return None
+        except Exception:
+            return None
+
+    def stored_row(self, observation_id: str) -> dict[str, Any] | None:
+        """A stored bar's identity, integrity witness and measured values.
+
+        ADDITIVE and strictly downstream. ``_classify_duplicates`` does NOT use
+        this: it still calls ``stored_content_hash`` and decides conflicts from
+        the ``content_hash`` column alone, exactly as before. This method exists
+        only so an ALREADY-classified conflict can be attributed to the fields
+        that moved, and it is called at most once per conflict -- three times in
+        a 242-bar capture.
+
+        PRECISION WARNING. The numerics returned here are PostgREST's 15
+        significant-digit serialisation of ``double precision`` columns, not the
+        stored bits. Never rehash them: ``content_hash`` in this row is the
+        authority, and ``apex.b2.validation.revisions`` is built around never
+        needing to recompute it.
+        """
+        if not self.available:
+            return None
+        try:
+            response = requests.get(
+                self._url(),
+                headers=core._supabase_headers(),
+                params={
+                    "observation_id": f"eq.{observation_id}",
+                    "select": (
+                        "observation_id,symbol,instrument,granularity,price_source,"
+                        "bar_time,open,high,low,close,volume,invert,content_hash"
+                    ),
+                    "limit": 1,
+                },
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            body = response.json()
+            if isinstance(body, list) and body and isinstance(body[0], dict):
+                return dict(body[0])
             return None
         except Exception:
             return None
@@ -451,6 +516,33 @@ class LocalMarketObservationStore:
     def stored_content_hash(self, observation_id: str) -> str | None:
         return self._existing().get(observation_id) or None
 
+    def stored_row(self, observation_id: str) -> dict[str, Any] | None:
+        """The first appended row for this id, or None.
+
+        ``insert_rows`` never appends a second line for an id it already holds,
+        so "first" and "only" are the same line. Local values are exact -- this
+        mirror does not go through PostgREST -- but callers must still treat
+        ``content_hash`` as the authority so both backends behave identically.
+        """
+        wanted = str(observation_id)
+        try:
+            if not os.path.exists(self.path):
+                return None
+            with open(self.path, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except Exception:
+                        continue
+                    if isinstance(row, dict) and str(row.get("observation_id", "")) == wanted:
+                        return dict(row)
+        except Exception:
+            return None
+        return None
+
     def row_count(self) -> int | None:
         return len(self._existing())
 
@@ -510,10 +602,191 @@ class LocalMarketObservationStore:
         return list(result.rows) if result.ok else []
 
 
+class SupabaseMarketObservationRevisionStore:
+    """Append-only row store over the pre-created revision log.
+
+    Same write shape as the observations store -- POST with
+    ``resolution=ignore-duplicates``, which is ON CONFLICT DO NOTHING -- so a
+    revision already recorded is left exactly as it was, ``first_seen_at``
+    included. There is no conflict bucket here and there cannot be one: a
+    revision's identity IS its content, so two rows sharing an id necessarily
+    share a payload.
+    """
+
+    def __init__(self, table: str | None = None, timeout: int | None = None) -> None:
+        self.table = table or MARKET_OBSERVATION_REVISIONS_TABLE
+        self.timeout = timeout or MARKET_OBS_TIMEOUT
+
+    @property
+    def available(self) -> bool:
+        return core._supabase_enabled()
+
+    def _url(self) -> str:
+        return f"{core.SUPABASE_URL}/rest/v1/{self.table}"
+
+    def insert_rows(self, rows: list[dict[str, Any]]) -> InsertOutcome:
+        """Record revisions, ignoring any already known.
+
+        Ids returned by ``return=representation`` are the ones genuinely
+        inserted; ids sent but not returned were already present. On a batch
+        failure each row is retried alone, so one rejected revision cannot cost
+        the others their record.
+        """
+        if not rows:
+            return InsertOutcome(backend="supabase", durable=True)
+        if not self.available:
+            return InsertOutcome(
+                backend="unavailable",
+                durable=False,
+                failed=tuple(str(r.get("revision_id", "")) for r in rows),
+                error="Supabase is not configured",
+            )
+
+        sent = [str(r.get("revision_id", "")) for r in rows]
+        try:
+            response = requests.post(
+                self._url(),
+                headers=core._supabase_headers(
+                    "resolution=ignore-duplicates,return=representation"
+                ),
+                params={"on_conflict": "revision_id", "select": "revision_id"},
+                json=rows,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            body = response.json()
+            inserted = (
+                tuple(
+                    str(item.get("revision_id", ""))
+                    for item in body
+                    if isinstance(item, dict) and item.get("revision_id")
+                )
+                if isinstance(body, list)
+                else ()
+            )
+            known = set(inserted)
+            return InsertOutcome(
+                backend="supabase",
+                durable=True,
+                inserted=inserted,
+                duplicate=tuple(r for r in sent if r not in known),
+            )
+        except Exception as exc:
+            if len(rows) == 1:
+                return InsertOutcome(
+                    backend="supabase",
+                    durable=False,
+                    failed=tuple(sent),
+                    error=str(exc)[:200],
+                )
+            inserted_ids: list[str] = []
+            duplicate_ids: list[str] = []
+            failed_ids: list[str] = []
+            last_error = str(exc)[:200]
+            for row in rows:
+                one = self.insert_rows([row])
+                inserted_ids.extend(one.inserted)
+                duplicate_ids.extend(one.duplicate)
+                failed_ids.extend(one.failed)
+                if one.error:
+                    last_error = one.error
+            return InsertOutcome(
+                backend="supabase",
+                durable=not failed_ids,
+                inserted=tuple(inserted_ids),
+                duplicate=tuple(duplicate_ids),
+                failed=tuple(failed_ids),
+                error=last_error if failed_ids else "",
+            )
+
+
+class LocalMarketObservationRevisionStore:
+    """Append-only JSONL mirror of the revision log, for local dev and tests.
+
+    Never durable, for the same reason its observation counterpart is not: a
+    redeploy discards the container filesystem.
+    """
+
+    def __init__(self, path: str | None = None) -> None:
+        self.path = path or LOCAL_MARKET_OBSERVATION_REVISIONS_FILE
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    def _existing(self) -> set[str]:
+        known: set[str] = set()
+        try:
+            if not os.path.exists(self.path):
+                return known
+            with open(self.path, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except Exception:
+                        continue
+                    revision_id = str(row.get("revision_id", ""))
+                    if revision_id:
+                        known.add(revision_id)
+        except Exception:
+            return known
+        return known
+
+    def insert_rows(self, rows: list[dict[str, Any]]) -> InsertOutcome:
+        if not rows:
+            return InsertOutcome(backend="local", durable=False)
+        known = self._existing()
+        inserted: list[str] = []
+        duplicate: list[str] = []
+        failed: list[str] = []
+        try:
+            with open(self.path, "a", encoding="utf-8") as handle:
+                for row in rows:
+                    revision_id = str(row.get("revision_id", ""))
+                    if not revision_id:
+                        failed.append(revision_id)
+                        continue
+                    if revision_id in known:
+                        duplicate.append(revision_id)
+                        continue
+                    handle.write(json.dumps(row, separators=(",", ":")) + "\n")
+                    known.add(revision_id)
+                    inserted.append(revision_id)
+        except Exception as exc:
+            settled = len(inserted) + len(duplicate)
+            return InsertOutcome(
+                backend="local",
+                durable=False,
+                inserted=tuple(inserted),
+                duplicate=tuple(duplicate),
+                failed=tuple(str(r.get("revision_id", "")) for r in rows)[settled:],
+                error=str(exc)[:200],
+            )
+        return InsertOutcome(
+            backend="local",
+            durable=False,
+            inserted=tuple(inserted),
+            duplicate=tuple(duplicate),
+            failed=tuple(failed),
+        )
+
+    def row_count(self) -> int | None:
+        return len(self._existing())
+
+
 def resolve_market_store() -> Any:
     """The append-only store to use: Supabase when configured, else local."""
     supabase = SupabaseMarketObservationStore()
     return supabase if supabase.available else LocalMarketObservationStore()
+
+
+def resolve_revision_store() -> Any:
+    """The revision log to use: Supabase when configured, else local."""
+    supabase = SupabaseMarketObservationRevisionStore()
+    return supabase if supabase.available else LocalMarketObservationRevisionStore()
 
 
 # ===========================================================================
@@ -666,10 +939,147 @@ def fetch_daily_bars(
     return bars
 
 
+#: The shape of the revision half of a capture report, when nothing was
+#: recorded. Every key is always present, so an operator never has to tell
+#: "no revisions" apart from "this build does not report revisions".
+_EMPTY_REVISION_REPORT: Mapping[str, Any] = {
+    "revision_backend": "none",
+    "revisions_recorded": 0,
+    "revisions_duplicate": 0,
+    "revisions_failed": 0,
+    "revisions_skipped": 0,
+    "revisions_by_kind": {},
+    "revisions_error": "",
+}
+
+
+def _record_revisions(
+    *,
+    store: Any,
+    revision_store: Any | None,
+    conflicted: Sequence[str],
+    bars_by_id: Mapping[str, MarketBar],
+    captured_at: str,
+) -> dict[str, Any]:
+    """Record already-classified conflicts as point-in-time revisions.
+
+    STRICTLY DOWNSTREAM, and structurally so. This runs only after
+    ``insert_rows`` has returned, reads only ids that outcome ALREADY placed in
+    ``conflicted``, and returns a separate report fragment. It cannot influence
+    which bars were inserted, which were duplicates, or which conflicted --
+    ``_classify_duplicates`` is not called, not passed anything, and not
+    modified.
+
+    FAILS OPEN. Every path here is contained: a missing table, an unreachable
+    endpoint, a malformed stored row, a refused revision. None of them raises,
+    and none of them changes the capture result. The failure is reported in
+    ``revisions_error`` and nowhere else, because a capture that persisted its
+    bars must not be reported as having failed just because the note about a
+    vendor correction did not land.
+    """
+    report = dict(_EMPTY_REVISION_REPORT)
+    report["revisions_by_kind"] = {}
+    if not conflicted:
+        return report
+    if revision_store is None:
+        # An injected observation store with no injected revision store. Reaching
+        # for the real cloud log here would be a hidden write against a backend
+        # the caller did not ask for.
+        report["revisions_skipped"] = len(conflicted)
+        report["revisions_error"] = (
+            "no revision store was provided alongside the injected market store; "
+            "revisions were not recorded"
+        )
+        return report
+
+    reader = getattr(store, "stored_row", None)
+    if not callable(reader):
+        report["revisions_skipped"] = len(conflicted)
+        report["revisions_error"] = (
+            "market store cannot read back a stored row; revisions were not recorded"
+        )
+        return report
+
+    revisions: list[MarketBarRevision] = []
+    skipped = 0
+    first_error = ""
+    for observation_id in conflicted:
+        try:
+            bar = bars_by_id.get(str(observation_id))
+            if bar is None:
+                skipped += 1
+                continue
+            stored = reader(str(observation_id))
+            if not isinstance(stored, Mapping):
+                skipped += 1
+                continue
+            # The AUTHORITATIVE integrity witness: the stored column, never a
+            # hash recomputed from the numerics beside it.
+            original = str(stored.get("content_hash") or "")
+            if not original or original == bar.content_hash:
+                # Either unreadable, or no longer a conflict. Both are reasons
+                # to record nothing rather than to invent a revision.
+                skipped += 1
+                continue
+            revisions.append(
+                build_revision(
+                    observation_id=str(observation_id),
+                    original_content_hash=original,
+                    stored_row=stored,
+                    bar=bar,
+                    captured_at=captured_at,
+                    resolver_version=RESOLVER_VERSION,
+                    meta={
+                        "resolver_version": RESOLVER_VERSION,
+                        "detected_by": "capture_daily_bars",
+                        "original_observed_by": str(
+                            (stored.get("meta") or {}).get("resolver_version", "")
+                        )
+                        if isinstance(stored.get("meta"), Mapping)
+                        else "",
+                        "attribution_rule": (
+                            "volume_only is proven by hash probe against the stored "
+                            "content_hash column; OHLC is compared only at the "
+                            "transport's 15-significant-digit precision."
+                        ),
+                    },
+                )
+            )
+        except Exception as exc:
+            skipped += 1
+            first_error = first_error or str(exc)[:200]
+
+    report["revisions_skipped"] = skipped
+    by_kind: dict[str, int] = {}
+    for revision in revisions:
+        by_kind[revision.kind.value] = by_kind.get(revision.kind.value, 0) + 1
+    report["revisions_by_kind"] = by_kind
+
+    if not revisions:
+        report["revisions_error"] = first_error
+        return report
+
+    try:
+        outcome = revision_store.insert_rows([r.to_row() for r in revisions])
+    except Exception as exc:
+        report["revision_backend"] = "unavailable"
+        report["revisions_failed"] = len(revisions)
+        report["revisions_error"] = first_error or str(exc)[:200]
+        return report
+
+    report["revision_backend"] = outcome.backend
+    report["revisions_recorded"] = len(outcome.inserted)
+    report["revisions_duplicate"] = len(outcome.duplicate)
+    report["revisions_failed"] = len(outcome.failed)
+    report["revisions_error"] = outcome.error or first_error
+    return report
+
+
 def capture_daily_bars(
     instruments: Iterable[str] | None = None,
     *,
     store: Any | None = None,
+    revision_store: Any | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Offline entry point: capture closed daily bars for B2's instruments.
@@ -683,11 +1093,21 @@ def capture_daily_bars(
     """
     reference = now or datetime.now(timezone.utc)
     backend = store if store is not None else resolve_market_store()
+    # An injected market store never silently pairs with the real cloud revision
+    # log; see _record_revisions. A genuine capture injects neither and gets
+    # both resolved for real.
+    revisions_backend = (
+        revision_store
+        if revision_store is not None
+        else (resolve_revision_store() if store is None else None)
+    )
     wanted = tuple(instruments) if instruments is not None else registered_instruments()
 
     rows: list[dict[str, Any]] = []
+    bars_by_id: dict[str, MarketBar] = {}
     per_instrument: dict[str, str] = {}
     symbols_seen: dict[str, str] = {}
+    pinned_seen: dict[str, str] = {}
 
     for instrument in wanted:
         convention = symbol_convention(instrument)
@@ -697,14 +1117,24 @@ def capture_daily_bars(
         bars = []
         symbol_used = ""
 
-        candidates = (convention.symbol, *convention.fallback_symbols)
+        # A PINNED instrument has exactly one candidate and no fallback. Vendor
+        # availability may make its capture fail; it may never make it switch
+        # series. See apex.b2.validation.series_pins for why Gold is pinned.
+        pin = pinned_capture_symbol(instrument)
+        if pin is not None:
+            candidates = (pin.symbol,)
+            invert = pin.invert
+            pinned_seen[instrument] = pin.symbol
+        else:
+            candidates = (convention.symbol, *convention.fallback_symbols)
+            invert = convention.invert
 
         for candidate_symbol in candidates:
             try:
                 bars = fetch_daily_bars(
                     candidate_symbol,
                     instrument=instrument,
-                    invert=convention.invert,
+                    invert=invert,
                     now=reference,
                 )
             except Exception:
@@ -719,7 +1149,9 @@ def capture_daily_bars(
             continue
 
         symbols_seen[instrument] = symbol_used
-        rows.extend(bar.to_row() for bar in bars)
+        for bar in bars:
+            rows.append(bar.to_row())
+            bars_by_id[bar.observation_id] = bar
         per_instrument[instrument] = "fetched"
 
     if not rows:
@@ -729,12 +1161,15 @@ def capture_daily_bars(
             "granularity": GRANULARITY_1D,
             "instruments": per_instrument,
             "symbols": symbols_seen,
+            "pinned": pinned_seen,
+            "series_pin_version": SERIES_PIN_VERSION,
             "backend": "none",
             "durable": False,
             "inserted": 0,
             "duplicate": 0,
             "conflicted": [],
             "failed": 0,
+            **dict(_EMPTY_REVISION_REPORT),
         }
 
     try:
@@ -747,12 +1182,31 @@ def capture_daily_bars(
             error=str(exc)[:200],
         )
 
+    # STRICTLY DOWNSTREAM of the classification above, and unable to change it.
+    # Wrapped a second time here so that even a defect inside _record_revisions'
+    # own error handling cannot cost a successful capture its report.
+    try:
+        revision_report = _record_revisions(
+            store=backend,
+            revision_store=revisions_backend,
+            conflicted=outcome.conflicted,
+            bars_by_id=bars_by_id,
+            captured_at=reference.isoformat(),
+        )
+    except Exception as exc:
+        revision_report = dict(_EMPTY_REVISION_REPORT)
+        revision_report["revisions_by_kind"] = {}
+        revision_report["revisions_skipped"] = len(outcome.conflicted)
+        revision_report["revisions_error"] = str(exc)[:200]
+
     return {
         "captured_at": reference.isoformat(),
         "resolver_version": RESOLVER_VERSION,
         "granularity": GRANULARITY_1D,
         "instruments": per_instrument,
         "symbols": symbols_seen,
+        "pinned": pinned_seen,
+        "series_pin_version": SERIES_PIN_VERSION,
         "backend": outcome.backend,
         # True only for a real cloud write. A local mirror is never durable.
         "durable": outcome.durable,
@@ -762,6 +1216,9 @@ def capture_daily_bars(
         "conflicted": list(outcome.conflicted),
         "failed": len(outcome.failed),
         "error": outcome.error,
+        # Reported separately and never folded into the counts above: a failure
+        # to record a revision is not a failure to capture a bar.
+        **revision_report,
     }
 
 
@@ -932,6 +1389,15 @@ def resolve_range(
         start=min(stamps),
         end=max(stamps) + widest,
     )
+    # RECONSTRUCTION PRECISION. PostgREST serialises ``double precision`` at 15
+    # significant digits, so a bar rebuilt here carries prices accurate to about
+    # 5e-12 relative, not to the bit -- far below any price move this system
+    # measures, and entirely fit for returns, excursions and coverage.
+    #
+    # It is NOT fit for hashing. ``bar.content_hash`` on one of these
+    # reconstructions is a hash of the shortened values and will not match the
+    # ``content_hash`` column stored beside the row. That column is the sole
+    # integrity authority; nothing here or downstream may rehash a read-back.
     bars = [bar for bar in (row_to_bar(r) for r in rows) if bar is not None]
 
     return {

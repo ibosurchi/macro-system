@@ -915,7 +915,11 @@ class TestScopeBoundary(unittest.TestCase):
         self.assertEqual(present, {"__init__.py", "anchor.py", "bars.py",
                                    "config.py", "maturity.py", "outcome.py",
                                    "resolve.py", "series.py", "invalidation.py",
-                                   "envelope.py", "readiness.py"})
+                                   "envelope.py", "readiness.py",
+                                   # Stage D-4 (approved) added exactly two further pure
+                                   # modules: the safe revision store and the pinned
+                                   # capture series. metrics.py stays forbidden.
+                                   "revisions.py", "series_pins.py"})
 
 
 class TestProductionSafety(unittest.TestCase):

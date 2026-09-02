@@ -40,20 +40,30 @@ from apex.b2_validation_bridge import (
 )
 
 
-def run_capture(instruments=None, *, store=None, now=None) -> dict:
+def run_capture(instruments=None, *, store=None, revision_store=None, now=None) -> dict:
     """Capture closed daily bars and return an operator-facing report.
 
-    ``store`` and ``now`` exist for tests to inject a fake table and a fixed
-    clock; a real invocation leaves both ``None`` so ``capture_daily_bars``
-    resolves the real backend (Supabase if configured, else the local
-    append-only mirror) and uses the real wall clock.
+    ``store``, ``revision_store`` and ``now`` exist for tests to inject a fake
+    table, a fake revision log and a fixed clock; a real invocation leaves all
+    three ``None`` so ``capture_daily_bars`` resolves the real backends
+    (Supabase if configured, else the local append-only mirrors) and uses the
+    real wall clock.
     """
     requested = tuple(instruments) if instruments is not None else registered_instruments()
-    result = capture_daily_bars(requested, store=store, now=now)
+    result = capture_daily_bars(
+        requested, store=store, revision_store=revision_store, now=now
+    )
 
     symbols_used = dict(result["symbols"])
+    pinned = dict(result.get("pinned") or {})
     fallback_used = {}
     for instrument, symbol in symbols_used.items():
+        if instrument in pinned:
+            # A pinned instrument has no fallback to have used. Reporting its
+            # pinned symbol as a "fallback" because it differs from production's
+            # primary would describe a switch that cannot happen.
+            fallback_used[instrument] = False
+            continue
         convention = symbol_convention(instrument)
         fallback_used[instrument] = bool(convention is not None and symbol != convention.symbol)
 
@@ -85,9 +95,20 @@ def run_capture(instruments=None, *, store=None, now=None) -> dict:
         "failed_rows": result["failed"],
         "symbols_used": symbols_used,
         "fallback_used": fallback_used,
+        "pinned_series": pinned,
+        "series_pin_version": result.get("series_pin_version", ""),
         "backend": result["backend"],
         "durable": result["durable"],
         "error": result.get("error", ""),
+        # Reported alongside, never folded into, the capture counts above. A
+        # revision that failed to record does not make a stored bar less stored.
+        "revision_backend": result.get("revision_backend", "none"),
+        "revisions_recorded": result.get("revisions_recorded", 0),
+        "revisions_duplicate": result.get("revisions_duplicate", 0),
+        "revisions_failed": result.get("revisions_failed", 0),
+        "revisions_skipped": result.get("revisions_skipped", 0),
+        "revisions_by_kind": dict(result.get("revisions_by_kind") or {}),
+        "revisions_error": result.get("revisions_error", ""),
     }
 
 
@@ -107,10 +128,29 @@ def format_report(report: dict) -> str:
     for instrument in report["requested_instruments"]:
         status = report["instrument_status"].get(instrument, "unknown")
         symbol = report["symbols_used"].get(instrument, "-")
-        fallback = " (fallback symbol)" if report["fallback_used"].get(instrument) else ""
-        lines.append(f"  {instrument}: {status} symbol={symbol}{fallback}")
+        if instrument in (report.get("pinned_series") or {}):
+            note = " (pinned series)"
+        elif report["fallback_used"].get(instrument):
+            note = " (fallback symbol)"
+        else:
+            note = ""
+        lines.append(f"  {instrument}: {status} symbol={symbol}{note}")
     if report["conflicted"]:
         lines.append(f"CONFLICTED -- two payloads claim one bar, not auto-resolved: {report['conflicted']}")
+        by_kind = report.get("revisions_by_kind") or {}
+        kinds = ", ".join(f"{kind}={count}" for kind, count in sorted(by_kind.items())) or "(none)"
+        lines.append(
+            f"Revisions -- recorded: {report.get('revisions_recorded', 0)}  "
+            f"already known: {report.get('revisions_duplicate', 0)}  "
+            f"skipped: {report.get('revisions_skipped', 0)}  "
+            f"failed: {report.get('revisions_failed', 0)}  "
+            f"backend: {report.get('revision_backend', 'none')}  kinds: {kinds}"
+        )
+    if report.get("revisions_error"):
+        lines.append(
+            "Revision log error (the capture above is unaffected): "
+            f"{report['revisions_error']}"
+        )
     if report["error"]:
         lines.append(f"Error: {report['error']}")
     return "\n".join(lines)

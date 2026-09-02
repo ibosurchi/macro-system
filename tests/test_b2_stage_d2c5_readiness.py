@@ -1033,7 +1033,11 @@ class TestScope(unittest.TestCase):
         self.assertNotIn("metrics.py", present)
         self.assertEqual(present, {"__init__.py", "anchor.py", "bars.py", "config.py",
                                    "maturity.py", "outcome.py", "resolve.py", "series.py",
-                                   "invalidation.py", "envelope.py", "readiness.py"})
+                                   "invalidation.py", "envelope.py", "readiness.py",
+                                   # Stage D-4 (approved) added exactly two further pure
+                                   # modules: the safe revision store and the pinned
+                                   # capture series. metrics.py stays forbidden.
+                                   "revisions.py", "series_pins.py"})
 
     def test_cross_asset_remains_withheld(self):
         with open(os.path.join(ROOT, "apex", "b2", "shadow.py"), encoding="utf-8") as h:

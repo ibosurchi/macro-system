@@ -149,23 +149,76 @@ class TestRunCaptureReport(unittest.TestCase):
         self.assertIn("Gold", report["successful_instruments"])
         self.assertGreater(report["inserted"], 0)
 
-    def test_fallback_symbol_use_is_reported(self):
-        """When the primary symbol has no bars and a fallback does, say so."""
-        primary_payload = _yahoo_payload(_epochs(1, 3), [3400.0] * 3)
-        fallback_payload = _yahoo_payload(_epochs(1, 20), [3400.0] * 20)
+    def test_gold_is_reported_as_pinned_and_never_as_a_fallback(self):
+        """Stage D-4 replaced Gold's fallback with a pin.
+
+        This test used to assert the opposite -- that a healthy GC=F was
+        reported as a FALLBACK after XAUUSD=X came back thin. Gold is now pinned
+        to GC=F (see apex/b2/validation/series_pins.py), so XAUUSD=X is never
+        requested at all and "fallback" would describe a switch that can no
+        longer happen. The fallback REPORTING path is still exercised, by
+        ``test_fallback_symbol_use_is_reported_for_an_unpinned_instrument``
+        below; only Gold's participation in it changed.
+        """
+        payload = _yahoo_payload(_epochs(1, 20), [3400.0] * 20)
+        requested: list[str] = []
 
         def fake_get(url, **kwargs):
-            if "XAUUSD" in url:
-                return _FakeResponse(primary_payload)
-            if "GC%3DF" in url or "GC=F" in url:
-                return _FakeResponse(fallback_payload)
-            raise AssertionError(f"unexpected symbol request: {url}")
+            requested.append(url)
+            return _FakeResponse(payload)
 
         with mock.patch.object(vb.requests, "get", side_effect=fake_get):
             report = runner.run_capture(["Gold"], store=FakeMarketTable(), now=NOW)
 
+        for url in requested:
+            self.assertNotIn("XAUUSD", url, "the pinned series must be the only one tried")
         self.assertEqual(report["symbols_used"]["Gold"], "GC=F")
-        self.assertTrue(report["fallback_used"]["Gold"])
+        self.assertEqual(report["pinned_series"], {"Gold": "GC=F"})
+        self.assertFalse(report["fallback_used"]["Gold"])
+
+    def test_fallback_symbol_use_is_reported_for_an_unpinned_instrument(self):
+        """When an UNPINNED instrument's primary has no bars and a fallback
+        does, say so. Gold is the only instrument production declares a fallback
+        for, so an injected convention keeps this path covered rather than
+        letting it rot behind the pin."""
+        primary_payload = _yahoo_payload(_epochs(1, 3), [70.0] * 3)
+        fallback_payload = _yahoo_payload(_epochs(1, 20), [70.0] * 20)
+
+        def fake_get(url, **kwargs):
+            if "PRIMARY" in url:
+                return _FakeResponse(primary_payload)
+            if "BACKUP" in url:
+                return _FakeResponse(fallback_payload)
+            raise AssertionError(f"unexpected symbol request: {url}")
+
+        convention = b2_bridge.SymbolConvention(
+            instrument="Oil", symbol="PRIMARY=X", invert=False,
+            fallback_symbols=("BACKUP=X",),
+        )
+        with mock.patch.object(vb, "symbol_convention", return_value=convention):
+            with mock.patch.object(runner, "symbol_convention", return_value=convention):
+                with mock.patch.object(vb.requests, "get", side_effect=fake_get):
+                    report = runner.run_capture(
+                        ["Oil"], store=FakeMarketTable(), now=NOW
+                    )
+
+        self.assertEqual(report["symbols_used"]["Oil"], "BACKUP=X")
+        self.assertTrue(report["fallback_used"]["Oil"])
+        self.assertEqual(report["pinned_series"], {})
+
+    def test_the_revision_half_of_the_report_is_always_present(self):
+        """An operator must never have to tell 'no revisions' apart from 'this
+        build does not report revisions'."""
+        payload = _yahoo_payload(_epochs(1, 20), [3400.0] * 20)
+        with mock.patch.object(vb.requests, "get", return_value=_FakeResponse(payload)):
+            report = runner.run_capture(["Gold"], store=FakeMarketTable(), now=NOW)
+
+        for key in ("revision_backend", "revisions_recorded", "revisions_duplicate",
+                    "revisions_failed", "revisions_skipped", "revisions_by_kind",
+                    "revisions_error", "series_pin_version"):
+            self.assertIn(key, report, key)
+        self.assertEqual(report["revisions_recorded"], 0)
+        self.assertEqual(report["revisions_by_kind"], {})
 
     def test_defaults_to_every_registered_instrument(self):
         with mock.patch.object(runner, "capture_daily_bars") as fake_capture:
