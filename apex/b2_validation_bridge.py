@@ -1150,9 +1150,11 @@ __all__ = [
     "capture_daily_bars",
     "fetch_daily_bars",
     "forward_window_for",
+    "registered_instruments",
     "resolve_market_store",
     "resolve_observation",
     "resolve_range",
+    "symbol_convention",
     "validate_range",
     "validate_stored_range",
 ]

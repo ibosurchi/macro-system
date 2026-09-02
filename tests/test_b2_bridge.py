@@ -11,6 +11,7 @@ import inspect
 import json
 import os
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -366,25 +367,29 @@ class TestBridge(unittest.TestCase):
             ["b2_validation_bridge.py", "production_core.py"],
         )
 
-    def test_the_validation_bridge_is_not_reachable_from_production(self):
-        """Stage D's I/O half has NO importer at all.
+    #: The single approved operator/research entry point for Stage D-1 capture.
+    #: See scripts/capture_daily_bars.py -- it is explicit, independently
+    #: invoked by a human, not imported by anything, and performs no fetch or
+    #: storage logic of its own beyond calling capture_daily_bars().
+    APPROVED_VALIDATION_BRIDGE_IMPORTER = "capture_daily_bars.py"
 
-        The validation bridge is operator-invoked and offline. Nothing may
-        import it: not production_core, not a page, not a strategy, not the
-        daemon. The moment something does, capture stops being offline and the
-        'no new expensive runtime work' guarantee is gone -- so it is asserted
-        here rather than trusted.
+    def _find_validation_bridge_importers(self, root: str, *, skip_dirs=None, skip_filename=None) -> list[str]:
+        """Every ``.py`` file under ``root`` that imports ``b2_validation_bridge``.
+
+        Shared by the real-repo guard below and by the synthetic test that
+        proves this detection actually catches an unauthorized importer,
+        rather than merely restating today's repo state.
         """
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        skip_dirs = skip_dirs if skip_dirs is not None else (
+            "_backup_", "_baseline_", ".git", "__pycache__", "tests"
+        )
+        skip_filename = skip_filename if skip_filename is not None else "b2_validation_bridge.py"
         importers: list[str] = []
         for folder, _dirs, files in os.walk(root):
-            if any(
-                part in folder
-                for part in ("_backup_", "_baseline_", ".git", "__pycache__", "tests")
-            ):
+            if any(part in folder for part in skip_dirs):
                 continue
             for filename in files:
-                if not filename.endswith(".py") or filename == "b2_validation_bridge.py":
+                if not filename.endswith(".py") or filename == skip_filename:
                     continue
                 path = os.path.join(folder, filename)
                 with open(path, "r", encoding="utf-8") as handle:
@@ -393,15 +398,80 @@ class TestBridge(unittest.TestCase):
                     except SyntaxError:
                         continue
                 for node in ast.walk(tree):
-                    if isinstance(node, ast.ImportFrom) and "b2_validation_bridge" in (
-                        node.module or ""
-                    ):
-                        importers.append(os.path.basename(path))
+                    if isinstance(node, ast.ImportFrom):
+                        if "b2_validation_bridge" in (node.module or "") or any(
+                            a.name == "b2_validation_bridge" for a in node.names
+                        ):
+                            importers.append(os.path.basename(path))
                     if isinstance(node, ast.Import) and any(
                         "b2_validation_bridge" in a.name for a in node.names
                     ):
                         importers.append(os.path.basename(path))
-        self.assertEqual(sorted(set(importers)), [])
+        return importers
+
+    def test_the_validation_bridge_has_exactly_one_approved_importer(self):
+        """Stage D's I/O half has exactly ONE importer: the named capture runner.
+
+        Before Stage D-1 activation this asserted zero importers -- correct
+        while capture had no invoker at all. Now that an explicit,
+        independently-invoked operator runner exists (scripts/capture_daily_bars.py),
+        the rule is not 'nothing imports this' but 'only the one approved,
+        non-production, human-invoked runner imports this'. Anything else --
+        production_core, a page, a strategy, the daemon, the Telegram loop --
+        still fails here exactly as before. The moment a SECOND file imports
+        the bridge, capture stops being an explicit, singular, offline
+        operation and this test catches it.
+        """
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        importers = self._find_validation_bridge_importers(root)
+        self.assertEqual(sorted(set(importers)), [self.APPROVED_VALIDATION_BRIDGE_IMPORTER])
+
+    def test_the_approved_runner_file_actually_exists_and_is_not_production_code(self):
+        """The allowlisted name must name a real, non-production file.
+
+        Guards against the previous test passing vacuously because the
+        approved name was simply never matched by anything on disk.
+        """
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        runner_path = os.path.join(root, "scripts", self.APPROVED_VALIDATION_BRIDGE_IMPORTER)
+        self.assertTrue(os.path.isfile(runner_path), runner_path)
+        with open(runner_path, "r", encoding="utf-8") as handle:
+            source = handle.read()
+        tree = ast.parse(source)
+        imported: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                imported.add((node.module or "").split(".")[0])
+            if isinstance(node, ast.Import):
+                imported.update(a.name.split(".")[0] for a in node.names)
+        # The runner may depend on the b2 research surface and stdlib/argparse
+        # plumbing, but never on any production entry-point or scheduling
+        # module -- proving requirement (2) structurally, not by convention.
+        for forbidden in (
+            "telegram_service", "background_services", "dashboard", "views",
+            "forecaster", "app", "bootstrap", "auth", "payments", "news",
+            "strategies", "threading",
+        ):
+            self.assertNotIn(forbidden, imported, forbidden)
+
+    def test_zero_importer_guard_actually_detects_an_unauthorized_importer(self):
+        """Proves the detection mechanism, not just today's repo state.
+
+        A synthetic tree with one decoy file and one unauthorized importer of
+        ``b2_validation_bridge`` must be flagged by exactly that filename, and
+        only that one -- confirming the guard would catch a real second
+        importer rather than passing by coincidence.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "decoy.py"), "w", encoding="utf-8") as handle:
+                handle.write("import os\nfrom apex import b2_bridge\n")
+            with open(os.path.join(tmp, "sneaky_page.py"), "w", encoding="utf-8") as handle:
+                handle.write("from apex import b2_validation_bridge\n")
+            with open(os.path.join(tmp, "b2_validation_bridge.py"), "w", encoding="utf-8") as handle:
+                handle.write("# the module itself -- must be skipped, not self-flagged\n")
+
+            importers = self._find_validation_bridge_importers(tmp)
+        self.assertEqual(sorted(set(importers)), ["sneaky_page.py"])
 
     def test_production_core_has_no_module_level_b2_import(self):
         """The single import must be deferred, so B2 is not a load-time dependency."""
