@@ -21,7 +21,7 @@ from apex.b2 import shadow
 from apex.b2.validation.bars import GRANULARITY_1D, MarketBar
 from apex.b2_bridge import QueryOutcome
 from apex.b2_validation_bridge import validate_range
-from test_b2_storage_v2 import NOW, FakeRow, _PatchProduction, _reset
+from test_b2_storage_v2 import NOW, _TACTICAL, FakeRow, _PatchProduction, _reset
 
 
 class TestExecutionHorizonActivation(unittest.TestCase):
@@ -131,15 +131,37 @@ class TestExecutionRowsSurviveValidation(unittest.TestCase):
     def setUp(self):
         _reset()
 
+    #: The shared storage fixture omits the four keys production's
+    #: ``compute_tactical_move`` actually exports (symbol / analysis_price /
+    #: last_price / market_ts), so its records carry ``anchor_missing`` and every
+    #: observation built from them is unresolvable for that reason alone. Adding
+    #: them here -- as an override, leaving the shared fixture untouched -- is
+    #: what lets these tests exercise the path a LIVE record really takes.
+    ANCHORED_TACTICAL = dict(
+        _TACTICAL,
+        symbol="XAUUSD=X",
+        analysis_price=3330.0,
+        last_price=3330.0,
+        market_ts=int(NOW.timestamp()),
+    )
+
     def _live_rows(self):
         table = FakeRow()
         backend = shadow.InMemoryShadowStore()
-        with _PatchProduction():
+        with _PatchProduction(tactical=dict(self.ANCHORED_TACTICAL)):
             with mock.patch.object(b2_bridge, "resolve_record_store", return_value=table),                  mock.patch.object(b2_bridge, "shadow_instruments", return_value=("Gold",)):
                 b2_bridge.run_shadow_observation(
                     "FAKE_KEY", "chan", store=backend, now=NOW
                 )
         return list(table.rows.values())
+
+    @staticmethod
+    def _by_horizon(result):
+        out = {}
+        for item in result["evaluated"]:
+            record = item.as_record()
+            out[record["envelope"]["context"]["horizon"]] = record
+        return out
 
     @staticmethod
     def _market_store(rows):
@@ -201,14 +223,53 @@ class TestExecutionRowsSurviveValidation(unittest.TestCase):
 
     def test_execution_rows_are_never_reinterpreted_as_tactical(self):
         """No verdict is invented for Execution -- it stays out of D-2C3 scope."""
-        result = self._validate(as_of=NOW + timedelta(days=20))
-        for item in result["evaluated"]:
-            record = item.as_record()
+        records = self._by_horizon(self._validate(as_of=NOW + timedelta(days=20)))
+        axes = records[Horizon.EXECUTION.value]["envelope"]["outcome_hash_basis"]
+        self.assertIn(axes["setup_invalidation"], ("unknown", "not_applicable"))
+
+    def test_the_shared_anchor_is_identical_across_both_horizons(self):
+        """One gathering pass means one anchor: the horizons cannot disagree
+        about the state of the world they observed."""
+        anchors = [row["record"]["market_anchor"] for row in self._live_rows()]
+        self.assertEqual(len(anchors), 2)
+        self.assertEqual(anchors[0], anchors[1])
+        self.assertEqual(anchors[0]["anchor_status"], "anchor_captured")
+
+    def test_each_horizon_matures_on_its_own_window(self):
+        """The load-bearing property of D-3: same snapshot, separate windows.
+
+        Four days on, Execution's 3-day window has closed and resolved while
+        Tactical's 14-day window is still open. A single shared window -- or a
+        horizon silently borrowing the other's -- could not produce this.
+        """
+        records = self._by_horizon(self._validate(as_of=NOW + timedelta(days=4)))
+        self.assertEqual(set(records), {Horizon.TACTICAL.value, Horizon.EXECUTION.value})
+        execution = records[Horizon.EXECUTION.value]["envelope"]["outcome_hash_basis"]
+        tactical = records[Horizon.TACTICAL.value]["envelope"]["outcome_hash_basis"]
+        self.assertEqual(execution["maturity_state"], "matured")
+        self.assertEqual(execution["coverage_status"], "resolvable")
+        self.assertEqual(tactical["maturity_state"], "not_matured")
+        self.assertEqual(tactical["coverage_status"], "unresolved_window_open")
+
+    def test_a_live_anchored_observation_reaches_a_real_verdict(self):
+        """End-to-end proof the D-3 write path produces VALIDATABLE records.
+
+        Guards the anchor contract: if the four production tactical exports the
+        anchor is assembled from were ever dropped, every record would silently
+        degrade to anchor_missing and nothing else in this suite would notice.
+        """
+        records = self._by_horizon(self._validate(as_of=NOW + timedelta(days=20)))
+        for horizon, record in records.items():
+            self.assertEqual(record["provenance_grade"], "ideal", horizon)
             axes = record["envelope"]["outcome_hash_basis"]
-            if record["envelope"]["context"].get("horizon") == Horizon.EXECUTION.value:
-                self.assertIn(
-                    axes["setup_invalidation"], ("unknown", "not_applicable")
-                )
+            self.assertEqual(axes["eligibility_pool"], "captured", horizon)
+            self.assertEqual(axes["maturity_state"], "matured", horizon)
+            self.assertIsNotNone(axes["terminal_return"], horizon)
+        tactical = records[Horizon.TACTICAL.value]
+        self.assertEqual(
+            tactical["envelope"]["outcome_hash_basis"]["direction"], "confirmed"
+        )
+        self.assertEqual(tactical["readiness_tier"], "calibration_eligible")
 
 
 if __name__ == "__main__":
