@@ -1,11 +1,12 @@
 # B2 Job A — hourly shadow capture (Tactical + Execution)
 #
-# MANUAL ONLY IN THIS PHASE. There is deliberately no schedule trigger yet.
-# Activation is a separate, explicit operator step performed only after the
-# one-writer cutover; until then this workflow runs when a human dispatches it.
+# AUTOMATED SCHEDULE ACTIVE.
+# Runs every hour at minute 07 UTC.
 #
-# When it is activated, the trigger to add is an hourly cron at minute 07 UTC:
-# minute 00 is the most congested minute on the platform and suffers the longest
+# The workflow_dispatch trigger is also retained so an operator can still run
+# the workflow manually or perform a dry-run configuration check.
+#
+# Minute 00 is the most congested minute on the platform and suffers the longest
 # delays, while :07 keeps 53 minutes of headroom before a delayed run would slip
 # into the next hour bucket. Delay INSIDE the intended hour is harmless — the
 # bucket is the identity, so a late run produces the same record ids and the
@@ -13,11 +14,19 @@
 # legitimate bucket instead; the missed hour stays a documented evidence gap and
 # is never fabricated.
 #
+# One-writer cutover completed before schedule activation:
+# Streamlit B2 shadow capture is disabled and GitHub Actions is the durable
+# external writer.
+#
 # This workflow writes nothing to the repository. It has no write token, makes
 # no commit, creates no tag, pushes nothing and uploads no artifact.
+
 name: b2-capture-shadow
 
 on:
+  schedule:
+    - cron: "7 * * * *"
+
   workflow_dispatch:
     inputs:
       dry_run:
@@ -41,15 +50,14 @@ concurrency:
 jobs:
   capture:
     runs-on: ubuntu-latest
+
     # Generous on purpose: an external runner starts COLD. None of the caches
     # the in-daemon hook rode are warm here, so every run re-fetches its
     # upstream inputs for all instruments.
     timeout-minutes: 20
 
     steps:
-      # Pinned to a full commit SHA rather than a tag: this repository currently
-      # allows all actions, so the pin is what stops a moved tag from silently
-      # changing the code that runs. VERIFY THESE PINS before activation.
+      # Pinned to verified full commit SHAs rather than movable tags.
       - name: Check out repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -63,14 +71,11 @@ jobs:
         run: python -m pip install --disable-pip-version-check -r requirements.txt
 
       # Secrets reach the dispatcher as environment variables and are written to
-      # .streamlit/secrets.toml by Python, never by a shell. A shell `echo`
-      # would put the value straight into this log. The dispatcher reports the
-      # NAMES it wrote and never the values.
+      # .streamlit/secrets.toml by Python, never by a shell. The dispatcher
+      # reports only secret NAMES and never secret values.
       #
-      # B2_SHADOW_ENABLED is deliberately NOT set here. The one-writer cutover
-      # works because the Streamlit deployment and this runner read independent
-      # secret stores; setting it here would couple them again and let the
-      # scheduler silently disable itself.
+      # B2_SHADOW_ENABLED is deliberately NOT set here. Streamlit has its own
+      # B2_SHADOW_ENABLED="0" setting after the one-writer cutover.
       - name: Run shadow capture
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
