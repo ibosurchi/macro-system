@@ -39,6 +39,32 @@ from .enums import Direction, Horizon
 from .horizons import evaluation_deadline, utcnow
 
 
+#: Status of the transmission-prediction corpus as a whole.
+#:
+#: Every prediction registered before the B2 freeze was written by a caller that
+#: stamped ``expected_direction`` with the instrument's thesis direction on EVERY
+#: step, so the intermediate legs of each chain assert the opposite of the
+#: mechanism the asset modules describe. The records themselves are immutable and
+#: are not rewritten -- they are historically truthful about what was registered.
+#: They are simply not admissible as evidence about anything.
+#:
+#: No outcome has ever been attached to any of them (``attach_outcome`` has no
+#: caller), so nothing has been scored and no confirmation rate exists. That must
+#: stay true: resolving this corpus would score inverted claims, and no outcome
+#: may be invented for it retrospectively.
+CORPUS_STATUS = "invalid_pre_freeze"
+
+CORPUS_STATUS_REASON = (
+    "Pre-freeze transmission predictions were registered with every step's "
+    "expected direction set to the thesis direction, which inverts the "
+    "intermediate legs of each chain (a bullish-gold thesis asserts rising real "
+    "yields and a rising dollar). The chain endpoints are also free text with no "
+    "resolver, so no step was measurable. This corpus must never be resolved, "
+    "scored, reinterpreted, or used to inform regime confidence. It is retained "
+    "unmodified as a record of what was registered, and registration is disabled."
+)
+
+
 class StepOutcomeState(Enum):
     PENDING = "pending"
     CONFIRMED = "confirmed"
@@ -280,6 +306,8 @@ class PredictionLog:
         return {
             "predictions": [r.as_record() for r in self._records.values()],
             "outcomes": [o.as_record() for o in self._outcomes.values()],
+            "corpus_status": CORPUS_STATUS,
+            "corpus_status_reason": CORPUS_STATUS_REASON,
         }
 
     @classmethod

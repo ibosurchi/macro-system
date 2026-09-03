@@ -57,7 +57,64 @@ SHADOW_MODE_LABEL = "SHADOW / NON-PRODUCTION / UNCALIBRATED"
 #: waiting. Existing v1 rows are left exactly as they are: they are historically
 #: truthful, and backfilling an anchor into them would fabricate a
 #: point-in-time capture that never happened.
-CURRENT_SCHEMA_VERSION = 2
+#:
+#: v2 -> v3 is the B2 FREEZE BOUNDARY. It adds ``evidence_provenance`` and the
+#: per-member values on each family reading, and it is the first version whose
+#: evidence layer carries scale-aware neutral bands, horizon-filtered family
+#: evaluation, an entry-plan direction check and Unavailable-preserving adapters.
+#:
+#: The version bump is what makes the boundary machine-checkable. A v1 or v2
+#: record was produced by an evidence layer with known defects -- a directional
+#: family that read sub-sigma noise as evidence, missing news arriving as flat,
+#: and a macro-chosen invalidation flag pre-empting the decision state -- and it
+#: cannot be corrected retrospectively, because the member values it was scored
+#: from were never stored. Those records stay exactly as written: historically
+#: truthful, never rewritten, and never reinterpreted under v3 semantics.
+CURRENT_SCHEMA_VERSION = 3
+
+#: The first schema version written by the post-freeze evidence layer.
+#: ``schema_version < FREEZE_SCHEMA_VERSION`` is the definition of a pre-freeze
+#: record, expressed once here rather than as a literal at each call site.
+FREEZE_SCHEMA_VERSION = 3
+
+#: Stamped on every record so the epoch is legible in the payload itself and not
+#: only derivable from a version comparison.
+EVIDENCE_EPOCH_PRE_FREEZE = "pre_freeze"
+EVIDENCE_EPOCH_POST_FREEZE = "post_freeze"
+
+
+def evidence_epoch(schema_version: object) -> str:
+    """Which evidence epoch a stored record belongs to.
+
+    Pre-freeze records remain valid history and valid diagnostics. They are NOT
+    valid calibration evidence and must never be pooled with post-freeze records
+    for any accuracy claim: they were produced by a measurably different -- and
+    known-defective -- evidence layer, so pooling them would average two
+    different systems and attribute the result to one.
+    """
+    try:
+        version = int(schema_version)
+    except (TypeError, ValueError):
+        return EVIDENCE_EPOCH_PRE_FREEZE
+    return (
+        EVIDENCE_EPOCH_POST_FREEZE
+        if version >= FREEZE_SCHEMA_VERSION
+        else EVIDENCE_EPOCH_PRE_FREEZE
+    )
+
+
+def is_pre_freeze_record(record: Mapping[str, object] | None) -> bool:
+    """True for a record written before the B2 freeze boundary.
+
+    Tolerates a legacy payload with no ``schema_version`` at all, which is
+    treated as pre-freeze -- the safe direction, since the only cost of being
+    wrong is excluding a record from calibration it was never eligible for.
+    """
+    if not isinstance(record, Mapping):
+        return True
+    inner = record.get("record")
+    payload = inner if isinstance(inner, Mapping) else record
+    return evidence_epoch(payload.get("schema_version")) == EVIDENCE_EPOCH_PRE_FREEZE
 
 CROSS_ASSET_STATUS = "withheld"
 CROSS_ASSET_REASON = (
@@ -99,6 +156,13 @@ class ShadowRecord:
     #: are ever changed. Absent (None) on legacy records, which are left
     #: historically truthful rather than backfilled with a fabricated value.
     aggregation_config: Mapping[str, object] | None = None
+    #: Schema v3: how each member value was derived (adapter side) and how it
+    #: was classified (registry side: scale, neutral band, frequency). Together
+    #: with the member values stored on each family reading, this is what makes
+    #: a record re-scorable -- an analyst can re-threshold, ablate or
+    #: re-normalise it without consulting repository history. Absent (None) on
+    #: legacy v1/v2 records, which stay historically truthful.
+    evidence_provenance: Mapping[str, object] | None = None
     #: Stage D: the point-in-time market state this evaluation was taken
     #: against -- the price, the symbol that price came from, the direction
     #: convention in force, and the market timestamp. This is what makes an
@@ -128,6 +192,10 @@ class ShadowRecord:
             "aggregation_config": (
                 dict(self.aggregation_config) if self.aggregation_config else None
             ),
+            "evidence_provenance": (
+                dict(self.evidence_provenance) if self.evidence_provenance else None
+            ),
+            "evidence_epoch": evidence_epoch(self.schema_version),
             "market_anchor": (
                 dict(self.market_anchor) if self.market_anchor else None
             ),
@@ -294,6 +362,7 @@ def build_shadow_record(
     asset_module: AssetModuleReading | None = None,
     event_timing: Mapping[str, object] | None = None,
     aggregation_config: Mapping[str, object] | None = None,
+    evidence_provenance: Mapping[str, object] | None = None,
     market_anchor: Mapping[str, object] | None = None,
     evaluated_at: datetime | None = None,
     observation_key: str = "",
@@ -338,6 +407,7 @@ def build_shadow_record(
         asset_module=asset_module,
         event_timing=event_timing,
         aggregation_config=aggregation_config,
+        evidence_provenance=evidence_provenance,
         market_anchor=market_anchor,
     )
 

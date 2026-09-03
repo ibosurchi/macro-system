@@ -389,28 +389,42 @@ class TestDuplicateAndPredictions(unittest.TestCase):
         self.assertEqual(set(outcomes.values()), {"written"})
         self.assertEqual(len(_records(store)), 22)
 
-    def test_predictions_are_registered_for_every_instrument(self):
+    def test_no_predictions_are_registered_for_any_instrument(self):
+        # Registration is withheld: every chain stamped each step with the
+        # thesis direction, inverting the intermediate legs. A full multi-asset
+        # cycle must therefore accumulate nothing.
         _, store, _ = _run()
-        payload = store.load(b2_bridge.PREDICTION_LOG_STATE_ID, None)
-        instruments = {p["instrument"] for p in payload["predictions"]}
-        self.assertEqual(instruments, set(b2_bridge.shadow_instruments()))
+        self.assertIsNone(store.load(b2_bridge.PREDICTION_LOG_STATE_ID, None))
 
     def test_prediction_day_bucket_idempotency_holds_across_instruments(self):
+        # The bucketing plumbing is unchanged and still covered; only the live
+        # path is closed, so it is exercised through the explicit override.
         store = _CountingStore()
-        _run(store=store, now=NOW)
-        first = len(store.load(b2_bridge.PREDICTION_LOG_STATE_ID, None)["predictions"])
+        instruments = list(b2_bridge.shadow_instruments())
+
+        def register(moment):
+            for instrument in instruments:
+                b2_bridge.register_transmission_prediction(
+                    store, instrument=instrument, direction=Direction.BULLISH,
+                    now=moment, enabled=True,
+                )
+            return len(store.load(b2_bridge.PREDICTION_LOG_STATE_ID, None)["predictions"])
+
+        first = register(NOW)
         # A later hour on the SAME day must not add new predictions.
-        _run(store=store, now=NOW + timedelta(hours=3))
-        second = len(store.load(b2_bridge.PREDICTION_LOG_STATE_ID, None)["predictions"])
+        second = register(NOW + timedelta(hours=3))
         self.assertEqual(first, second)
         # The next day does.
-        _run(store=store, now=NOW + timedelta(days=1))
-        third = len(store.load(b2_bridge.PREDICTION_LOG_STATE_ID, None)["predictions"])
+        third = register(NOW + timedelta(days=1))
         self.assertGreater(third, second)
 
-    def test_only_the_two_approved_state_ids_are_ever_written(self):
+    def test_only_the_approved_state_ids_are_ever_written(self):
+        # Stricter than before: with registration withheld, an observation
+        # writes ONLY the shadow log. Any other id -- a new persistence
+        # surface, or a write into an existing production payload -- fails here.
         _, store, _ = _run()
-        self.assertEqual(
+        self.assertEqual(set(store.saves), {b2_bridge.SHADOW_LOG_STATE_ID})
+        self.assertLessEqual(
             set(store.saves),
             {b2_bridge.SHADOW_LOG_STATE_ID, b2_bridge.PREDICTION_LOG_STATE_ID},
         )

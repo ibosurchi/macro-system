@@ -818,10 +818,17 @@ class TestAnchorCapture(unittest.TestCase):
         self.assertEqual(anchor["volatility_regime"], "normal")
         self.assertEqual(anchor["granularity"], "5m")
 
-    def test_new_records_are_schema_version_two(self):
+    def test_new_records_are_schema_version_three(self):
         _, evaluation = _observe("Gold")
-        self.assertEqual(evaluation.record.as_record()["schema_version"], 2)
-        self.assertEqual(shadow.CURRENT_SCHEMA_VERSION, 2)
+        # v3 is the freeze boundary: scale-aware bands, horizon-filtered family
+        # evaluation, an entry-plan direction check, Unavailable-preserving
+        # adapters, and stored member values with their provenance.
+        record = evaluation.record.as_record()
+        self.assertEqual(record["schema_version"], 3)
+        self.assertEqual(record["evidence_epoch"], "post_freeze")
+        self.assertIsNotNone(record["evidence_provenance"])
+        self.assertEqual(shadow.CURRENT_SCHEMA_VERSION, 3)
+        self.assertEqual(shadow.FREEZE_SCHEMA_VERSION, 3)
 
     def test_the_anchor_survives_a_neutral_macro_regime(self):
         """The gap Stage D exists to close: no entry plan, still an anchor."""
@@ -1318,8 +1325,8 @@ class TestStorageV2Regression(unittest.TestCase):
     def test_record_to_row_promotes_the_new_schema_version(self):
         _, evaluation = _observe("Gold")
         row = shadow.record_to_row(evaluation.record.as_record())
-        self.assertEqual(row["schema_version"], 2)
-        self.assertEqual(row["record"]["schema_version"], 2)
+        self.assertEqual(row["schema_version"], 3)
+        self.assertEqual(row["record"]["schema_version"], 3)
         self.assertIn("market_anchor", row["record"])
 
     def test_legacy_rows_are_never_rewritten_by_the_read_path(self):

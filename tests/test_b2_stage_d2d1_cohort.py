@@ -1443,10 +1443,19 @@ class TestScope(unittest.TestCase):
         self.assertEqual(result.returncode, 0,
                          f"{path} changed:\n{result.stdout[:800]}")
 
-    def test_the_evaluation_package_holds_exactly_three_modules(self):
+    def test_the_evaluation_package_holds_exactly_the_authorized_modules(self):
         present = {f for f in os.listdir(
             os.path.join(ROOT, "apex", "b2", "evaluation")) if f.endswith(".py")}
-        self.assertEqual(present, {"__init__.py", "observation.py", "cohort.py"})
+        self.assertEqual(present, {
+            "__init__.py", "observation.py", "cohort.py",
+            # Final Fixes (approved) added exactly one further pure module: the
+            # null benchmark. It is a VALIDATION CONTROL -- it measures how the
+            # evidence layer responds to input known to contain no signal. It
+            # reads no stored record, selects no parameter and computes no
+            # metric over real observations, which is what keeps metrics.py
+            # forbidden while this is permitted.
+            "null_benchmark.py",
+        })
         self.assertNotIn("metrics.py", present)
 
     def test_the_validation_surface_is_untouched(self):

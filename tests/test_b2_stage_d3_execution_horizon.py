@@ -17,7 +17,7 @@ from collections import Counter
 from datetime import timedelta
 
 from apex import b2_bridge
-from apex.b2.enums import Horizon
+from apex.b2.enums import Direction, Horizon
 from apex.b2 import shadow
 from apex.b2.validation.bars import GRANULARITY_1D, MarketBar
 from apex.b2_bridge import QueryOutcome
@@ -90,6 +90,14 @@ class TestExecutionHorizonActivation(unittest.TestCase):
                  mock.patch.object(b2_bridge, "register_transmission_prediction", return_value="registered") as reg:
                 b2_bridge.run_shadow_observation("FAKE_KEY", "chan", store=backend, now=NOW)
         self.assertEqual({c.kwargs["horizon"] for c in reg.call_args_list}, {Horizon.TACTICAL, Horizon.EXECUTION})
+        # ...and the unpatched function refuses by default.
+        self.assertFalse(b2_bridge.TRANSMISSION_PREDICTION_REGISTRATION_ENABLED)
+        self.assertEqual(
+            b2_bridge.register_transmission_prediction(
+                backend, instrument="Gold", direction=Direction.BULLISH, now=NOW
+            ),
+            b2_bridge.TRANSMISSION_WITHHELD,
+        )
 
     def test_execution_failure_does_not_cost_tactical_observation(self):
         table = FakeRow()
@@ -157,11 +165,10 @@ class TestPerHorizonFailureIndependence(unittest.TestCase):
         # Only the settled horizon is marked; Tactical stays unmarked to retry.
         self.assertIn("Gold|execution", b2_bridge._HANDLED_BUCKETS)
         self.assertNotIn("Gold", b2_bridge._HANDLED_BUCKETS)
-        # A prediction is registered only for the observation that persisted.
-        log = backend.load(b2_bridge.PREDICTION_LOG_STATE_ID, None)
-        self.assertEqual(
-            [p["horizon"] for p in log["predictions"]], [Horizon.EXECUTION.value]
-        )
+        # Transmission registration is withheld, so no prediction log is
+        # written for either horizon. The per-horizon settlement above is what
+        # this test is about and is unaffected.
+        self.assertIsNone(backend.load(b2_bridge.PREDICTION_LOG_STATE_ID, None))
 
     def test_only_the_failed_horizon_is_retried_on_the_next_tick(self):
         table = FakeRow(fail_ids={self._tactical_storage_id()})
@@ -234,25 +241,37 @@ class TestLiveCycleAtFullScale(unittest.TestCase):
             {"anchor_captured"},
         )
 
-    def test_predictions_are_registered_per_instrument_and_horizon(self):
+    def test_no_predictions_are_registered_by_the_live_cycle(self):
+        # Containment: every chain stamped each step with the thesis direction,
+        # inverting the intermediate legs, so registration is disabled and a
+        # full 22-row cycle must accumulate nothing.
         _, _, backend = self._cycle()
+        self.assertIsNone(backend.load(b2_bridge.PREDICTION_LOG_STATE_ID, None))
+
+    def test_horizon_plumbing_still_registers_correctly_under_override(self):
+        # The identity and horizon plumbing is unchanged and still covered; only
+        # the live path is closed. Exercised explicitly rather than left untested.
+        backend = shadow.InMemoryShadowStore()
+        for horizon in (Horizon.TACTICAL, Horizon.EXECUTION):
+            b2_bridge.register_transmission_prediction(
+                backend, instrument="Gold", direction=Direction.BULLISH,
+                horizon=horizon, now=NOW, enabled=True,
+            )
         log = backend.load(b2_bridge.PREDICTION_LOG_STATE_ID, None)
-        self.assertIsNotNone(log)
-        self.assertEqual(len(log["predictions"]), 22)
         self.assertEqual(
             Counter(p["horizon"] for p in log["predictions"]),
-            {Horizon.TACTICAL.value: 11, Horizon.EXECUTION.value: 11},
+            {Horizon.TACTICAL.value: 1, Horizon.EXECUTION.value: 1},
         )
+        self.assertEqual(log["corpus_status"], "invalid_pre_freeze")
 
     def test_structural_is_absent_from_everything_the_cycle_produced(self):
         _, table, backend = self._cycle()
-        log = backend.load(b2_bridge.PREDICTION_LOG_STATE_ID, None)
         self.assertNotIn(
             Horizon.STRUCTURAL.value, {r["horizon"] for r in table.rows.values()}
         )
-        self.assertNotIn(
-            Horizon.STRUCTURAL.value, {p["horizon"] for p in log["predictions"]}
-        )
+        # No prediction log exists at all while registration is withheld, which
+        # is a stronger statement than "no structural prediction".
+        self.assertIsNone(backend.load(b2_bridge.PREDICTION_LOG_STATE_ID, None))
 
     def test_cross_asset_stays_withheld_on_every_row(self):
         _, table, _ = self._cycle()

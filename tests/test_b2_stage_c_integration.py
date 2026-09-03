@@ -509,11 +509,24 @@ class TestTransmissionPredictions(unittest.TestCase):
     def setUp(self):
         _reset()
 
-    def test_an_observation_registers_the_modules_chain(self):
+    def test_an_observation_registers_nothing_while_registration_is_withheld(self):
+        # The pre-freeze corpus stamped every step of every chain with the
+        # thesis direction, inverting the intermediate legs (a bullish-gold
+        # thesis asserted rising real yields and a rising dollar). Registration
+        # is disabled so nothing further accumulates.
         _, store = _observe("Gold")
+        self.assertIsNone(store.load(b2_bridge.PREDICTION_LOG_STATE_ID, None))
+
+    def test_the_module_chain_still_registers_correctly_under_override(self):
+        store = shadow.InMemoryShadowStore()
+        b2_bridge.register_transmission_prediction(
+            store, instrument="Gold", direction=Direction.BULLISH,
+            now=NOW, enabled=True,
+        )
         payload = store.load(b2_bridge.PREDICTION_LOG_STATE_ID, None)
         self.assertIsNotNone(payload)
         self.assertEqual(len(payload["predictions"]), 1)
+        self.assertEqual(payload["corpus_status"], "invalid_pre_freeze")
         record = payload["predictions"][0]
         self.assertEqual(record["instrument"], "Gold")
         self.assertEqual(record["horizon"], "tactical")
@@ -526,7 +539,8 @@ class TestTransmissionPredictions(unittest.TestCase):
         store = shadow.InMemoryShadowStore()
         self.assertEqual(
             b2_bridge.register_transmission_prediction(
-                store, instrument="Gold", direction=Direction.BULLISH, now=NOW
+                store, instrument="Gold", direction=Direction.BULLISH,
+                now=NOW, enabled=True,
             ),
             "registered",
         )
@@ -536,6 +550,7 @@ class TestTransmissionPredictions(unittest.TestCase):
                 instrument="Gold",
                 direction=Direction.BULLISH,
                 now=NOW + timedelta(hours=6),
+                enabled=True,
             ),
             "duplicate_skipped",
         )
@@ -545,6 +560,7 @@ class TestTransmissionPredictions(unittest.TestCase):
                 instrument="Gold",
                 direction=Direction.BULLISH,
                 now=NOW + timedelta(days=1),
+                enabled=True,
             ),
             "registered",
         )
@@ -556,7 +572,8 @@ class TestTransmissionPredictions(unittest.TestCase):
         store = shadow.InMemoryShadowStore()
         self.assertEqual(
             b2_bridge.register_transmission_prediction(
-                store, instrument="Gold", direction=Direction.FLAT, now=NOW
+                store, instrument="Gold", direction=Direction.FLAT,
+                now=NOW, enabled=True,
             ),
             "no_direction",
         )
@@ -565,7 +582,8 @@ class TestTransmissionPredictions(unittest.TestCase):
         store = shadow.InMemoryShadowStore()
         self.assertEqual(
             b2_bridge.register_transmission_prediction(
-                store, instrument="NOT_A_MARKET", direction=Direction.BULLISH, now=NOW
+                store, instrument="NOT_A_MARKET", direction=Direction.BULLISH,
+                now=NOW, enabled=True,
             ),
             "no_module",
         )
@@ -576,11 +594,20 @@ class TestTransmissionPredictions(unittest.TestCase):
         self.assertNotIn("pending_steps", source)
 
     def test_predictions_remain_append_only_and_immutable(self):
-        _, store = _observe("Gold")
+        # The live path writes no log at all now, so append-only is exercised
+        # through the override: the structure and its guarantees are unchanged,
+        # and the corpus carries its invalid-pre-freeze marker.
+        store = shadow.InMemoryShadowStore()
+        b2_bridge.register_transmission_prediction(
+            store, instrument="Gold", direction=Direction.BULLISH,
+            now=NOW, enabled=True,
+        )
         payload = store.load(b2_bridge.PREDICTION_LOG_STATE_ID, None)
         self.assertIn("predictions", payload)
         self.assertIn("outcomes", payload)
         self.assertEqual(payload["outcomes"], [])
+        self.assertEqual(payload["corpus_status"], "invalid_pre_freeze")
+        self.assertIn("never be resolved", payload["corpus_status_reason"])
 
 
 # ---------------------------------------------------------------------------

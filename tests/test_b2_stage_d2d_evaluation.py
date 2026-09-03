@@ -894,10 +894,18 @@ class TestScope(unittest.TestCase):
         check itself is unchanged and still fails on any UNapproved module.
         ``metrics.py`` stays forbidden: D-2D1 is deliberately one module, and
         a second one would have to publish the cohort's internal member
-        sequence across a file boundary purely to hand it over."""
+        sequence across a file boundary purely to hand it over.
+
+        Final Fixes authorized exactly one more, ``null_benchmark.py``: a
+        validation CONTROL that measures the evidence layer's response to input
+        known to contain no signal. It reads no stored observation, returns no
+        parameter and computes no metric over real data -- which is exactly why
+        ``metrics.py`` remains forbidden while this does not."""
         present = {f for f in os.listdir(
             os.path.join(ROOT, "apex", "b2", "evaluation")) if f.endswith(".py")}
-        self.assertEqual(present, {"__init__.py", "observation.py", "cohort.py"})
+        self.assertEqual(present, {
+            "__init__.py", "observation.py", "cohort.py", "null_benchmark.py"
+        })
         self.assertNotIn("metrics.py", present)
 
     def test_the_validation_surface_is_untouched(self):

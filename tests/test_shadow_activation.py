@@ -234,12 +234,13 @@ class TestObservationIsPersisted(unittest.TestCase):
     def test_only_the_new_state_ids_are_written(self):
         with _PatchAll():
             b2_bridge.observe_instrument("Gold", "KEY", "chan", store=self.store, now=NOW)
-        # Stage C added transmission-prediction registration, so an observation
-        # now also writes the SECOND approved state id. Asserting the exact pair
-        # keeps the real protection intact: any THIRD id -- a new persistence
-        # surface, or a write into an existing production payload -- still fails
-        # here. Both ids were approved before Stage B.
-        self.assertEqual(
+        # Stage C added transmission-prediction registration as a second
+        # approved state id; Final Fixes withheld that registration, so an
+        # observation writes only the first. Asserting the exact set keeps the
+        # real protection intact: any OTHER id -- a new persistence surface, or
+        # a write into an existing production payload -- still fails here.
+        self.assertEqual(set(self.store._data), {b2_bridge.SHADOW_LOG_STATE_ID})
+        self.assertLessEqual(
             set(self.store._data),
             {b2_bridge.SHADOW_LOG_STATE_ID, b2_bridge.PREDICTION_LOG_STATE_ID},
         )

@@ -12,6 +12,7 @@ import ast
 import inspect
 import os
 import sys
+import math
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -209,6 +210,13 @@ class TestVotingBudget(unittest.TestCase):
                 members=(f"m{i}",),
                 justification="x" * 100,
                 data_sources=(),
+                member_specs=(
+                    registry.MemberSpec(
+                        key=f"m{i}",
+                        scale=registry.MemberScale.BOUNDED_UNIT,
+                        frequency=horizons.SeriesFrequency.DAILY,
+                    ),
+                ),
             )
             for i in range(registry.VOTING_BUDGET + 1)
         ]
@@ -932,18 +940,59 @@ class TestAdapters(unittest.TestCase):
 
     def test_directional_signals_preserve_sign(self):
         tactical = {"ret_15m": 0.002, "ret_1h": 0.004, "ret_4h": 0.008}
-        signals = adapters.directional_signals(tactical=tactical)
+        signals = adapters.directional_signals(tactical=tactical, volatility_scale=0.0005)
         self.assertGreater(signals["short_horizon_return"], 0)
         self.assertEqual(signals["multi_timeframe_alignment"], 1.0)
 
     def test_mixed_timeframes_are_not_aligned(self):
         tactical = {"ret_15m": 0.002, "ret_1h": -0.004, "ret_4h": 0.008}
-        signals = adapters.directional_signals(tactical=tactical)
+        signals = adapters.directional_signals(tactical=tactical, volatility_scale=0.0005)
         self.assertEqual(signals["multi_timeframe_alignment"], 0.0)
 
     def test_alignment_is_unavailable_when_a_timeframe_is_missing(self):
-        signals = adapters.directional_signals(tactical={"ret_15m": 0.002, "ret_1h": 0.004})
+        signals = adapters.directional_signals(
+            tactical={"ret_15m": 0.002, "ret_1h": 0.004}, volatility_scale=0.0005
+        )
         self.assertIsNone(signals["multi_timeframe_alignment"])
+
+    def test_returns_are_unavailable_without_a_volatility_scale(self):
+        # The old fallback divided each return by the largest of the three,
+        # which guaranteed one member always read at full magnitude however
+        # quiet the market was. That is an invented scale, so the members are
+        # Unavailable instead -- and Unavailable, not flat.
+        signals = adapters.directional_signals(
+            tactical={"ret_15m": 0.002, "ret_1h": 0.004, "ret_4h": 0.008}
+        )
+        self.assertIsNone(signals["short_horizon_return"])
+        self.assertIsNone(signals["medium_horizon_return"])
+        self.assertIsNone(signals["multi_timeframe_alignment"])
+
+    def test_returns_carry_productions_own_sqrt_bars_scaling(self):
+        # production's normalized_move divides by vol5 * sqrt(bars); dividing by
+        # a bare vol5 inflated the longer horizons by sqrt(bars).
+        vol = 0.001
+        signals = adapters.directional_signals(
+            tactical={"ret_15m": 0.001, "ret_1h": 0.001, "ret_4h": 0.001},
+            volatility_scale=vol,
+        )
+        self.assertAlmostEqual(
+            signals["short_horizon_return"], 0.001 / (vol * math.sqrt(3)), places=9
+        )
+        self.assertAlmostEqual(
+            signals["medium_horizon_return"], 0.001 / (vol * math.sqrt(12)), places=9
+        )
+
+    def test_alignment_needs_magnitude_not_only_matching_signs(self):
+        # Three same-sign returns that are all sub-band must NOT produce a
+        # maximally directional confirmation member.
+        vol = 0.001
+        tiny = 0.1 * vol
+        signals = adapters.directional_signals(
+            tactical={"ret_15m": tiny, "ret_1h": tiny, "ret_4h": tiny},
+            volatility_scale=vol,
+        )
+        self.assertEqual(signals["multi_timeframe_alignment"], 0.0)
+        self.assertGreater(signals["short_horizon_return"], 0.0)
 
     def test_structure_uses_only_price_derived_breakout(self):
         self.assertEqual(
@@ -994,10 +1043,29 @@ class TestAdapters(unittest.TestCase):
         self.assertEqual(inputs["asymmetry_ratio"], 2.5)
         self.assertFalse(inputs["technical_invalidated"])
 
-    def test_invalidated_entry_plan_is_detected(self):
-        inputs = adapters.execution_inputs(entry_plan={"status": "INVALIDATED"})
-        self.assertTrue(inputs["technical_invalidated"])
+    def test_invalidated_entry_plan_is_not_admitted_as_technical_evidence(self):
+        # The entry plan's invalidation LEVEL and the SIDE of its comparison are
+        # both chosen from production's macro regime, so its INVALIDATED status
+        # is a macro verdict. It must not reach B2 as a technical fact.
+        inputs = adapters.execution_inputs(
+            entry_plan={"status": "INVALIDATED", "direction": "SELL"}
+        )
+        self.assertIsNone(inputs["technical_invalidated"])
         self.assertIsNone(inputs["invalidation_level"])
+        # Retained as a diagnostic so the mismatch rate stays measurable.
+        self.assertEqual(inputs["entry_plan_status"], "INVALIDATED")
+        self.assertIs(inputs["entry_plan_direction"], enums.Direction.BEARISH)
+        self.assertIn("technical_invalidated", adapters.UNAVAILABLE_REASONS)
+
+    def test_entry_plan_direction_is_carried_explicitly(self):
+        for label, expected in (
+            ("BUY", enums.Direction.BULLISH),
+            ("SELL", enums.Direction.BEARISH),
+            ("WAIT", enums.Direction.UNAVAILABLE),
+            ("", enums.Direction.UNAVAILABLE),
+        ):
+            inputs = adapters.execution_inputs(entry_plan={"direction": label})
+            self.assertIs(inputs["entry_plan_direction"], expected, label)
 
     def test_unavailable_opportunity_quality_is_not_faked(self):
         inputs = adapters.execution_inputs(
@@ -1038,6 +1106,10 @@ class TestStageASafetyConstraints(unittest.TestCase):
             # file, and they require a file object this package never obtains.
             # test_b2_writes_no_durable_state asserts those are never called.
             "json",
+            # math is pure computation: sqrt for the volatility-time scaling the
+            # Directional adapter needs, and log/sin/cos for the null benchmark's
+            # own generator. No I/O, no state, no clock.
+            "math",
             "types",
             "typing",
         }
@@ -1128,10 +1200,22 @@ class TestStageASafetyConstraints(unittest.TestCase):
             "relative_value_layer",
             "macro_regime_context",
             "recent_macro_surprise",
-            "macro_thesis_invalidation",
-            "regime_confidence",
         ):
             self.assertIn(key, withheld)
+        # Implemented but UNWIRED components are withheld, not active. The rule
+        # is the registry's own: nothing calls it and nothing logs it, so it is
+        # not an implemented feature and must not be counted as one.
+        for key in (
+            "macro_thesis_invalidation",
+            "transmission_regime_confidence_channel",
+            "transmission_prediction_registration",
+            "scenario_condition_evaluation",
+        ):
+            self.assertIn(key, withheld, key)
+            self.assertNotIn(key, registry.active_non_voting_keys(), key)
+        # Regime STATE is wired -- classify_regime runs on every evaluation and
+        # reaches every record -- so it is genuinely active non-voting.
+        self.assertIn("regime_state", registry.active_non_voting_keys())
 
     def test_cross_asset_bridge_records_its_non_circularity_requirement(self):
         component = next(

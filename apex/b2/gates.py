@@ -190,8 +190,18 @@ def evaluate_data_confidence_gate(
     An unavailable family is counted here precisely because it is not neutral:
     neutral would silently pass as "no evidence either way", whereas
     unavailable means the system does not know.
+
+    A HORIZON-EXCLUDED family is deliberately NOT counted. Its data arrived and
+    was usable; the architecture declined to read it at this horizon because it
+    publishes too slowly to be evidence here. That is a design decision, not an
+    outage, and reporting it as reduced Data Confidence would mean every
+    Execution record permanently claimed a data problem it does not have.
     """
-    unavailable = tuple(r.family_key for r in readings if not r.is_available)
+    excluded = frozenset(r.family_key for r in readings if r.is_horizon_excluded)
+    unavailable = tuple(
+        r.family_key for r in readings
+        if not r.is_available and r.family_key not in excluded
+    )
     critical_missing = tuple(k for k in unavailable if k in critical_family_keys)
 
     if critical_missing:
@@ -216,11 +226,19 @@ def evaluate_data_confidence_gate(
             max_confidence=ConfidenceLevel.MODERATE,
         )
 
+    reason = "All declared voting families returned usable data."
+    if excluded:
+        reason += (
+            " Horizon-excluded (usable, but too slow to be evidence at this "
+            "horizon, and therefore not a data deficiency): "
+            + ", ".join(sorted(excluded))
+            + "."
+        )
     return GateOutcome(
         gate="data_confidence",
         triggered=False,
         action=GateAction.NONE,
-        reason="All declared voting families returned usable data.",
+        reason=reason,
     )
 
 

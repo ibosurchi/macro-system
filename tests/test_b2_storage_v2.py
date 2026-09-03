@@ -28,6 +28,7 @@ isolate_durable_state()
 from apex import b2_bridge
 from apex.b2 import shadow
 from apex.b2.aggregation import AGGREGATION_CONFIG_VERSION, DEFAULT_AGGREGATION
+from apex.b2.enums import Direction
 
 NOW = datetime(2026, 8, 31, 10, 0, 0, tzinfo=timezone.utc)
 
@@ -256,7 +257,7 @@ class TestRoundTripAndImmutability(unittest.TestCase):
         # Stage D: new payloads are v2, which is what adds market_anchor.
         # Legacy rows already in the table stay at v1 and are never rewritten.
         self.assertEqual(row["schema_version"], shadow.CURRENT_SCHEMA_VERSION)
-        self.assertEqual(row["schema_version"], 2)
+        self.assertEqual(row["schema_version"], 3)
         rec = row["record"]
         for key in (
             "record_id", "instrument", "evaluated_at", "horizon", "schema_version",
@@ -883,7 +884,10 @@ class TestProvenanceAndGuarantees(unittest.TestCase):
         b = type(DEFAULT_AGGREGATION)(diminishing_factor=0.6).as_provenance()["config_hash"]
         self.assertNotEqual(a, b)
 
-    def test_prediction_log_behaviour_is_unchanged(self):
+    def test_no_prediction_log_is_written_while_registration_is_withheld(self):
+        # Containment, not absence of plumbing: every registered chain stamped
+        # each step with the thesis direction, inverting the intermediate legs,
+        # so registration is disabled and NOTHING new accumulates.
         table = FakeRow()
         store = shadow.InMemoryShadowStore()
         with tempfile.TemporaryDirectory() as tmp:
@@ -891,12 +895,24 @@ class TestProvenanceAndGuarantees(unittest.TestCase):
                 b2_bridge, "MIGRATION_STATE_FILE", os.path.join(tmp, "m.json")
             ), mock.patch.object(b2_bridge, "SHADOW_BACKUP_DIR", tmp):
                 _v2(table, store=store, now=NOW)
-                first = len(store.load(b2_bridge.PREDICTION_LOG_STATE_ID, None)["predictions"])
+                self.assertIsNone(store.load(b2_bridge.PREDICTION_LOG_STATE_ID, None))
                 _reset()
                 _v2(table, store=store, now=NOW + timedelta(hours=3))
-                second = len(store.load(b2_bridge.PREDICTION_LOG_STATE_ID, None)["predictions"])
-        self.assertEqual(first, 11)
-        self.assertEqual(second, 11, "prediction day-bucket idempotency preserved")
+                self.assertIsNone(store.load(b2_bridge.PREDICTION_LOG_STATE_ID, None))
+
+    def test_prediction_day_bucket_idempotency_survives_under_override(self):
+        # The identity and day-bucket plumbing is still correct and still
+        # exercised; only the live path is closed. Re-registering the same
+        # instrument-day must still be refused by the append-only log.
+        store = shadow.InMemoryShadowStore()
+        for moment in (NOW, NOW + timedelta(hours=3)):
+            b2_bridge.register_transmission_prediction(
+                store, instrument="Gold", direction=Direction.BULLISH,
+                now=moment, enabled=True,
+            )
+        payload = store.load(b2_bridge.PREDICTION_LOG_STATE_ID, None)
+        self.assertEqual(len(payload["predictions"]), 1)
+        self.assertEqual(payload["corpus_status"], "invalid_pre_freeze")
 
     def test_predictions_only_registered_for_persisted_records(self):
         probe = FakeRow()

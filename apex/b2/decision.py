@@ -12,9 +12,10 @@ separate: a stopped-out setup on a still-valid macro thesis produces
 ``TECHNICAL_SETUP_INVALIDATED``, never ``MACRO_THESIS_INVALIDATED``, and the
 thesis remains eligible for re-entry on the next qualifying setup.
 
-Stage A does not compute macro thesis state. It accepts one if the caller has
-it and otherwise leaves it unset -- the transition rules (including the
-repeated / broad / unexplained escalation) are registered as withheld.
+Decision resolution does not compute macro thesis state. It accepts the state
+produced by ``apex.b2.thesis`` and keeps lifecycle transitions separate from
+execution decisions; repeated / broad / unexplained escalation is implemented
+in that Stage B lifecycle module.
 """
 from __future__ import annotations
 
@@ -107,15 +108,29 @@ def resolve_decision(
     gates: tuple[GateOutcome, ...] = (),
     execution: ExecutionAssessment | None = None,
     position_open: bool = False,
-    technical_invalidated: bool = False,
+    technical_invalidated: bool | None = None,
     thesis_state: ThesisState | None = None,
     config: AggregationConfig = DEFAULT_AGGREGATION,
 ) -> DecisionOutcome:
     """Resolve the final decision state.
 
-    ``technical_invalidated`` is the setup-level failure flag. It never implies
-    macro invalidation; that is what ``thesis_state`` is for, and Stage A only
-    passes it through.
+    ``technical_invalidated`` is TRI-STATE and defaults to ``None``:
+
+    ``True``
+        A technical invalidation was observed by a source B2 trusts. Produces
+        ``TECHNICAL_SETUP_INVALIDATED``. It never implies macro invalidation;
+        that is what ``thesis_state`` is for.
+    ``False``
+        A trusted source looked and found no invalidation.
+    ``None``
+        **Unknown, and the live default.** No source in this project can tell B2
+        whether its own setup is invalidated: the only invalidation available
+        comes from the macro entry plan, whose level and whose comparison side
+        are both chosen from production's macro regime. Treating that as a
+        technical fact let macro evidence pre-empt the decision state ahead of
+        almost every other branch, outside the family framework entirely. An
+        unknown invalidation state produces no decision state of its own -- it is
+        recorded as unknown and resolution continues.
     """
     macro_direction, macro_aggregate = _block_read(readings, macro_keys, config)
     technical_direction, technical_aggregate = _block_read(readings, technical_keys, config)
@@ -132,7 +147,30 @@ def resolve_decision(
     notes: list[str] = []
 
     veto_gate = next((g for g in gates if g.vetoes_execution), None)
-    critical_missing = tuple(k for k in unavailable if k in critical_family_keys)
+
+    # A family excluded because its cadence is too slow for this horizon is not
+    # missing data. Counting it as a critical outage would report a deliberate
+    # architectural rule -- monthly evidence may not vote at the execution
+    # horizon -- as a broken feed, and would degrade every single Execution
+    # record to INSUFFICIENT_DATA_SYSTEM_DEGRADED.
+    horizon_excluded = tuple(r.family_key for r in readings if r.is_horizon_excluded)
+    critical_missing = tuple(
+        k for k in unavailable
+        if k in critical_family_keys and k not in horizon_excluded
+    )
+    if horizon_excluded:
+        notes.append(
+            "Horizon-excluded families (present and usable, too slow to be "
+            f"evidence at the {decision_horizon.value} horizon): "
+            + ", ".join(sorted(horizon_excluded))
+            + ". This is a structural exclusion, not missing data."
+        )
+    if technical_invalidated is None:
+        notes.append(
+            "Technical invalidation is UNKNOWN: B2 derives no invalidation of "
+            "its own, and the production entry plan's invalidation is chosen by "
+            "macro regime, so it is not admissible as technical evidence."
+        )
 
     macro_directional = macro_direction.is_directional
     technical_directional = technical_direction.is_directional
@@ -196,8 +234,9 @@ def resolve_decision(
             "Macro thesis is under review; new macro evidence is required to restore it.",
         )
 
-    # --- Technical failure is a setup failure only.
-    if technical_invalidated:
+    # --- Technical failure is a setup failure only. `is True` deliberately:
+    # an unknown invalidation state must not take this branch.
+    if technical_invalidated is True:
         notes.append(
             "Technical invalidation does not invalidate the macro thesis; the "
             "thesis remains eligible for re-entry on the next qualifying setup."

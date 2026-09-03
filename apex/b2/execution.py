@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .enums import ConfidenceLevel, GateAction
+from .enums import ConfidenceLevel, Direction, GateAction
 from .gates import GateOutcome
 
 #: Volatility regime labels, matching the vocabulary the live entry-plan layer
@@ -51,6 +51,22 @@ class ExecutionAssessment:
     blocked: bool
     block_reason: str
     notes: tuple[str, ...]
+    #: B2's own resolved direction, and the side the production entry plan was
+    #: built for. Recorded on every assessment -- including the agreeing case --
+    #: so the disagreement RATE is measurable from stored records rather than
+    #: only its occurrences being visible.
+    thesis_direction: Direction = Direction.UNAVAILABLE
+    entry_plan_direction: Direction = Direction.UNAVAILABLE
+    direction_mismatch: bool = False
+
+    @property
+    def geometry_measured(self) -> bool:
+        """Whether zone / extension / invalidation distances were computed at all.
+
+        False when the entry plan describes the opposite trade: the distances
+        would be arithmetically valid and semantically meaningless.
+        """
+        return self.invalidation_defined and not self.direction_mismatch
 
     @property
     def deferred_not_invalidated(self) -> bool:
@@ -75,10 +91,65 @@ class ExecutionAssessment:
             "blocked": self.blocked,
             "block_reason": self.block_reason,
             "notes": list(self.notes),
+            "thesis_direction": self.thesis_direction.value,
+            "entry_plan_direction": self.entry_plan_direction.value,
+            "direction_mismatch": self.direction_mismatch,
+            "geometry_measured": self.geometry_measured,
         }
 
 
-def _undefined_invalidation(volatility_regime: str) -> ExecutionAssessment:
+def _direction_mismatch(
+    volatility_regime: str,
+    thesis_direction: Direction,
+    entry_plan_direction: Direction,
+) -> ExecutionAssessment:
+    """The entry plan describes the opposite trade. Measure nothing.
+
+    ``_build_macro_entry_plan`` picks its candidate levels, its zone and its
+    invalidation from production's macro regime: ``direction = 1 if macro_regime
+    == "Bullish" else -1``. When B2 has resolved the other way, every geometric
+    quantity in that plan belongs to a trade B2 is not proposing.
+
+    Computing ``in_zone``, ``extended`` or ``invalidation_distance_atr`` against
+    it would produce finite, plausible numbers describing the wrong trade, and
+    those numbers select between CONFIRMED_THESIS, LATE_EXTENDED and
+    EXECUTION_BLOCKED. So none of them is computed: the assessment is blocked
+    with the mismatch recorded, which is the honest state -- B2 has a thesis and
+    no execution geometry for it.
+    """
+    return ExecutionAssessment(
+        invalidation_defined=False,
+        invalidation_level=None,
+        entry_zone=None,
+        current_price=None,
+        invalidation_distance=None,
+        invalidation_distance_atr=None,
+        room_to_opposing_atr=None,
+        asymmetry_ratio=None,
+        volatility_regime=volatility_regime,
+        in_zone=False,
+        extended=False,
+        execution_confidence=ConfidenceLevel.LOW,
+        blocked=True,
+        block_reason=(
+            f"The available entry plan is built for a {entry_plan_direction.value} "
+            f"trade while B2 resolved {thesis_direction.value}. Its zone, "
+            "invalidation and ATR geometry describe the opposite trade, so no "
+            "entry-quality measurement is taken from it. The thesis is unaffected; "
+            "only execution is unavailable."
+        ),
+        notes=("entry_plan_direction_mismatch", "execution_geometry_not_measured"),
+        thesis_direction=thesis_direction,
+        entry_plan_direction=entry_plan_direction,
+        direction_mismatch=True,
+    )
+
+
+def _undefined_invalidation(
+    volatility_regime: str,
+    thesis_direction: Direction = Direction.UNAVAILABLE,
+    entry_plan_direction: Direction = Direction.UNAVAILABLE,
+) -> ExecutionAssessment:
     return ExecutionAssessment(
         invalidation_defined=False,
         invalidation_level=None,
@@ -99,6 +170,8 @@ def _undefined_invalidation(volatility_regime: str) -> ExecutionAssessment:
             "first would be a dependency inversion."
         ),
         notes=("invalidation_required_before_entry_quality",),
+        thesis_direction=thesis_direction,
+        entry_plan_direction=entry_plan_direction,
     )
 
 
@@ -112,12 +185,29 @@ def assess_execution(
     asymmetry_ratio: float | None = None,
     volatility_regime: str = "unavailable",
     gates: tuple[GateOutcome, ...] = (),
+    thesis_direction: Direction = Direction.UNAVAILABLE,
+    entry_plan_direction: Direction = Direction.UNAVAILABLE,
 ) -> ExecutionAssessment:
-    """Assess execution quality. ``invalidation_level`` is required first."""
+    """Assess execution quality. ``invalidation_level`` is required first.
+
+    ``thesis_direction`` and ``entry_plan_direction`` are checked BEFORE any
+    geometry is computed. The entry plan this project supplies is built for a
+    side chosen by production's macro regime, and B2 resolves its own direction
+    independently; when the two disagree the plan's geometry describes a
+    different trade and none of it is measured. Both directions are recorded on
+    every assessment so the mismatch rate can be counted later.
+    """
     regime = volatility_regime if volatility_regime in VOLATILITY_REGIMES else "unavailable"
 
+    if (
+        thesis_direction.is_directional
+        and entry_plan_direction.is_directional
+        and thesis_direction is not entry_plan_direction
+    ):
+        return _direction_mismatch(regime, thesis_direction, entry_plan_direction)
+
     if invalidation_level is None:
-        return _undefined_invalidation(regime)
+        return _undefined_invalidation(regime, thesis_direction, entry_plan_direction)
 
     notes: list[str] = []
     confidence = ConfidenceLevel.HIGH
@@ -202,4 +292,7 @@ def assess_execution(
         blocked=blocked,
         block_reason=block_reason,
         notes=tuple(notes),
+        thesis_direction=thesis_direction,
+        entry_plan_direction=entry_plan_direction,
+        direction_mismatch=False,
     )

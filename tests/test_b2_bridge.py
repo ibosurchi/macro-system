@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 import inspect
 import json
+import math
 import os
 import sys
 import tempfile
@@ -225,10 +226,19 @@ class TestBridge(unittest.TestCase):
         without = b2_bridge.signals_from_production(
             tactical={k: v for k, v in tactical.items() if k != "volatility_scale"}
         )
-        # Max-abs fallback saturates the longest return at 1.0; the real
-        # volatility scale keeps the magnitudes small and honest.
-        self.assertEqual(without["directional"]["medium_horizon_return"], 0.5)
-        self.assertLess(with_scale["directional"]["medium_horizon_return"], 0.5)
+        # With no exported scale the returns cannot be placed on ANY scale, so
+        # they are Unavailable. The former max-abs fallback saturated the
+        # largest return at 1.0 by construction -- an invented scale that read
+        # full magnitude however quiet the market was.
+        self.assertIsNone(without["directional"]["medium_horizon_return"])
+        self.assertIsNone(without["directional"]["short_horizon_return"])
+        # With the real scale, ret_1h is standardised over its own 12 bars:
+        # 0.002 / (0.01 * sqrt(12)).
+        self.assertAlmostEqual(
+            with_scale["directional"]["medium_horizon_return"],
+            0.002 / (0.01 * math.sqrt(12)),
+            places=9,
+        )
 
     def test_bridge_network_use_is_limited_to_the_approved_storage_path(self):
         """Storage V2 intentionally performs Supabase persistence requests.

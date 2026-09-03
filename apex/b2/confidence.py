@@ -53,6 +53,9 @@ class ConfidenceSet:
     unavailable: tuple[str, ...]
     caps_applied: tuple[str, ...]
     notes: tuple[str, ...]
+    #: Families silent because their cadence is too slow for this horizon.
+    #: Reported apart from ``unavailable`` because they are not a data problem.
+    horizon_excluded: tuple[str, ...] = ()
 
     @property
     def has_disagreement(self) -> bool:
@@ -67,6 +70,7 @@ class ConfidenceSet:
             "data_confidence": self.data.name,
             "disagreements": list(self.disagreements),
             "unavailable": list(self.unavailable),
+            "horizon_excluded": list(self.horizon_excluded),
             "caps_applied": list(self.caps_applied),
             "notes": list(self.notes),
         }
@@ -85,7 +89,12 @@ def _block_confidence(
     conflicting = tuple(
         r.family_key for r in block if r.state_against(candidate) is FamilyState.CONFLICTS
     )
-    unavailable = tuple(r.family_key for r in block if not r.is_available)
+    # Horizon-excluded families are not counted as unavailable: they are not a
+    # data deficiency and must not cap this block's confidence as though the
+    # system had failed to read something it needed.
+    unavailable = tuple(
+        r.family_key for r in block if not r.is_available and not r.is_horizon_excluded
+    )
 
     level = level_from_agreeing_count(len(supporting))
     if conflicting:
@@ -127,8 +136,20 @@ def assemble_confidence(
         )
 
     # --- Data confidence -------------------------------------------------
-    unavailable = tuple(r.family_key for r in readings if not r.is_available)
+    horizon_excluded = tuple(r.family_key for r in readings if r.is_horizon_excluded)
+    unavailable = tuple(
+        r.family_key for r in readings
+        if not r.is_available and not r.is_horizon_excluded
+    )
     critical_missing = tuple(k for k in unavailable if k in critical_family_keys)
+    if horizon_excluded:
+        notes.append(
+            "Horizon-excluded families are reported apart from unavailable ones "
+            "and do not reduce Data Confidence: "
+            + ", ".join(sorted(horizon_excluded))
+            + ". Their data arrived and is usable; it is too slow to be evidence "
+            "at this horizon."
+        )
 
     if critical_missing or len(unavailable) >= 2:
         data = ConfidenceLevel.LOW
@@ -200,6 +221,7 @@ def assemble_confidence(
         data=data,
         disagreements=disagreements,
         unavailable=tuple(dict.fromkeys(unavailable)),
+        horizon_excluded=tuple(dict.fromkeys(horizon_excluded)),
         caps_applied=tuple(dict.fromkeys(caps)),
         notes=tuple(notes),
     )

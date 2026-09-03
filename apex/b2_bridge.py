@@ -5,10 +5,11 @@ package is pure and performs no I/O; this file is the single place allowed to
 touch ``production_core``, and keeping it separate is what preserves that
 guarantee.
 
-**Nothing in the production system calls this module.** B2 remains in shadow
-mode: no page, score, alert, scheduler or Telegram path imports it, so importing
-it changes no production behaviour. Wiring an actual call site is a separate,
-explicitly approved step.
+B2 remains non-production decision infrastructure, but the production alert
+daemon now calls ``run_shadow_observation`` as an observational hook. Production
+never reads B2 output back into a score, alert, page or Telegram decision. The
+hook is fail-contained so B2 capture cannot propagate an exception into the
+production loop.
 
 Persistence reuses the existing Supabase-first / atomic-local-mirror layer under
 two NEW state ids. The backing table is a generic key/value store keyed by id,
@@ -103,6 +104,8 @@ def signals_from_production(
     inflation_expectations_mtf: Mapping[str, Any] | None = None,
     rule_points: float | None = None,
     ai_points: float | None = None,
+    article_count: int | None = None,
+    ai_active: bool | None = None,
     tactical: Mapping[str, Any] | None = None,
 ) -> dict[str, dict[str, float | None]]:
     """Translate live production outputs into B2 member signals.
@@ -112,6 +115,12 @@ def signals_from_production(
     the tactical result's own ``volatility_scale`` export, so the returns are
     normalised on exactly the scale that function already used internally
     rather than on a second, independently invented definition.
+
+    ``article_count`` and ``ai_active`` are the AVAILABILITY facts the news
+    layer cannot express in its own return value. ``analyze_news_rule_based``
+    seeds every asset score to ``0.0`` and returns that same all-zero map when
+    no articles were fetched, so without these two the adapter cannot tell an
+    empty feed from a balanced one -- and News is half of every currency score.
     """
     rows: Sequence[Mapping[str, Any]] | None = None
     if isinstance(composite, Mapping):
@@ -130,9 +139,42 @@ def signals_from_production(
         inflation_expectations_mtf=inflation_expectations_mtf,
         rule_points=rule_points,
         ai_points=ai_points,
+        article_count=article_count,
+        ai_active=ai_active,
         tactical=tactical,
         volatility_scale=volatility_scale,
     )
+
+
+#: How an instrument key maps onto the asset name the news layer scores it
+#: under. Only Nasdaq differs; declared rather than special-cased inline so the
+#: news-availability lookup cannot silently miss and read as "no articles".
+NEWS_ASSET_BY_INSTRUMENT: Mapping[str, str] = {"NDX": "Nasdaq"}
+
+
+def news_availability(
+    instrument: str, news: Mapping[str, Any] | None
+) -> tuple[int | None, bool | None]:
+    """The article count and AI-batch state behind one instrument's news score.
+
+    Returns ``(None, None)`` when the news payload does not carry the counts at
+    all, which means "the caller could not tell" and leaves the points trusted
+    as given. That is deliberately different from ``(0, ...)``, which is a
+    positive statement that nothing arrived.
+    """
+    if not isinstance(news, Mapping):
+        return None, None
+    counts = news.get("asset_news_counts")
+    asset = NEWS_ASSET_BY_INSTRUMENT.get(instrument, instrument)
+    count: int | None = None
+    if isinstance(counts, Mapping):
+        raw = counts.get(asset)
+        try:
+            count = int(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            count = None
+    active = news.get("ai_active")
+    return count, (bool(active) if active is not None else None)
 
 
 def evaluate_from_production(
@@ -146,6 +188,8 @@ def evaluate_from_production(
     inflation_expectations_mtf: Mapping[str, Any] | None = None,
     rule_points: float | None = None,
     ai_points: float | None = None,
+    article_count: int | None = None,
+    ai_active: bool | None = None,
     prediction_log: PredictionLog | None = None,
     **kwargs: Any,
 ) -> ShadowEvaluation:
@@ -169,8 +213,14 @@ def evaluate_from_production(
         inflation_expectations_mtf=inflation_expectations_mtf,
         rule_points=rule_points,
         ai_points=ai_points,
+        article_count=article_count,
+        ai_active=ai_active,
         tactical=tactical,
     )
+
+    volatility_scale = None
+    if isinstance(tactical, Mapping):
+        volatility_scale = tactical.get("volatility_scale")
 
     merged: dict[str, Any] = {
         "invalidation_level": execution_inputs["invalidation_level"],
@@ -181,7 +231,16 @@ def evaluate_from_production(
         "room_to_opposing_atr": execution_inputs["room_to_opposing_atr"],
         "asymmetry_ratio": execution_inputs["asymmetry_ratio"],
         "volatility_regime": execution_inputs["volatility_regime"],
+        # Unavailable, by construction. See adapters.UNAVAILABLE_REASONS.
         "technical_invalidated": execution_inputs["technical_invalidated"],
+        # The side production's entry plan was built for, so the execution layer
+        # can refuse to measure B2's thesis against the opposite trade's geometry.
+        "entry_plan_direction": execution_inputs["entry_plan_direction"],
+        "signal_provenance": adapters.signal_provenance(
+            volatility_scale=volatility_scale,
+            article_count=article_count,
+            ai_active=ai_active,
+        ),
     }
     merged.update(kwargs)
 
@@ -234,6 +293,7 @@ HOOK_COUNTERS = (
     "unknown_instrument",
     "prediction_registered",
     "prediction_duplicate",
+    "prediction_withheld",
     # Storage V2
     "v2_inserted",
     "v2_duplicate",
@@ -1462,11 +1522,15 @@ def _gather_production_inputs(
         # is the USD transmission input the asset modules need.
         usd_macro_score = composite.get("macro_score")
 
+    article_count, ai_active = news_availability(instrument, news)
+
     return {
         "composite": composite,
         "tactical": tactical,
         "rule_points": rule_points,
         "ai_points": ai_points,
+        "article_count": article_count,
+        "ai_active": ai_active,
         "real_yield_mtf": real_yield_mtf,
         "nominal_yield_mtf": _mtf(core.GOLD_SERIES["yield"], "rate", 36),
         "inflation_expectations_mtf": _mtf(core.GOLD_SERIES["inflation_exp"], "inflation", 36),
@@ -1607,6 +1671,11 @@ def _evaluate_gathered_observation(
         inflation_expectations_mtf=inputs["inflation_expectations_mtf"],
         rule_points=inputs["rule_points"],
         ai_points=inputs["ai_points"],
+        # Availability, not value: a zero news score with zero articles is
+        # Unavailable, and an inactive AI batch makes the ai_news member
+        # Unavailable rather than flat.
+        article_count=inputs.get("article_count"),
+        ai_active=inputs.get("ai_active"),
         minutes_to_event=timing.minutes,
         is_top_tier_event=event_timing_mod.is_top_tier(timing),
         event_label=timing.title or "scheduled event",
@@ -2043,6 +2112,39 @@ def prediction_identity(instrument: str, horizon: Horizon, moment: datetime) -> 
     return f"b2pred|{instrument}|{horizon.value}|{bucket}"
 
 
+#: Registration is DISABLED at the pre-freeze boundary, and this switch is the
+#: containment.
+#:
+#: Every step of every chain was registered with ``expected_direction`` set to
+#: the instrument's thesis direction, uniformly. Gold's chain is
+#: ``real_yields -> usd -> gold``, so a bullish-gold thesis pre-registered the
+#: falsifiable claims "real yields will RISE" and "the dollar will RISE" -- the
+#: inverse of the mechanism the gold module's own rationale states two files
+#: away ("falling real rates ease that cost", "broad dollar strength pressures
+#: the USD price"). Oil carries the same inversion through ``usd -> oil``.
+#:
+#: Nothing has been scored against these, because no outcome has ever been
+#: attached to one -- resolution has no caller anywhere. That is the only reason
+#: the error has not yet produced statistics. Wiring resolution without fixing
+#: the polarity would invert the confirmation rate, and since that rate feeds
+#: ``regime_confidence_contribution``, it would suppress regime confidence
+#: precisely when the mechanism WAS operating.
+#:
+#: The chain endpoints are also free-text strings with no resolver, so no step
+#: was measurable even in principle.
+#:
+#: The append-only log and its anti-hindsight guarantees are correct and are
+#: retained unchanged. What is withheld is the chain SEMANTICS. Re-enabling
+#: requires per-step polarity relative to the thesis and a measurable observable
+#: per endpoint -- see registry WITHHELD_COMPONENTS
+#: ``transmission_prediction_registration``.
+TRANSMISSION_PREDICTION_REGISTRATION_ENABLED = False
+
+#: Returned when registration is refused by the switch above. A named outcome
+#: rather than a silent no-op, so a caller can count containment.
+TRANSMISSION_WITHHELD = "withheld_invalid_chain_semantics"
+
+
 def register_transmission_prediction(
     store: Any,
     *,
@@ -2050,11 +2152,24 @@ def register_transmission_prediction(
     direction: Direction,
     horizon: Horizon = Horizon.TACTICAL,
     now: datetime | None = None,
+    enabled: bool | None = None,
 ) -> str:
     """Pre-register the asset module's transmission chain for this thesis.
 
-    Returns registered / duplicate_skipped / no_module / no_direction.
+    Returns registered / duplicate_skipped / no_module / no_direction, or
+    ``TRANSMISSION_WITHHELD`` while registration is contained.
+
+    ``enabled`` overrides the module switch. It exists so the horizon and
+    identity plumbing stays exercisable by tests without re-opening the live
+    path; production callers pass nothing and get the withheld outcome.
     """
+    active = (
+        TRANSMISSION_PREDICTION_REGISTRATION_ENABLED if enabled is None else bool(enabled)
+    )
+    if not active:
+        _bump("prediction_withheld")
+        return TRANSMISSION_WITHHELD
+
     module = module_for(instrument)
     chain = getattr(module, "TRANSMISSION_CHAIN", ()) if module else ()
     if not chain:
@@ -2123,6 +2238,10 @@ __all__ = [
     "LocalShadowRecordStore",
     "MIGRATION_STATE_ID",
     "PREDICTION_BUCKET_SECONDS",
+    "TRANSMISSION_PREDICTION_REGISTRATION_ENABLED",
+    "TRANSMISSION_WITHHELD",
+    "news_availability",
+    "NEWS_ASSET_BY_INSTRUMENT",
     "SHADOW_RECORDS_TABLE",
     "STORAGE_MODE_LEGACY",
     "STORAGE_MODE_V2",

@@ -38,6 +38,7 @@ from .registry import (
     MACRO_FAMILY_KEYS,
     TECHNICAL_FAMILY_KEYS,
     VOTING_FAMILIES,
+    member_spec_provenance,
 )
 from .risk import DEFAULT_RISK_PARAMETERS, RiskParameters, SizeDirective, size_directive
 from .scenarios import ScenarioSet, build_scenario_set
@@ -82,7 +83,9 @@ def run_shadow_evaluation(
     room_to_opposing_atr: float | None = None,
     asymmetry_ratio: float | None = None,
     volatility_regime: str = "unavailable",
-    technical_invalidated: bool = False,
+    technical_invalidated: bool | None = None,
+    entry_plan_direction: Direction = Direction.UNAVAILABLE,
+    signal_provenance: Mapping[str, object] | None = None,
     minutes_to_event: float | None = None,
     is_top_tier_event: bool = False,
     event_can_invalidate_thesis: bool = False,
@@ -110,7 +113,12 @@ def run_shadow_evaluation(
     """
     moment = evaluated_at or utcnow()
 
-    readings = evaluate_families(VOTING_FAMILIES, signals_by_family)
+    # The decision horizon reaches family evaluation, which is what makes two
+    # horizons over one snapshot produce two genuinely different readings
+    # instead of one claim carrying two labels. A member whose slowest series
+    # publishes more slowly than this horizon accepts is refused here, and is
+    # recorded as horizon-excluded rather than as missing data.
+    readings = evaluate_families(VOTING_FAMILIES, signals_by_family, decision_horizon)
     direction, aggregate = resolve_direction(
         readings, MACRO_FAMILY_KEYS, TECHNICAL_FAMILY_KEYS, config
     )
@@ -127,7 +135,9 @@ def run_shadow_evaluation(
         event_label=event_label,
     )
 
-    # Invalidation first: entry quality is defined relative to it.
+    # Invalidation first: entry quality is defined relative to it. The two
+    # directions are passed so the execution layer can refuse to measure B2's
+    # thesis against an entry plan built for the opposite trade.
     execution = assess_execution(
         invalidation_level=invalidation_level,
         entry_zone=entry_zone,
@@ -137,6 +147,8 @@ def run_shadow_evaluation(
         asymmetry_ratio=asymmetry_ratio,
         volatility_regime=volatility_regime,
         gates=gates,
+        thesis_direction=direction,
+        entry_plan_direction=entry_plan_direction,
     )
 
     transmission_rate, transmission_sample = (None, 0)
@@ -245,6 +257,17 @@ def run_shadow_evaluation(
         # Provenance of the aggregation shape this evaluation ran under. Stored
         # on every new record so it stays interpretable if the constants change.
         aggregation_config=config.as_provenance(),
+        # Schema v3: how each member value was DERIVED (adapter side) and how it
+        # was CLASSIFIED (registry side). With the member values themselves now
+        # on every family reading, these two together are what let a stored
+        # record be re-thresholded, ablated or re-normalised later instead of
+        # being frozen against whatever band happened to be in force.
+        evidence_provenance={
+            "signals": dict(signal_provenance) if signal_provenance else None,
+            "member_specs": member_spec_provenance(),
+            "horizon_enforced": True,
+            "decision_horizon": decision_horizon.value,
+        },
         # Stage D: the point-in-time market state this evaluation was taken
         # against. Passed straight through -- nothing here computes it and no
         # scoring path reads it, so it cannot influence the evaluation it
