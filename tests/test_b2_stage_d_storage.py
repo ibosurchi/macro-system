@@ -1278,11 +1278,27 @@ class TestProductionSafety(unittest.TestCase):
         self.assertNotIn("SUPABASE_SERVICE_ROLE_KEY", source)
 
     def test_no_ddl_verb_appears_anywhere(self):
-        for module in (vb, bars_mod, anchor_mod, revisions_mod, series_pins_mod, outcomes_mod):
+        # H8 extends this guard to the operational package. sql/003 creates
+        # b2_ops_job_health and is run BY HAND by an operator, exactly like
+        # every other file in sql/. The runtime that reads and writes that table
+        # must not be able to create, alter or drop it -- otherwise "this
+        # application never executes DDL" would quietly become "except for the
+        # newest table", which is how the guarantee dies.
+        from apex.ops import (
+            config as ops_config,
+            heartbeat as ops_heartbeat,
+            lease as ops_lease,
+            logging as ops_logging,
+            runner as ops_runner,
+        )
+
+        for module in (vb, bars_mod, anchor_mod, revisions_mod, series_pins_mod,
+                       outcomes_mod, ops_config, ops_heartbeat, ops_lease,
+                       ops_logging, ops_runner):
             source = inspect.getsource(module).upper()
             for verb in ("CREATE TABLE", "ALTER TABLE", "DROP TABLE",
                          "TRUNCATE", "CREATE INDEX"):
-                self.assertNotIn(verb, source, verb)
+                self.assertNotIn(verb, source, f"{module.__name__}: {verb}")
 
     def test_production_signal_thresholds_are_unchanged(self):
         self.assertEqual(core.bias_from_score(0.40)[0], "🚀 Strong Bullish")

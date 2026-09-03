@@ -1,0 +1,105 @@
+# B2 Jobs B and C — daily market bars, then matured outcome evaluation
+#
+# MANUAL ONLY IN THIS PHASE. There is deliberately no schedule trigger yet.
+# Activation is a separate, explicit operator step. When it is activated the
+# trigger to add is a daily cron at 23:40 UTC — after the US session settles and
+# clear of the 00:00 UTC congestion peak, while staying on the same UTC calendar
+# day so the lookback arithmetic is unambiguous.
+#
+# ORDERING IS THE POINT OF THIS FILE.
+# Job C can only resolve outcomes from bars that are already stored, so it runs
+# only after Job B succeeds. If B hard-fails, C is skipped: it would re-evaluate
+# an unchanged evidence set, write nothing new, and — worse — a green C after a
+# failed B would mask a real capture failure behind a successful-looking run.
+# Both jobs self-heal on the next day, so skipping costs nothing.
+#
+# This workflow writes nothing to the repository. No write token, no commit, no
+# tag, no push, no artifact upload.
+name: b2-daily
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Validate configuration only; write no evidence and no heartbeat"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: b2-daily
+  cancel-in-progress: false
+
+jobs:
+  market-bars:
+    name: Job B — capture market bars
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # Pinned to full commit SHAs. VERIFY THESE PINS before activation.
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Python
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+
+      # FRED_API_KEY is not supplied: bar capture reads market bars only and has
+      # no macro-series dependency. Least privilege applies to secrets too.
+      - name: Capture closed daily bars
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python -m apex.ops run capture-market-bars \
+            ${{ inputs.dry_run && '--dry-run' || '' }}
+
+      - name: Remove materialised secrets
+        if: always()
+        run: rm -f .streamlit/secrets.toml
+
+  outcomes:
+    name: Job C — evaluate matured outcomes
+    # The hard ordering gate. C does not start unless B succeeded.
+    needs: market-bars
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Python
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+
+      # --persist is explicit. The underlying runner is dry-run by default and
+      # that default is left intact: persisting is something a caller must ask
+      # for, in the open, on the command line.
+      #
+      # --lookback-days 30 covers the fourteen-day tactical horizon plus slack
+      # for missed runs. Re-evaluating an already-final outcome is free: its
+      # natural key collides and the insert is ignored.
+      - name: Evaluate matured tactical outcomes
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python -m apex.ops run evaluate-outcomes --lookback-days 30 \
+            ${{ inputs.dry_run && '--dry-run' || '--persist' }}
+
+      - name: Remove materialised secrets
+        if: always()
+        run: rm -f .streamlit/secrets.toml

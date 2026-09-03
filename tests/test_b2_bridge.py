@@ -374,7 +374,17 @@ class TestBridge(unittest.TestCase):
                             importers.append(os.path.basename(path))
         self.assertEqual(
             sorted(set(importers)),
-            ["b2_validation_bridge.py", "production_core.py"],
+            # H8 adds the third and last: apex/ops/runner.py, the external
+            # dispatcher. Shadow capture has no approved runner script to go
+            # through -- it has only ever run inside the production daemon --
+            # so the dispatcher must reach this bridge directly to be invocable
+            # without Streamlit.
+            #
+            # The guarantee is UNCHANGED and still strict: this is an exact
+            # list of three file names, not a directory and not a pattern. Any
+            # FOURTH entry point into B2 -- a page, a strategy, an alert path,
+            # a second runner -- still fails here.
+            ["b2_validation_bridge.py", "production_core.py", "runner.py"],
         )
 
     #: The approved operator/research entry points for Stage D. BOTH are

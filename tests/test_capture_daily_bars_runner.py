@@ -282,14 +282,76 @@ class TestFormatReportAndCli(unittest.TestCase):
         ):
             self.assertIn(expected, text)
 
-    def test_main_json_mode_emits_a_valid_report_and_exits_zero(self):
+    def _clean_report(self, **overrides):
+        """A report with no failure condition and durable storage."""
+        report = self._sample_report()
+        report.update({
+            "successful_instruments": ["Gold", "Oil"],
+            "failed_instruments": [],
+            "instrument_status": {"Gold": "fetched", "Oil": "fetched"},
+            "backend": "supabase",
+            "durable": True,
+        })
+        report.update(overrides)
+        return report
+
+    def test_main_json_mode_emits_a_valid_report_and_exits_one_on_failure(self):
+        """SUPERSEDED BY H8. This previously asserted exit 0.
+
+        The fixture deliberately carries a FAILED instrument (Oil) and
+        non-durable storage, and the runner returned 0 for it anyway -- so an
+        unattended scheduler could not tell a total capture failure from a
+        clean run. That is exactly the defect H8 closes, so the expectation is
+        corrected rather than the behaviour.
+
+        The report itself is still asserted, unchanged: the exit code is an
+        addition to what this test checks, not a replacement for it.
+        """
         with mock.patch.object(runner, "run_capture", return_value=self._sample_report()):
             buffer = io.StringIO()
             with redirect_stdout(buffer):
                 exit_code = runner.main(["--json"])
-        self.assertEqual(exit_code, 0)
+        self.assertEqual(exit_code, 1)
         parsed = json.loads(buffer.getvalue())
         self.assertEqual(parsed["successful_instruments"], ["Gold"])
+        self.assertEqual(parsed["failed_instruments"], ["Oil"])
+
+    def test_main_exits_zero_only_when_the_capture_was_clean_and_durable(self):
+        with mock.patch.object(
+            runner, "run_capture", return_value=self._clean_report()
+        ):
+            with redirect_stdout(io.StringIO()):
+                exit_code = runner.main(["--json"])
+        self.assertEqual(exit_code, 0)
+
+    def test_main_exits_non_durable_when_storage_was_local_only(self):
+        """Exit 4: the capture succeeded, but into storage that will not survive.
+
+        No job-failure condition is present -- every instrument fetched, no
+        failed rows, no error -- so nothing takes precedence over durability
+        here. Bars that reached only the local append-only mirror disappear at
+        the next redeploy on an ephemeral host, and reporting that as success
+        would let them be counted as clean corpus evidence.
+        """
+        report = self._clean_report(backend="local", durable=False)
+        with mock.patch.object(runner, "run_capture", return_value=report):
+            with redirect_stdout(io.StringIO()):
+                exit_code = runner.main(["--json"])
+        self.assertEqual(exit_code, 4)
+
+    def test_a_job_failure_takes_precedence_over_non_durability(self):
+        """Both conditions at once must report the failure, not the storage.
+
+        A run that failed AND wrote locally is a failed run; collapsing it to
+        exit 4 would understate it.
+        """
+        report = self._clean_report(
+            backend="local", durable=False, failed_instruments=["Oil"]
+        )
+        with mock.patch.object(runner, "run_capture", return_value=report):
+            with redirect_stdout(io.StringIO()):
+                exit_code = runner.main(["--json"])
+        self.assertEqual(exit_code, 1)
 
     def test_main_passes_repeated_instrument_flags_through(self):
         with mock.patch.object(

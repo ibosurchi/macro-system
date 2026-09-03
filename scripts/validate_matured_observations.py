@@ -187,6 +187,44 @@ def format_report(report: dict) -> str:
     return "\n".join(lines)
 
 
+#: Exit codes, matching the H8 contract in ``apex/ops/__init__.py``. Declared
+#: here as plain integers rather than imported, so this script keeps working
+#: standalone for a human with no dependency on the operational package.
+EXIT_SUCCESS = 0
+EXIT_JOB_FAILURE = 1
+EXIT_NON_DURABLE = 4
+
+
+def exit_code_for(report: dict) -> int:
+    """Map a validation report onto the H8 exit-code contract.
+
+    This runner previously always returned 0, including on a persistence error
+    and on a determinism conflict. Under a scheduler that made a real defect
+    indistinguishable from a clean run.
+
+    **Zero eligible outcomes stays a SUCCESS.** Most of the time it simply means
+    no forward window has matured yet, which the script's own report already
+    says in words. Treating it as a failure would alert continuously until the
+    first tactical maturity and train an operator to ignore the signal.
+
+    A determinism conflict is a FAILURE, not a market event: one job over one
+    set of evidence reached two different verdicts, and that must never pass
+    quietly.
+    """
+    if report.get("persistence_error"):
+        return EXIT_JOB_FAILURE
+    if report.get("rows_conflicted"):
+        return EXIT_JOB_FAILURE
+    if int(report.get("rows_failed", 0) or 0) > 0:
+        return EXIT_JOB_FAILURE
+    # Durability only matters when this run actually tried to write something.
+    # A dry run, or a run with nothing eligible, has no evidence to lose.
+    if report.get("persist_requested") and int(report.get("rows_written", 0) or 0) > 0:
+        if str(report.get("outcome_backend") or "") != "supabase":
+            return EXIT_NON_DURABLE
+    return EXIT_SUCCESS
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="validate_matured_observations",
@@ -250,7 +288,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(format_report(report))
 
-    return 0
+    return exit_code_for(report)
 
 
 if __name__ == "__main__":

@@ -156,6 +156,44 @@ def format_report(report: dict) -> str:
     return "\n".join(lines)
 
 
+#: Exit codes, matching the H8 contract in ``apex/ops/__init__.py``. Declared
+#: here as plain integers rather than imported, so this script keeps working
+#: standalone for a human with no dependency on the operational package.
+EXIT_SUCCESS = 0
+EXIT_JOB_FAILURE = 1
+EXIT_NON_DURABLE = 4
+
+
+def exit_code_for(report: dict) -> int:
+    """Map a capture report onto the H8 exit-code contract.
+
+    This runner previously always returned 0, including when the capture
+    errored, when instruments failed, and when the bars reached only
+    non-durable local storage. A scheduler's single channel back to an operator
+    is the exit code, so an unattended run could fail completely and be recorded
+    as a success. That is the defect this function closes.
+
+    ``durable`` is REPORTED by ``capture_daily_bars`` itself; it is read here
+    rather than re-derived, so there is exactly one definition of it.
+
+    Zero closed bars is NOT a failure. A weekend or a holiday legitimately
+    produces nothing, and treating that as an error would make every Monday
+    alert falsely.
+    """
+    if report.get("error"):
+        return EXIT_JOB_FAILURE
+    if report.get("failed_instruments"):
+        return EXIT_JOB_FAILURE
+    if int(report.get("failed_rows", 0) or 0) > 0:
+        return EXIT_JOB_FAILURE
+    if not report.get("durable"):
+        # The capture ran and stored bars, but only in the local append-only
+        # mirror. On an ephemeral host that file is discarded at the next
+        # redeploy, so it must never be reported as durable evidence capture.
+        return EXIT_NON_DURABLE
+    return EXIT_SUCCESS
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="capture_daily_bars",
@@ -185,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(format_report(report))
 
-    return 0
+    return exit_code_for(report)
 
 
 if __name__ == "__main__":
