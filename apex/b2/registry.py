@@ -107,11 +107,76 @@ _DEFAULT_THRESHOLD_BY_SCALE: Mapping[MemberScale, float] = {
 }
 
 
+class EvidenceExpectation(Enum):
+    """Whether the architecture EXPECTS this member to carry evidence.
+
+    This is the H3 mechanism. Data Confidence previously asked only "did this
+    family speak?", which is a boolean over five families and is satisfied by a
+    single surviving member. It could therefore report HIGH with five of fifteen
+    declared member signals present. Coverage needs a denominator, and a
+    denominator is only meaningful once each member declares whether its absence
+    is a data deficiency at all.
+
+    The classes are CATEGORICAL on purpose. A numeric importance weight would be
+    an uncalibrated free parameter chosen before the corpus that could justify
+    it exists -- the same objection that keeps ``ConfidenceLevel`` categorical.
+
+    ``REQUIRED``
+        Absence makes the evaluation uninformative. Counted in the denominator.
+        **No production member currently declares this**: "required" is already
+        expressed at family granularity by ``CRITICAL_FAMILY_KEYS``, and
+        duplicating that policy at member level is not a change H3 was approved
+        to make. It is declared here because the taxonomy is incomplete without
+        it and because a future family may genuinely need it. Note that it does
+        NOT create a path to LOW -- see ``EXPECTED`` below.
+
+    ``EXPECTED``
+        Should normally arrive; its absence is a real degradation of coverage.
+        Counted in the denominator.
+
+        REQUIRED and EXPECTED are treated identically by the coverage ratio.
+        That is deliberate: H3 is bound by invariant I-1, which forbids any new
+        route to ``ConfidenceLevel.LOW``. The only conditions that may reach LOW
+        are the pre-existing ones (a critical family unavailable, two or more
+        families unavailable, a BROKEN series). Coverage floors at MODERATE, so
+        a REQUIRED member that is missing degrades coverage and is named in the
+        provenance block, but it cannot by itself degrade the decision.
+
+    ``OPTIONAL``
+        Its absence is not a data deficiency. Excluded from the denominator
+        entirely, so it can neither raise nor lower coverage.
+
+    ``UNOBTAINABLE``
+        Declared, and never obtainable in this project. Excluded from the
+        denominator. Without this class the two permanently-null Structure
+        members would cap every record ever written, which is a constant offset
+        carrying no information rather than a measurement. A member declaring
+        this MUST record why in ``frequency_basis``; the validator enforces it.
+    """
+
+    REQUIRED = "required"
+    EXPECTED = "expected"
+    OPTIONAL = "optional"
+    UNOBTAINABLE = "unobtainable"
+
+    @property
+    def is_counted(self) -> bool:
+        """True when this member belongs in the coverage denominator."""
+        return self in (EvidenceExpectation.REQUIRED, EvidenceExpectation.EXPECTED)
+
+
+#: Bumped when the MEANING of an expectation assignment changes -- a member
+#: reclassified, a class redefined, a new class added. Stored on every record
+#: alongside the coverage basis so a historical Data Confidence value stays
+#: explicable if these declarations are ever revised.
+EXPECTATION_VERSION = "b2-evidence-expectation-v1"
+
+
 @dataclass(frozen=True)
 class MemberSpec:
     """What one family member IS, as opposed to what it read this evaluation.
 
-    Two facts live here and both are structural rather than incidental:
+    Three facts live here and all three are structural rather than incidental:
 
     *   ``scale`` + ``flat_threshold`` -- the neutral band, expressed in the
         member's own units. Without this a single package constant gets applied
@@ -120,11 +185,20 @@ class MemberSpec:
         behind the member. This is what ``horizons.horizon_compatible`` needs in
         order to refuse a member that is too slow to be evidence at a given
         decision horizon.
+    *   ``expectation`` -- whether the absence of this member is a data
+        deficiency. This is what gives the H3 coverage ratio a denominator that
+        is DECLARED rather than discovered from whatever happened to arrive.
 
     ``frequency`` is deliberately the SLOWEST constituent series, not an
     average. A member blended from a monthly and a quarterly release cannot
     update faster than its quarterly leg, and treating it as though it could is
     the frequency smuggling this field exists to prevent.
+
+    ``expectation`` defaults to ``EXPECTED``, which keeps every pre-H3
+    construction of this dataclass valid -- including
+    ``dataclasses.replace(spec, flat_threshold=...)`` in the null benchmark --
+    and defaults in the direction that COUNTS a member rather than silently
+    excusing it.
     """
 
     key: str
@@ -135,6 +209,8 @@ class MemberSpec:
     #: trusting it.
     frequency_basis: str = ""
     flat_threshold: float | None = None
+    #: Whether the architecture expects evidence here. See EvidenceExpectation.
+    expectation: EvidenceExpectation = EvidenceExpectation.EXPECTED
 
     @property
     def threshold(self) -> float:
@@ -151,6 +227,9 @@ class MemberSpec:
             "frequency_period_days": float(self.frequency.period_days),
             "flat_threshold": float(self.threshold),
             "frequency_basis": self.frequency_basis,
+            # H3: the declared expectation, so a stored Data Confidence value
+            # can be re-derived without consulting repository history.
+            "expectation": self.expectation.value,
         }
 
 
@@ -256,6 +335,7 @@ POLICY_REAL_RATES = FamilyDefinition(
     member_specs=(
         MemberSpec(
             key="policy_rate_momentum",
+            expectation=EvidenceExpectation.EXPECTED,
             scale=MemberScale.BOUNDED_UNIT,
             frequency=SeriesFrequency.MONTHLY,
             frequency_basis=(
@@ -265,18 +345,21 @@ POLICY_REAL_RATES = FamilyDefinition(
         ),
         MemberSpec(
             key="real_yield_momentum",
+            expectation=EvidenceExpectation.EXPECTED,
             scale=MemberScale.BOUNDED_UNIT,
             frequency=SeriesFrequency.DAILY,
             frequency_basis="GOLD_SERIES real_yield = DFII10, a daily constant-maturity series.",
         ),
         MemberSpec(
             key="nominal_yield_momentum",
+            expectation=EvidenceExpectation.EXPECTED,
             scale=MemberScale.BOUNDED_UNIT,
             frequency=SeriesFrequency.DAILY,
             frequency_basis="GOLD_SERIES yield = DGS10, a daily constant-maturity series.",
         ),
         MemberSpec(
             key="inflation_expectations_momentum",
+            expectation=EvidenceExpectation.EXPECTED,
             scale=MemberScale.BOUNDED_UNIT,
             frequency=SeriesFrequency.DAILY,
             frequency_basis="GOLD_SERIES inflation_exp = T10YIE, a daily breakeven series.",
@@ -309,6 +392,7 @@ MACRO_ACTIVITY = FamilyDefinition(
     member_specs=(
         MemberSpec(
             key="inflation_momentum",
+            expectation=EvidenceExpectation.EXPECTED,
             scale=MemberScale.BOUNDED_UNIT,
             frequency=SeriesFrequency.MONTHLY,
             frequency_basis=(
@@ -318,6 +402,7 @@ MACRO_ACTIVITY = FamilyDefinition(
         ),
         MemberSpec(
             key="labor_momentum",
+            expectation=EvidenceExpectation.EXPECTED,
             scale=MemberScale.BOUNDED_UNIT,
             frequency=SeriesFrequency.MONTHLY,
             frequency_basis=(
@@ -327,6 +412,7 @@ MACRO_ACTIVITY = FamilyDefinition(
         ),
         MemberSpec(
             key="growth_momentum",
+            expectation=EvidenceExpectation.EXPECTED,
             scale=MemberScale.BOUNDED_UNIT,
             frequency=SeriesFrequency.QUARTERLY,
             frequency_basis=(
@@ -365,6 +451,7 @@ NEWS_GEOPOLITICAL = FamilyDefinition(
     member_specs=(
         MemberSpec(
             key="rule_based_news",
+            expectation=EvidenceExpectation.EXPECTED,
             scale=MemberScale.BOUNDED_UNIT,
             frequency=SeriesFrequency.EVENT,
             frequency_basis=(
@@ -376,6 +463,7 @@ NEWS_GEOPOLITICAL = FamilyDefinition(
         ),
         MemberSpec(
             key="ai_news",
+            expectation=EvidenceExpectation.OPTIONAL,
             scale=MemberScale.BOUNDED_UNIT,
             frequency=SeriesFrequency.EVENT,
             frequency_basis="Same articles as rule_based_news, scored by the shared AI batch.",
@@ -409,18 +497,21 @@ DIRECTIONAL = FamilyDefinition(
     member_specs=(
         MemberSpec(
             key="short_horizon_return",
+            expectation=EvidenceExpectation.EXPECTED,
             scale=MemberScale.STANDARDISED_SIGMA,
             frequency=SeriesFrequency.INTRADAY,
             frequency_basis="compute_tactical_move ret_15m, from the 5-minute bar series.",
         ),
         MemberSpec(
             key="medium_horizon_return",
+            expectation=EvidenceExpectation.EXPECTED,
             scale=MemberScale.STANDARDISED_SIGMA,
             frequency=SeriesFrequency.INTRADAY,
             frequency_basis="compute_tactical_move ret_1h, from the 5-minute bar series.",
         ),
         MemberSpec(
             key="multi_timeframe_alignment",
+            expectation=EvidenceExpectation.EXPECTED,
             scale=MemberScale.CATEGORICAL_UNIT,
             frequency=SeriesFrequency.INTRADAY,
             frequency_basis=(
@@ -452,6 +543,7 @@ STRUCTURE = FamilyDefinition(
     member_specs=(
         MemberSpec(
             key="breakout_quality",
+            expectation=EvidenceExpectation.EXPECTED,
             scale=MemberScale.CATEGORICAL_UNIT,
             frequency=SeriesFrequency.INTRADAY,
             frequency_basis=(
@@ -461,6 +553,7 @@ STRUCTURE = FamilyDefinition(
         ),
         MemberSpec(
             key="price_structure_zone",
+            expectation=EvidenceExpectation.UNOBTAINABLE,
             scale=MemberScale.CATEGORICAL_UNIT,
             frequency=SeriesFrequency.INTRADAY,
             frequency_basis=(
@@ -471,6 +564,7 @@ STRUCTURE = FamilyDefinition(
         ),
         MemberSpec(
             key="retest_behaviour",
+            expectation=EvidenceExpectation.UNOBTAINABLE,
             scale=MemberScale.CATEGORICAL_UNIT,
             frequency=SeriesFrequency.INTRADAY,
             frequency_basis="Not computed anywhere in this project; see adapters.UNAVAILABLE_REASONS.",
@@ -499,6 +593,27 @@ FAMILIES_BY_KEY: Mapping[str, FamilyDefinition] = {f.key: f for f in VOTING_FAMI
 #: A thesis built with no policy read and no activity read is not a weak thesis,
 #: it is an uninformed one.
 CRITICAL_FAMILY_KEYS: frozenset[str] = frozenset({"policy_real_rates", "macro_activity"})
+
+#: The canonical universal macro family set, named once here rather than left in
+#: the prose comment above ``POLICY_REAL_RATES``.
+#:
+#: This is the H3 ARCHITECTURAL COMPLETENESS denominator, and it is deliberately
+#: NOT "everything in DORMANT_COMPONENTS". Most dormant entries are instrument
+#: diagnostics, display artefacts or data-vintage caveats; treating them as
+#: missing macro evidence would be arbitrary. These four are the family set the
+#: architecture claims to reason over, so their absence -- and only theirs -- is
+#: a statement about the completeness of the macro evidence base itself.
+#:
+#: Exactly one of the four is live here. The other three are declared dormant
+#: below because this project holds no funding, positioning or issuance data.
+CANONICAL_MACRO_FAMILY_KEYS: frozenset[str] = frozenset(
+    {
+        "policy_real_rates",
+        "liquidity_funding",
+        "positioning_crowding",
+        "fiscal_issuance",
+    }
+)
 
 MACRO_FAMILY_KEYS: frozenset[str] = frozenset(
     f.key for f in VOTING_FAMILIES if f.horizon is Horizon.TACTICAL
@@ -1044,6 +1159,36 @@ def _validate_registry() -> None:
     if not CRITICAL_FAMILY_KEYS <= set(keys):
         raise ValueError("CRITICAL_FAMILY_KEYS references an undeclared family")
 
+    # H3: an UNOBTAINABLE member is excluded from the coverage denominator
+    # forever, so the reason has to be on the record rather than in someone's
+    # head. Without this, "unobtainable" becomes a way to quietly delete an
+    # inconvenient member from the measure of completeness.
+    for family in VOTING_FAMILIES:
+        for spec in family.member_specs:
+            if (
+                spec.expectation is EvidenceExpectation.UNOBTAINABLE
+                and not spec.frequency_basis.strip()
+            ):
+                raise ValueError(
+                    f"{family.key}.{spec.key}: a member declared UNOBTAINABLE must "
+                    "record why in frequency_basis. It is removed from the Data "
+                    "Confidence denominator permanently, and an unexplained "
+                    "removal is indistinguishable from hiding a data gap."
+                )
+
+    # H3: every canonical macro family must be accounted for somewhere in this
+    # registry. A key that is neither voting nor dormant would make the
+    # architectural completeness cap silently under-report -- the family would
+    # be absent from the system AND absent from the list of things noted as
+    # absent, which is the exact failure the cap exists to prevent.
+    unaccounted = CANONICAL_MACRO_FAMILY_KEYS - (set(keys) | set(inactive_keys))
+    if unaccounted:
+        raise ValueError(
+            f"CANONICAL_MACRO_FAMILY_KEYS entries {sorted(unaccounted)} are neither "
+            "declared as voting families nor registered as inactive components. A "
+            "canonical macro family must be visible in the registry either way."
+        )
+
     module_keys = [m.key for m in ASSET_MODULES]
     if len(set(module_keys)) != len(module_keys):
         raise ValueError("Duplicate asset module keys")
@@ -1077,6 +1222,20 @@ def withheld_keys() -> tuple[str, ...]:
     return tuple(c.key for c in WITHHELD_COMPONENTS)
 
 
+def dormant_canonical_macro_families() -> tuple[str, ...]:
+    """Canonical universal macro families that are declared but have no data.
+
+    Computed from the LIVE registry state rather than from a hard-coded count,
+    so the H3 architectural completeness cap lifts by itself the moment a
+    funding, positioning or issuance source is genuinely activated. Nothing
+    needs to remember to remove a constant.
+
+    Sorted, so the value is deterministic and two records built from the same
+    registry state serialise identically.
+    """
+    return tuple(sorted(CANONICAL_MACRO_FAMILY_KEYS & set(dormant_keys())))
+
+
 #: Bumped when the MEANING of a member spec changes -- a new scale, a new
 #: threshold rule, a corrected frequency. Stored on every record so a stored
 #: reading stays interpretable if these declarations are ever revised.
@@ -1093,6 +1252,13 @@ def member_spec_provenance() -> dict[str, object]:
     """
     return {
         "version": MEMBER_SPEC_VERSION,
+        # H3: the expectation declarations that produced this record's coverage
+        # denominator. Versioned separately from MEMBER_SPEC_VERSION because a
+        # reclassified member changes what Data Confidence MEANS without
+        # changing how any member is scaled, thresholded or horizon-checked.
+        "expectation_version": EXPECTATION_VERSION,
+        "canonical_macro_families": sorted(CANONICAL_MACRO_FAMILY_KEYS),
+        "dormant_canonical_macro_families": list(dormant_canonical_macro_families()),
         "scale_thresholds": {
             scale.value: float(threshold)
             for scale, threshold in _DEFAULT_THRESHOLD_BY_SCALE.items()
@@ -1114,6 +1280,9 @@ def describe_budget() -> dict[str, object]:
         "macro": sorted(MACRO_FAMILY_KEYS),
         "technical": sorted(TECHNICAL_FAMILY_KEYS),
         "critical": sorted(CRITICAL_FAMILY_KEYS),
+        # H3: the canonical macro set and how much of it actually exists here.
+        "canonical_macro": sorted(CANONICAL_MACRO_FAMILY_KEYS),
+        "dormant_canonical_macro": list(dormant_canonical_macro_families()),
         "active_non_voting": list(active_non_voting_keys()),
         "dormant": list(dormant_keys()),
         "withheld": list(withheld_keys()),

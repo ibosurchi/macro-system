@@ -47,7 +47,17 @@ from .aggregation import (
     resolve_direction,
     saturating_total,
 )
-from .confidence import ConfidenceSet, assemble_confidence, level_from_agreeing_count
+from .confidence import (
+    ARCHITECTURAL_CAP_LEVEL,
+    COVERAGE_FLOOR,
+    ConfidenceSet,
+    EvidenceCoverage,
+    architectural_completeness_cap,
+    assemble_confidence,
+    evidence_coverage,
+    level_from_agreeing_count,
+    level_from_coverage_ratio,
+)
 from .decision import DecisionOutcome, operational_priority_for, resolve_decision
 from .evaluate import ShadowEvaluation, run_shadow_evaluation, thesis_input_keys
 from .horizons import (
@@ -136,17 +146,21 @@ from .gates import (
     evaluate_gates,
 )
 from .registry import (
+    CANONICAL_MACRO_FAMILY_KEYS,
     CRITICAL_FAMILY_KEYS,
     DORMANT_COMPONENTS,
+    EXPECTATION_VERSION,
     FAMILIES_BY_KEY,
     MACRO_FAMILY_KEYS,
     TECHNICAL_FAMILY_KEYS,
     VOTING_BUDGET,
     VOTING_FAMILIES,
     WITHHELD_COMPONENTS,
+    EvidenceExpectation,
     FamilyDefinition,
     InactiveComponent,
     describe_budget,
+    dormant_canonical_macro_families,
     dormant_keys,
     voting_family_keys,
     withheld_keys,
@@ -166,7 +180,17 @@ __all__ = [
     "CRITICAL_FAMILY_KEYS",
     "ConditionPolarity",
     "ConfidenceLevel",
+    "ARCHITECTURAL_CAP_LEVEL",
+    "COVERAGE_FLOOR",
+    "CANONICAL_MACRO_FAMILY_KEYS",
+    "EXPECTATION_VERSION",
+    "EvidenceCoverage",
+    "EvidenceExpectation",
     "ConfidenceSet",
+    "architectural_completeness_cap",
+    "evidence_coverage",
+    "level_from_coverage_ratio",
+    "dormant_canonical_macro_families",
     "EscalationAssessment",
     "HORIZON_EVALUATION_WINDOW",
     "HORIZON_MAX_FREQUENCY",

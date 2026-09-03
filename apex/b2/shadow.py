@@ -70,7 +70,29 @@ SHADOW_MODE_LABEL = "SHADOW / NON-PRODUCTION / UNCALIBRATED"
 #: cannot be corrected retrospectively, because the member values it was scored
 #: from were never stored. Those records stay exactly as written: historically
 #: truthful, never rewritten, and never reinterpreted under v3 semantics.
-CURRENT_SCHEMA_VERSION = 3
+#:
+#: v3 -> v4 is H3, and it is a bump because the SERIALISED MEANING of
+#: ``data_confidence`` changes -- not merely because code changed.
+#:
+#: Under v3, ``data_confidence: HIGH`` asserted "all five declared voting
+#: families spoke". A family speaks on ONE surviving member, so that claim was
+#: satisfiable with five of fifteen declared member signals present -- and the
+#: five declared families were themselves drawn to match the data this project
+#: happens to hold, which makes the claim circular. Under v4 the same string
+#: asserts "expected member coverage is complete at this horizon AND the
+#: canonical universal macro set is complete". Those are different propositions.
+#: Pooling records carrying them under one label would average two different
+#: measurements and attribute the result to one -- the error ``evidence_epoch``
+#: exists to prevent.
+#:
+#: v4 records additionally carry ``confidence.data_confidence_basis``, which is
+#: what makes the value re-derivable from the record alone rather than from
+#: repository history.
+#:
+#: The FREEZE boundary is deliberately NOT moved. ``FREEZE_SCHEMA_VERSION``
+#: stays at 3, so v4 is post-freeze, v1/v2 remain pre-freeze, and no stored
+#: record changes epoch, is rewritten, or is reinterpreted under v4 semantics.
+CURRENT_SCHEMA_VERSION = 4
 
 #: The first schema version written by the post-freeze evidence layer.
 #: ``schema_version < FREEZE_SCHEMA_VERSION`` is the definition of a pre-freeze

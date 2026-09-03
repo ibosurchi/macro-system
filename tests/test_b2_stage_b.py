@@ -638,8 +638,27 @@ class TestConfidenceDimensions(unittest.TestCase):
         partial = self._assemble(
             _readings(policy=0.5, activity=0.5, news=None, directional=0.5, structure=0.5)
         )
-        self.assertIs(full.data, ConfidenceLevel.HIGH)
-        self.assertLess(partial.data.value, full.data.value)
+        # SUPERSEDED BY H3. This previously asserted HIGH for a complete set of
+        # the five DECLARED families. That expectation is exactly the circular
+        # claim H3 closes: the declared five were drawn to match the data this
+        # project happens to hold, and three of the four canonical universal
+        # macro families (liquidity, positioning, issuance) have no data source
+        # at all. While that is true the evidence base is structurally
+        # incomplete and HIGH is not a claim the system may make, however well
+        # the declared families reported.
+        self.assertIs(full.data, ConfidenceLevel.MODERATE)
+        self.assertIn("data:architectural_dormant_canonical", full.caps_applied)
+
+        # The property this test exists to protect -- missing data must be
+        # VISIBLE and must lower the completeness measure -- is now asserted on
+        # the coverage ratio rather than the three-state label. That is a
+        # strengthening, not a weakening: the ratio is a float that separates
+        # every degree of incompleteness, where the label can only separate
+        # three, and under the architectural cap both readings sit at MODERATE.
+        self.assertLessEqual(partial.data.value, full.data.value)
+        self.assertLess(partial.coverage.ratio, full.coverage.ratio)
+        self.assertEqual(full.coverage.ratio, 1.0)
+        self.assertIn("news_geopolitical.rule_based_news", partial.coverage.missing)
 
     def test_critical_family_unavailable_drops_data_confidence_to_low(self):
         result = self._assemble(_readings(policy=None, activity=0.5, news=0.5))
@@ -986,8 +1005,17 @@ class TestStageBConstraints(unittest.TestCase):
         self.assertIs(
             missing.decision.state, DecisionState.INSUFFICIENT_DATA_SYSTEM_DEGRADED
         )
-        self.assertIs(flat.confidence.data, ConfidenceLevel.HIGH)
+        # SUPERSEDED BY H3, constant only. The property under test -- flat and
+        # missing must stay distinct end to end -- is untouched and is now
+        # asserted more strongly: they differ in decision state, in Data
+        # Confidence AND in coverage, where flat evidence is fully present
+        # (ratio 1.0) and missing evidence is not. The former HIGH became
+        # MODERATE because canonical macro families are dormant, which is a
+        # statement about the evidence base rather than about these readings.
+        self.assertIs(flat.confidence.data, ConfidenceLevel.MODERATE)
         self.assertIs(missing.confidence.data, ConfidenceLevel.LOW)
+        self.assertEqual(flat.confidence.coverage.ratio, 1.0)
+        self.assertEqual(missing.confidence.coverage.ratio, 0.0)
 
     def test_no_operator_risk_parameter_is_invented(self):
         self.assertFalse(risk.DEFAULT_RISK_PARAMETERS.is_configured)

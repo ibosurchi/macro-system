@@ -192,6 +192,11 @@ def run_shadow_evaluation(
         gates=gates,
         staleness_observations=staleness,
         conflicting_sources=conflicting_sources,
+        # H3: coverage is measured against the evidence eligible at THIS
+        # horizon. Without the horizon, a member correctly refused for
+        # publishing too slowly would be counted as missing data and every
+        # Execution record would report an outage it does not have.
+        decision_horizon=decision_horizon,
     )
 
     size = size_directive(

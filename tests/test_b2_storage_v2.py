@@ -257,7 +257,12 @@ class TestRoundTripAndImmutability(unittest.TestCase):
         # Stage D: new payloads are v2, which is what adds market_anchor.
         # Legacy rows already in the table stay at v1 and are never rewritten.
         self.assertEqual(row["schema_version"], shadow.CURRENT_SCHEMA_VERSION)
-        self.assertEqual(row["schema_version"], 3)
+        # SUPERSEDED BY H3 (constant only): the duplicate literal pinned the
+        # then-current value alongside the constant it was already asserting.
+        # H3 writes v4, so the literal is dropped rather than re-pinned -- the
+        # line above already protects the property, and the assertion below
+        # keeps the freeze boundary itself fixed.
+        self.assertEqual(shadow.FREEZE_SCHEMA_VERSION, 3)
         rec = row["record"]
         for key in (
             "record_id", "instrument", "evaluated_at", "horizon", "schema_version",

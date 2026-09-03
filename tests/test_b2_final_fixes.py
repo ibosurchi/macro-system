@@ -436,7 +436,18 @@ class TestH4EvidenceIsPersisted(unittest.TestCase):
 
     def test_the_schema_version_marks_the_freeze_boundary(self):
         record = self._evaluation().record.as_record()
-        self.assertEqual(record["schema_version"], shadow.FREEZE_SCHEMA_VERSION)
+        # SUPERSEDED BY H3, and the correction makes the test stronger. It
+        # previously required a new record's version to EQUAL the freeze
+        # boundary, which silently conflated two different constants: "what is
+        # written now" and "where the pre/post-freeze line sits". They were
+        # equal only while v3 happened to be current. H3 writes v4, so the
+        # relationship being protected is >=, and the boundary itself must stay
+        # exactly where the Final Fix put it.
+        self.assertEqual(record["schema_version"], shadow.CURRENT_SCHEMA_VERSION)
+        self.assertGreaterEqual(
+            record["schema_version"], shadow.FREEZE_SCHEMA_VERSION
+        )
+        self.assertEqual(shadow.FREEZE_SCHEMA_VERSION, 3)
         self.assertEqual(record["evidence_epoch"], shadow.EVIDENCE_EPOCH_POST_FREEZE)
         self.assertFalse(shadow.is_pre_freeze_record(record))
 

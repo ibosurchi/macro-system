@@ -818,16 +818,25 @@ class TestAnchorCapture(unittest.TestCase):
         self.assertEqual(anchor["volatility_regime"], "normal")
         self.assertEqual(anchor["granularity"], "5m")
 
-    def test_new_records_are_schema_version_three(self):
+    def test_new_records_are_current_schema_and_post_freeze(self):
         _, evaluation = _observe("Gold")
-        # v3 is the freeze boundary: scale-aware bands, horizon-filtered family
+        # v3 is the freeze BOUNDARY: scale-aware bands, horizon-filtered family
         # evaluation, an entry-plan direction check, Unavailable-preserving
         # adapters, and stored member values with their provenance.
+        #
+        # SUPERSEDED BY H3, which writes v4 because the serialised meaning of
+        # data_confidence changed. The literal 3 pinned "what is written now",
+        # which a schema bump is defined to change; the test now tracks the
+        # constant instead, so it keeps protecting the real properties -- new
+        # records are current, they are post-freeze, and the boundary itself
+        # has not moved -- without re-breaking on the next legitimate bump.
         record = evaluation.record.as_record()
-        self.assertEqual(record["schema_version"], 3)
+        self.assertEqual(record["schema_version"], shadow.CURRENT_SCHEMA_VERSION)
         self.assertEqual(record["evidence_epoch"], "post_freeze")
         self.assertIsNotNone(record["evidence_provenance"])
-        self.assertEqual(shadow.CURRENT_SCHEMA_VERSION, 3)
+        self.assertGreaterEqual(
+            shadow.CURRENT_SCHEMA_VERSION, shadow.FREEZE_SCHEMA_VERSION
+        )
         self.assertEqual(shadow.FREEZE_SCHEMA_VERSION, 3)
 
     def test_the_anchor_survives_a_neutral_macro_regime(self):
@@ -1325,8 +1334,15 @@ class TestStorageV2Regression(unittest.TestCase):
     def test_record_to_row_promotes_the_new_schema_version(self):
         _, evaluation = _observe("Gold")
         row = shadow.record_to_row(evaluation.record.as_record())
-        self.assertEqual(row["schema_version"], 3)
-        self.assertEqual(row["record"]["schema_version"], 3)
+        # SUPERSEDED BY H3 (constant only). The property protected here is that
+        # record_to_row PROMOTES the payload's version into its own column and
+        # the two agree -- not that the number is 3. Asserting the agreement
+        # against the live constant is what that property actually says.
+        self.assertEqual(row["schema_version"], shadow.CURRENT_SCHEMA_VERSION)
+        self.assertEqual(
+            row["record"]["schema_version"], shadow.CURRENT_SCHEMA_VERSION
+        )
+        self.assertEqual(row["schema_version"], row["record"]["schema_version"])
         self.assertIn("market_anchor", row["record"])
 
     def test_legacy_rows_are_never_rewritten_by_the_read_path(self):
