@@ -25,7 +25,7 @@ name: b2-capture-shadow
 
 on:
   schedule:
-    - cron: "37 * * * *"
+    - cron: "1 * * * *"
 
   workflow_dispatch:
     inputs:
